@@ -11,7 +11,7 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, OutPoint, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
@@ -31,9 +31,10 @@ use bitcoin::secp256k1;
 use util::byte_utils;
 use util::ser::{Writeable, Writer, Readable};
 
+use chain::transaction::OutPoint;
 use ln::chan_utils;
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
-use ln::msgs;
+use ln::msgs::UnsignedChannelAnnouncement;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
@@ -316,7 +317,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// Note that if this fails or is rejected, the channel will not be publicly announced and
 	/// our counterparty may (though likely will not) close the channel on us for violating the
 	/// protocol.
-	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Set the remote channel basepoints and remote/local to_self_delay.
 	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
@@ -582,7 +583,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 
-	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
@@ -808,7 +809,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> InMemoryChannelKeys {
+	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner {
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		let ix_and_nanos: u64 = (child_ix as u64) << 32 | (self.starting_time_nanos as u64);
 		self.derive_channel_keys(channel_value_satoshis, ix_and_nanos, self.starting_time_secs)

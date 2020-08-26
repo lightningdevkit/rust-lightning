@@ -136,13 +136,13 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		match self.0 {
 			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
-				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, .. } => {
-				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 			&SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, .. } => {
-				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 		}
 		Ok(())

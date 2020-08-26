@@ -20,18 +20,31 @@ use bitcoin::blockdata::opcodes;
 
 use chain::chaininterface::{ChainError, ChainWatchInterface};
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, OptionalField, MAX_VALUE_MSAT};
+use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 
 use std::{cmp, fmt};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
+
+/// Represents the network as nodes and channels between them
+#[derive(PartialEq)]
+pub struct NetworkGraph {
+	channels: BTreeMap<u64, ChannelInfo>,
+	nodes: BTreeMap<PublicKey, NodeInfo>,
+}
+
+/// A simple newtype for RwLockReadGuard<'a, NetworkGraph>.
+/// This exists only to make accessing a RwLock<NetworkGraph> possible from
+/// the C bindings, as it can be done directly in Rust code.
+pub struct LockedNetworkGraph<'a>(pub RwLockReadGuard<'a, NetworkGraph>);
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -76,6 +89,21 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInt
 			chain_monitor,
 			logger,
 		}
+	}
+
+	/// Take a read lock on the network_graph and return it in the C-bindings
+	/// newtype helper. This is likely only useful when called via the C
+	/// bindings as you can call `self.network_graph.read().unwrap()` in Rust
+	/// yourself.
+	pub fn read_locked_graph<'a>(&'a self) -> LockedNetworkGraph<'a> {
+		LockedNetworkGraph(self.network_graph.read().unwrap())
+	}
+}
+
+impl<'a> LockedNetworkGraph<'a> {
+	/// Get a reference to the NetworkGraph which this read-lock contains.
+	pub fn graph(&self) -> &NetworkGraph {
+		&*self.0
 	}
 }
 
@@ -147,7 +175,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx))
 	}
 
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let mut iter = network_graph.get_channels().range(starting_point..);
@@ -175,7 +203,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		result
 	}
 
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
+	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
 		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let mut iter = if let Some(pubkey) = starting_point {
@@ -441,13 +469,6 @@ impl Readable for NodeInfo {
 			announcement_info,
 		})
 	}
-}
-
-/// Represents the network as nodes and channels between them
-#[derive(PartialEq)]
-pub struct NetworkGraph {
-	channels: BTreeMap<u64, ChannelInfo>,
-	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
 
 impl Writeable for NetworkGraph {

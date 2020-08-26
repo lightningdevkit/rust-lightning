@@ -1636,7 +1636,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commitment_secret = SecretKey::from_slice(&remote_secret1).unwrap();
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &commitment_secret);
-	let commit_tx_keys = chan_utils::TxCreationKeys::new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
+	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
 		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
@@ -3625,7 +3625,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	let logger = test_utils::TestLogger::new();
 	let payment_event = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
+			&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+			&Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
@@ -3800,7 +3802,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 
 	// Channel should still work fine...
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels()), &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
+		&nodes[1].node.get_our_node_id(), Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+		&Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 	let payment_preimage_2 = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
 }
@@ -4314,7 +4318,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
-			channel_monitors: &mut channel_monitors,
+			channel_monitors,
 		}).unwrap()
 	};
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
@@ -4422,7 +4426,7 @@ fn test_manager_serialize_deserialize_events() {
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
-			channel_monitors: &mut channel_monitors,
+			channel_monitors,
 		}).unwrap()
 	};
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
@@ -4512,7 +4516,7 @@ fn test_simple_manager_serialize_deserialize() {
 			monitor: nodes[0].chan_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
-			channel_monitors: &mut channel_monitors,
+			channel_monitors,
 		}).unwrap()
 	};
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
@@ -4602,7 +4606,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		monitor: nodes[0].chan_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 		logger: &logger,
-		channel_monitors: &mut node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
+		channel_monitors: node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}) { } else {
 		panic!("If the monitor(s) are stale, this indicates a bug and we should get an Err return");
 	};
@@ -4616,7 +4620,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		monitor: nodes[0].chan_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 		logger: &logger,
-		channel_monitors: &mut node_0_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
+		channel_monitors: node_0_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
 	}).unwrap();
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
@@ -4668,7 +4672,7 @@ macro_rules! check_spendable_outputs {
 							match *outp {
 								SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, ref output, ref key_derivation_params } => {
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: 0,
 										witness: Vec::new(),
@@ -4696,7 +4700,7 @@ macro_rules! check_spendable_outputs {
 								},
 								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey } => {
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: *to_self_delay as u32,
 										witness: Vec::new(),
@@ -4729,7 +4733,7 @@ macro_rules! check_spendable_outputs {
 								SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
 									let secp_ctx = Secp256k1::new();
 									let input = TxIn {
-										previous_output: outpoint.clone(),
+										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: 0,
 										witness: Vec::new(),
@@ -7887,7 +7891,7 @@ fn test_data_loss_protect() {
 			logger: &logger,
 			tx_broadcaster: &tx_broadcaster,
 			default_config: UserConfig::default(),
-			channel_monitors: &mut channel_monitors,
+			channel_monitors,
 		}).unwrap().1
 	};
 	nodes[0].node = &node_state_0;

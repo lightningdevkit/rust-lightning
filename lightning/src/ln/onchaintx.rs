@@ -583,7 +583,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
 					&InputMaterial::Revoked { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_remote_tx_csv } => {
-						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 
 							let witness_script = if let Some(ref htlc) = *htlc {
 								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key)
@@ -607,7 +607,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						}
 					},
 					&InputMaterial::RemoteHTLC { ref per_commitment_point, ref remote_delayed_payment_base_key, ref remote_htlc_base_key, ref preimage, ref htlc } => {
-						if let Ok(chan_keys) = TxCreationKeys::new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, remote_delayed_payment_base_key, remote_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
 							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.a_htlc_key, &chan_keys.b_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
