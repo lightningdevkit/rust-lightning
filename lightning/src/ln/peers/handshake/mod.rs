@@ -7,6 +7,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use ln::peers::conduit::Conduit;
 use ln::peers::handshake::states::{HandshakeState, IHandshakeState};
 
+mod acts;
 mod states;
 
 /// Object for managing handshakes.
@@ -46,7 +47,7 @@ impl PeerHandshake {
 		self.state = Some(next_state);
 
 		self.ready_for_process = true;
-		response_vec_opt.unwrap()
+		response_vec_opt.unwrap().to_vec()
 	}
 
 	/// Process act dynamically
@@ -61,7 +62,12 @@ impl PeerHandshake {
 		assert!(self.ready_for_process);
 		let cur_state = self.state.take().unwrap();
 
-		let (act_opt, mut next_state) = cur_state.next(input)?;
+		// Convert the Act to a Vec before passing it back. Next patch removes this in favor
+		// of passing back a slice.
+		let (act_opt, mut next_state) = match cur_state.next(input)? {
+			(Some(act), next_state) => (Some(act.to_vec()), next_state),
+			(None, next_state) => (None, next_state)
+		};
 
 		let result = match next_state {
 			HandshakeState::Complete(ref mut conduit_and_pubkey) => {

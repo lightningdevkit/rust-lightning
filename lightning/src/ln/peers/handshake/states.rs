@@ -6,9 +6,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
-
-const ACT_ONE_TWO_LENGTH: usize = 50;
-const ACT_THREE_LENGTH: usize = 66;
+use ln::peers::handshake::acts::{Act, ActBuilder, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
 
 type ChainingKey = [u8; 32];
 
@@ -34,7 +32,7 @@ pub(super) enum HandshakeState {
 // Trait for all individual states to implement that ensure HandshakeState::next() can
 // delegate to a common function signature.
 pub(super) trait IHandshakeState {
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String>;
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String>;
 }
 
 // Enum dispatch for state machine. Single public interface can statically dispatch to all states
@@ -48,7 +46,7 @@ impl HandshakeState {
 }
 
 impl IHandshakeState for HandshakeState {
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
 		match self {
 			HandshakeState::InitiatorStarting(state) => { state.next(input) },
 			HandshakeState::ResponderAwaitingActOne(state) => { state.next(input) },
@@ -77,7 +75,7 @@ pub(super) struct ResponderAwaitingActOneState {
 	responder_ephemeral_public_key: PublicKey,
 	chaining_key: Sha256,
 	hash: Sha256,
-	read_buffer: Vec<u8>
+	act_one_builder: ActBuilder
 }
 
 // Handshake state of the Initiator prior to receiving Act 2
@@ -88,7 +86,7 @@ pub(super) struct InitiatorAwaitingActTwoState {
 	responder_static_public_key: PublicKey,
 	chaining_key: ChainingKey,
 	hash: Sha256,
-	read_buffer: Vec<u8>
+	act_two_builder: ActBuilder
 }
 
 // Handshake state of the Responder prior to receiving Act 3
@@ -97,7 +95,7 @@ pub(super) struct ResponderAwaitingActThreeState {
 	responder_ephemeral_private_key: SecretKey,
 	chaining_key: ChainingKey,
 	temporary_key: [u8; 32],
-	read_buffer: Vec<u8>
+	act_three_builder: ActBuilder
 }
 
 impl InitiatorStartingState {
@@ -119,7 +117,7 @@ impl InitiatorStartingState {
 
 impl IHandshakeState for InitiatorStartingState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
 
 		if input.len() > 0 {
 			return Err("first call for initiator must be empty".to_string());
@@ -134,16 +132,18 @@ impl IHandshakeState for InitiatorStartingState {
 		let hash = self.hash;
 
 		// serialize act one
-		let (act_one, hash, chaining_key, _) = calculate_act_message(
+		let mut act_one = EMPTY_ACT_ONE;
+		let (hash, chaining_key, _) = calculate_act_message(
 			&initiator_ephemeral_private_key,
 			&initiator_ephemeral_public_key,
 			&responder_static_public_key,
 			chaining_key.into_inner(),
 			hash,
+			&mut act_one
 		);
 
 		Ok((
-			Some(act_one.to_vec()),
+			Some(Act::One(act_one)),
 			HandshakeState::InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState {
 				initiator_static_private_key,
 				initiator_static_public_key,
@@ -151,7 +151,7 @@ impl IHandshakeState for InitiatorStartingState {
 				responder_static_public_key,
 				chaining_key,
 				hash,
-				read_buffer: Vec::new()
+				act_two_builder: ActBuilder::new(Act::Two(EMPTY_ACT_TWO))
 			})
 		))
 	}
@@ -169,7 +169,7 @@ impl ResponderAwaitingActOneState {
 			responder_ephemeral_public_key,
 			chaining_key,
 			hash,
-			read_buffer: Vec::new()
+			act_one_builder: ActBuilder::new(Act::One(EMPTY_ACT_ONE))
 		}
 	}
 }
@@ -177,18 +177,19 @@ impl ResponderAwaitingActOneState {
 impl IHandshakeState for ResponderAwaitingActOneState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (receiver)
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
-		let mut read_buffer = self.read_buffer;
-		read_buffer.extend_from_slice(input);
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
+		let mut act_one_builder = self.act_one_builder;
+		let remaining = act_one_builder.fill(input);
 
 		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since initiator data
 		// is required to generate act3 (so it can't come before we transition)
-		if read_buffer.len() > ACT_ONE_TWO_LENGTH {
+		if remaining.len() != 0 {
 			return Err("Act One too large".to_string());
 		}
 
 		// In the event of a partial fill, stay in the same state and wait for more data
-		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
+		if !act_one_builder.is_finished() {
+			assert_eq!(remaining.len(), 0);
 			return Ok((
 				None,
 				HandshakeState::ResponderAwaitingActOne(Self {
@@ -197,41 +198,43 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 					responder_ephemeral_public_key: self.responder_ephemeral_public_key,
 					chaining_key: self.chaining_key,
 					hash: self.hash,
-					read_buffer
+					act_one_builder
 				})
 			));
 		}
-
 
 		let hash = self.hash;
 		let responder_static_private_key = self.responder_static_private_key;
 		let chaining_key = self.chaining_key;
 		let responder_ephemeral_private_key = self.responder_ephemeral_private_key;
 		let responder_ephemeral_public_key = self.responder_ephemeral_public_key;
+		let act_one = Act::from(act_one_builder);
 
 		let (initiator_ephemeral_public_key, hash, chaining_key, _) = process_act_message(
-			&mut read_buffer,
+			&act_one,
 			&responder_static_private_key,
 			chaining_key.into_inner(),
 			hash,
 		)?;
 
-		let (act_two, hash, chaining_key, temporary_key) = calculate_act_message(
+		let mut act_two = EMPTY_ACT_TWO;
+		let (hash, chaining_key, temporary_key) = calculate_act_message(
 			&responder_ephemeral_private_key,
 			&responder_ephemeral_public_key,
 			&initiator_ephemeral_public_key,
 			chaining_key,
 			hash,
+			&mut act_two
 		);
 
 		Ok((
-			Some(act_two),
+			Some(Act::Two(act_two)),
 			HandshakeState::ResponderAwaitingActThree(ResponderAwaitingActThreeState {
 				hash,
 				responder_ephemeral_private_key,
 				chaining_key,
 				temporary_key,
-				read_buffer
+				act_three_builder: ActBuilder::new(Act::Three(EMPTY_ACT_THREE))
 			})
 		))
 	}
@@ -240,18 +243,19 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 impl IHandshakeState for InitiatorAwaitingActTwoState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (sender)
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
-		let mut read_buffer = self.read_buffer;
-		read_buffer.extend_from_slice(input);
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
+		let mut act_two_builder = self.act_two_builder;
+		let remaining = act_two_builder.fill(input);
 
 		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since responder data
 		// is required to generate post-authentication messages (so it can't come before we transition)
-		if read_buffer.len() > ACT_ONE_TWO_LENGTH {
+		if remaining.len() != 0 {
 			return Err("Act Two too large".to_string());
 		}
 
 		// In the event of a partial fill, stay in the same state and wait for more data
-		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
+		if !act_two_builder.is_finished() {
+			assert_eq!(remaining.len(), 0);
 			return Ok((
 				None,
 				HandshakeState::InitiatorAwaitingActTwo(Self {
@@ -261,7 +265,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 					responder_static_public_key: self.responder_static_public_key,
 					chaining_key: self.chaining_key,
 					hash: self.hash,
-					read_buffer
+					act_two_builder
 				})
 			));
 		}
@@ -272,9 +276,10 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let responder_static_public_key = self.responder_static_public_key;
 		let hash = self.hash;
 		let chaining_key = self.chaining_key;
+		let act_two = Act::from(act_two_builder);
 
 		let (responder_ephemeral_public_key, hash, chaining_key, temporary_key) = process_act_message(
-			&mut read_buffer,
+			&act_two,
 			&initiator_ephemeral_private_key,
 			chaining_key,
 			hash,
@@ -304,14 +309,12 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
 		// Send m = 0 || c || t over the network buffer
-		let mut act_three = Vec::with_capacity(ACT_THREE_LENGTH);
-		act_three.extend(&[0]);
-		act_three.extend(&tagged_encrypted_pubkey);
-		act_three.extend(&authentication_tag);
-		assert_eq!(act_three.len(), ACT_THREE_LENGTH);
+		let mut act_three = EMPTY_ACT_THREE;
+		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
+		act_three[50..].copy_from_slice(&authentication_tag);
 
 		Ok((
-			Some(act_three),
+			Some(Act::Three(act_three)),
 			HandshakeState::Complete(Some((conduit, responder_static_public_key)))
 		))
 	}
@@ -319,12 +322,13 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 
 impl IHandshakeState for ResponderAwaitingActThreeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (receiver)
-	fn next(self, input: &[u8]) -> Result<(Option<Vec<u8>>, HandshakeState), String> {
-		let mut read_buffer = self.read_buffer;
-		read_buffer.extend_from_slice(input);
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
+		let mut act_three_builder = self.act_three_builder;
+		let remaining = act_three_builder.fill(input);
 
 		// In the event of a partial fill, stay in the same state and wait for more data
-		if read_buffer.len() < ACT_THREE_LENGTH {
+		if !act_three_builder.is_finished() {
+			assert_eq!(remaining.len(), 0);
 			return Ok((
 				None,
 				HandshakeState::ResponderAwaitingActThree(Self {
@@ -332,7 +336,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 					responder_ephemeral_private_key: self.responder_ephemeral_private_key,
 					chaining_key: self.chaining_key,
 					temporary_key: self.temporary_key,
-					read_buffer
+					act_three_builder
 				})
 			));
 		}
@@ -343,7 +347,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let chaining_key = self.chaining_key;
 
 		// 1. Read exactly 66 bytes from the network buffer
-		let act_three_bytes: Vec<u8> = read_buffer.drain(..ACT_THREE_LENGTH).collect();
+		let act_three_bytes = Act::from(act_three_builder);
 
 		// 2. Parse the read message (m) into v, c, and t
 		let version = act_three_bytes[0];
@@ -385,10 +389,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
 		// to the Conduit for future use.
-		if read_buffer.len() > 0 { // have we received more data still?
-			conduit.read(&read_buffer[..]);
-			read_buffer.drain(..);
-		}
+		conduit.read(remaining);
 
 		Ok((
 			None,
@@ -417,7 +418,7 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (S
 
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
-fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: Sha256) -> (Vec<u8>, Sha256, SymmetricKey, SymmetricKey) {
+fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: Sha256, act_out: &mut [u8]) -> (Sha256, SymmetricKey, SymmetricKey) {
 	// 1. e = generateKey() (passed in)
 	// 2. h = SHA-256(h || e.pub.serializeCompressed())
 	let serialized_local_public_key = local_public_ephemeral_key.serialize();
@@ -439,22 +440,18 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 	let hash = concat_then_sha256!(hash, tagged_ciphertext);
 
 	// Send m = 0 || e.pub.serializeCompressed() || c
-	let mut act = Vec::with_capacity(ACT_ONE_TWO_LENGTH);
-	act.extend(&[0]);
-	act.extend_from_slice(&serialized_local_public_key);
-	act.extend(&tagged_ciphertext);
-	assert_eq!(act.len(), ACT_ONE_TWO_LENGTH);
 
-	(act, hash, chaining_key, temporary_key)
+	act_out[1..34].copy_from_slice(&serialized_local_public_key);
+	act_out[34..50].copy_from_slice(&tagged_ciphertext);
+
+	(hash, chaining_key, temporary_key)
 }
 
 // Due to the very high similarity of acts 1 and 2, this method is used to process both
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (receiver)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
-fn process_act_message(read_buffer: &mut Vec<u8>, local_private_key: &SecretKey, chaining_key: ChainingKey, hash: Sha256) -> Result<(PublicKey, Sha256, SymmetricKey, SymmetricKey), String> {
+fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining_key: ChainingKey, hash: Sha256) -> Result<(PublicKey, Sha256, SymmetricKey, SymmetricKey), String> {
 	// 1. Read exactly 50 bytes from the network buffer
-	let act_bytes: Vec<u8> = read_buffer.drain(..ACT_ONE_TWO_LENGTH).collect();
-
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
 	let ephemeral_public_key_bytes = &act_bytes[1..34];
@@ -581,7 +578,7 @@ mod test {
 		let test_ctx = TestCtx::new();
 		let (act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 
-		assert_eq!(act1, test_ctx.valid_act1);
+		assert_eq!(act1.as_ref(), test_ctx.valid_act1.as_slice());
 		assert_matches!(awaiting_act_two_state, InitiatorAwaitingActTwo(_));
 	}
 
@@ -600,7 +597,7 @@ mod test {
 		let test_ctx = TestCtx::new();
 		let (act2, awaiting_act_three_state) = test_ctx.responder.next(&test_ctx.valid_act1).unwrap();
 
-		assert_eq!(act2.unwrap(), test_ctx.valid_act2);
+		assert_eq!(act2.unwrap().as_ref(), test_ctx.valid_act2.as_slice());
 		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
 	}
 
@@ -687,7 +684,7 @@ mod test {
 			panic!();
 		};
 
-		assert_eq!(act3, test_ctx.valid_act3);
+		assert_eq!(act3.as_ref(), test_ctx.valid_act3.as_slice());
 		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
 		assert_eq!(0, conduit.decryptor.read_buffer_length());
 	}
