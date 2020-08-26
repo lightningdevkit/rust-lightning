@@ -181,6 +181,12 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
+		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since initiator data
+		// is required to generate act3 (so it can't come before we transition)
+		if read_buffer.len() > ACT_ONE_TWO_LENGTH {
+			return Err("Act One too large".to_string());
+		}
+
 		// In the event of a partial fill, stay in the same state and wait for more data
 		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
 			return Ok((
@@ -238,6 +244,12 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let mut read_buffer = self.read_buffer;
 		read_buffer.extend_from_slice(input);
 
+		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since responder data
+		// is required to generate post-authentication messages (so it can't come before we transition)
+		if read_buffer.len() > ACT_ONE_TWO_LENGTH {
+			return Err("Act Two too large".to_string());
+		}
+
 		// In the event of a partial fill, stay in the same state and wait for more data
 		if read_buffer.len() < ACT_ONE_TWO_LENGTH {
 			return Ok((
@@ -289,7 +301,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 
 		// 7. rn = 0, sn = 0
 		// - done by Conduit
-		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
+		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
 		// Send m = 0 || c || t over the network buffer
 		let mut act_three = Vec::with_capacity(ACT_THREE_LENGTH);
@@ -297,14 +309,6 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		act_three.extend(&tagged_encrypted_pubkey);
 		act_three.extend(&authentication_tag);
 		assert_eq!(act_three.len(), ACT_THREE_LENGTH);
-
-		// Any remaining data in the read buffer would be encrypted, so transfer ownership
-		// to the Conduit for future use. In this case, it is unlikely that any valid data
-		// exists, since the responder doesn't have Act3
-		if read_buffer.len() > 0 {
-			conduit.read(&read_buffer[..]);
-			read_buffer.drain(..);
-		}
 
 		Ok((
 			Some(act_three),
@@ -600,18 +604,16 @@ mod test {
 		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
 	}
 
-	// Responder::AwaitingActOne -> AwaitingActThree
-	// TODO: Should this fail since we don't expect data > ACT_ONE_TWO_LENGTH and likely indicates
-	// a bad peer?
+	// Responder::AwaitingActOne -> AwaitingActThree (bad peer)
+	// Act2 requires data from the initiator. If we receive a payload for act1 that is larger than
+	// expected it indicates a bad peer
 	#[test]
 	fn awaiting_act_one_to_awaiting_act_three_input_extra_bytes() {
 		let test_ctx = TestCtx::new();
 		let mut act1 = test_ctx.valid_act1;
 		act1.extend_from_slice(&[1]);
-		let (act2, awaiting_act_three_state) = test_ctx.responder.next(&act1).unwrap();
 
-		assert_eq!(act2.unwrap(), test_ctx.valid_act2);
-		assert_matches!(awaiting_act_three_state, ResponderAwaitingActThree(_));
+		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("Act One too large")));
 	}
 
 	// Responder::AwaitingActOne -> AwaitingActThree (segmented calls)
@@ -658,6 +660,19 @@ mod test {
 		assert_eq!(test_ctx.responder.next(&act1).err(), Some(String::from("invalid hmac")));
 	}
 
+	// Initiator::AwaitingActTwo -> Complete (bad peer)
+	// Initiator data is required to generate post-authentication messages. This means any extra
+	// data indicates a bad peer.
+	#[test]
+	fn awaiting_act_two_to_complete_extra_bytes() {
+		let test_ctx = TestCtx::new();
+		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
+		let mut act2 = test_ctx.valid_act2;
+		act2.extend_from_slice(&[1]);
+
+		assert_eq!(awaiting_act_two_state.next(&act2).err(), Some(String::from("Act Two too large")));
+	}
+
 	// Initiator::AwaitingActTwo -> Complete
 	// RFC test vector: transport-initiator successful handshake
 	#[test]
@@ -675,29 +690,6 @@ mod test {
 		assert_eq!(act3, test_ctx.valid_act3);
 		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
 		assert_eq!(0, conduit.decryptor.read_buffer_length());
-	}
-
-	// Initiator::AwaitingActTwo -> Complete (with extra data)
-	// Ensures that any remaining data in the read buffer is transferred to the conduit once
-	// the handshake is complete
-	// TODO: Is this valid? Don't we expect peers to need ActThree before sending additional data?
-	#[test]
-	fn awaiting_act_two_to_complete_excess_bytes_are_in_conduit() {
-		let test_ctx = TestCtx::new();
-		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
-		let mut act2 = test_ctx.valid_act2;
-		act2.extend_from_slice(&[1; 100]);
-		let (act3, complete_state) = do_next_or_panic!(awaiting_act_two_state, &act2);
-
-		let (conduit, remote_pubkey) = if let Complete(Some((conduit, remote_pubkey))) = complete_state {
-			(conduit, remote_pubkey)
-		} else {
-			panic!();
-		};
-
-		assert_eq!(act3, test_ctx.valid_act3);
-		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
-		assert_eq!(100, conduit.decryptor.read_buffer_length());
 	}
 
 	// Initiator::AwaitingActTwo -> Complete (segmented calls)
