@@ -44,7 +44,7 @@ impl EnforcingChannelKeys {
 impl EnforcingChannelKeys {
 	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
 	                                                               keys: &TxCreationKeys) {
-		let remote_points = self.inner.remote_pubkeys();
+		let remote_points = self.inner.counterparty_pubkeys();
 
 		let keys_expected = TxCreationKeys::derive_new(secp_ctx,
 		                                               &keys.per_commitment_point,
@@ -100,7 +100,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 	fn sign_local_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, local_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let commitment_txid = local_commitment_tx.txid();
-		let local_csv = self.inner.counterparty_to_self_delay();
+		let local_csv = self.inner.counterparty_selected_contest_delay();
 
 		for this_htlc in local_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
@@ -132,8 +132,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_to_self_delay: u16, local_to_self_delay: u16) {
-		self.inner.on_accept(channel_pubkeys, remote_to_self_delay, local_to_self_delay)
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_locally_selected_delay: u16, locally_selected_delay: u16) {
+		self.inner.on_accept(channel_pubkeys, remote_locally_selected_delay, locally_selected_delay)
 	}
 }
 

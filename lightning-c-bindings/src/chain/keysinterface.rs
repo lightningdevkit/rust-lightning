@@ -670,8 +670,8 @@ pub extern "C" fn InMemoryChannelKeys_new(mut funding_key: crate::c_types::Secre
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_remote_pubkeys(this_arg: &InMemoryChannelKeys) -> crate::ln::chan_utils::ChannelPublicKeys {
-	let mut ret = unsafe { &*this_arg.inner }.remote_pubkeys();
+pub extern "C" fn InMemoryChannelKeys_counterparty_pubkeys(this_arg: &InMemoryChannelKeys) -> crate::ln::chan_utils::ChannelPublicKeys {
+	let mut ret = unsafe { &*this_arg.inner }.counterparty_pubkeys();
 	crate::ln::chan_utils::ChannelPublicKeys { inner: unsafe { ( (&(*ret) as *const _) as *mut _) }, is_owned: false }
 }
 
@@ -682,8 +682,8 @@ pub extern "C" fn InMemoryChannelKeys_remote_pubkeys(this_arg: &InMemoryChannelK
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_counterparty_to_self_delay(this_arg: &InMemoryChannelKeys) -> u16 {
-	let mut ret = unsafe { &*this_arg.inner }.counterparty_to_self_delay();
+pub extern "C" fn InMemoryChannelKeys_counterparty_selected_contest_delay(this_arg: &InMemoryChannelKeys) -> u16 {
+	let mut ret = unsafe { &*this_arg.inner }.counterparty_selected_contest_delay();
 	ret
 }
 
@@ -693,8 +693,8 @@ pub extern "C" fn InMemoryChannelKeys_counterparty_to_self_delay(this_arg: &InMe
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_local_to_self_delay(this_arg: &InMemoryChannelKeys) -> u16 {
-	let mut ret = unsafe { &*this_arg.inner }.local_to_self_delay();
+pub extern "C" fn InMemoryChannelKeys_locally_selected_contest_delay(this_arg: &InMemoryChannelKeys) -> u16 {
+	let mut ret = unsafe { &*this_arg.inner }.locally_selected_contest_delay();
 	ret
 }
 

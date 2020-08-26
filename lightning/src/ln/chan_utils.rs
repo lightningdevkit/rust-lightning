@@ -385,11 +385,11 @@ impl TxCreationKeys {
 /// A script either spendable by the revocation
 /// key or the delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_local` output on a commitment transaction or 2nd-stage HTLC transactions.
-pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, to_self_delay: u16, delayed_payment_key: &PublicKey) -> Script {
+pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u16, delayed_payment_key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::all::OP_IF)
 	              .push_slice(&revocation_key.serialize())
 	              .push_opcode(opcodes::all::OP_ELSE)
-	              .push_int(to_self_delay as i64)
+	              .push_int(contest_delay as i64)
 	              .push_opcode(opcodes::all::OP_CSV)
 	              .push_opcode(opcodes::all::OP_DROP)
 	              .push_slice(&delayed_payment_key.serialize())
@@ -516,7 +516,7 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 }
 
 /// panics if htlc.transaction_output_index.is_none()!
-pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, to_self_delay: u16, htlc: &HTLCOutputInCommitment, delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
@@ -536,7 +536,7 @@ pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, to_self_del
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(TxOut {
-		script_pubkey: get_revokeable_redeemscript(revocation_key, to_self_delay, delayed_payment_key).to_v0_p2wsh(),
+		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, delayed_payment_key).to_v0_p2wsh(),
 		value: htlc.amount_msat / 1000 - total_fee //TODO: BOLT 3 does not specify if we should add amount_msat before dividing or if we should divide by 1000 before subtracting (as we do here)
 	});
 

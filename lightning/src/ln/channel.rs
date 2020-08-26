@@ -367,8 +367,8 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	// get_holder_selected_channel_reserve_satoshis(channel_value_sats: u64): u64
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
-	counterparty_to_self_delay: u16,
-	to_self_delay: u16,
+	counterparty_selected_contest_delay: u16,
+	holder_selected_contest_delay: u16,
 	#[cfg(test)]
 	pub counterparty_max_accepted_htlcs: u16,
 	#[cfg(not(test))]
@@ -463,7 +463,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
 	      F::Target: FeeEstimator,
 	{
-		let to_self_delay = config.own_channel_config.our_to_self_delay;
+		let holder_selected_contest_delay = config.own_channel_config.our_to_self_delay;
 		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -473,8 +473,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if push_msat > channel_value_msat {
 			return Err(APIError::APIMisuseError { err: format!("Push value ({}) was larger than channel_value ({})", push_msat, channel_value_msat) });
 		}
-		if to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", to_self_delay)});
+		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
+			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 		if Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_holder_dust_limit_satoshis(background_feerate) {
@@ -540,8 +540,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			counterparty_selected_channel_reserve_satoshis: 0,
 			counterparty_htlc_minimum_msat: 0,
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
-			counterparty_to_self_delay: 0,
-			to_self_delay,
+			counterparty_selected_contest_delay: 0,
+			holder_selected_contest_delay,
 			counterparty_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
 
@@ -768,8 +768,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			counterparty_selected_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
-			counterparty_to_self_delay: msg.to_self_delay,
-			to_self_delay: config.own_channel_config.our_to_self_delay,
+			counterparty_selected_contest_delay: msg.to_self_delay,
+			holder_selected_contest_delay: config.own_channel_config.our_to_self_delay,
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
 			minimum_depth: config.own_channel_config.minimum_depth,
 
@@ -989,7 +989,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			log_trace!(logger, "   ...including {} output with value {}", if local { "to_local" } else { "to_remote" }, value_to_a);
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
-				                                                       if local { self.counterparty_to_self_delay } else { self.to_self_delay },
+				                                                       if local { self.counterparty_selected_contest_delay } else { self.holder_selected_contest_delay },
 				                                                       &keys.delayed_payment_key).to_v0_p2wsh(),
 				value: value_to_a as u64
 			}, None));
@@ -1153,7 +1153,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
 	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.counterparty_to_self_delay } else { self.to_self_delay }, htlc, &keys.delayed_payment_key, &keys.revocation_key)
+		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.counterparty_selected_contest_delay } else { self.holder_selected_contest_delay }, htlc, &keys.delayed_payment_key, &keys.revocation_key)
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
@@ -1448,7 +1448,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
 		self.counterparty_selected_channel_reserve_satoshis = msg.channel_reserve_satoshis;
 		self.counterparty_htlc_minimum_msat = msg.htlc_minimum_msat;
-		self.counterparty_to_self_delay = msg.to_self_delay;
+		self.counterparty_selected_contest_delay = msg.to_self_delay;
 		self.counterparty_max_accepted_htlcs = msg.max_accepted_htlcs;
 		self.minimum_depth = msg.minimum_depth;
 
@@ -1460,7 +1460,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			htlc_basepoint: msg.htlc_basepoint
 		};
 
-		self.holder_keys.on_accept(&counterparty_pubkeys, msg.to_self_delay, self.to_self_delay);
+		self.holder_keys.on_accept(&counterparty_pubkeys, msg.to_self_delay, self.holder_selected_contest_delay);
 		self.counterparty_pubkeys = Some(counterparty_pubkeys);
 
 		self.counterparty_cur_commitment_point = Some(msg.first_per_commitment_point);
@@ -1533,10 +1533,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		macro_rules! create_monitor {
 			() => { {
 				let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
-				                                              &self.shutdown_pubkey, self.to_self_delay,
+				                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
 				                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
 				                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
-				                                              self.counterparty_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+				                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
 				                                              self.get_commitment_transaction_number_obscure_factor(),
 				                                              initial_commitment_tx.clone());
 
@@ -1578,8 +1578,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
 
-		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, self.feerate_per_kw, logger).0;
+		let holder_keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_keys, true, false, self.feerate_per_kw, logger).0;
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(&initial_commitment_tx).signature_hash(0, &funding_script, self.channel_value_satoshis, SigHashType::All)[..]);
 
 		let counterparty_funding_pubkey = &self.counterparty_pubkeys.as_ref().unwrap().funding_pubkey;
@@ -1595,12 +1595,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		macro_rules! create_monitor {
 			() => { {
-				let commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, keys.clone(), self.feerate_per_kw, Vec::new());
+				let commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, holder_keys.clone(), self.feerate_per_kw, Vec::new());
 				let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
-				                                              &self.shutdown_pubkey, self.to_self_delay,
+				                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
 				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
 				                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
-				                                              self.counterparty_to_self_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+				                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
 				                                              self.get_commitment_transaction_number_obscure_factor(),
 				                                              commitment_tx);
 
@@ -3466,7 +3466,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			channel_reserve_satoshis: Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			feerate_per_kw: self.feerate_per_kw as u32,
-			to_self_delay: self.to_self_delay,
+			to_self_delay: self.holder_selected_contest_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: keys.funding_pubkey,
 			revocation_basepoint: keys.revocation_basepoint,
@@ -3500,7 +3500,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			channel_reserve_satoshis: Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth,
-			to_self_delay: self.to_self_delay,
+			to_self_delay: self.holder_selected_contest_delay,
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: keys.funding_pubkey,
 			revocation_basepoint: keys.revocation_basepoint,
@@ -3883,7 +3883,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_tx.0.txid(), feerate_per_kw, self.to_self_delay, htlc, &counterparty_keys.delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_tx.0.txid(), feerate_per_kw, self.holder_selected_contest_delay, htlc, &counterparty_keys.delayed_payment_key, &counterparty_keys.revocation_key)),
 					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, counterparty_keys)),
 					log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]));
@@ -4201,8 +4201,8 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		self.counterparty_selected_channel_reserve_satoshis.write(writer)?;
 		self.counterparty_htlc_minimum_msat.write(writer)?;
 		self.holder_htlc_minimum_msat.write(writer)?;
-		self.counterparty_to_self_delay.write(writer)?;
-		self.to_self_delay.write(writer)?;
+		self.counterparty_selected_contest_delay.write(writer)?;
+		self.holder_selected_contest_delay.write(writer)?;
 		self.counterparty_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
@@ -4355,8 +4355,8 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 		let counterparty_selected_channel_reserve_satoshis = Readable::read(reader)?;
 		let counterparty_htlc_minimum_msat = Readable::read(reader)?;
 		let holder_htlc_minimum_msat = Readable::read(reader)?;
-		let counterparty_to_self_delay = Readable::read(reader)?;
-		let to_self_delay = Readable::read(reader)?;
+		let counterparty_selected_contest_delay = Readable::read(reader)?;
+		let holder_selected_contest_delay = Readable::read(reader)?;
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
@@ -4427,8 +4427,8 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 			counterparty_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat,
 			holder_htlc_minimum_msat,
-			counterparty_to_self_delay,
-			to_self_delay,
+			counterparty_selected_contest_delay,
+			holder_selected_contest_delay,
 			counterparty_max_accepted_htlcs,
 			minimum_depth,
 
@@ -4639,7 +4639,7 @@ mod tests {
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
 		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
-		chan.counterparty_to_self_delay = 144;
+		chan.counterparty_selected_contest_delay = 144;
 		chan.holder_dust_limit_satoshis = 546;
 
 		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
@@ -4652,7 +4652,7 @@ mod tests {
 			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
 		};
-		chan_keys.on_accept(&counterparty_pubkeys, chan.counterparty_to_self_delay, chan.to_self_delay);
+		chan_keys.on_accept(&counterparty_pubkeys, chan.counterparty_selected_contest_delay, chan.holder_selected_contest_delay);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
@@ -4738,7 +4738,7 @@ mod tests {
 
 					let signature = Signature::from_der(&hex::decode($htlc_sig_hex).unwrap()[..]).unwrap();
 					assert_eq!(Some(signature), *(htlc_sig.1).1);
-					assert_eq!(serialize(&localtx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.counterparty_to_self_delay))[..],
+					assert_eq!(serialize(&localtx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.counterparty_selected_contest_delay))[..],
 							hex::decode($htlc_tx_hex).unwrap()[..]);
 				})*
 				loop {
