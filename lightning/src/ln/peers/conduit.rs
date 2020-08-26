@@ -128,10 +128,10 @@ impl Encryptor {
 
 		let mut ciphertext = vec![0u8; TAGGED_MESSAGE_LENGTH_HEADER_SIZE + length as usize + chacha::TAG_SIZE];
 
-		ciphertext[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes));
+		chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], &length_bytes, &mut ciphertext[..TAGGED_MESSAGE_LENGTH_HEADER_SIZE]);
 		self.increment_nonce();
 
-		ciphertext[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..].copy_from_slice(&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer));
+		&chacha::encrypt(&self.sending_key, self.sending_nonce as u64, &[0; 0], buffer, &mut ciphertext[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..]);
 		self.increment_nonce();
 
 		ciphertext
@@ -185,7 +185,7 @@ impl Decryptor {
 
 			let encrypted_length = &buffer[0..TAGGED_MESSAGE_LENGTH_HEADER_SIZE];
 			let mut length_bytes = [0u8; MESSAGE_LENGTH_HEADER_SIZE];
-			length_bytes.copy_from_slice(&chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length)?);
+			chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_length, &mut length_bytes)?;
 
 			self.increment_nonce();
 
@@ -203,8 +203,9 @@ impl Decryptor {
 		self.pending_message_length = None;
 
 		let encrypted_message = &buffer[TAGGED_MESSAGE_LENGTH_HEADER_SIZE..message_end_index];
+		let mut message = vec![0u8; message_length];
 
-		let message = chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_message)?;
+		chacha::decrypt(&self.receiving_key, self.receiving_nonce as u64, &[0; 0], encrypted_message, &mut message)?;
 
 		self.increment_nonce();
 

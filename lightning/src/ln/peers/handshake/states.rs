@@ -285,12 +285,14 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 			hash,
 		)?;
 
+		let mut act_three = EMPTY_ACT_THREE;
+
 		// start serializing act three
 		// 1. c = encryptWithAD(temp_k2, 1, h, s.pub.serializeCompressed())
-		let tagged_encrypted_pubkey = chacha::encrypt(&temporary_key, 1, &hash, &initiator_static_public_key.serialize());
+		chacha::encrypt(&temporary_key, 1, &hash, &initiator_static_public_key.serialize(), &mut act_three[1..50]);
 
 		// 2. h = SHA-256(h || c)
-		let hash = concat_then_sha256!(hash, tagged_encrypted_pubkey);
+		let hash = concat_then_sha256!(hash, act_three[1..50]);
 
 		// 3. se = ECDH(s.priv, re)
 		let ecdh = ecdh(&initiator_static_private_key, &responder_ephemeral_public_key);
@@ -299,7 +301,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 
 		// 5. t = encryptWithAD(temp_k3, 0, h, zero)
-		let authentication_tag = chacha::encrypt(&temporary_key, 0, &hash, &[0; 0]);
+		chacha::encrypt(&temporary_key, 0, &hash, &[0; 0], &mut act_three[50..]);
 
 		// 6. sk, rk = HKDF(ck, zero)
 		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
@@ -307,11 +309,6 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		// 7. rn = 0, sn = 0
 		// - done by Conduit
 		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
-
-		// Send m = 0 || c || t over the network buffer
-		let mut act_three = EMPTY_ACT_THREE;
-		act_three[1..50].copy_from_slice(&tagged_encrypted_pubkey);
-		act_three[50..].copy_from_slice(&authentication_tag);
 
 		Ok((
 			Some(Act::Three(act_three)),
@@ -352,7 +349,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		// 2. Parse the read message (m) into v, c, and t
 		let version = act_three_bytes[0];
 		let tagged_encrypted_pubkey = &act_three_bytes[1..50];
-		let chacha_tag = &act_three_bytes[50..66];
+		let chacha_tag = &act_three_bytes[50..];
 
 		// 3. If v is an unrecognized handshake version, then the responder MUST abort the connection attempt.
 		if version != 0 {
@@ -361,8 +358,9 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		}
 
 		// 4. rs = decryptWithAD(temp_k2, 1, h, c)
-		let remote_pubkey_vec = chacha::decrypt(&temporary_key, 1, &hash, &tagged_encrypted_pubkey)?;
-		let initiator_pubkey = if let Ok(public_key) = PublicKey::from_slice(remote_pubkey_vec.as_slice()) {
+		let mut remote_pubkey = [0; 33];
+		chacha::decrypt(&temporary_key, 1, &hash, &tagged_encrypted_pubkey, &mut remote_pubkey)?;
+		let initiator_pubkey = if let Ok(public_key) = PublicKey::from_slice(&remote_pubkey) {
 			public_key
 		} else {
 			return Err("invalid remote public key".to_string());
@@ -378,7 +376,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 
 		// 8. p = decryptWithAD(temp_k3, 0, h, t)
-		let _tag_check = chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag)?;
+		chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag, &mut [0; 0])?;
 
 		// 9. rk, sk = HKDF(ck, zero)
 		let (receiving_key, sending_key) = hkdf::derive(&chaining_key, &[0; 0]);
@@ -434,15 +432,13 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 
 	// 5. ACT1: c = encryptWithAD(temp_k1, 0, h, zero)
 	// 5. ACT2: c = encryptWithAD(temp_k2, 0, h, zero)
-	let tagged_ciphertext = chacha::encrypt(&temporary_key, 0, &hash, &[0; 0]);
+	chacha::encrypt(&temporary_key, 0, &hash, &[0; 0], &mut act_out[34..]);
 
 	// 6. h = SHA-256(h || c)
-	let hash = concat_then_sha256!(hash, tagged_ciphertext);
+	let hash = concat_then_sha256!(hash, &act_out[34..]);
 
 	// Send m = 0 || e.pub.serializeCompressed() || c
-
 	act_out[1..34].copy_from_slice(&serialized_local_public_key);
-	act_out[34..50].copy_from_slice(&tagged_ciphertext);
 
 	(hash, chaining_key, temporary_key)
 }
@@ -455,7 +451,7 @@ fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
 	let ephemeral_public_key_bytes = &act_bytes[1..34];
-	let chacha_tag = &act_bytes[34..50];
+	let chacha_tag = &act_bytes[34..];
 
 	let ephemeral_public_key = if let Ok(public_key) = PublicKey::from_slice(&ephemeral_public_key_bytes) {
 		public_key
@@ -481,7 +477,7 @@ fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining
 	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 
 	// 7. p = decryptWithAD(temp_k1, 0, h, c)
-	let _tag_check = chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag)?;
+	chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag, &mut [0; 0])?;
 
 	// 8. h = SHA-256(h || c)
 	let hash = concat_then_sha256!(hash, chacha_tag);
