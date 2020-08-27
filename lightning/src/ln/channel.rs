@@ -990,7 +990,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			txouts.push((TxOut {
 				script_pubkey: chan_utils::get_revokeable_redeemscript(&keys.revocation_key,
 				                                                       if local { self.counterparty_selected_contest_delay } else { self.holder_selected_contest_delay },
-				                                                       &keys.delayed_payment_key).to_v0_p2wsh(),
+				                                                       &keys.broadcaster_delayed_payment_key).to_v0_p2wsh(),
 				value: value_to_a as u64
 			}, None));
 		}
@@ -1153,7 +1153,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	/// @local is used only to convert relevant internal structures which refer to remote vs local
 	/// to decide value of outputs and direction of HTLCs.
 	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.counterparty_selected_contest_delay } else { self.holder_selected_contest_delay }, htlc, &keys.delayed_payment_key, &keys.revocation_key)
+		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.counterparty_selected_contest_delay } else { self.holder_selected_contest_delay }, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key)
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
@@ -3883,7 +3883,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_tx.0.txid(), feerate_per_kw, self.holder_selected_contest_delay, htlc, &counterparty_keys.delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_tx.0.txid(), feerate_per_kw, self.holder_selected_contest_delay, htlc, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
 					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, counterparty_keys)),
 					log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]));

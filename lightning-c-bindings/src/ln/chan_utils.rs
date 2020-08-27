@@ -167,24 +167,24 @@ pub extern "C" fn TxCreationKeys_set_countersignatory_htlc_key(this_ptr: &mut Tx
 }
 /// Payment Key (which isn't allowed to be spent from for some delay)
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_get_delayed_payment_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.delayed_payment_key;
+pub extern "C" fn TxCreationKeys_get_broadcaster_delayed_payment_key(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.broadcaster_delayed_payment_key;
 	crate::c_types::PublicKey::from_rust(&(*inner_val))
 }
 /// Payment Key (which isn't allowed to be spent from for some delay)
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_set_delayed_payment_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
-	unsafe { &mut *this_ptr.inner }.delayed_payment_key = val.into_rust();
+pub extern "C" fn TxCreationKeys_set_broadcaster_delayed_payment_key(this_ptr: &mut TxCreationKeys, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.broadcaster_delayed_payment_key = val.into_rust();
 }
 #[must_use]
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_types::PublicKey, mut revocation_key_arg: crate::c_types::PublicKey, mut broadcaster_htlc_key_arg: crate::c_types::PublicKey, mut countersignatory_htlc_key_arg: crate::c_types::PublicKey, mut delayed_payment_key_arg: crate::c_types::PublicKey) -> TxCreationKeys {
+pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_types::PublicKey, mut revocation_key_arg: crate::c_types::PublicKey, mut broadcaster_htlc_key_arg: crate::c_types::PublicKey, mut countersignatory_htlc_key_arg: crate::c_types::PublicKey, mut broadcaster_delayed_payment_key_arg: crate::c_types::PublicKey) -> TxCreationKeys {
 	TxCreationKeys { inner: Box::into_raw(Box::new(nativeTxCreationKeys {
 		per_commitment_point: per_commitment_point_arg.into_rust(),
 		revocation_key: revocation_key_arg.into_rust(),
 		broadcaster_htlc_key: broadcaster_htlc_key_arg.into_rust(),
 		countersignatory_htlc_key: countersignatory_htlc_key_arg.into_rust(),
-		delayed_payment_key: delayed_payment_key_arg.into_rust(),
+		broadcaster_delayed_payment_key: broadcaster_delayed_payment_key_arg.into_rust(),
 	})), is_owned: true }
 }
 #[no_mangle]
@@ -422,11 +422,11 @@ pub extern "C" fn TxCreationKeys_derive_new(per_commitment_point: crate::c_types
 }
 
 /// A script either spendable by the revocation
-/// key or the delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
+/// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_local` output on a commitment transaction or 2nd-stage HTLC transactions.
 #[no_mangle]
-pub extern "C" fn get_revokeable_redeemscript(revocation_key: crate::c_types::PublicKey, mut to_self_delay: u16, delayed_payment_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
-	let mut ret = lightning::ln::chan_utils::get_revokeable_redeemscript(&revocation_key.into_rust(), to_self_delay, &delayed_payment_key.into_rust());
+pub extern "C" fn get_revokeable_redeemscript(revocation_key: crate::c_types::PublicKey, mut to_self_delay: u16, broadcaster_delayed_payment_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
+	let mut ret = lightning::ln::chan_utils::get_revokeable_redeemscript(&revocation_key.into_rust(), to_self_delay, &broadcaster_delayed_payment_key.into_rust());
 	ret.into_bytes().into()
 }
 
@@ -563,8 +563,8 @@ pub extern "C" fn make_funding_redeemscript(a: crate::c_types::PublicKey, b: cra
 
 /// panics if htlc.transaction_output_index.is_none()!
 #[no_mangle]
-pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate_per_kw: u32, mut to_self_delay: u16, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, a_delayed_payment_key: crate::c_types::PublicKey, revocation_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
-	let mut ret = lightning::ln::chan_utils::build_htlc_transaction(&::bitcoin::hash_types::Txid::from_slice(&unsafe { &*prev_hash }[..]).unwrap(), feerate_per_kw, to_self_delay, unsafe { &*htlc.inner }, &a_delayed_payment_key.into_rust(), &revocation_key.into_rust());
+pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate_per_kw: u32, mut to_self_delay: u16, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, broadcaster_delayed_payment_key: crate::c_types::PublicKey, revocation_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
+	let mut ret = lightning::ln::chan_utils::build_htlc_transaction(&::bitcoin::hash_types::Txid::from_slice(&unsafe { &*prev_hash }[..]).unwrap(), feerate_per_kw, to_self_delay, unsafe { &*htlc.inner }, &broadcaster_delayed_payment_key.into_rust(), &revocation_key.into_rust());
 	let mut local_ret = ::bitcoin::consensus::encode::serialize(&ret);
 	local_ret.into()
 }

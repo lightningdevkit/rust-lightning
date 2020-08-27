@@ -104,7 +104,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 		for this_htlc in local_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, local_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &local_commitment_tx.local_keys.broadcaster_delayed_payment_key, &local_commitment_tx.local_keys.revocation_key);
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
 

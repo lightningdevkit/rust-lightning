@@ -588,7 +588,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let witness_script = if let Some(ref htlc) = *htlc {
 								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key)
 							} else {
-								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.delayed_payment_key)
+								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_remote_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
 							};
 
 							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx) {

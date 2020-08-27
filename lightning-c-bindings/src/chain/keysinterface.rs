@@ -666,7 +666,7 @@ pub extern "C" fn InMemoryChannelKeys_new(mut funding_key: crate::c_types::Secre
 	crate::chain::keysinterface::InMemoryChannelKeys { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
-/// Remote pubkeys.
+/// Counterparty pubkeys.
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
@@ -675,10 +675,10 @@ pub extern "C" fn InMemoryChannelKeys_counterparty_pubkeys(this_arg: &InMemoryCh
 	crate::ln::chan_utils::ChannelPublicKeys { inner: unsafe { ( (&(*ret) as *const _) as *mut _) }, is_owned: false }
 }
 
-/// The to_self_delay value specified by our counterparty and applied on locally-broadcastable
+/// The contest delay value specified by our counterparty and applied on holder-broadcastable
 /// transactions, ie the amount of time that we have to wait to recover our funds if we
 /// broadcast a transaction. You'll likely want to pass this to the
-/// ln::chan_utils::build*_transaction functions when signing local transactions.
+/// ln::chan_utils::build*_transaction functions when signing holder transactions.
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
@@ -687,7 +687,7 @@ pub extern "C" fn InMemoryChannelKeys_counterparty_selected_contest_delay(this_a
 	ret
 }
 
-/// The to_self_delay value specified by us and applied on transactions broadcastable
+/// The to_contest delay value specified by us and applied on transactions broadcastable
 /// by our counterparty, ie the amount of time that they have to wait to recover their funds
 /// if they broadcast a transaction.
 /// Will panic if on_accept wasn't called.

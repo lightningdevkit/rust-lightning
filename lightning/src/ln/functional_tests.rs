@@ -1652,7 +1652,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let local_commit_tx_output = TxOut {
 		script_pubkey: chan_utils::get_revokeable_redeemscript(&commit_tx_keys.revocation_key,
 				                                               BREAKDOWN_TIMEOUT,
-				                                               &commit_tx_keys.delayed_payment_key).to_v0_p2wsh(),
+				                                               &commit_tx_keys.broadcaster_delayed_payment_key).to_v0_p2wsh(),
 				value: 95000,
 	};
 
