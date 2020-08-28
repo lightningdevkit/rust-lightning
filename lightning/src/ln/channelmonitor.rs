@@ -824,6 +824,10 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	// Set once we've signed a holder commitment transaction and handed it over to our
 	// OnchainTxHandler. After this is set, no future updates to our holder commitment transactions
 	// may occur, and we fail any such monitor updates.
+	//
+	// In case of update rejection due to a locally already signed commitment transaction, we
+	// nevertheless store update content to track in case of concurrent broadcast by another
+	// remote monitor out-of-order with regards to the block view.
 	holder_tx_signed: bool,
 
 	// We simply modify last_block_hash in Channel's block_connected so that serialization is
@@ -888,6 +892,11 @@ pub trait ManyChannelMonitor: Send + Sync {
 	///
 	/// Any spends of outputs which should have been registered which aren't passed to
 	/// ChannelMonitors via block_connected may result in FUNDS LOSS.
+	///
+	/// In case of distributed watchtowers deployment, even if an Err is return, the new version
+	/// must be written to disk, as state may have been stored but rejected due to a block forcing
+	/// a commitment broadcast. This storage is used to claim outputs of rejected state confirmed
+	/// onchain by another watchtower, lagging behind on block processing.
 	fn update_monitor(&self, funding_txo: OutPoint, monitor: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Used by ChannelManager to get list of HTLC resolved onchain and which needed to be updated
@@ -1167,12 +1176,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw: initial_holder_commitment_tx.feerate_per_kw,
 			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
 		};
-		// Returning a monitor error before updating tracking points means in case of using
-		// a concurrent watchtower implementation for same channel, if this one doesn't
-		// reject update as we do, you MAY have the latest holder valid commitment tx onchain
-		// for which you want to spend outputs. We're NOT robust again this scenario right
-		// now but we should consider it later.
-		onchain_tx_handler.provide_latest_holder_tx(initial_holder_commitment_tx).unwrap();
+		onchain_tx_handler.provide_latest_holder_tx(initial_holder_commitment_tx);
 
 		ChannelMonitor {
 			latest_update_id: 0,
@@ -1327,9 +1331,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
 	pub(super) fn provide_latest_holder_commitment_tx_info(&mut self, commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
-		if self.holder_tx_signed {
-			return Err(MonitorUpdateError("A holder commitment tx has already been signed, no new holder commitment txn can be sent to our counterparty"));
-		}
 		let txid = commitment_tx.txid();
 		let sequence = commitment_tx.unsigned_tx.input[0].sequence as u64;
 		let locktime = commitment_tx.unsigned_tx.lock_time as u64;
@@ -1343,17 +1344,13 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			feerate_per_kw: commitment_tx.feerate_per_kw,
 			htlc_outputs: htlc_outputs,
 		};
-		// Returning a monitor error before updating tracking points means in case of using
-		// a concurrent watchtower implementation for same channel, if this one doesn't
-		// reject update as we do, you MAY have the latest holder valid commitment tx onchain
-		// for which you want to spend outputs. We're NOT robust again this scenario right
-		// now but we should consider it later.
-		if let Err(_) = self.onchain_tx_handler.provide_latest_holder_tx(commitment_tx) {
-			return Err(MonitorUpdateError("Holder commitment signed has already been signed, no further update of LOCAL commitment transaction is allowed"));
-		}
+		self.onchain_tx_handler.provide_latest_holder_tx(commitment_tx);
 		self.current_holder_commitment_number = 0xffff_ffff_ffff - ((((sequence & 0xffffff) << 3*8) | (locktime as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
+		if self.holder_tx_signed {
+			return Err(MonitorUpdateError("Latest holder commitment signed has already been signed, update is rejected"));
+		}
 		Ok(())
 	}
 
