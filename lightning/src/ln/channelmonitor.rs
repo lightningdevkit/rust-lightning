@@ -133,11 +133,19 @@ pub enum ChannelMonitorUpdateErr {
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
-	/// of this channel). This will force-close the channel in question (which will generate one
-	/// final ChannelMonitorUpdate which must be delivered to at least one ChannelMonitor copy).
+	/// of this channel).
 	///
-	/// Should also be used to indicate a failure to update the local persisted copy of the channel
-	/// monitor.
+	/// At reception of this error, ChannelManager will force-close the channel and return at
+	/// least a final ChannelMonitorUpdate::ChannelForceClosed which must be delivered to at
+	/// least one ChannelMonitor copy. Revocation secret MUST NOT be released and offchain channel
+	/// update must be rejected.
+	///
+	/// This failure may also signal a failure to update the local persisted copy of one of
+	/// the channel monitor instance.
+	///
+	/// Note that even when you fail a holder commitment transaction update, you must store the
+	/// update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
+	/// broadcasts it (e.g distributed channel-monitor deployment)
 	PermanentFailure,
 }
 
