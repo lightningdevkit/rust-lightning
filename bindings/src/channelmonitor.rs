@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use bitcoin::hash_types::{BlockHash};
+use bitcoin::{
+    hash_types::{BlockHash},
+    Block
+};
 
 use lightning::{
     ln::channelmonitor::SimpleManyChannelMonitor,
@@ -9,7 +12,8 @@ use lightning::{
         keysinterface::InMemoryChannelKeys
     },
     ln::channelmonitor::SimpleManyChannelMonitorReadArgs,
-    util::ser::ReadableArgs
+    util::ser::ReadableArgs,
+    util::events::EventsProvider
 };
 
 use crate::{
@@ -26,9 +30,9 @@ use crate::{
         fee_estimator_fn
     },
     utils::into_fixed_buffer,
-    adaptors::primitives::{FFIOutPoint, Bytes32}
+    adaptors::primitives::{FFIOutPoint, Bytes32},
+    adaptors::primitives::FFIEvents
 };
-use bitcoin::Block;
 
 pub type FFIManyChannelMonitor = SimpleManyChannelMonitor<OutPoint, InMemoryChannelKeys, Arc<FFIBroadCaster>, Arc<FFIFeeEstimator>, Arc<FFILogger>, Arc<FFIChainWatchInterface>>;
 pub type FFIManyChannelMonitorHandle = HandleShared<'static, FFIManyChannelMonitor>;
@@ -163,6 +167,12 @@ ffi! {
         FFIResult::ok()
     }
 
+    fn many_channel_monitor_get_and_clear_pending_events(handle: FFIManyChannelMonitorHandle, buf_out: Out<u8>, buf_len: usize, actual_buffer_len: Out<usize>) -> FFIResult {
+        let buf = unsafe_block!("The buffer lives as long as this function, the length is within the buffer and the buffer won't be read before initialization" => buf_out.as_uninit_bytes_mut(buf_len));
+        let chan_mon = handle.as_ref();
+        let mut e = FFIEvents{ events: chan_mon.get_and_clear_pending_events() };
+        into_fixed_buffer(&mut e, buf, &mut actual_buffer_len)
+    }
 
     fn release_many_channel_monitor(handle: FFIManyChannelMonitorHandle) -> FFIResult {
         unsafe_block!("The upstream caller guarantees the handle will not be accessed after being freed" => FFIManyChannelMonitorHandle::dealloc(handle, |mut _handle| {
