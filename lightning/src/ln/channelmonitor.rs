@@ -1252,6 +1252,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		};
 		onchain_tx_handler.provide_latest_holder_tx(initial_holder_commitment_tx);
 
+		let mut outputs_to_watch = HashMap::new();
+		outputs_to_watch.insert(funding_info.0.txid, vec![funding_info.1.clone()]);
+
 		ChannelMonitor {
 			latest_update_id: 0,
 			commitment_transaction_number_obscure_factor,
@@ -1288,7 +1291,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			pending_events: Vec::new(),
 
 			onchain_events_waiting_threshold_conf: HashMap::new(),
-			outputs_to_watch: HashMap::new(),
+			outputs_to_watch,
 
 			onchain_tx_handler,
 
