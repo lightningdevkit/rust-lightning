@@ -611,7 +611,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							if let Ok(sig) = self.key_storage.sign_remote_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
+							if let Ok(sig) = self.key_storage.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
 								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 								if let &Some(preimage) = preimage {
@@ -893,7 +893,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	fn sign_latest_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(local_commitment, &self.secp_ctx) {
 				self.local_htlc_sigs = Some(Vec::new());
 				let ret = self.local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -909,7 +909,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 	fn sign_prev_local_htlcs(&mut self) {
 		if let Some(ref local_commitment) = self.prev_local_commitment {
-			if let Ok(sigs) = self.key_storage.sign_local_commitment_htlc_transactions(local_commitment, &self.secp_ctx) {
+			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(local_commitment, &self.secp_ctx) {
 				self.prev_local_htlc_sigs = Some(Vec::new());
 				let ret = self.prev_local_htlc_sigs.as_mut().unwrap();
 				for (htlc_idx, (local_sig, &(ref htlc, _))) in sigs.iter().zip(local_commitment.per_htlc.iter()).enumerate() {
@@ -930,7 +930,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// to monitor before.
 	pub(super) fn get_fully_signed_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
-			match self.key_storage.sign_local_commitment(local_commitment, &self.secp_ctx) {
+			match self.key_storage.sign_holder_commitment(local_commitment, &self.secp_ctx) {
 				Ok(sig) => Some(local_commitment.add_local_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}
@@ -943,7 +943,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	pub(super) fn get_fully_signed_copy_local_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut local_commitment) = self.local_commitment {
 			let local_commitment = local_commitment.clone();
-			match self.key_storage.sign_local_commitment(&local_commitment, &self.secp_ctx) {
+			match self.key_storage.sign_holder_commitment(&local_commitment, &self.secp_ctx) {
 				Ok(sig) => Some(local_commitment.add_local_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}

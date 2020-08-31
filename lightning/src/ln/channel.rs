@@ -1487,7 +1487,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
 		let pre_remote_keys = PreCalculatedTxCreationKeys::new(counterparty_keys);
-		let counterparty_signature = self.holder_keys.sign_remote_commitment(self.feerate_per_kw, &counterparty_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
+		let counterparty_signature = self.holder_keys.sign_counterparty_commitment(self.feerate_per_kw, &counterparty_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -3517,7 +3517,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
 		let pre_remote_keys = PreCalculatedTxCreationKeys::new(counterparty_keys);
-		Ok(self.holder_keys.sign_remote_commitment(self.feerate_per_kw, &counterparty_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
+		Ok(self.holder_keys.sign_counterparty_commitment(self.feerate_per_kw, &counterparty_initial_commitment_tx, &pre_remote_keys, &Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -3870,7 +3870,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 
 			let pre_remote_keys = PreCalculatedTxCreationKeys::new(counterparty_keys);
-			let res = self.holder_keys.sign_remote_commitment(feerate_per_kw, &counterparty_commitment_tx.0, &pre_remote_keys, &htlcs, &self.secp_ctx)
+			let res = self.holder_keys.sign_counterparty_commitment(feerate_per_kw, &counterparty_commitment_tx.0, &pre_remote_keys, &htlcs, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -4702,13 +4702,13 @@ mod tests {
 				assert_eq!(unsigned_tx.1.len(), per_htlc.len());
 
 				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), counterparty_signature.clone(), &chan_keys.pubkeys().funding_pubkey, chan.counterparty_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
-				let local_sig = chan_keys.sign_local_commitment(&localtx, &chan.secp_ctx).unwrap();
+				let local_sig = chan_keys.sign_holder_commitment(&localtx, &chan.secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), local_sig);
 
 				assert_eq!(serialize(&localtx.add_local_sig(&redeemscript, local_sig))[..],
 						hex::decode($tx_hex).unwrap()[..]);
 
-				let htlc_sigs = chan_keys.sign_local_commitment_htlc_transactions(&localtx, &chan.secp_ctx).unwrap();
+				let htlc_sigs = chan_keys.sign_holder_commitment_htlc_transactions(&localtx, &chan.secp_ctx).unwrap();
 				let mut htlc_sig_iter = localtx.per_htlc.iter().zip(htlc_sigs.iter().enumerate());
 
 				$({

@@ -272,32 +272,32 @@ pub struct ChannelKeys {
 	/// ChannelKeys object uniquely and lookup or re-derive its keys.
 	#[must_use]
 	pub key_derivation_params: extern "C" fn (this_arg: *const c_void) -> crate::c_types::derived::C2Tuple_u64u64Z,
-	/// Create a signature for a remote commitment transaction and associated HTLC transactions.
+	/// Create a signature for a counterparty commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
 	#[must_use]
-	pub sign_remote_commitment: extern "C" fn (this_arg: *const c_void, feerate_per_kw: u32, commitment_tx: crate::c_types::Transaction, keys: &crate::ln::chan_utils::PreCalculatedTxCreationKeys, htlcs: crate::c_types::derived::CVec_HTLCOutputInCommitmentZ) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ,
+	pub sign_counterparty_commitment: extern "C" fn (this_arg: *const c_void, feerate_per_kw: u32, commitment_tx: crate::c_types::Transaction, keys: &crate::ln::chan_utils::PreCalculatedTxCreationKeys, htlcs: crate::c_types::derived::CVec_HTLCOutputInCommitmentZ) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ,
 	/// Create a signature for a local commitment transaction. This will only ever be called with
 	/// the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
 	/// that it will not be called multiple times.
 	/// An external signer implementation should check that the commitment has not been revoked.
 	#[must_use]
-	pub sign_local_commitment: extern "C" fn (this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ,
-	/// Create a signature for each HTLC transaction spending a local commitment transaction.
+	pub sign_holder_commitment: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ,
+	/// Create a signature for each HTLC transaction spending a holder commitment transaction.
 	///
-	/// Unlike sign_local_commitment, this may be called multiple times with *different*
-	/// local_commitment_tx values. While this will never be called with a revoked
-	/// local_commitment_tx, it is possible that it is called with the second-latest
-	/// local_commitment_tx (only if we haven't yet revoked it) if some watchtower/secondary
+	/// Unlike sign_holder_commitment, this may be called multiple times with *different*
+	/// holder_commitment_tx values. While this will never be called with a revoked
+	/// holder_commitment_tx, it is possible that it is called with the second-latest
+	/// holder_commitment_tx (only if we haven't yet revoked it) if some watchtower/secondary
 	/// ChannelMonitor decided to broadcast before it had been updated to the latest.
 	///
 	/// Either an Err should be returned, or a Vec with one entry for each HTLC which exists in
-	/// local_commitment_tx. For those HTLCs which have transaction_output_index set to None
+	/// holder_commitment_tx. For those HTLCs which have transaction_output_index set to None
 	/// (implying they were considered dust at the time the commitment transaction was negotiated),
 	/// a corresponding None should be included in the return value. All other positions in the
 	/// return value must contain a signature.
 	#[must_use]
-	pub sign_local_commitment_htlc_transactions: extern "C" fn (this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ,
+	pub sign_holder_commitment_htlc_transactions: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ,
 	/// Create a signature for the given input in a transaction spending an HTLC or commitment
 	/// transaction output when our counterparty broadcasts an old state.
 	///
@@ -318,7 +318,7 @@ pub struct ChannelKeys {
 	/// signatures).
 	#[must_use]
 	pub sign_justice_transaction: extern "C" fn (this_arg: *const c_void, justice_tx: crate::c_types::Transaction, input: usize, amount: u64, per_commitment_key: *const [u8; 32], htlc: &crate::ln::chan_utils::HTLCOutputInCommitment) -> crate::c_types::derived::CResult_SignatureNoneZ,
-	/// Create a signature for a claiming transaction for a HTLC output on a remote commitment
+	/// Create a signature for a claiming transaction for a HTLC output on a counterparty commitment
 	/// transaction, either offered or received.
 	///
 	/// Such a transaction may claim multiples offered outputs at same time if we know the
@@ -336,7 +336,7 @@ pub struct ChannelKeys {
 	/// channel state keys, which are then included in the witness script and committed to in the
 	/// BIP 143 signature.
 	#[must_use]
-	pub sign_remote_htlc_transaction: extern "C" fn (this_arg: *const c_void, htlc_tx: crate::c_types::Transaction, input: usize, amount: u64, per_commitment_point: crate::c_types::PublicKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment) -> crate::c_types::derived::CResult_SignatureNoneZ,
+	pub sign_counterparty_htlc_transaction: extern "C" fn (this_arg: *const c_void, htlc_tx: crate::c_types::Transaction, input: usize, amount: u64, per_commitment_point: crate::c_types::PublicKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment) -> crate::c_types::derived::CResult_SignatureNoneZ,
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one \"missing\" satoshi, and either party may have
@@ -371,11 +371,11 @@ impl Clone for ChannelKeys {
 			pubkeys: self.pubkeys.clone(),
 			set_pubkeys: self.set_pubkeys.clone(),
 			key_derivation_params: self.key_derivation_params.clone(),
-			sign_remote_commitment: self.sign_remote_commitment.clone(),
-			sign_local_commitment: self.sign_local_commitment.clone(),
-			sign_local_commitment_htlc_transactions: self.sign_local_commitment_htlc_transactions.clone(),
+			sign_counterparty_commitment: self.sign_counterparty_commitment.clone(),
+			sign_holder_commitment: self.sign_holder_commitment.clone(),
+			sign_holder_commitment_htlc_transactions: self.sign_holder_commitment_htlc_transactions.clone(),
 			sign_justice_transaction: self.sign_justice_transaction.clone(),
-			sign_remote_htlc_transaction: self.sign_remote_htlc_transaction.clone(),
+			sign_counterparty_htlc_transaction: self.sign_counterparty_htlc_transaction.clone(),
 			sign_closing_transaction: self.sign_closing_transaction.clone(),
 			sign_channel_announcement: self.sign_channel_announcement.clone(),
 			on_accept: self.on_accept.clone(),
@@ -406,20 +406,20 @@ impl rustChannelKeys for ChannelKeys {
 		let (mut orig_ret_0, mut orig_ret_1) = ret.to_rust(); let mut local_ret = (orig_ret_0, orig_ret_1);
 		local_ret
 	}
-	fn sign_remote_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &bitcoin::blockdata::transaction::Transaction, keys: &lightning::ln::chan_utils::PreCalculatedTxCreationKeys, htlcs: &[&lightning::ln::chan_utils::HTLCOutputInCommitment], _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<(bitcoin::secp256k1::Signature, Vec<bitcoin::secp256k1::Signature>), ()> {
+	fn sign_counterparty_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &bitcoin::blockdata::transaction::Transaction, keys: &lightning::ln::chan_utils::PreCalculatedTxCreationKeys, htlcs: &[&lightning::ln::chan_utils::HTLCOutputInCommitment], _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<(bitcoin::secp256k1::Signature, Vec<bitcoin::secp256k1::Signature>), ()> {
 		let mut local_commitment_tx = ::bitcoin::consensus::encode::serialize(commitment_tx);
 		let mut local_htlcs = Vec::new(); for item in htlcs.iter() { local_htlcs.push( { crate::ln::chan_utils::HTLCOutputInCommitment { inner: unsafe { ( (&(**item) as *const _) as *mut _) }, is_owned: false } }); };
-		let mut ret = (self.sign_remote_commitment)(self.this_arg, feerate_per_kw, crate::c_types::Transaction::from_slice(&local_commitment_tx), &crate::ln::chan_utils::PreCalculatedTxCreationKeys { inner: unsafe { (keys as *const _) as *mut _ }, is_owned: false }, local_htlcs.into());
+		let mut ret = (self.sign_counterparty_commitment)(self.this_arg, feerate_per_kw, crate::c_types::Transaction::from_slice(&local_commitment_tx), &crate::ln::chan_utils::PreCalculatedTxCreationKeys { inner: unsafe { (keys as *const _) as *mut _ }, is_owned: false }, local_htlcs.into());
 		let mut local_ret = match ret.result_ok { true => Ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).to_rust(); let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.into_rust().drain(..) { local_orig_ret_0_1.push( { item.into_rust() }); }; let mut local_ret_0 = (orig_ret_0_0.into_rust(), local_orig_ret_0_1); local_ret_0 }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn sign_local_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
-		let mut ret = (self.sign_local_commitment)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
+	fn sign_holder_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
+		let mut ret = (self.sign_holder_commitment)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
 		let mut local_ret = match ret.result_ok { true => Ok( { (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust() }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn sign_local_commitment_htlc_transactions<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<Vec<Option<bitcoin::secp256k1::Signature>>, ()> {
-		let mut ret = (self.sign_local_commitment_htlc_transactions)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
+	fn sign_holder_commitment_htlc_transactions<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<Vec<Option<bitcoin::secp256k1::Signature>>, ()> {
+		let mut ret = (self.sign_holder_commitment_htlc_transactions)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
 		let mut local_ret = match ret.result_ok { true => Ok( { let mut local_ret_0 = Vec::new(); for mut item in (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust().drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_null() { None } else { Some( { item.into_rust() }) }; local_ret_0_0 }); }; local_ret_0 }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
@@ -430,9 +430,9 @@ impl rustChannelKeys for ChannelKeys {
 		let mut local_ret = match ret.result_ok { true => Ok( { (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust() }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn sign_remote_htlc_transaction<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, htlc_tx: &bitcoin::blockdata::transaction::Transaction, input: usize, amount: u64, per_commitment_point: &bitcoin::secp256k1::key::PublicKey, htlc: &lightning::ln::chan_utils::HTLCOutputInCommitment, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
+	fn sign_counterparty_htlc_transaction<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, htlc_tx: &bitcoin::blockdata::transaction::Transaction, input: usize, amount: u64, per_commitment_point: &bitcoin::secp256k1::key::PublicKey, htlc: &lightning::ln::chan_utils::HTLCOutputInCommitment, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
 		let mut local_htlc_tx = ::bitcoin::consensus::encode::serialize(htlc_tx);
-		let mut ret = (self.sign_remote_htlc_transaction)(self.this_arg, crate::c_types::Transaction::from_slice(&local_htlc_tx), input, amount, crate::c_types::PublicKey::from_rust(&per_commitment_point), &crate::ln::chan_utils::HTLCOutputInCommitment { inner: unsafe { (htlc as *const _) as *mut _ }, is_owned: false });
+		let mut ret = (self.sign_counterparty_htlc_transaction)(self.this_arg, crate::c_types::Transaction::from_slice(&local_htlc_tx), input, amount, crate::c_types::PublicKey::from_rust(&per_commitment_point), &crate::ln::chan_utils::HTLCOutputInCommitment { inner: unsafe { (htlc as *const _) as *mut _ }, is_owned: false });
 		let mut local_ret = match ret.result_ok { true => Ok( { (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust() }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
@@ -709,11 +709,11 @@ pub extern "C" fn InMemoryChannelKeys_as_ChannelKeys(this_arg: *const InMemoryCh
 		pubkeys: crate::ln::chan_utils::ChannelPublicKeys { inner: std::ptr::null_mut(), is_owned: true },
 		set_pubkeys: Some(InMemoryChannelKeys_ChannelKeys_set_pubkeys),
 		key_derivation_params: InMemoryChannelKeys_ChannelKeys_key_derivation_params,
-		sign_remote_commitment: InMemoryChannelKeys_ChannelKeys_sign_remote_commitment,
-		sign_local_commitment: InMemoryChannelKeys_ChannelKeys_sign_local_commitment,
-		sign_local_commitment_htlc_transactions: InMemoryChannelKeys_ChannelKeys_sign_local_commitment_htlc_transactions,
+		sign_counterparty_commitment: InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment,
+		sign_holder_commitment: InMemoryChannelKeys_ChannelKeys_sign_holder_commitment,
+		sign_holder_commitment_htlc_transactions: InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_htlc_transactions,
 		sign_justice_transaction: InMemoryChannelKeys_ChannelKeys_sign_justice_transaction,
-		sign_remote_htlc_transaction: InMemoryChannelKeys_ChannelKeys_sign_remote_htlc_transaction,
+		sign_counterparty_htlc_transaction: InMemoryChannelKeys_ChannelKeys_sign_counterparty_htlc_transaction,
 		sign_closing_transaction: InMemoryChannelKeys_ChannelKeys_sign_closing_transaction,
 		sign_channel_announcement: InMemoryChannelKeys_ChannelKeys_sign_channel_announcement,
 		on_accept: InMemoryChannelKeys_ChannelKeys_on_accept,
@@ -750,21 +750,21 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_key_derivation_params(this_arg: *c
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_remote_commitment(this_arg: *const c_void, mut feerate_per_kw: u32, commitment_tx: crate::c_types::Transaction, pre_keys: &crate::ln::chan_utils::PreCalculatedTxCreationKeys, mut htlcs: crate::c_types::derived::CVec_HTLCOutputInCommitmentZ) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ {
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment(this_arg: *const c_void, mut feerate_per_kw: u32, commitment_tx: crate::c_types::Transaction, pre_keys: &crate::ln::chan_utils::PreCalculatedTxCreationKeys, mut htlcs: crate::c_types::derived::CVec_HTLCOutputInCommitmentZ) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ {
 	let mut local_htlcs = Vec::new(); for mut item in htlcs.as_slice().iter() { local_htlcs.push( { unsafe { &*item.inner } }); };
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_remote_commitment(feerate_per_kw, &commitment_tx.into_bitcoin(), unsafe { &*pre_keys.inner }, &local_htlcs[..], &bitcoin::secp256k1::Secp256k1::new());
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_counterparty_commitment(feerate_per_kw, &commitment_tx.into_bitcoin(), unsafe { &*pre_keys.inner }, &local_htlcs[..], &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = o; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::Signature::from_rust(&item) }); }; let mut local_ret_0 = (crate::c_types::Signature::from_rust(&orig_ret_0_0), local_orig_ret_0_1.into()).into(); local_ret_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_local_commitment(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_local_commitment(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ {
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_holder_commitment(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::Signature::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_local_commitment_htlc_transactions(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_local_commitment_htlc_transactions(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_htlc_transactions(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_holder_commitment_htlc_transactions(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_none() { crate::c_types::Signature::null() } else {  { crate::c_types::Signature::from_rust(&(item.unwrap())) } }; local_ret_0_0 }); }; local_ret_0.into() }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
@@ -776,8 +776,8 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_justice_transaction(this_arg:
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_remote_htlc_transaction(this_arg: *const c_void, htlc_tx: crate::c_types::Transaction, mut input: usize, mut amount: u64, per_commitment_point: crate::c_types::PublicKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment) -> crate::c_types::derived::CResult_SignatureNoneZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_remote_htlc_transaction(&htlc_tx.into_bitcoin(), input, amount, &per_commitment_point.into_rust(), unsafe { &*htlc.inner }, &bitcoin::secp256k1::Secp256k1::new());
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_counterparty_htlc_transaction(this_arg: *const c_void, htlc_tx: crate::c_types::Transaction, mut input: usize, mut amount: u64, per_commitment_point: crate::c_types::PublicKey, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment) -> crate::c_types::derived::CResult_SignatureNoneZ {
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_counterparty_htlc_transaction(&htlc_tx.into_bitcoin(), input, amount, &per_commitment_point.into_rust(), unsafe { &*htlc.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::Signature::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }

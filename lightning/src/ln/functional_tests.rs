@@ -1704,7 +1704,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
 		let local_chan_keys = local_chan.get_keys();
 		let pre_commit_tx_keys = PreCalculatedTxCreationKeys::new(commit_tx_keys);
-		local_chan_keys.sign_remote_commitment(feerate_per_kw, &commit_tx, &pre_commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
+		local_chan_keys.sign_counterparty_commitment(feerate_per_kw, &commit_tx, &pre_commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -4217,8 +4217,8 @@ fn test_invalid_channel_announcement() {
 
 	nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
-	let as_bitcoin_key = as_chan.get_keys().inner.local_channel_pubkeys.funding_pubkey;
-	let bs_bitcoin_key = bs_chan.get_keys().inner.local_channel_pubkeys.funding_pubkey;
+	let as_bitcoin_key = as_chan.get_keys().inner.holder_channel_pubkeys.funding_pubkey;
+	let bs_bitcoin_key = bs_chan.get_keys().inner.holder_channel_pubkeys.funding_pubkey;
 
 	let as_network_key = nodes[0].node.get_our_node_id();
 	let bs_network_key = nodes[1].node.get_our_node_id();
