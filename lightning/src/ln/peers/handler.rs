@@ -419,7 +419,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			($msg: expr) => {
 				{
 					log_trace!(self.logger, "Encoding and sending sync update message of type {} to {}", $msg.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
-					assert!(peer.transport.is_connected());
 					peer.transport.enqueue_message($msg, &mut peer.pending_outbound_buffer)
 				}
 			}
