@@ -146,10 +146,14 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		self.conduit.is_some()
 	}
 
-	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer>(&mut self, message: &M, output_buffer: &mut Q) {
+	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L)
+		where L::Target: Logger {
+
 		match self.conduit {
 			None => panic!("Enqueueing messages only supported after transport is connected"),
 			Some(ref mut conduit) => {
+				log_trace!(logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(self.their_node_id.unwrap()));
+
 				let mut buffer = VecWriter(Vec::new());
 				wire::write(message, &mut buffer).unwrap();
 				output_buffer.push_back(conduit.encrypt(&buffer.0));
@@ -263,6 +267,7 @@ mod tests {
 	#[test]
 	#[should_panic(expected = "Enqueueing messages only supported after transport is connected")]
 	fn inbound_enqueue_message_panic() {
+		let logger = TestLogger::new();
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
@@ -270,13 +275,14 @@ mod tests {
 			ponglen: 0,
 			byteslen: 64,
 		};
-		transport.enqueue_message(&ping, &mut spy);
+		transport.enqueue_message(&ping, &mut spy, &logger);
 	}
 
 	// Test that enqueue_message() panics in the wrong state
 	#[test]
 	#[should_panic(expected = "Enqueueing messages only supported after transport is connected")]
 	fn outbound_enqueue_message_panic() {
+		let logger = TestLogger::new();
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
@@ -284,12 +290,13 @@ mod tests {
 			ponglen: 0,
 			byteslen: 64,
 		};
-		transport.enqueue_message(&ping, &mut spy);
+		transport.enqueue_message(&ping, &mut spy, &logger);
 	}
 
 	// Test that enqueue_message() puts something into the outbound buffer
 	#[test]
 	fn inbound_enqueue_message_encrypts() {
+		let logger = TestLogger::new();
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
@@ -299,13 +306,14 @@ mod tests {
 			ponglen: 0,
 			byteslen: 64,
 		};
-		transport.enqueue_message(&ping, &mut spy);
+		transport.enqueue_message(&ping, &mut spy, &logger);
 
 		assert_matches!(&spy[..], [_]);
 	}
 
 	#[test]
 	fn outbound_enqueue_message_encrypts() {
+		let logger = TestLogger::new();
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
@@ -315,7 +323,7 @@ mod tests {
 			ponglen: 0,
 			byteslen: 64,
 		};
-		transport.enqueue_message(&ping, &mut spy);
+		transport.enqueue_message(&ping, &mut spy, &logger);
 
 		assert_matches!(&spy[..], [_]);
 	}
