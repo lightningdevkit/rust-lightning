@@ -3,12 +3,14 @@
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{ITransport, PayloadQueuer};
+use ln::peers::handler::{ITransport, PeerHandleError, PayloadQueuer};
 use ln::peers::handshake::PeerHandshake;
-use ln::wire;
-use ln::wire::Encode;
+use ln::{wire, msgs};
+use ln::wire::{Encode, Message};
 
 use util::ser::{Writeable, VecWriter};
+use util::logger::Logger;
+use std::ops::Deref;
 
 /// Interface used by Transport to interact with a handshake object
 pub trait IPeerHandshake {
@@ -78,6 +80,68 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		Ok(())
 	}
 
+	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError>
+		where L::Target: Logger {
+
+		let mut received_messages = vec![];
+
+		match self.conduit {
+			None => {}
+			Some(ref mut conduit) => {
+				// Using Iterators that can error requires special handling
+				// The item returned from next() has type Option<Result<Option<Vec>, String>>
+				// The Some wrapper is stripped for each item inside the loop
+				// There are 3 valid match cases:
+				// 1) Some(Ok(Some(msg_data))) => Indicates a valid decrypted msg accessed via msg_data
+				// 2) Some(Err(_)) => Indicates an error during decryption that should be handled
+				// 3) None -> Indicates there were no messages available to decrypt
+				// Invalid Cases
+				// 1) Some(Ok(None)) => Translated to None case above so users of iterators can stop correctly
+				for msg_data_result in &mut conduit.decryptor {
+					match msg_data_result {
+						Ok(Some(msg_data)) => {
+							let mut reader = ::std::io::Cursor::new(&msg_data[..]);
+							let message_result = wire::read(&mut reader);
+							let message = match message_result {
+								Ok(x) => x,
+								Err(e) => {
+									match e {
+										msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
+										msgs::DecodeError::UnknownRequiredFeature => {
+											log_debug!(logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
+											continue;
+										}
+										msgs::DecodeError::InvalidValue => {
+											log_debug!(logger, "Got an invalid value while deserializing message");
+											return Err(PeerHandleError { no_connection_possible: false });
+										}
+										msgs::DecodeError::ShortRead => {
+											log_debug!(logger, "Deserialization failed due to shortness of message");
+											return Err(PeerHandleError { no_connection_possible: false });
+										}
+										msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
+										msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
+									}
+								}
+							};
+
+							received_messages.push(message);
+						},
+						Err(e) => {
+							log_trace!(logger, "Message decryption failed due to: {}", e);
+							return Err(PeerHandleError { no_connection_possible: false });
+						}
+						Ok(None) => {
+							panic!("Invalid behavior. Conduit iterator should never return this match.")
+						}
+					}
+				}
+			}
+		}
+
+		Ok(received_messages)
+	}
+
 	fn is_connected(&self) -> bool {
 		self.conduit.is_some()
 	}
@@ -102,6 +166,7 @@ mod tests {
 	use bitcoin::secp256k1;
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 	use ln::msgs;
+	use util::test_utils::TestLogger;
 
 	fn create_outbound_for_test<PeerHandshakeImpl: IPeerHandshake>() -> Transport<PeerHandshakeImpl> {
 		let curve = secp256k1::Secp256k1::new();
@@ -253,5 +318,23 @@ mod tests {
 		transport.enqueue_message(&ping, &mut spy);
 
 		assert_matches!(&spy[..], [_]);
+	}
+
+	#[test]
+	fn inbound_not_connected_empty() {
+		let logger = TestLogger::new();
+		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
+
+		let messages = transport.drain_messages(&logger).unwrap();
+		assert_eq!(messages.len(), 0);
+	}
+
+	#[test]
+	fn outbound_not_connected_empty() {
+		let logger = TestLogger::new();
+		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
+
+		let messages = transport.drain_messages(&logger).unwrap();
+		assert_eq!(messages.len(), 0);
 	}
 }
