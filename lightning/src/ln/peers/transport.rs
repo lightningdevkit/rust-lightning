@@ -78,7 +78,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		Ok(())
 	}
 
-	fn is_ready_for_encryption(&self) -> bool {
+	fn is_connected(&self) -> bool {
 		self.conduit.is_some()
 	}
 
@@ -125,7 +125,7 @@ mod tests {
 	fn inbound_unconnected() {
 		let transport = create_inbound_for_test::<PeerHandshakeTestStubFail>();
 
-		assert!(!transport.is_ready_for_encryption());
+		assert!(!transport.is_connected());
 	}
 
 	#[test]
@@ -133,7 +133,7 @@ mod tests {
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubFail>();
 		transport.set_up_outbound();
 
-		assert!(!transport.is_ready_for_encryption());
+		assert!(!transport.is_connected());
 	}
 
 	// Test that errors in the handshake code are reraised through the transport
@@ -159,7 +159,7 @@ mod tests {
 		let mut spy = Vec::new();
 
 		transport.process_input(&[], &mut spy).unwrap();
-		assert!(!transport.is_ready_for_encryption());
+		assert!(!transport.is_connected());
 
 		assert_matches!(&spy[..], [_]);
 	}
@@ -171,7 +171,7 @@ mod tests {
 		let mut spy = Vec::new();
 
 		transport.process_input(&[], &mut spy).unwrap();
-		assert!(!transport.is_ready_for_encryption());
+		assert!(!transport.is_connected());
 
 		assert_matches!(&spy[..], [_]);
 	}
@@ -182,17 +182,17 @@ mod tests {
 		let mut spy = Vec::new();
 
 		transport.process_input(&[], &mut spy).unwrap();
-		assert!(transport.is_ready_for_encryption());
+		assert!(transport.is_connected());
 	}
 
-	// Test that when a handshake completes is_ready_for_encryption() is correct
+	// Test that when a handshake completes is_connected() is correct
 	#[test]
 	fn outbound_handshake_complete_ready_for_encryption() {
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
 		transport.process_input(&[], &mut spy).unwrap();
-		assert!(transport.is_ready_for_encryption());
+		assert!(transport.is_connected());
 	}
 
 	#[test]
