@@ -1,6 +1,6 @@
 //! Handles all over the wire message encryption and decryption upon handshake completion.
 
-use ln::peers::{chacha, hkdf};
+use ln::peers::{chacha, hkdf5869rfc};
 use util::byte_utils;
 
 pub(super) type SymmetricKey = [u8; 32];
@@ -111,7 +111,7 @@ impl Conduit {
 	}
 
 	fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
-		let (new_chaining_key, new_key) = hkdf::derive(chaining_key, key);
+		let (new_chaining_key, new_key) = hkdf5869rfc::derive(chaining_key, key);
 		chaining_key.copy_from_slice(&new_chaining_key);
 		key.copy_from_slice(&new_key);
 	}

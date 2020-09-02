@@ -4,7 +4,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::{chacha, hkdf};
+use ln::peers::{chacha, hkdf5869rfc};
 use ln::peers::conduit::{Conduit, SymmetricKey};
 use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
 
@@ -300,13 +300,13 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let ecdh = ecdh(&initiator_static_private_key, &responder_ephemeral_public_key);
 
 		// 4. ck, temp_k3 = HKDF(ck, se)
-		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+		let (chaining_key, temporary_key) = hkdf5869rfc::derive(&chaining_key, &ecdh);
 
 		// 5. t = encryptWithAD(temp_k3, 0, h, zero)
 		chacha::encrypt(&temporary_key, 0, &hash, &[0; 0], &mut act_three[50..]);
 
 		// 6. sk, rk = HKDF(ck, zero)
-		let (sending_key, receiving_key) = hkdf::derive(&chaining_key, &[0; 0]);
+		let (sending_key, receiving_key) = hkdf5869rfc::derive(&chaining_key, &[0; 0]);
 
 		// 7. rn = 0, sn = 0
 		// - done by Conduit
@@ -377,13 +377,13 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let ecdh = ecdh(&responder_ephemeral_private_key, &initiator_pubkey);
 
 		// 7. ck, temp_k3 = HKDF(ck, se)
-		let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+		let (chaining_key, temporary_key) = hkdf5869rfc::derive(&chaining_key, &ecdh);
 
 		// 8. p = decryptWithAD(temp_k3, 0, h, t)
 		chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag, &mut [0; 0])?;
 
 		// 9. rk, sk = HKDF(ck, zero)
-		let (receiving_key, sending_key) = hkdf::derive(&chaining_key, &[0; 0]);
+		let (receiving_key, sending_key) = hkdf5869rfc::derive(&chaining_key, &[0; 0]);
 
 		// 10. rn = 0, sn = 0
 		// - done by Conduit
@@ -436,7 +436,7 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 
 	// 4. ACT1: ck, temp_k1 = HKDF(ck, es)
 	// 4. ACT2: ck, temp_k2 = HKDF(ck, ee)
-	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+	let (chaining_key, temporary_key) = hkdf5869rfc::derive(&chaining_key, &ecdh);
 
 	// 5. ACT1: c = encryptWithAD(temp_k1, 0, h, zero)
 	// 5. ACT2: c = encryptWithAD(temp_k2, 0, h, zero)
@@ -487,7 +487,7 @@ fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining
 
 	// 6. Act1: ck, temp_k1 = HKDF(ck, es)
 	// 6. Act2: ck, temp_k2 = HKDF(ck, ee)
-	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
+	let (chaining_key, temporary_key) = hkdf5869rfc::derive(&chaining_key, &ecdh);
 
 	// 7. Act1: p = decryptWithAD(temp_k1, 0, h, c)
 	// 7. Act2: p = decryptWithAD(temp_k2, 0, h, c)

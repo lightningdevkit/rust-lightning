@@ -53,7 +53,7 @@ pub(super) fn derive(salt: &[u8], ikm: &[u8])  -> ([u8; 32], [u8; 32]) {
 #[cfg(test)]
 mod test {
 	use hex;
-	use ln::peers::hkdf::derive;
+	use ln::peers::hkdf5869rfc::derive;
 
 	// Test with SHA-256 and zero-length salt/info
 	// Our implementation uses a zero-length info field and returns the first 64 octets. As a result,
