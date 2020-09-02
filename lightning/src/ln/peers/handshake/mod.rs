@@ -14,40 +14,39 @@ mod states;
 /// Currently requires explicit ephemeral private key specification.
 pub struct PeerHandshake {
 	state: Option<HandshakeState>,
-	ready_for_process: bool
+	ready_to_process: bool,
 }
 
 impl PeerHandshake {
-	/// Instantiate a new handshake with a node identity secret key and an ephemeral private key
+	/// Instantiate a handshake given the peer's static public key. The ephemeral private key MUST
+	/// generate a new session with strong cryptographic randomness.
 	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		let state = HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key);
 
 		Self {
 			state: Some(state),
-			ready_for_process: false
+			ready_to_process: false,
 		}
 	}
 
-	/// Instantiate a new handshake in anticipation of a peer's first handshake act
+	/// Instantiate a handshake in anticipation of a peer's first handshake act
 	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
 			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key)),
-			ready_for_process: true
+			ready_to_process: true,
 		}
 	}
 
 	/// Initializes the outbound handshake and provides the initial bytes to send to the responder
 	pub fn set_up_outbound(&mut self) -> Vec<u8> {
-		assert!(!self.ready_for_process);
-		let cur_state = self.state.take().unwrap();
+		assert!(!self.ready_to_process);
+		self.ready_to_process = true;
 
 		// This transition does not have a failure path
-		let (response_vec_opt, next_state) = cur_state.next(&[]).unwrap();
+		let (response_vec_option, conduit_and_remote_static_public_key_option) = self.process_act(&[]).unwrap();
+		assert!(conduit_and_remote_static_public_key_option.is_none());
 
-		self.state = Some(next_state);
-
-		self.ready_for_process = true;
-		response_vec_opt.unwrap().to_vec()
+		response_vec_option.unwrap()
 	}
 
 	/// Process act dynamically
@@ -59,21 +58,19 @@ impl PeerHandshake {
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Some(Conduit, PublicKey) if the handshake was just processed to completion and messages can now be encrypted and decrypted
 	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
-		assert!(self.ready_for_process);
+		assert!(self.ready_to_process);
 		let cur_state = self.state.take().unwrap();
 
-		// Convert the Act to a Vec before passing it back. Next patch removes this in favor
-		// of passing back a slice.
-		let (act_opt, mut next_state) = match cur_state.next(input)? {
+		let (act_option, mut next_state) = match cur_state.next(input)? {
 			(Some(act), next_state) => (Some(act.to_vec()), next_state),
 			(None, next_state) => (None, next_state)
 		};
 
 		let result = match next_state {
 			HandshakeState::Complete(ref mut conduit_and_pubkey) => {
-				Ok((act_opt, conduit_and_pubkey.take()))
+				Ok((act_option, conduit_and_pubkey.take()))
 			},
-			_ => { Ok((act_opt, None)) }
+			_ => { Ok((act_option, None)) }
 		};
 
 		self.state = Some(next_state);
@@ -140,7 +137,7 @@ mod test {
 
 	// Test that the outbound needs to call set_up_outbound() before process_act()
 	#[test]
-	#[should_panic(expected = "assertion failed: self.ready_for_process")]
+	#[should_panic(expected = "assertion failed: self.ready_to_process")]
 	fn new_outbound_no_set_up_panics() {
 		let curve = secp256k1::Secp256k1::new();
 
@@ -155,7 +152,7 @@ mod test {
 
 	// Test that calling set_up_outbound() on the inbound panics
 	#[test]
-	#[should_panic(expected = "assertion failed: !self.ready_for_process")]
+	#[should_panic(expected = "assertion failed: !self.ready_to_process")]
 	fn new_inbound_calling_set_up_panics() {
 		let inbound_static_private_key = SecretKey::from_slice(&[0x_21_u8; 32]).unwrap();
 		let inbound_ephemeral_private_key = SecretKey::from_slice(&[0x_22_u8; 32]).unwrap();
