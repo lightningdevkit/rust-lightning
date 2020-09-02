@@ -181,17 +181,17 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
 	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
 		let mut act_one_builder = self.act_one_builder;
-		let remaining = act_one_builder.fill(input);
+		let bytes_read = act_one_builder.fill(input);
 
-		// Any payload larger than ACT_ONE_LENGTH indicates a bad peer since initiator data
-		// is required to generate act3 (so it can't come before we transition)
-		if remaining.len() != 0 {
+		// Any payload that is not fully consumed by the builder indicates a bad peer since responder
+		// data is required to generate act3 (so it can't come before we transition)
+		if bytes_read < input.len() {
 			return Err("Act One too large".to_string());
 		}
 
 		// In the event of a partial fill, stay in the same state and wait for more data
 		if !act_one_builder.is_finished() {
-			assert_eq!(remaining.len(), 0);
+			assert_eq!(bytes_read, input.len());
 			return Ok((
 				None,
 				HandshakeState::ResponderAwaitingActOne(Self {
@@ -247,17 +247,17 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (sender)
 	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
 		let mut act_two_builder = self.act_two_builder;
-		let remaining = act_two_builder.fill(input);
+		let bytes_read = act_two_builder.fill(input);
 
-		// Any payload larger than ACT_TWO_LENGTH indicates a bad peer since responder data
+		// Any payload that is not fully consumed by the builder indicates a bad peer since responder data
 		// is required to generate post-authentication messages (so it can't come before we transition)
-		if remaining.len() != 0 {
+		if bytes_read < input.len() {
 			return Err("Act Two too large".to_string());
 		}
 
 		// In the event of a partial fill, stay in the same state and wait for more data
 		if !act_two_builder.is_finished() {
-			assert_eq!(remaining.len(), 0);
+			assert_eq!(bytes_read, input.len());
 			return Ok((
 				None,
 				HandshakeState::InitiatorAwaitingActTwo(Self {
@@ -325,11 +325,11 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 	// https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-three (receiver)
 	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String> {
 		let mut act_three_builder = self.act_three_builder;
-		let remaining = act_three_builder.fill(input);
+		let bytes_read = act_three_builder.fill(input);
 
 		// In the event of a partial fill, stay in the same state and wait for more data
 		if !act_three_builder.is_finished() {
-			assert_eq!(remaining.len(), 0);
+			assert_eq!(bytes_read, input.len());
 			return Ok((
 				None,
 				HandshakeState::ResponderAwaitingActThree(Self {
@@ -392,7 +392,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
 		// to the Conduit for future use.
-		conduit.read(remaining);
+		conduit.read(&input[bytes_read..]);
 
 		Ok((
 			None,

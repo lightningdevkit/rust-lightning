@@ -82,8 +82,8 @@ impl ActBuilder {
 		}
 	}
 
-	/// Fills the Act with bytes from input and returns the unprocessed bytes
-	pub(super) fn fill<'a>(&mut self, input: &'a [u8]) -> &'a [u8] {
+	/// Fills the Act with bytes from input and returns the number of bytes consumed from input.
+	pub(super) fn fill(&mut self, input: &[u8]) -> usize {
 		// Simple fill implementation for both almost-identical structs to deduplicate code
 		// $act: Act[One|Two|Three], $input: &[u8]; returns &[u8] of remaining input that was not processed
 		macro_rules! fill_act_content {
@@ -93,7 +93,7 @@ impl ActBuilder {
 				$act[$write_pos..$write_pos + fill_amount].copy_from_slice(&$input[..fill_amount]);
 
 				$write_pos += fill_amount;
-				&$input[fill_amount..]
+				fill_amount
 			}}
 		}
 
@@ -125,11 +125,12 @@ mod tests {
 	fn partial_fill() {
 		let mut builder = ActBuilder::new(Act::One(EMPTY_ACT_ONE));
 
-		let remaining = builder.fill(&[1, 2, 3]);
+		let input = [1, 2, 3];
+		let bytes_read = builder.fill(&input);
 		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
 		assert_eq!(builder.write_pos, 3);
 		assert!(!builder.is_finished());
-		assert_eq!(remaining, &[]);
+		assert_eq!(bytes_read, input.len());
 	}
 
 	// Test bookkeeping of exact fill
@@ -137,13 +138,13 @@ mod tests {
 	fn exact_fill() {
 		let mut builder = ActBuilder::new(Act::One(EMPTY_ACT_ONE));
 
-		let input = [0; 50];
-		let remaining = builder.fill(&input);
+		let input = [0; ACT_ONE_LENGTH];
+		let bytes_read = builder.fill(&input);
 		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
 		assert_eq!(builder.write_pos, ACT_ONE_LENGTH);
 		assert!(builder.is_finished());
 		assert_eq!(Act::from(builder).as_ref(), &input[..]);
-		assert_eq!(remaining, &[]);
+		assert_eq!(bytes_read, input.len());
 	}
 
 	// Test bookkeeping of overfill
@@ -151,14 +152,14 @@ mod tests {
 	fn over_fill() {
 		let mut builder = ActBuilder::new(Act::One(EMPTY_ACT_ONE));
 
-		let input = [0; 51];
-		let remaining = builder.fill(&input);
+		let input = [0; ACT_ONE_LENGTH + 1];
+		let bytes_read = builder.fill(&input);
 
 		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
 		assert_eq!(builder.write_pos, ACT_ONE_LENGTH);
 		assert!(builder.is_finished());
-		assert_eq!(Act::from(builder).as_ref(), &input[..50]);
-		assert_eq!(remaining, &[0]);
+		assert_eq!(Act::from(builder).as_ref(), &input[..ACT_ONE_LENGTH]);
+		assert_eq!(bytes_read, ACT_ONE_LENGTH);
 	}
 
 	// Converting an unfinished ActBuilder panics
