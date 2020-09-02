@@ -5,7 +5,7 @@
 
 mod chacha;
 pub mod handler;
-mod hkdf;
+mod hkdf5869rfc;
 
 #[cfg(feature = "fuzztarget")]
 pub mod conduit;
