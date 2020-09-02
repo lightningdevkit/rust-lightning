@@ -5,13 +5,14 @@
 
 use std::{cmp, ops};
 
-pub const ACT_ONE_TWO_LENGTH: usize = 50;
+pub const ACT_ONE_LENGTH: usize = 50;
+pub const ACT_TWO_LENGTH: usize = 50;
 pub const ACT_THREE_LENGTH: usize = 66;
-pub const EMPTY_ACT_ONE: ActOne = [0; ACT_ONE_TWO_LENGTH];
-pub const EMPTY_ACT_TWO: ActTwo = EMPTY_ACT_ONE;
+pub const EMPTY_ACT_ONE: ActOne = [0; ACT_ONE_LENGTH];
+pub const EMPTY_ACT_TWO: ActTwo = [0; ACT_TWO_LENGTH];
 pub const EMPTY_ACT_THREE: ActThree = [0; ACT_THREE_LENGTH];
-type ActOne = [u8; ACT_ONE_TWO_LENGTH];
-type ActTwo = ActOne;
+type ActOne = [u8; ACT_ONE_LENGTH];
+type ActTwo = [u8; ACT_TWO_LENGTH];
 type ActThree = [u8; ACT_THREE_LENGTH];
 
 /// Wrapper for any act message
@@ -64,19 +65,6 @@ impl AsRef<[u8]> for Act {
 	}
 }
 
-// Simple fill implementation for both almost-identical structs to deduplicate code
-// $act: Act[One|Two|Three], $input: &[u8]; returns &[u8] of remaining input that was not processed
-macro_rules! fill_impl {
-	($act:expr, $write_pos:expr, $input:expr) => {{
-		let fill_amount = cmp::min($act.len() - $write_pos, $input.len());
-
-		$act[$write_pos..$write_pos + fill_amount].copy_from_slice(&$input[..fill_amount]);
-
-		$write_pos += fill_amount;
-		&$input[fill_amount..]
-	}}
-}
-
 /// Light wrapper around an Act that allows multiple fill() calls before finally
 /// converting to an Act via Act::from(act_builder). Handles all of the bookkeeping
 /// and edge cases of the array fill
@@ -96,15 +84,28 @@ impl ActBuilder {
 
 	/// Fills the Act with bytes from input and returns the unprocessed bytes
 	pub(super) fn fill<'a>(&mut self, input: &'a [u8]) -> &'a [u8] {
+		// Simple fill implementation for both almost-identical structs to deduplicate code
+		// $act: Act[One|Two|Three], $input: &[u8]; returns &[u8] of remaining input that was not processed
+		macro_rules! fill_act_content {
+			($act:expr, $write_pos:expr, $input:expr) => {{
+				let fill_amount = cmp::min($act.len() - $write_pos, $input.len());
+
+				$act[$write_pos..$write_pos + fill_amount].copy_from_slice(&$input[..fill_amount]);
+
+				$write_pos += fill_amount;
+				&$input[fill_amount..]
+			}}
+		}
+
 		match &mut self.partial_act {
 			&mut Act::One(ref mut act) => {
-				fill_impl!(act, self.write_pos, input)
+				fill_act_content!(act, self.write_pos, input)
 			}
 			&mut Act::Two(ref mut act) => {
-				fill_impl!(act, self.write_pos, input)
+				fill_act_content!(act, self.write_pos, input)
 			}
 			&mut Act::Three(ref mut act) => {
-				fill_impl!(act, self.write_pos, input)
+				fill_act_content!(act, self.write_pos, input)
 			}
 		}
 	}
@@ -125,7 +126,7 @@ mod tests {
 		let mut builder = ActBuilder::new(Act::One(EMPTY_ACT_ONE));
 
 		let remaining = builder.fill(&[1, 2, 3]);
-		assert_eq!(builder.partial_act.len(), ACT_ONE_TWO_LENGTH);
+		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
 		assert_eq!(builder.write_pos, 3);
 		assert!(!builder.is_finished());
 		assert_eq!(remaining, &[]);
@@ -138,8 +139,8 @@ mod tests {
 
 		let input = [0; 50];
 		let remaining = builder.fill(&input);
-		assert_eq!(builder.partial_act.len(), ACT_ONE_TWO_LENGTH);
-		assert_eq!(builder.write_pos, ACT_ONE_TWO_LENGTH);
+		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
+		assert_eq!(builder.write_pos, ACT_ONE_LENGTH);
 		assert!(builder.is_finished());
 		assert_eq!(Act::from(builder).as_ref(), &input[..]);
 		assert_eq!(remaining, &[]);
@@ -153,8 +154,8 @@ mod tests {
 		let input = [0; 51];
 		let remaining = builder.fill(&input);
 
-		assert_eq!(builder.partial_act.len(), ACT_ONE_TWO_LENGTH);
-		assert_eq!(builder.write_pos, ACT_ONE_TWO_LENGTH);
+		assert_eq!(builder.partial_act.len(), ACT_ONE_LENGTH);
+		assert_eq!(builder.write_pos, ACT_ONE_LENGTH);
 		assert!(builder.is_finished());
 		assert_eq!(Act::from(builder).as_ref(), &input[..50]);
 		assert_eq!(remaining, &[0]);
@@ -162,7 +163,7 @@ mod tests {
 
 	// Converting an unfinished ActBuilder panics
 	#[test]
-	#[should_panic(expected="as")]
+	#[should_panic(expected="assertion failed: act_builder.is_finished()")]
 	fn convert_not_finished_panics() {
 		let builder = ActBuilder::new(Act::One(EMPTY_ACT_ONE));
 		let _should_panic = Act::from(builder);

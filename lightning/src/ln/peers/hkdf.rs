@@ -3,7 +3,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 
 // Allows 1 or more inputs and "concatenates" them together using the input() function
 // of HmacEngine::<Sha256>
-macro_rules! hmac_hash {
+macro_rules! hmac_sha256 {
 	( $salt:expr, ($( $input:expr ),+ )) => {{
 		let mut engine = HmacEngine::<Sha256>::new($salt);
 		$(
@@ -31,7 +31,7 @@ pub(super) fn derive(salt: &[u8], ikm: &[u8])  -> ([u8; 32], [u8; 32]) {
 	// 2.2. Step 1: Extract
 	// HKDF-Extract(salt, IKM) -> PRK
 	// PRK = HMAC-Hash(salt, IKM)
-	let prk = hmac_hash!(salt, (ikm));
+	let prk = hmac_sha256!(salt, (ikm));
 
 	// 2.3.  Step 2: Expand
 	// HKDF-Expand(PRK, info, L) -> OKM
@@ -42,9 +42,9 @@ pub(super) fn derive(salt: &[u8], ikm: &[u8])  -> ([u8; 32], [u8; 32]) {
 	// where:
 	// T(0) = empty string (zero length)
 	// T(1) = HMAC-Hash(PRK, T(0) | info | 0x01)
-	let t1 = hmac_hash!(&prk, (&[1]));
+	let t1 = hmac_sha256!(&prk, (&[1]));
 	// T(2) = HMAC-Hash(PRK, T(1) | info | 0x02)
-	let t2 = hmac_hash!(&prk, (&t1, &[2]));
+	let t2 = hmac_sha256!(&prk, (&t1, &[2]));
 
 	return (t1, t2)
 }

@@ -6,8 +6,9 @@ use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::{chacha, hkdf};
 use ln::peers::conduit::{Conduit, SymmetricKey};
-use ln::peers::handshake::acts::{Act, ActBuilder, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
+use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
 
+// Alias type to help differentiate between temporary key and chaining key when passing bytes around
 type ChainingKey = [u8; 32];
 
 // Generate a SHA-256 hash from one or more elements concatenated together
@@ -30,7 +31,8 @@ pub(super) enum HandshakeState {
 }
 
 // Trait for all individual states to implement that ensure HandshakeState::next() can
-// delegate to a common function signature.
+// delegate to a common function signature. May transition to the same state in the event there are
+// not yet enough bytes to move forward with the handshake.
 pub(super) trait IHandshakeState {
 	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String>;
 }
@@ -101,7 +103,7 @@ pub(super) struct ResponderAwaitingActThreeState {
 impl InitiatorStartingState {
 	pub(crate) fn new(initiator_static_private_key: SecretKey, initiator_ephemeral_private_key: SecretKey, responder_static_public_key: PublicKey) -> Self {
 		let initiator_static_public_key = private_key_to_public_key(&initiator_static_private_key);
-		let (hash, chaining_key) = handshake_state_initialization(&responder_static_public_key);
+		let (hash, chaining_key) = initialize_handshake_state(&responder_static_public_key);
 		let initiator_ephemeral_public_key = private_key_to_public_key(&initiator_ephemeral_private_key);
 		InitiatorStartingState {
 			initiator_static_private_key,
@@ -160,7 +162,7 @@ impl IHandshakeState for InitiatorStartingState {
 impl ResponderAwaitingActOneState {
 	pub(crate) fn new(responder_static_private_key: SecretKey, responder_ephemeral_private_key: SecretKey) -> Self {
 		let responder_static_public_key = private_key_to_public_key(&responder_static_private_key);
-		let (hash, chaining_key) = handshake_state_initialization(&responder_static_public_key);
+		let (hash, chaining_key) = initialize_handshake_state(&responder_static_public_key);
 		let responder_ephemeral_public_key = private_key_to_public_key(&responder_ephemeral_private_key);
 
 		ResponderAwaitingActOneState {
@@ -181,7 +183,7 @@ impl IHandshakeState for ResponderAwaitingActOneState {
 		let mut act_one_builder = self.act_one_builder;
 		let remaining = act_one_builder.fill(input);
 
-		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since initiator data
+		// Any payload larger than ACT_ONE_LENGTH indicates a bad peer since initiator data
 		// is required to generate act3 (so it can't come before we transition)
 		if remaining.len() != 0 {
 			return Err("Act One too large".to_string());
@@ -247,7 +249,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let mut act_two_builder = self.act_two_builder;
 		let remaining = act_two_builder.fill(input);
 
-		// Any payload larger than ACT_ONE_TWO_LENGTH indicates a bad peer since responder data
+		// Any payload larger than ACT_TWO_LENGTH indicates a bad peer since responder data
 		// is required to generate post-authentication messages (so it can't come before we transition)
 		if remaining.len() != 0 {
 			return Err("Act Two too large".to_string());
@@ -310,6 +312,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		// - done by Conduit
 		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
+		// 8. Send m = 0 || c || t
 		Ok((
 			Some(Act::Three(act_three)),
 			HandshakeState::Complete(Some((conduit, responder_static_public_key)))
@@ -345,6 +348,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// 1. Read exactly 66 bytes from the network buffer
 		let act_three_bytes = Act::from(act_three_builder);
+		assert_eq!(act_three_bytes.len(), ACT_THREE_LENGTH);
 
 		// 2. Parse the read message (m) into v, c, and t
 		let version = act_three_bytes[0];
@@ -396,8 +400,11 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 	}
 }
 
+// The handshake state always uses the responder's static public key. When running on the initiator,
+// the initiator provides the remote's static public key and running on the responder they provide
+// their own.
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#handshake-state-initialization
-fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (Sha256, Sha256) {
+fn initialize_handshake_state(responder_static_public_key: &PublicKey) -> (Sha256, Sha256) {
 	let protocol_name = b"Noise_XK_secp256k1_ChaChaPoly_SHA256";
 	let prologue = b"lightning";
 
@@ -414,6 +421,7 @@ fn handshake_state_initialization(responder_static_public_key: &PublicKey) -> (S
 	(hash, chaining_key)
 }
 
+// Due to the very high similarity of acts 1 and 2, this method is used to process both
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-one (sender)
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (sender)
 fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_ephemeral_key: &PublicKey, remote_public_key: &PublicKey, chaining_key: ChainingKey, hash: Sha256, act_out: &mut [u8]) -> (Sha256, SymmetricKey, SymmetricKey) {
@@ -448,6 +456,11 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 // https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#act-two (receiver)
 fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining_key: ChainingKey, hash: Sha256) -> Result<(PublicKey, Sha256, SymmetricKey, SymmetricKey), String> {
 	// 1. Read exactly 50 bytes from the network buffer
+	// Partial act messages are handled by the callers. By the time it gets here, it
+	// must be the correct size.
+	assert_eq!(act_bytes.len(), ACT_ONE_LENGTH);
+	assert_eq!(act_bytes.len(), ACT_TWO_LENGTH);
+
 	// 2.Parse the read message (m) into v, re, and c
 	let version = act_bytes[0];
 	let ephemeral_public_key_bytes = &act_bytes[1..34];
@@ -476,7 +489,8 @@ fn process_act_message(act_bytes: &[u8], local_private_key: &SecretKey, chaining
 	// 6. Act2: ck, temp_k2 = HKDF(ck, ee)
 	let (chaining_key, temporary_key) = hkdf::derive(&chaining_key, &ecdh);
 
-	// 7. p = decryptWithAD(temp_k1, 0, h, c)
+	// 7. Act1: p = decryptWithAD(temp_k1, 0, h, c)
+	// 7. Act2: p = decryptWithAD(temp_k2, 0, h, c)
 	chacha::decrypt(&temporary_key, 0, &hash, &chacha_tag, &mut [0; 0])?;
 
 	// 8. h = SHA-256(h || c)

@@ -85,6 +85,9 @@ struct TestCtx {
 }
 
 impl TestCtx {
+	// At the completion of this call each handshake has the following state:
+	// initiator_handshake: HandshakeState::InitiatorStarting
+	// responder_handshake: HandshakeState::ResponderAwaitingActOne
 	fn make(generator: &mut FuzzGen) -> Result<Self, GeneratorFinishedError> {
 		let curve = secp256k1::Secp256k1::new();
 
@@ -98,6 +101,14 @@ impl TestCtx {
 
 		let mut initiator_handshake = PeerHandshake::new_outbound(&initiator_static_private_key, &responder_static_public_key, &initiator_ephemeral_private_key);
 		let act1 = initiator_handshake.set_up_outbound();
+
+		// Sanity checks around initialization to catch errors before we get to the fuzzing
+
+		// act 1 is the correct size
+		assert_eq!(act1.len(), 50);
+
+		// act 1 has the correct version
+		assert_eq!(act1[0], 0);
 		let responder_handshake = PeerHandshake::new_inbound(&responder_static_private_key, &responder_ephemeral_private_key);
 
 		Ok(TestCtx {
@@ -146,8 +157,8 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 	}
 }
 
-// This test completes a valid handshake based on "random" private keys and then sends variable
-// length encrypted messages between two conduits to validate that they can communicate.
+// This test completes a valid handshake based on fuzzer-provided private keys and then sends
+// variable length encrypted messages between two conduits to validate that they can communicate.
 #[inline]
 fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedError> {
 	let mut test_ctx = TestCtx::make(generator)?;
