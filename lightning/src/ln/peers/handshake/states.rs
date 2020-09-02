@@ -313,6 +313,7 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
 
 		// 8. Send m = 0 || c || t
+		act_three[0] = 0;
 		Ok((
 			Some(Act::Three(act_three)),
 			HandshakeState::Complete(Some((conduit, responder_static_public_key)))
@@ -446,6 +447,7 @@ fn calculate_act_message(local_private_ephemeral_key: &SecretKey, local_public_e
 	let hash = concat_then_sha256!(hash, &act_out[34..]);
 
 	// Send m = 0 || e.pub.serializeCompressed() || c
+	act_out[0] = 0;
 	act_out[1..34].copy_from_slice(&serialized_local_public_key);
 
 	(hash, chaining_key, temporary_key)
