@@ -4,13 +4,18 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{SocketDescriptor, PayloadQueuer};
+use ln::peers::handler::{SocketDescriptor, PayloadQueuer, ITransport, PeerHandleError};
 use ln::peers::transport::IPeerHandshake;
 
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{RefCell};
 use std::hash::Hash;
 use std::cmp;
+use ln::wire::{Message, Encode};
+use bitcoin::hashes::core::ops::Deref;
+use util::logger::Logger;
+use util::ser::{Writeable, VecWriter};
+use ln::wire;
 
 macro_rules! assert_matches {
 	($actual:expr, $expected:pat) => {
@@ -108,6 +113,9 @@ pub(super) struct SocketDescriptorMock {
 
 	/// Vector of arguments and return values to send_data() used for validation
 	send_recording: Rc<RefCell<Vec<(Vec<u8>, bool)>>>,
+
+	/// Record if disconnect() was called on the Mock
+	disconnect_called: Rc<RefCell<bool>>,
 }
 
 impl SocketDescriptorMock {
@@ -116,7 +124,8 @@ impl SocketDescriptorMock {
 		Self {
 			unbounded: Rc::new(RefCell::new(true)),
 			send_recording: Rc::new(RefCell::new(Vec::new())),
-			free_space: Rc::new(RefCell::new(0))
+			free_space: Rc::new(RefCell::new(0)),
+			disconnect_called: Rc::new(RefCell::new(false))
 		}
 	}
 
@@ -134,6 +143,15 @@ impl SocketDescriptorMock {
 		assert_eq!(expectation.as_slice(), self.send_recording.borrow().as_slice())
 	}
 
+	/// Retrieve the underlying recording for use in pattern matching or more complex value validation
+	pub(super) fn get_recording(&self) -> Vec<(Vec<u8>, bool)> {
+		self.send_recording.borrow().clone()
+	}
+
+	pub(super) fn disconnect_called(&self) -> bool {
+		*self.disconnect_called.borrow_mut()
+	}
+
 	/// Allow future send_data() calls to succeed for the next added_room bytes. Not valid for
 	/// unbounded mock descriptors
 	pub(super) fn make_room(&mut self, added_room: usize) {
@@ -141,6 +159,11 @@ impl SocketDescriptorMock {
 		let mut free_space = self.free_space.borrow_mut();
 
 		*free_space += added_room;
+	}
+
+	/// Clear the saved recording. Useful for resetting state between test phases.
+	pub(super) fn clear_recording(&mut self) {
+		self.send_recording.borrow_mut().clear();
 	}
 }
 
@@ -163,7 +186,9 @@ impl SocketDescriptor for SocketDescriptorMock {
 	}
 
 	fn disconnect_socket(&mut self) {
-		unimplemented!()
+		let mut val = self.disconnect_called.borrow_mut();
+		assert!(!*val, "disconnect_socket() was alraedy called");
+		*val = true;
 	}
 }
 
@@ -172,7 +197,8 @@ impl Clone for SocketDescriptorMock {
 		Self {
 			unbounded: self.unbounded.clone(),
 			send_recording: self.send_recording.clone(),
-			free_space: self.free_space.clone()
+			free_space: self.free_space.clone(),
+			disconnect_called: self.disconnect_called.clone(),
 		}
 	}
 }
@@ -203,3 +229,133 @@ impl PayloadQueuer for Vec<Vec<u8>> {
 	}
 }
 
+// Builder for TransportTestStub that allows tests to easily construct the Transport layer they
+// want to use for their test.
+pub(super) struct TransportStubBuilder {
+	stub: TransportStub,
+}
+
+impl TransportStubBuilder {
+	pub(super) fn new() -> Self {
+		Self {
+			stub: TransportStub {
+				is_connected: false,
+				messages: vec![],
+				process_returns_error: false,
+				their_node_id: None,
+			}
+		}
+	}
+
+	pub(super) fn set_connected(mut self, their_node_id: &PublicKey) -> Self {
+		self.stub.is_connected = true;
+		self.stub.their_node_id = Some(their_node_id.clone());
+		self
+	}
+
+	pub(super) fn process_returns_error(mut self) -> Self {
+		self.stub.process_returns_error();
+		self
+	}
+
+	pub(super) fn finish(self) -> TransportStub {
+		self.stub
+	}
+}
+
+pub(super) struct TransportStub {
+	is_connected: bool,
+	messages: Vec<Message>,
+	process_returns_error: bool,
+	their_node_id: Option<PublicKey>,
+}
+
+// &RefCell passthrough to allow unit tests to pass in a Transport to the PeerManager, but later
+// modify it to fail, return messages, etc.
+impl<'a> ITransport for &'a RefCell<TransportStub> {
+	fn new_outbound(_initiator_static_private_key: &SecretKey, _responder_static_public_key: &PublicKey, _initiator_ephemeral_private_key: &SecretKey) -> Self {
+		unimplemented!()
+	}
+
+	fn set_up_outbound(&mut self) -> Vec<u8> {
+		self.borrow_mut().set_up_outbound()
+	}
+
+	fn new_inbound(_responder_static_private_key: &SecretKey, _responder_ephemeral_private_key: &SecretKey) -> Self {
+		unimplemented!()
+	}
+
+	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<(), String> {
+		self.borrow_mut().process_input(input, output_buffer)
+	}
+
+	fn is_connected(&self) -> bool {
+		self.borrow().is_connected()
+	}
+
+	fn get_their_node_id(&self) -> PublicKey {
+		self.borrow().get_their_node_id()
+	}
+
+	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
+		self.borrow_mut().drain_messages(logger)
+	}
+
+	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger {
+		self.borrow_mut().enqueue_message(message, output_buffer, logger)
+	}
+}
+
+impl TransportStub {
+	pub(super) fn process_returns_error(&mut self) {
+		self.process_returns_error = true;
+	}
+
+	pub(super) fn add_incoming_message(&mut self, message: Message) {
+		assert!(self.is_connected, "Can't set messages on unconnected Transport");
+		self.messages.push(message);
+	}
+}
+
+// Stub implementation for ITransport with a fixed connection state. All enqueue_message() calls
+// are placed directly into the PayloadQueuer unencrypted for easier test validation.
+impl ITransport for TransportStub {
+	fn new_outbound(_initiator_static_private_key: &SecretKey, _responder_static_public_key: &PublicKey, _initiator_ephemeral_private_key: &SecretKey) -> Self {
+		unimplemented!()
+	}
+
+	fn set_up_outbound(&mut self) -> Vec<u8> {
+		vec![]
+	}
+
+	fn new_inbound(_responder_static_private_key: &SecretKey, _responder_ephemeral_private_key: &SecretKey) -> Self {
+		unimplemented!()
+	}
+
+	fn process_input(&mut self, _input: &[u8], _output_buffer: &mut impl PayloadQueuer) -> Result<(), String> {
+		if self.process_returns_error {
+			Err("Oh no!".to_string())
+		} else {
+			Ok(())
+		}
+	}
+
+	fn is_connected(&self) -> bool {
+		self.their_node_id.is_some()
+	}
+
+	fn get_their_node_id(&self) -> PublicKey {
+		self.their_node_id.unwrap()
+	}
+
+	fn drain_messages<L: Deref>(&mut self, _logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
+		Ok(self.messages.drain(..).collect())
+	}
+
+	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, _logger: L)
+		where L::Target: Logger {
+		let mut buffer = VecWriter(Vec::new());
+		wire::write(message, &mut buffer).unwrap();
+		output_buffer.push_back(buffer.0);
+	}
+}

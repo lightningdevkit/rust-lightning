@@ -480,6 +480,10 @@ impl<T: sealed::StaticRemoteKey> Features<T> {
 	pub(crate) fn requires_static_remote_key(&self) -> bool {
 		<T as sealed::StaticRemoteKey>::requires_feature(&self.flags)
 	}
+	#[cfg(test)]
+	pub(crate) fn clear_requires_static_remote_key(&mut self) {
+		<T as sealed::StaticRemoteKey>::clear_bits(&mut self.flags)
+	}
 }
 
 impl<T: sealed::InitialRoutingSync> Features<T> {

@@ -7,6 +7,10 @@
 #[macro_use]
 mod test_util;
 
+#[cfg(test)]
+#[macro_use]
+mod test_message_macros;
+
 mod chacha;
 pub mod handler;
 mod hkdf5869rfc;
