@@ -28,6 +28,7 @@ impl PayloadQueuer for OutboundQueue {
 		self.soft_limit - cmp::min(self.soft_limit, self.buffer.len())
 	}
 }
+
 impl SocketDescriptorFlusher for OutboundQueue {
 	fn try_flush_one(&mut self, descriptor: &mut impl SocketDescriptor) -> bool {
 		// Exit early if  a previous full write failed and haven't heard that there may be more
@@ -83,104 +84,7 @@ impl OutboundQueue {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::rc::Rc;
-	use std::cell::RefCell;
-	use std::hash::Hash;
-	use std::cmp;
-
-	/// Mock implementation of the SocketDescriptor trait that can be used in tests to finely control
-	/// the send_data() behavior.
-	///
-	///Additionally, records the actual calls to send_data() for later validation.
-	#[derive(Debug, Eq)]
-	struct SocketDescriptorMock {
-		/// If true, all send_data() calls will succeed
-		unbounded: Rc<RefCell<bool>>,
-
-		/// Amount of free space in the descriptor for send_data() bytes
-		free_space: Rc<RefCell<usize>>,
-
-		/// Vector of arguments and return values to send_data() used for validation
-		send_recording: Rc<RefCell<Vec<(Vec<u8>, bool)>>>,
-	}
-
-	impl SocketDescriptorMock {
-		/// Basic unbounded implementation where send_data() will always succeed
-		fn new() -> Self {
-			Self {
-				unbounded: Rc::new(RefCell::new(true)),
-				send_recording: Rc::new(RefCell::new(Vec::new())),
-				free_space: Rc::new(RefCell::new(0))
-			}
-		}
-
-		/// Used for tests that want to return partial sends after a certain amount of data is sent through send_data()
-		fn with_fixed_size(limit: usize) -> Self {
-			let mut descriptor = Self::new();
-			descriptor.unbounded = Rc::new(RefCell::new(false));
-			descriptor.free_space = Rc::new(RefCell::new(limit));
-
-			descriptor
-		}
-
-		/// Standard Mock api to verify actual vs. expected calls
-		fn assert_called_with(&self, expectation: Vec<(Vec<u8>, bool)>) {
-			assert_eq!(expectation.as_slice(), self.send_recording.borrow().as_slice())
-		}
-
-		/// Allow future send_data() calls to succeed for the next added_room bytes. Not valid for
-		/// unbounded mock descriptors
-		fn make_room(&mut self, added_room: usize) {
-			assert!(!*self.unbounded.borrow());
-			let mut free_space = self.free_space.borrow_mut();
-
-			*free_space += added_room;
-		}
-	}
-
-	impl SocketDescriptor for SocketDescriptorMock {
-		fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
-			self.send_recording.borrow_mut().push((data.to_vec(), resume_read));
-
-			let mut free_space = self.free_space.borrow_mut();
-
-			// Unbounded just flush everything
-			return if *self.unbounded.borrow() {
-				data.len()
-			}
-			// Bounded flush up to the free_space limit
-			else {
-				let write_len = cmp::min(data.len(), *free_space);
-				*free_space -= write_len;
-				write_len
-			}
-		}
-
-		fn disconnect_socket(&mut self) {
-			unimplemented!()
-		}
-	}
-
-	impl Clone for SocketDescriptorMock {
-		fn clone(&self) -> Self {
-			Self {
-				unbounded: self.unbounded.clone(),
-				send_recording: self.send_recording.clone(),
-				free_space: self.free_space.clone()
-			}
-		}
-	}
-
-	impl PartialEq for SocketDescriptorMock {
-		fn eq(&self, o: &Self) -> bool {
-			Rc::ptr_eq(&self.send_recording, &o.send_recording)
-		}
-	}
-	impl Hash for SocketDescriptorMock {
-		fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-			self.send_recording.as_ptr().hash(state)
-		}
-	}
+	use ln::peers::test_util::*;
 
 	// Test that a try_flush_one() call with no queued data doesn't write anything
 	#[test]

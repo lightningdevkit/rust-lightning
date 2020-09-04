@@ -6,6 +6,7 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use lightning::ln::peers::conduit::Conduit;
 use lightning::ln::peers::handshake::PeerHandshake;
+use lightning::ln::peers::transport::IPeerHandshake;
 use utils::test_logger;
 
 // Test structure used to generate "random" values based on input data. It is used throughout

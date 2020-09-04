@@ -7,6 +7,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey};
 use ln::peers::{chacha, hkdf5869rfc};
 use ln::peers::conduit::{Conduit, SymmetricKey};
 use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
+use ln::peers::handshake::IHandshakeState;
 
 // Alias type to help differentiate between temporary key and chaining key when passing bytes around
 type ChainingKey = [u8; 32];
@@ -28,13 +29,6 @@ pub(super) enum HandshakeState {
 	InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState),
 	ResponderAwaitingActThree(ResponderAwaitingActThreeState),
 	Complete(Option<(Conduit, PublicKey)>),
-}
-
-// Trait for all individual states to implement that ensure HandshakeState::next() can
-// delegate to a common function signature. May transition to the same state in the event there are
-// not yet enough bytes to move forward with the handshake.
-pub(super) trait IHandshakeState {
-	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String>;
 }
 
 // Enum dispatch for state machine. Single public interface can statically dispatch to all states

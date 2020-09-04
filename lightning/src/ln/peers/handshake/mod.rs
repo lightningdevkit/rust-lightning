@@ -5,10 +5,20 @@
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::states::{HandshakeState, IHandshakeState};
+use ln::peers::handshake::acts::Act;
+use ln::peers::handshake::states::HandshakeState;
+use ln::peers::transport::IPeerHandshake;
 
 mod acts;
 mod states;
+
+/// Interface used by PeerHandshake to interact with NOISE state machine.
+/// State may transition to the same state in the event there are not yet enough bytes to move
+/// forward with the handshake.
+trait IHandshakeState {
+	/// Returns the next HandshakeState after processing the input bytes
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String>;
+}
 
 /// Object for managing handshakes.
 /// Currently requires explicit ephemeral private key specification.
@@ -17,10 +27,10 @@ pub struct PeerHandshake {
 	ready_to_process: bool,
 }
 
-impl PeerHandshake {
+impl IPeerHandshake for PeerHandshake {
 	/// Instantiate a handshake given the peer's static public key. The ephemeral private key MUST
 	/// generate a new session with strong cryptographic randomness.
-	pub fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
+	fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		let state = HandshakeState::new_initiator(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key);
 
 		Self {
@@ -29,16 +39,8 @@ impl PeerHandshake {
 		}
 	}
 
-	/// Instantiate a handshake in anticipation of a peer's first handshake act
-	pub fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
-		Self {
-			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key)),
-			ready_to_process: true,
-		}
-	}
-
 	/// Initializes the outbound handshake and provides the initial bytes to send to the responder
-	pub fn set_up_outbound(&mut self) -> Vec<u8> {
+	fn set_up_outbound(&mut self) -> Vec<u8> {
 		assert!(!self.ready_to_process);
 		self.ready_to_process = true;
 
@@ -49,6 +51,14 @@ impl PeerHandshake {
 		response_vec_option.unwrap()
 	}
 
+	/// Instantiate a new handshake in anticipation of a peer's first handshake act
+	fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
+		Self {
+			state: Some(HandshakeState::new_responder(responder_static_private_key, responder_ephemeral_private_key)),
+			ready_to_process: true,
+		}
+	}
+
 	/// Process act dynamically
 	/// # Arguments
 	/// `input`: Byte slice received from peer as part of the handshake protocol
@@ -57,7 +67,7 @@ impl PeerHandshake {
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
 	/// `.1`: Some(Conduit, PublicKey) if the handshake was just processed to completion and messages can now be encrypted and decrypted
-	pub fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
 		assert!(self.ready_to_process);
 		let cur_state = self.state.take().unwrap();
 
@@ -116,15 +126,6 @@ mod test {
 				outbound_static_public_key,
 				inbound_handshake,
 				inbound_static_public_key,
-			}
-		}
-	}
-
-	macro_rules! assert_matches {
-		($e:expr, $state_match:pat) => {
-			match $e {
-				$state_match => (),
-				_ => panic!()
 			}
 		}
 	}
