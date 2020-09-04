@@ -61,7 +61,7 @@ pub enum Message {
 
 /// A number identifying a message to determine how it is encoded on the wire.
 #[derive(Clone, Copy)]
-pub struct MessageType(u16);
+pub struct MessageType(pub u16);
 
 impl Message {
 	/// Returns the type that was used to decode the message payload.

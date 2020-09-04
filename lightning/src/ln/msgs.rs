@@ -672,6 +672,7 @@ pub enum ErrorAction {
 }
 
 /// An Err type for failure to process messages.
+#[derive(Clone)]
 pub struct LightningError {
 	/// A human-readable message describing the error
 	pub err: String,
