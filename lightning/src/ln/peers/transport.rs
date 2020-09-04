@@ -31,7 +31,7 @@ pub trait IPeerHandshake {
 pub(super) struct Transport<PeerHandshakeImpl: IPeerHandshake=PeerHandshake> {
 	pub(super) conduit: Option<Conduit>,
 	handshake: PeerHandshakeImpl,
-	pub(super) their_node_id: Option<PublicKey>,
+	their_node_id: Option<PublicKey>,
 }
 
 impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeImpl> {
@@ -160,6 +160,11 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 			}
 		}
 	}
+
+	fn get_their_node_id(&self) -> PublicKey {
+		assert!(self.is_connected(), "Retrieving the remote node_id is only supported after transport is connected");
+		self.their_node_id.unwrap()
+	}
 }
 
 #[cfg(test)]
@@ -254,6 +259,42 @@ mod tests {
 		assert!(transport.is_connected());
 	}
 
+	// Test get_their_node_id() in unconnected and connected scenarios
+	#[test]
+	#[should_panic(expected = "Retrieving the remote node_id is only supported after transport is connected")]
+	fn inbound_unconnected_get_their_node_id_panics() {
+		let transport = create_inbound_for_test::<PeerHandshakeTestStubFail>();
+
+		let _should_panic = transport.get_their_node_id();
+	}
+
+	#[test]
+	#[should_panic(expected = "Retrieving the remote node_id is only supported after transport is connected")]
+	fn outbound_unconnected_get_their_node_id_panics() {
+		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubFail>();
+		transport.set_up_outbound();
+
+		let _should_panic = transport.get_their_node_id();
+	}
+
+	#[test]
+	fn inbound_unconnected_get_their_node_id() {
+		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
+		let mut spy = Vec::new();
+
+		transport.process_input(&[], &mut spy).unwrap();
+		let _no_panic = transport.get_their_node_id();
+	}
+
+	#[test]
+	fn outbound_unconnected_get_their_node_id() {
+		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
+		let mut spy = Vec::new();
+
+		transport.process_input(&[], &mut spy).unwrap();
+		let _no_panic = transport.get_their_node_id();
+	}
+
 	// Test that when a handshake completes is_connected() is correct
 	#[test]
 	fn outbound_handshake_complete_ready_for_encryption() {
@@ -262,6 +303,7 @@ mod tests {
 
 		transport.process_input(&[], &mut spy).unwrap();
 		assert!(transport.is_connected());
+		let _no_panic = transport.get_their_node_id();
 	}
 
 	#[test]
