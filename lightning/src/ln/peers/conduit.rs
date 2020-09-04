@@ -2,6 +2,7 @@
 
 use ln::peers::{chacha, hkdf5869rfc};
 use util::byte_utils;
+use std::collections::VecDeque;
 
 pub(super) type SymmetricKey = [u8; 32];
 
@@ -33,29 +34,14 @@ pub(super) struct Decryptor {
 
 	pending_message_length: Option<usize>,
 	read_buffer: Option<Vec<u8>>,
-	poisoned: bool, // signal an error has occurred so None is returned on iteration after failure
+	decrypted_payloads: VecDeque<Vec<u8>>,
 }
 
 impl Iterator for Decryptor {
-	type Item = Result<Option<Vec<u8>>, String>;
+	type Item = Vec<u8>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if self.poisoned {
-			return None;
-		}
-
-		match self.decrypt_single_message(None) {
-			Ok(Some(result)) => {
-				Some(Ok(Some(result)))
-			},
-			Ok(None) => {
-				None
-			}
-			Err(e) => {
-				self.poisoned = true;
-				Some(Err(e))
-			}
-		}
+		self.decrypted_payloads.pop_front()
 	}
 }
 
@@ -74,7 +60,7 @@ impl Conduit {
 				receiving_nonce: 0,
 				read_buffer: None,
 				pending_message_length: None,
-				poisoned: false
+				decrypted_payloads: VecDeque::new(),
 			}
 		}
 	}
@@ -84,7 +70,7 @@ impl Conduit {
 		self.encryptor.encrypt(buffer)
 	}
 
-	pub(super) fn read(&mut self, data: &[u8]) {
+	pub(super) fn read(&mut self, data: &[u8]) -> Result<(), String>{
 		self.decryptor.read(data)
 	}
 
@@ -134,9 +120,25 @@ impl Encryptor {
 }
 
 impl Decryptor {
-	pub(super) fn read(&mut self, data: &[u8]) {
-		let read_buffer = self.read_buffer.get_or_insert(Vec::new());
-		read_buffer.extend_from_slice(data);
+	pub(super) fn read(&mut self, data: &[u8]) -> Result<(), String> {
+		let mut input_data = Some(data);
+
+		loop {
+			match self.decrypt_single_message(input_data) {
+				Ok(Some(result)) => {
+					self.decrypted_payloads.push_back(result);
+				},
+				Ok(None) => {
+					break;
+				}
+				Err(e) => {
+					return Err(e);
+				}
+			}
+			input_data = None;
+		}
+
+		Ok(())
 	}
 
 	/// Decrypt a single message. If data containing more than one message has been received,
@@ -318,7 +320,7 @@ mod tests {
 		let encrypted = remote_peer.encrypt(&[1]);
 
 		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decrypt_single_message(Some(&encrypted)), Err("invalid hmac".to_string()));
+		assert_eq!(connected_peer.read(&encrypted), Err("invalid hmac".to_string()));
 	}
 
 	// Test next()::None
@@ -334,86 +336,9 @@ mod tests {
 	fn decryptor_iterator_one_item_valid() {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
 		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted);
+		connected_peer.read(&encrypted).unwrap();
 
-		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
-		assert_eq!(connected_peer.decryptor.next(), None);
-	}
-
-	// Test next()::err -> next()::None
-	#[test]
-	fn decryptor_iterator_error() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted);
-
-		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
-		assert_eq!(connected_peer.decryptor.next(), None);
-	}
-
-	// Test next()::Some -> next()::err -> next()::None
-	#[test]
-	fn decryptor_iterator_error_after_success() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted);
-		let encrypted = remote_peer.encrypt(&[2]);
-		connected_peer.read(&encrypted);
-
-		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
-		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
-		assert_eq!(connected_peer.decryptor.next(), None);
-	}
-
-	// Test that next()::Some -> next()::err -> next()::None
-	// Error should poison decryptor
-	#[test]
-	fn decryptor_iterator_next_after_error_returns_none() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted);
-		let encrypted = remote_peer.encrypt(&[2]);
-		connected_peer.read(&encrypted);
-		let encrypted = remote_peer.encrypt(&[3]);
-		connected_peer.read(&encrypted);
-
-		// Get one valid value
-		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
-		let valid_receiving_key = connected_peer.decryptor.receiving_key;
-
-		// Corrupt the receiving key and ensure we get a failure
-		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
-
-		// Restore the receiving key, do a read and ensure None is returned (poisoned)
-		connected_peer.decryptor.receiving_key = valid_receiving_key;
-		assert_eq!(connected_peer.decryptor.next(), None);
-	}
-
-	// Test next()::Some -> next()::err -> read() -> next()::None
-	// Error should poison decryptor even after future reads
-	#[test]
-	fn decryptor_iterator_read_next_after_error_returns_none() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted);
-		let encrypted = remote_peer.encrypt(&[2]);
-		connected_peer.read(&encrypted);
-
-		// Get one valid value
-		assert_eq!(connected_peer.decryptor.next(), Some(Ok(Some(vec![1]))));
-		let valid_receiving_key = connected_peer.decryptor.receiving_key;
-
-		// Corrupt the receiving key and ensure we get a failure
-		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decryptor.next(), Some(Err("invalid hmac".to_string())));
-
-		// Restore the receiving key, do a read and ensure None is returned (poisoned)
-		let encrypted = remote_peer.encrypt(&[3]);
-		connected_peer.read(&encrypted);
-		connected_peer.decryptor.receiving_key = valid_receiving_key;
+		assert_eq!(connected_peer.decryptor.next(), Some(vec![1]));
 		assert_eq!(connected_peer.decryptor.next(), None);
 	}
 }

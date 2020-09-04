@@ -386,7 +386,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
 		// to the Conduit for future use.
-		conduit.read(&input[bytes_read..]);
+		conduit.read(&input[bytes_read..])?;
 
 		Ok((
 			None,
@@ -766,7 +766,7 @@ mod test {
 		let test_ctx = TestCtx::new();
 		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
 		let mut act3 = test_ctx.valid_act3;
-		act3.extend_from_slice(&[2; 100]);
+		act3.extend_from_slice(&[2; 16]);
 
 		let (conduit, remote_pubkey) = if let (None, Complete(Some((conduit, remote_pubkey)))) = awaiting_act_three_state.next(&act3).unwrap() {
 			(conduit, remote_pubkey)
@@ -775,7 +775,7 @@ mod test {
 		};
 
 		assert_eq!(remote_pubkey, test_ctx.initiator_public_key);
-		assert_eq!(100, conduit.decryptor.read_buffer_length());
+		assert_eq!(16, conduit.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> Error (bad version bytes)

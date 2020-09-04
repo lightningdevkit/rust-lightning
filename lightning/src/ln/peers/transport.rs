@@ -88,7 +88,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 				}
 			}
 			Some(ref mut conduit) => {
-				conduit.read(input);
+				conduit.read(input)?;
 				Ok(false) // newly connected
 			}
 		}
@@ -102,53 +102,33 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		match self.conduit {
 			None => {}
 			Some(ref mut conduit) => {
-				// Using Iterators that can error requires special handling
-				// The item returned from next() has type Option<Result<Option<Vec>, String>>
-				// The Some wrapper is stripped for each item inside the loop
-				// There are 3 valid match cases:
-				// 1) Some(Ok(Some(msg_data))) => Indicates a valid decrypted msg accessed via msg_data
-				// 2) Some(Err(_)) => Indicates an error during decryption that should be handled
-				// 3) None -> Indicates there were no messages available to decrypt
-				// Invalid Cases
-				// 1) Some(Ok(None)) => Translated to None case above so users of iterators can stop correctly
-				for msg_data_result in &mut conduit.decryptor {
-					match msg_data_result {
-						Ok(Some(msg_data)) => {
-							let mut reader = ::std::io::Cursor::new(&msg_data[..]);
-							let message_result = wire::read(&mut reader);
-							let message = match message_result {
-								Ok(x) => x,
-								Err(e) => {
-									match e {
-										msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
-										msgs::DecodeError::UnknownRequiredFeature => {
-											log_debug!(logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
-											continue;
-										}
-										msgs::DecodeError::InvalidValue => {
-											log_debug!(logger, "Got an invalid value while deserializing message");
-											return Err(PeerHandleError { no_connection_possible: false });
-										}
-										msgs::DecodeError::ShortRead => {
-											log_debug!(logger, "Deserialization failed due to shortness of message");
-											return Err(PeerHandleError { no_connection_possible: false });
-										}
-										msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
-										msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
-									}
-								}
-							};
-
-							received_messages.push(message);
-						},
+				for msg_data in &mut conduit.decryptor {
+					let mut reader = ::std::io::Cursor::new(&msg_data[..]);
+					let message_result = wire::read(&mut reader);
+					let message = match message_result {
+						Ok(x) => x,
 						Err(e) => {
-							log_trace!(logger, "Message decryption failed due to: {}", e);
-							return Err(PeerHandleError { no_connection_possible: false });
+							match e {
+								msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
+								msgs::DecodeError::UnknownRequiredFeature => {
+									log_debug!(logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
+									continue;
+								}
+								msgs::DecodeError::InvalidValue => {
+									log_debug!(logger, "Got an invalid value while deserializing message");
+									return Err(PeerHandleError { no_connection_possible: false });
+								}
+								msgs::DecodeError::ShortRead => {
+									log_debug!(logger, "Deserialization failed due to shortness of message");
+									return Err(PeerHandleError { no_connection_possible: false });
+								}
+								msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
+								msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
+							}
 						}
-						Ok(None) => {
-							panic!("Invalid behavior. Conduit iterator should never return this match.")
-						}
-					}
+					};
+
+					received_messages.push(message);
 				}
 			}
 		}
