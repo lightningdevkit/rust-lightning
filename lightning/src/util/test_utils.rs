@@ -313,6 +313,91 @@ impl events::MessageSendEventsProvider for TestChannelMessageHandler {
 	}
 }
 
+// &TestChannelMessageHandler passthroughs so TypeParameters can be either a value or ref in test object containers
+impl<'a> ChannelMessageHandler for &'a TestChannelMessageHandler {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &OpenChannel) {
+		TestChannelMessageHandler::handle_open_channel(self, their_node_id, their_features, msg);
+	}
+
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &AcceptChannel) {
+		TestChannelMessageHandler::handle_accept_channel(self, their_node_id, their_features, msg);
+	}
+
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated) {
+		TestChannelMessageHandler::handle_funding_created(self, their_node_id, msg);
+	}
+
+	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned) {
+		TestChannelMessageHandler::handle_funding_signed(self, their_node_id, msg);
+	}
+
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked) {
+		TestChannelMessageHandler::handle_funding_locked(self, their_node_id, msg);
+	}
+
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown) {
+		TestChannelMessageHandler::handle_shutdown(self, their_node_id, msg);
+	}
+
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned) {
+		TestChannelMessageHandler::handle_closing_signed(self, their_node_id, msg);
+	}
+
+	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC) {
+		TestChannelMessageHandler::handle_update_add_htlc(self, their_node_id, msg);
+	}
+
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC) {
+		TestChannelMessageHandler::handle_update_fulfill_htlc(self, their_node_id, msg);
+	}
+
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC) {
+		TestChannelMessageHandler::handle_update_fail_htlc(self, their_node_id, msg);
+	}
+
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC) {
+		TestChannelMessageHandler::handle_update_fail_malformed_htlc(self, their_node_id, msg);
+	}
+
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned) {
+		TestChannelMessageHandler::handle_commitment_signed(self, their_node_id, msg);
+	}
+
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK) {
+		TestChannelMessageHandler::handle_revoke_and_ack(self, their_node_id, msg);
+	}
+
+	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee) {
+		TestChannelMessageHandler::handle_update_fee(self, their_node_id, msg);
+	}
+
+	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures) {
+		TestChannelMessageHandler::handle_announcement_signatures(self, their_node_id, msg);
+	}
+
+	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
+		TestChannelMessageHandler::peer_disconnected(self, their_node_id, no_connection_possible);
+	}
+
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) {
+		TestChannelMessageHandler::peer_connected(self, their_node_id, msg);
+	}
+
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish) {
+		TestChannelMessageHandler::handle_channel_reestablish(self, their_node_id, msg);
+	}
+
+	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage) {
+		TestChannelMessageHandler::handle_error(self, their_node_id, msg);
+	}
+}
+
+impl<'a> events::MessageSendEventsProvider for &'a TestChannelMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+		TestChannelMessageHandler::get_and_clear_pending_msg_events(self, )
+	}
+}
+
 fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnouncement {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	let secp_ctx = Secp256k1::new();

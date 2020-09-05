@@ -180,17 +180,20 @@ impl Connection {
 					Ok(len) => {
 						prepare_read_write_call!();
 						let read_res = peer_manager.read_event(&mut our_descriptor, &buf[0..len]);
-						let mut us_lock = us.lock().unwrap();
-						match read_res {
-							Ok(pause_read) => {
-								if pause_read {
-									us_lock.read_paused = true;
-								}
-								Self::event_trigger(&mut us_lock);
-							},
-							Err(e) => shutdown_socket!(e, Disconnect::CloseConnection),
+						{
+							let mut us_lock = us.lock().unwrap();
+							match read_res {
+								Ok(pause_read) => {
+									if pause_read {
+										us_lock.read_paused = true;
+									}
+									Self::event_trigger(&mut us_lock);
+								},
+								Err(e) => shutdown_socket!(e, Disconnect::CloseConnection),
+							}
+							us_lock.block_disconnect_socket = false;
 						}
-						us_lock.block_disconnect_socket = false;
+						peer_manager.process_events();
 					},
 					Err(e) => shutdown_socket!(e, Disconnect::PeerDisconnected),
 				},
