@@ -3,7 +3,7 @@
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{ITransport, PeerHandleError, PayloadQueuer};
+use ln::peers::handler::{ITransport, PeerHandleError, MessageQueuer};
 use ln::peers::handshake::PeerHandshake;
 use ln::{wire, msgs};
 use ln::wire::{Encode, Message};
@@ -26,6 +26,18 @@ pub trait IPeerHandshake {
 	/// Progress the handshake given bytes received from the peer. Returns Some(Conduit, PublicKey) when the handshake
 	/// is complete.
 	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String>;
+}
+
+/// Trait representing a container that allows enqueuing of Vec<[u8]>
+pub(super) trait PayloadQueuer {
+	/// Enqueue item to the queue
+	fn push_back(&mut self, item: Vec<u8>);
+
+	/// Returns true if the queue is empty
+	fn is_empty(&self) -> bool;
+
+	/// Returns the amount of available space in queue
+	fn queue_space(&self) -> usize;
 }
 
 pub(super) struct Transport<PeerHandshakeImpl: IPeerHandshake=PeerHandshake> {
@@ -146,6 +158,13 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		self.conduit.is_some()
 	}
 
+	fn get_their_node_id(&self) -> PublicKey {
+		assert!(self.is_connected(), "Retrieving the remote node_id is only supported after transport is connected");
+		self.their_node_id.unwrap()
+	}
+}
+
+impl<PeerHandshakeImpl: IPeerHandshake> MessageQueuer for Transport<PeerHandshakeImpl> {
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L)
 		where L::Target: Logger {
 
@@ -159,11 +178,6 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 				output_buffer.push_back(conduit.encrypt(&buffer.0));
 			}
 		}
-	}
-
-	fn get_their_node_id(&self) -> PublicKey {
-		assert!(self.is_connected(), "Retrieving the remote node_id is only supported after transport is connected");
-		self.their_node_id.unwrap()
 	}
 }
 

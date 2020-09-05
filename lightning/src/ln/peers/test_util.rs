@@ -4,8 +4,8 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{SocketDescriptor, PayloadQueuer, ITransport, PeerHandleError};
-use ln::peers::transport::IPeerHandshake;
+use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer};
+use ln::peers::transport::{IPeerHandshake, PayloadQueuer};
 
 use std::rc::Rc;
 use std::cell::{RefCell};
@@ -300,7 +300,9 @@ impl<'a> ITransport for &'a RefCell<TransportStub> {
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
 		self.borrow_mut().drain_messages(logger)
 	}
+}
 
+impl<'a> MessageQueuer for &'a RefCell<TransportStub> {
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger {
 		self.borrow_mut().enqueue_message(message, output_buffer, logger)
 	}
@@ -351,7 +353,9 @@ impl ITransport for TransportStub {
 	fn drain_messages<L: Deref>(&mut self, _logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
 		Ok(self.messages.drain(..).collect())
 	}
+}
 
+impl MessageQueuer for TransportStub {
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, _logger: L)
 		where L::Target: Logger {
 		let mut buffer = VecWriter(Vec::new());
