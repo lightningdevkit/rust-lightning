@@ -27,7 +27,6 @@ use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
 
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
@@ -50,7 +49,7 @@ pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifi
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as usize; 1]);
 	for i in 2..CHAN_CONFIRM_DEPTH {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
 	}
 }
@@ -59,10 +58,10 @@ pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b,
 	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
 	for i in 2..depth + 1 {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		notifier.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
 	}
-	header.bitcoin_hash()
+	header.block_hash()
 }
 
 pub struct TestChanMonCfg {
