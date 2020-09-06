@@ -272,7 +272,7 @@ macro_rules! get_local_commitment_txn {
 			let mut commitment_txn = None;
 			for (funding_txo, monitor) in monitors.iter_mut() {
 				if funding_txo.to_channel_id() == $channel_id {
-					commitment_txn = Some(monitor.unsafe_get_latest_local_commitment_txn(&$node.logger));
+					commitment_txn = Some(monitor.unsafe_get_latest_holder_commitment_txn(&$node.logger));
 					break;
 				}
 			}
@@ -1130,7 +1130,7 @@ pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 /// Tests that the given node has broadcast transactions for the given Channel
 ///
-/// First checks that the latest local commitment tx has been broadcast, unless an explicit
+/// First checks that the latest holder commitment tx has been broadcast, unless an explicit
 /// commitment_tx is provided, which may be used to test that a remote commitment tx was
 /// broadcast and the revoked outputs were claimed.
 ///
@@ -1355,7 +1355,7 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 	}
 	if send_funding_locked.0 || send_funding_locked.1 {
 		// If we expect any funding_locked's, both sides better have set
-		// next_local_commitment_number to 1
+		// next_holder_commitment_number to 1
 		for reestablish in reestablish_1.iter() {
 			assert_eq!(reestablish.next_local_commitment_number, 1);
 		}

@@ -43,7 +43,7 @@ pub enum SpendableOutputDescriptor {
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
 	/// ChannelKeys::pubkeys().
 	///
-	/// To derive the remote_revocation_pubkey provided here (which is used in the witness
+	/// To derive the counterparty_revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the remote revocation_basepoint (which appears in the
 	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
@@ -58,7 +58,7 @@ pub enum SpendableOutputDescriptor {
 		to_self_delay: u16,
 		output: crate::c_types::TxOut,
 		key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z,
-		remote_revocation_pubkey: crate::c_types::PublicKey,
+		counterparty_revocation_pubkey: crate::c_types::PublicKey,
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -67,7 +67,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
-	StaticOutputRemotePayment {
+	StaticOutputCounterpartyPayment {
 		outpoint: crate::chain::transaction::OutPoint,
 		output: crate::c_types::TxOut,
 		key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z,
@@ -86,29 +86,29 @@ impl SpendableOutputDescriptor {
 					output: output_nonref.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey, } => {
+			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref.to_rust(); let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1);
-				let mut remote_revocation_pubkey_nonref = (*remote_revocation_pubkey).clone();
+				let mut counterparty_revocation_pubkey_nonref = (*counterparty_revocation_pubkey).clone();
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_ptr()) },
 					per_commitment_point: per_commitment_point_nonref.into_rust(),
 					to_self_delay: to_self_delay_nonref,
 					output: output_nonref.into_rust(),
 					key_derivation_params: local_key_derivation_params_nonref,
-					remote_revocation_pubkey: remote_revocation_pubkey_nonref.into_rust(),
+					counterparty_revocation_pubkey: counterparty_revocation_pubkey_nonref.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::StaticOutputRemotePayment {ref outpoint, ref output, ref key_derivation_params, } => {
+			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref.to_rust(); let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1);
-				nativeSpendableOutputDescriptor::StaticOutputRemotePayment {
+				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_ptr()) },
 					output: output_nonref.into_rust(),
 					key_derivation_params: local_key_derivation_params_nonref,
@@ -125,7 +125,7 @@ impl SpendableOutputDescriptor {
 					output: output.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut remote_revocation_pubkey, } => {
+			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut counterparty_revocation_pubkey, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint.take_ptr()) },
@@ -133,12 +133,12 @@ impl SpendableOutputDescriptor {
 					to_self_delay: to_self_delay,
 					output: output.into_rust(),
 					key_derivation_params: local_key_derivation_params,
-					remote_revocation_pubkey: remote_revocation_pubkey.into_rust(),
+					counterparty_revocation_pubkey: counterparty_revocation_pubkey.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::StaticOutputRemotePayment {mut outpoint, mut output, mut key_derivation_params, } => {
+			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
-				nativeSpendableOutputDescriptor::StaticOutputRemotePayment {
+				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: *unsafe { Box::from_raw(outpoint.take_ptr()) },
 					output: output.into_rust(),
 					key_derivation_params: local_key_derivation_params,
@@ -157,29 +157,29 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey, } => {
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref; let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1).into();
-				let mut remote_revocation_pubkey_nonref = (*remote_revocation_pubkey).clone();
+				let mut counterparty_revocation_pubkey_nonref = (*counterparty_revocation_pubkey).clone();
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
 					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point_nonref),
 					to_self_delay: to_self_delay_nonref,
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 					key_derivation_params: local_key_derivation_params_nonref,
-					remote_revocation_pubkey: crate::c_types::PublicKey::from_rust(&remote_revocation_pubkey_nonref),
+					counterparty_revocation_pubkey: crate::c_types::PublicKey::from_rust(&counterparty_revocation_pubkey_nonref),
 				}
 			},
-			nativeSpendableOutputDescriptor::StaticOutputRemotePayment {ref outpoint, ref output, ref key_derivation_params, } => {
+			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref; let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1).into();
-				SpendableOutputDescriptor::StaticOutputRemotePayment {
+				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 					key_derivation_params: local_key_derivation_params_nonref,
@@ -196,7 +196,7 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut remote_revocation_pubkey, } => {
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut counterparty_revocation_pubkey, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params; let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1).into();
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
@@ -204,12 +204,12 @@ impl SpendableOutputDescriptor {
 					to_self_delay: to_self_delay,
 					output: crate::c_types::TxOut::from_rust(output),
 					key_derivation_params: local_key_derivation_params,
-					remote_revocation_pubkey: crate::c_types::PublicKey::from_rust(&remote_revocation_pubkey),
+					counterparty_revocation_pubkey: crate::c_types::PublicKey::from_rust(&counterparty_revocation_pubkey),
 				}
 			},
-			nativeSpendableOutputDescriptor::StaticOutputRemotePayment {mut outpoint, mut output, mut key_derivation_params, } => {
+			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params; let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1).into();
-				SpendableOutputDescriptor::StaticOutputRemotePayment {
+				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
 					output: crate::c_types::TxOut::from_rust(output),
 					key_derivation_params: local_key_derivation_params,

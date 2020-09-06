@@ -71,14 +71,14 @@ pub enum SpendableOutputDescriptor {
 	/// it is an output from an old state which we broadcast (which should never happen).
 	///
 	/// To derive the delayed_payment key which is used to sign for this input, you must pass the
-	/// local delayed_payment_base_key (ie the private key which corresponds to the pubkey in
+	/// holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
 	/// ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
 	/// chan_utils::derive_private_key. The public key can be generated without the secret key
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
 	/// ChannelKeys::pubkeys().
 	///
-	/// To derive the remote_revocation_pubkey provided here (which is used in the witness
-	/// script generation), you must pass the remote revocation_basepoint (which appears in the
+	/// To derive the counterparty_revocation_pubkey provided here (which is used in the witness
+	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
 	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
@@ -101,8 +101,8 @@ pub enum SpendableOutputDescriptor {
 		/// The channel keys state used to proceed to derivation of signing key. Must
 		/// be pass to KeysInterface::derive_channel_keys.
 		key_derivation_params: (u64, u64),
-		/// The remote_revocation_pubkey used to derive witnessScript
-		remote_revocation_pubkey: PublicKey
+		/// The counterparty_revocation_pubkey used to derive witnessScript
+		counterparty_revocation_pubkey: PublicKey
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -111,7 +111,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
-	StaticOutputRemotePayment {
+	StaticOutputCounterpartyPayment {
 		/// The outpoint which is spendable
 		outpoint: OutPoint,
 		/// The output which is reference by the given outpoint
@@ -130,7 +130,7 @@ impl Writeable for SpendableOutputDescriptor {
 				outpoint.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey } => {
 				1u8.write(writer)?;
 				outpoint.write(writer)?;
 				per_commitment_point.write(writer)?;
@@ -138,9 +138,9 @@ impl Writeable for SpendableOutputDescriptor {
 				output.write(writer)?;
 				key_derivation_params.0.write(writer)?;
 				key_derivation_params.1.write(writer)?;
-				remote_revocation_pubkey.write(writer)?;
+				counterparty_revocation_pubkey.write(writer)?;
 			},
-			&SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, ref output, ref key_derivation_params } => {
+			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref key_derivation_params } => {
 				2u8.write(writer)?;
 				outpoint.write(writer)?;
 				output.write(writer)?;
@@ -165,9 +165,9 @@ impl Readable for SpendableOutputDescriptor {
 				to_self_delay: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 				key_derivation_params: (Readable::read(reader)?, Readable::read(reader)?),
-				remote_revocation_pubkey: Readable::read(reader)?,
+				counterparty_revocation_pubkey: Readable::read(reader)?,
 			}),
-			2u8 => Ok(SpendableOutputDescriptor::StaticOutputRemotePayment {
+			2u8 => Ok(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 				outpoint: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 				key_derivation_params: (Readable::read(reader)?, Readable::read(reader)?),

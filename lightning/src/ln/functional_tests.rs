@@ -4669,7 +4669,7 @@ macro_rules! check_spendable_outputs {
 					Event::SpendableOutputs { ref outputs } => {
 						for outp in outputs {
 							match *outp {
-								SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, ref output, ref key_derivation_params } => {
+								SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref key_derivation_params } => {
 									let input = TxIn {
 										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
@@ -4697,7 +4697,7 @@ macro_rules! check_spendable_outputs {
 									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
 									txn.push(spend_tx);
 								},
-								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref remote_revocation_pubkey } => {
+								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey } => {
 									let input = TxIn {
 										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
@@ -4719,7 +4719,7 @@ macro_rules! check_spendable_outputs {
 									if let Ok(delayed_payment_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &keys.inner.delayed_payment_base_key) {
 
 										let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
-										let witness_script = chan_utils::get_revokeable_redeemscript(remote_revocation_pubkey, *to_self_delay, &delayed_payment_pubkey);
+										let witness_script = chan_utils::get_revokeable_redeemscript(counterparty_revocation_pubkey, *to_self_delay, &delayed_payment_pubkey);
 										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 										let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
 										spend_tx.input[0].witness.push(local_delayedsig.serialize_der().to_vec());

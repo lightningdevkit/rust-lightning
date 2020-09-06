@@ -141,7 +141,7 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, .. } => {
 				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
-			&SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, .. } => {
+			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, .. } => {
 				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 		}

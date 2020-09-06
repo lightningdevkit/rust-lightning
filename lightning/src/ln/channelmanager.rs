@@ -3853,20 +3853,20 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
-				if channel.get_cur_holder_commitment_transaction_number() < monitor.get_cur_local_commitment_number() ||
-						channel.get_revoked_remote_commitment_transaction_number() < monitor.get_min_seen_secret() ||
-						channel.get_cur_counterparty_commitment_transaction_number() < monitor.get_cur_remote_commitment_number() ||
+				if channel.get_cur_holder_commitment_transaction_number() < monitor.get_cur_holder_commitment_number() ||
+						channel.get_revoked_counterparty_commitment_transaction_number() < monitor.get_min_seen_secret() ||
+						channel.get_cur_counterparty_commitment_transaction_number() < monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() > monitor.get_latest_update_id() {
 					// If the channel is ahead of the monitor, return InvalidValue:
 					return Err(DecodeError::InvalidValue);
-				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_local_commitment_number() ||
-						channel.get_revoked_remote_commitment_transaction_number() > monitor.get_min_seen_secret() ||
-						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_remote_commitment_number() ||
+				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
+						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
+						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
 					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
-					monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
+					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, channel.channel_id());
@@ -3880,7 +3880,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
-				monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
+				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 			}
 		}
 

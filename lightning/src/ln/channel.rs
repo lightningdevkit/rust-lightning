@@ -1540,7 +1540,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				                                              self.get_commitment_transaction_number_obscure_factor(),
 				                                              initial_commitment_tx.clone());
 
-				channel_monitor.provide_latest_remote_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
+				channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 				channel_monitor
 			} }
 		}
@@ -1604,7 +1604,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				                                              self.get_commitment_transaction_number_obscure_factor(),
 				                                              commitment_tx);
 
-				channel_monitor.provide_latest_remote_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
+				channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
 				channel_monitor
 			} }
@@ -2045,7 +2045,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestLocalCommitmentTXInfo {
+			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
 				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(commitment_tx.0, msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, &counterparty_funding_pubkey, keys, self.feerate_per_kw, htlcs_without_source),
 				htlc_outputs: htlcs_and_sigs
 			}]
@@ -3164,7 +3164,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.cur_counterparty_commitment_transaction_number + 1 - if self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 }
 	}
 
-	pub fn get_revoked_remote_commitment_transaction_number(&self) -> u64 {
+	pub fn get_revoked_counterparty_commitment_transaction_number(&self) -> u64 {
 		self.cur_counterparty_commitment_transaction_number + 2
 	}
 
@@ -3838,7 +3838,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		self.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestRemoteCommitmentTXInfo {
+			updates: vec![ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 				unsigned_commitment_tx: counterparty_commitment_tx.clone(),
 				htlc_outputs: htlcs.clone(),
 				commitment_number: self.cur_counterparty_commitment_transaction_number,
