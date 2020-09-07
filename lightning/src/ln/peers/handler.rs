@@ -168,24 +168,44 @@ enum InitSyncTracker{
 	NodesSyncing(PublicKey),
 }
 
-struct Peer<TransportImpl: ITransport> {
-	transport: TransportImpl,
-	outbound: bool,
-	their_features: Option<InitFeatures>,
-
-	pending_outbound_buffer: OutboundQueue,
-
-	sync_status: InitSyncTracker,
-
+// Container for all state only valid after an Init message is seen
+struct PostInitState {
 	awaiting_pong: bool,
+	sync_status: InitSyncTracker,
+	their_features: InitFeatures,
+}
+
+impl PostInitState {
+	fn new(sync_status: InitSyncTracker, their_features: InitFeatures) -> Self {
+		Self {
+			awaiting_pong: false,
+			sync_status,
+			their_features
+		}
+	}
+}
+
+struct Peer<TransportImpl: ITransport> {
+	outbound: bool,
+	pending_outbound_buffer: OutboundQueue,
+	post_init_state: Option<PostInitState>,
+	transport: TransportImpl,
 }
 
 impl<TransportImpl: ITransport> Peer<TransportImpl> {
+	fn new(outbound: bool, transport: TransportImpl) -> Self {
+		Self {
+			outbound,
+			pending_outbound_buffer: OutboundQueue::new(MSG_BUFF_SIZE),
+			post_init_state: None,
+			transport
+		}
+	}
 
 	/// Returns true if an INIT message has been received from this peer. Implies that this node
 	/// can send and receive encrypted messages.
 	fn is_initialized(&self) -> bool {
-		self.their_features.is_some()
+		self.post_init_state.is_some()
 	}
 
 	/// Returns true if the channel announcements/updates for the given channel should be
@@ -194,20 +214,30 @@ impl<TransportImpl: ITransport> Peer<TransportImpl> {
 	/// announcements/updates for the given channel_id then we will send it when we get to that
 	/// point and we shouldn't send it yet to avoid sending duplicate updates. If we've already
 	/// sent the old versions, we should send the update, and so return true here.
-	fn should_forward_channel_announcement(&self, channel_id: u64)->bool{
-		match self.sync_status {
-			InitSyncTracker::NoSyncRequested => true,
-			InitSyncTracker::ChannelsSyncing(i) => i < channel_id,
-			InitSyncTracker::NodesSyncing(_) => true,
+	fn should_forward_channel_announcement(&self, channel_id: u64) -> bool{
+		match &self.post_init_state {
+			None => panic!("should_forward_channel_announcement() only valid on an uninitialized peer"),
+			Some(state) => {
+				match state.sync_status {
+					InitSyncTracker::NoSyncRequested => true,
+					InitSyncTracker::ChannelsSyncing(i) => i < channel_id,
+					InitSyncTracker::NodesSyncing(_) => true,
+				}
+			}
 		}
 	}
 
 	/// Similar to the above, but for node announcements indexed by node_id.
 	fn should_forward_node_announcement(&self, node_id: PublicKey) -> bool {
-		match self.sync_status {
-			InitSyncTracker::NoSyncRequested => true,
-			InitSyncTracker::ChannelsSyncing(_) => false,
-			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
+		match &self.post_init_state {
+			None => panic!("should_forward_channel_announcement() only valid on an uninitialized peer"),
+			Some(state) => {
+				match state.sync_status {
+					InitSyncTracker::NoSyncRequested => true,
+					InitSyncTracker::ChannelsSyncing(_) => false,
+					InitSyncTracker::NodesSyncing(pk) => pk < node_id,
+				}
+			}
 		}
 	}
 }
@@ -485,17 +515,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		let mut peers = self.peers.lock().unwrap();
 		let initial_bytes = transport.set_up_outbound();
 
-		if peers.peers.insert(descriptor, Peer::<TransportImpl> {
-			transport,
-			outbound: true,
-			their_features: None,
-
-			pending_outbound_buffer: OutboundQueue::new(MSG_BUFF_SIZE),
-
-			sync_status: InitSyncTracker::NoSyncRequested,
-
-			awaiting_pong: false,
-		}).is_some() {
+		if peers.peers.insert(descriptor, Peer::<TransportImpl>::new(true, transport)).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
 		Ok(initial_bytes)
@@ -508,74 +528,80 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 	fn new_inbound_connection_with_transport(&self, descriptor: Descriptor, transport: TransportImpl) -> Result<(), PeerHandleError> {
 		let mut peers = self.peers.lock().unwrap();
-		if peers.peers.insert(descriptor, Peer::<TransportImpl> {
-			transport,
-			outbound: false,
-			their_features: None,
-
-			pending_outbound_buffer: OutboundQueue::new(MSG_BUFF_SIZE),
-
-			sync_status: InitSyncTracker::NoSyncRequested,
-
-			awaiting_pong: false,
-		}).is_some() {
+		if peers.peers.insert(descriptor, Peer::<TransportImpl>::new(false, transport)).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
 		Ok(())
 	}
 
-	fn do_attempt_write_data<Q: PayloadQueuer + SocketDescriptorFlusher>(
+	// Fill remaining slots in output queue with sync messages, updating the sync state when
+	// appropriate
+	fn fill_message_queue_with_sync<Q: PayloadQueuer + SocketDescriptorFlusher>(
 		&self,
-		descriptor: &mut Descriptor,
 		sync_status: &mut InitSyncTracker,
 		message_queuer: &mut impl MessageQueuer,
 		pending_outbound_buffer: &mut Q) {
+
+		let queue_space = pending_outbound_buffer.queue_space();
+		if queue_space > 0 {
+			match sync_status {
+				&mut InitSyncTracker::NoSyncRequested => {},
+				&mut InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
+					let steps = ((queue_space + 2) / 3) as u8;
+					let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
+					for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
+						message_queuer.enqueue_message(announce, pending_outbound_buffer, &*self.logger);
+						if let &Some(ref update_a) = update_a_option {
+							message_queuer.enqueue_message(update_a, pending_outbound_buffer, &*self.logger);
+						}
+						if let &Some(ref update_b) = update_b_option {
+							message_queuer.enqueue_message(update_b, pending_outbound_buffer, &*self.logger);
+						}
+						*sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
+					}
+					if all_messages.is_empty() || all_messages.len() != steps as usize {
+						*sync_status = InitSyncTracker::ChannelsSyncing(0xffff_ffff_ffff_ffff);
+					}
+				},
+				&mut InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
+					let steps = queue_space as u8;
+					let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
+					for msg in all_messages.iter() {
+						message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
+						*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
+					}
+					if all_messages.is_empty() || all_messages.len() != steps as usize {
+						*sync_status = InitSyncTracker::NoSyncRequested;
+					}
+				},
+				&mut InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
+				&mut InitSyncTracker::NodesSyncing(key) => {
+					let steps = queue_space as u8;
+					let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
+					for msg in all_messages.iter() {
+						message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
+						*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
+					}
+					if all_messages.is_empty() || all_messages.len() != steps as usize {
+						*sync_status = InitSyncTracker::NoSyncRequested;
+					}
+				},
+			}
+		}
+	}
+
+	fn do_attempt_write_data<Q: PayloadQueuer + SocketDescriptorFlusher>(
+		&self,
+		descriptor: &mut Descriptor,
+		post_init_state: &mut Option<PostInitState>,
+		message_queuer: &mut impl MessageQueuer,
+		pending_outbound_buffer: &mut Q) {
+
 		while !pending_outbound_buffer.is_blocked() {
-			let queue_space = pending_outbound_buffer.queue_space();
-			if queue_space > 0 {
-				match sync_status {
-					&mut InitSyncTracker::NoSyncRequested => {},
-					&mut InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
-						let steps = ((queue_space + 2) / 3) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
-						for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
-							message_queuer.enqueue_message(announce, pending_outbound_buffer, &*self.logger);
-							if let &Some(ref update_a) = update_a_option {
-								message_queuer.enqueue_message(update_a, pending_outbound_buffer, &*self.logger);
-							}
-							if let &Some(ref update_b) = update_b_option {
-								message_queuer.enqueue_message(update_b, pending_outbound_buffer, &*self.logger);
-							}
-							*sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
-							*sync_status = InitSyncTracker::ChannelsSyncing(0xffff_ffff_ffff_ffff);
-						}
-					},
-					&mut InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
-						let steps = queue_space as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
-						for msg in all_messages.iter() {
-							message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
-							*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
-							*sync_status = InitSyncTracker::NoSyncRequested;
-						}
-					},
-					&mut InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
-					&mut InitSyncTracker::NodesSyncing(key) => {
-						let steps = queue_space as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
-						for msg in all_messages.iter() {
-							message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
-							*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
-							*sync_status = InitSyncTracker::NoSyncRequested;
-						}
-					},
-				}
+			// If connected, fill output queue with sync messages
+			match post_init_state {
+				None => {},
+				&mut Some(ref mut state) => self.fill_message_queue_with_sync(&mut state.sync_status, message_queuer, pending_outbound_buffer)
 			}
 
 			// No messages to send
@@ -593,7 +619,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			None => panic!("Descriptor for write_event is not already known to PeerManager"),
 			Some(peer) => {
 				peer.pending_outbound_buffer.unblock();
-				self.do_attempt_write_data(descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+				self.do_attempt_write_data(descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 			}
 		};
 		Ok(())
@@ -606,7 +632,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => peer
 			};
-			self.do_read_event(peer_descriptor, data, peer.outbound, &mut peer.sync_status, &mut peer.awaiting_pong, &mut peer.their_features, &mut peer.transport, &mut peer.pending_outbound_buffer, &mut peers.node_id_to_descriptor, &mut peers.peers_needing_send)
+			self.do_read_event(peer_descriptor, data, peer.outbound, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer, &mut peers.node_id_to_descriptor, &mut peers.peers_needing_send)
 		};
 
 		match result {
@@ -628,9 +654,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	                 peer_descriptor: &mut Descriptor,
 	                 data: &[u8],
 	                 outbound: bool,
-	                 sync_status: &mut InitSyncTracker,
-	                 awaiting_pong: &mut bool,
-	                 their_features: &mut Option<InitFeatures>,
+	                 post_init_state: &mut Option<PostInitState>,
 	                 transport: &mut impl ITransport,
 	                 pending_outbound_buffer: &mut impl PayloadQueuer,
 	                 node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>,
@@ -711,7 +735,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					}
 				}
 
-				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, outbound, sync_status, awaiting_pong, their_features, transport.get_their_node_id(), transport, pending_outbound_buffer) {
+				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, outbound, post_init_state, transport.get_their_node_id(), transport, pending_outbound_buffer) {
 					match handling_error {
 						MessageHandlingError::PeerHandleError(e) => { return Err(e) },
 						MessageHandlingError::LightningError(e) => {
@@ -733,9 +757,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	                  peer_descriptor: &mut Descriptor,
 	                  message: wire::Message,
 					  outbound: bool,
-					  sync_status: &mut InitSyncTracker,
-					  awaiting_pong: &mut bool,
-					  their_features: &mut Option<InitFeatures>,
+					  post_init_state: &mut Option<PostInitState>,
 					  their_node_id: PublicKey,
 					  message_queuer: &mut impl MessageQueuer,
 					  pending_outbound_buffer: &mut impl PayloadQueuer
@@ -744,7 +766,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 		// Need an Init as first message
 		if let wire::Message::Init(_) = message {
-		} else if their_features.is_none() {
+		} else if post_init_state.is_none() {
 			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(&their_node_id));
 			return Err(PeerHandleError{ no_connection_possible: false }.into());
 		}
@@ -760,7 +782,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					log_info!(self.logger, "Peer local features required unknown version bits");
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
-				if their_features.is_some() {
+				if post_init_state.is_some() {
 					return Err(PeerHandleError{ no_connection_possible: false }.into());
 				}
 
@@ -773,10 +795,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					if msg.features.supports_unknown_bits() { "present" } else { "none" }
 				);
 
-				if msg.features.initial_routing_sync() {
-					*sync_status = InitSyncTracker::ChannelsSyncing(0);
+				let sync_status = if msg.features.initial_routing_sync() {
 					peers_needing_send.insert(peer_descriptor.clone());
-				}
+					InitSyncTracker::ChannelsSyncing(0)
+				} else {
+					InitSyncTracker::NoSyncRequested
+				};
+
 				if !msg.features.supports_static_remote_key() {
 					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(&their_node_id));
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
@@ -793,7 +818,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 
 				self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
-				*their_features = Some(msg.features);
+
+				// Initialize the post_init_state now that the Init has been received
+				*post_init_state = Some(PostInitState::new(sync_status, msg.features));
 			},
 			wire::Message::Error(msg) => {
 				let mut data_is_printable = true;
@@ -822,15 +849,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 			},
 			wire::Message::Pong(_msg) => {
-				*awaiting_pong = false;
+				if let Some(ref mut state) = post_init_state {
+					state.awaiting_pong = false;
+				} else {
+					panic!("Received Pong before Init and didn't catch it earlier!");
+				}
 			},
 
 			// Channel messages:
 			wire::Message::OpenChannel(msg) => {
-				self.message_handler.chan_handler.handle_open_channel(&their_node_id, their_features.clone().unwrap(), &msg);
+				match post_init_state {
+					None => panic!("Received OpenChannel before Init and didn't catch it earlier!"),
+					Some(state) => {
+						self.message_handler.chan_handler.handle_open_channel(&their_node_id, state.their_features.clone(), &msg);
+					}
+				}
 			},
 			wire::Message::AcceptChannel(msg) => {
-				self.message_handler.chan_handler.handle_accept_channel(&their_node_id, their_features.clone().unwrap(), &msg);
+				match post_init_state {
+					None => panic!("Received AcceptChannel before Init and didn't catch it earlier!"),
+					Some(state) => {
+						self.message_handler.chan_handler.handle_accept_channel(&their_node_id, state.their_features.clone(), &msg);
+					}
+				}
 			},
 
 			wire::Message::FundingCreated(msg) => {
@@ -942,7 +983,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.temporary_channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
 						}
@@ -953,7 +994,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.temporary_channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Drop the pending channel? (or just let it timeout, but that sucks)
 						}
@@ -965,7 +1006,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_funding_channel_id!(msg.funding_txid, msg.funding_output_index));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: generate a DiscardFunding event indicating to the wallet that
 							//they should just throw away this funding transaction
@@ -977,7 +1018,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: generate a DiscardFunding event indicating to the wallet that
 							//they should just throw away this funding transaction
@@ -989,7 +1030,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1000,7 +1041,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: generate a DiscardFunding event indicating to the wallet that
 							//they should just throw away this funding transaction
@@ -1030,7 +1071,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							}
 							peer.transport.enqueue_message(commitment_signed, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1041,7 +1082,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1052,7 +1093,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1063,7 +1104,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1074,7 +1115,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_bytes!(msg.channel_id));
 						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-							self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
 							//TODO: Do whatever we're gonna do for handling dropped messages
 						}
@@ -1094,7 +1135,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								}
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 								peer.transport.enqueue_message(update_msg, &mut peer.pending_outbound_buffer, &*self.logger);
-								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 							}
 						}
 					},
@@ -1107,7 +1148,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 									continue
 								}
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 							}
 						}
 					},
@@ -1120,7 +1161,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 									continue
 								}
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 							}
 						}
 					},
@@ -1142,7 +1183,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 											}
 											// This isn't guaranteed to work, but if there is enough free
 											// room in the send buffer, put the error message there...
-											self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+											self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 										} else {
 											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 										}
@@ -1158,7 +1199,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 										msg.data);
 								if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
 									peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-									self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+									self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 								} else {
 									//TODO: Do whatever we're gonna do for handling dropped messages
 								}
@@ -1170,7 +1211,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 			for mut descriptor in peers.peers_needing_send.drain() {
 				match peers.peers.get_mut(&descriptor) {
-					Some(peer) => self.do_attempt_write_data(&mut descriptor, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer),
+					Some(peer) => self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer),
 					None => panic!("Inconsistent peers set state!"),
 				}
 			}
@@ -1214,34 +1255,41 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			let mut descriptors_needing_disconnect = Vec::new();
 
 			peers.retain(|descriptor, peer| {
-				if peer.awaiting_pong {
-					peers_needing_send.remove(descriptor);
-					descriptors_needing_disconnect.push(descriptor.clone());
-					let their_node_id = peer.transport.get_their_node_id();
-					log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", their_node_id);
-					node_id_to_descriptor.remove(&their_node_id);
-					self.message_handler.chan_handler.peer_disconnected(&their_node_id, false);
+				let needs_to_write_data = match peer.post_init_state {
+					None => return true, // retain
+					Some(ref mut post_init_state) => {
+						if post_init_state.awaiting_pong {
+							peers_needing_send.remove(descriptor);
+							descriptors_needing_disconnect.push(descriptor.clone());
+							let their_node_id = peer.transport.get_their_node_id();
+							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", their_node_id);
+							node_id_to_descriptor.remove(&their_node_id);
+							self.message_handler.chan_handler.peer_disconnected(&their_node_id, false);
 
-					return false;
-				}
+							return false; // retain
+						}
 
-				let mut needs_to_write_data = false;
-				if peer.transport.is_connected() {
-					let ping = msgs::Ping {
-						ponglen: 0,
-						byteslen: 64,
-					};
-					peer.transport.enqueue_message(&ping, &mut peer.pending_outbound_buffer, &*self.logger);
-					needs_to_write_data = true;
-				}
+						if peer.transport.is_connected() {
+							let ping = msgs::Ping {
+								ponglen: 0,
+								byteslen: 64,
+							};
+							peer.transport.enqueue_message(&ping, &mut peer.pending_outbound_buffer, &*self.logger);
+							post_init_state.awaiting_pong = true;
+
+							true // needs_to_write_data
+						} else {
+							false // !needs_to_write_data
+						}
+					}
+				};
 
 				if needs_to_write_data {
 					let mut descriptor_clone = descriptor.clone();
-					self.do_attempt_write_data(&mut descriptor_clone, &mut peer.sync_status, &mut peer.transport, &mut peer.pending_outbound_buffer);
+					self.do_attempt_write_data(&mut descriptor_clone, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 				}
 
-				peer.awaiting_pong = true;
-				true
+				true // retain
 			});
 
 			for mut descriptor in descriptors_needing_disconnect.drain(..) {
@@ -3198,11 +3246,11 @@ mod tests {
 			let peer_0 = peers[0].inner.peers.lock().unwrap();
 			let peer_1 = peers[1].inner.peers.lock().unwrap();
 
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
+			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().post_init_state.as_ref().unwrap();
+			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().post_init_state.as_ref().unwrap();
 
-			assert!(peer_0_features.unwrap().initial_routing_sync());
-			assert!(!peer_1_features.unwrap().initial_routing_sync());
+			assert!(peer_0_features.their_features.initial_routing_sync());
+			assert!(!peer_1_features.their_features.initial_routing_sync());
 		}
 
 		// Outbound peer 1 requests initial_routing_sync, but inbound peer 0 does not.
@@ -3215,11 +3263,11 @@ mod tests {
 			let peer_0 = peers[0].inner.peers.lock().unwrap();
 			let peer_1 = peers[1].inner.peers.lock().unwrap();
 
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
+			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().post_init_state.as_ref().unwrap();
+			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().post_init_state.as_ref().unwrap();
 
-			assert!(!peer_0_features.unwrap().initial_routing_sync());
-			assert!(peer_1_features.unwrap().initial_routing_sync());
+			assert!(!peer_0_features.their_features.initial_routing_sync());
+			assert!(peer_1_features.their_features.initial_routing_sync());
 		}
 	}
 }
