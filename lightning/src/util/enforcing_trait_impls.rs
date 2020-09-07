@@ -132,8 +132,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, remote_locally_selected_delay: u16, locally_selected_delay: u16) {
-		self.inner.on_accept(channel_pubkeys, remote_locally_selected_delay, locally_selected_delay)
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_delay: u16, holder_selected_delay: u16) {
+		self.inner.on_accept(channel_pubkeys, counterparty_selected_delay, holder_selected_delay)
 	}
 }
 

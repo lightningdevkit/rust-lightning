@@ -262,6 +262,9 @@ enum UpdateStatus {
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
 // inbound channel.
+//
+// Holder designates channel data owned for the benefice of the user client.
+// Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	config: ChannelConfig,
 

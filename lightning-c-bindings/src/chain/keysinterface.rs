@@ -37,14 +37,14 @@ pub enum SpendableOutputDescriptor {
 	/// it is an output from an old state which we broadcast (which should never happen).
 	///
 	/// To derive the delayed_payment key which is used to sign for this input, you must pass the
-	/// local delayed_payment_base_key (ie the private key which corresponds to the pubkey in
+	/// holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
 	/// ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
 	/// chan_utils::derive_private_key. The public key can be generated without the secret key
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
 	/// ChannelKeys::pubkeys().
 	///
 	/// To derive the revocation_pubkey provided here (which is used in the witness
-	/// script generation), you must pass the remote revocation_basepoint (which appears in the
+	/// script generation), you must pass the revocation_basepoint (which appears in the
 	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
@@ -351,7 +351,7 @@ pub struct ChannelKeys {
 	/// protocol.
 	#[must_use]
 	pub sign_channel_announcement: extern "C" fn (this_arg: *const c_void, msg: &crate::ln::msgs::UnsignedChannelAnnouncement) -> crate::c_types::derived::CResult_SignatureNoneZ,
-	/// Set the remote channel basepoints and remote/local to_self_delay.
+	/// Set the counterparty channel basepoints and counterparty/local to_self_delay.
 	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
 	///
 	/// We bind local_to_self_delay late here for API convenience.
@@ -613,13 +613,13 @@ pub extern "C" fn InMemoryChannelKeys_get_revocation_base_key(this_ptr: &InMemor
 pub extern "C" fn InMemoryChannelKeys_set_revocation_base_key(this_ptr: &mut InMemoryChannelKeys, mut val: crate::c_types::SecretKey) {
 	unsafe { &mut *this_ptr.inner }.revocation_base_key = val.into_rust();
 }
-/// Local secret key used for our balance in remote-broadcasted commitment transactions
+/// Local secret key used for our balance in counterparty-broadcasted commitment transactions
 #[no_mangle]
 pub extern "C" fn InMemoryChannelKeys_get_payment_key(this_ptr: &InMemoryChannelKeys) -> *const [u8; 32] {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.payment_key;
 	(*inner_val).as_ref()
 }
-/// Local secret key used for our balance in remote-broadcasted commitment transactions
+/// Local secret key used for our balance in counterparty-broadcasted commitment transactions
 #[no_mangle]
 pub extern "C" fn InMemoryChannelKeys_set_payment_key(this_ptr: &mut InMemoryChannelKeys, mut val: crate::c_types::SecretKey) {
 	unsafe { &mut *this_ptr.inner }.payment_key = val.into_rust();
@@ -693,8 +693,8 @@ pub extern "C" fn InMemoryChannelKeys_counterparty_selected_contest_delay(this_a
 /// Will panic if on_accept wasn't called.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_locally_selected_contest_delay(this_arg: &InMemoryChannelKeys) -> u16 {
-	let mut ret = unsafe { &*this_arg.inner }.locally_selected_contest_delay();
+pub extern "C" fn InMemoryChannelKeys_holder_selected_contest_delay(this_arg: &InMemoryChannelKeys) -> u16 {
+	let mut ret = unsafe { &*this_arg.inner }.holder_selected_contest_delay();
 	ret
 }
 
@@ -793,8 +793,8 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_channel_announcement(this_arg
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::Signature::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
-extern "C" fn InMemoryChannelKeys_ChannelKeys_on_accept(this_arg: *mut c_void, channel_pubkeys: &crate::ln::chan_utils::ChannelPublicKeys, mut remote_to_self_delay: u16, mut local_to_self_delay: u16) {
-	unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.on_accept(unsafe { &*channel_pubkeys.inner }, remote_to_self_delay, local_to_self_delay)
+extern "C" fn InMemoryChannelKeys_ChannelKeys_on_accept(this_arg: *mut c_void, channel_pubkeys: &crate::ln::chan_utils::ChannelPublicKeys, mut counterparty_selected_contest_delay: u16, mut holder_selected_contest_delay: u16) {
+	unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.on_accept(unsafe { &*channel_pubkeys.inner }, counterparty_selected_contest_delay, holder_selected_contest_delay)
 }
 
 #[no_mangle]

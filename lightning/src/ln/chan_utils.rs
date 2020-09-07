@@ -349,8 +349,8 @@ pub struct ChannelPublicKeys {
 	/// counterparty to create a secret which the counterparty can reveal to revoke previous
 	/// states.
 	pub revocation_basepoint: PublicKey,
-	/// The public key which receives our immediately spendable primary channel balance in
-	/// counterparty-broadcasted commitment transactions. This key is static across every commitment
+	/// The public key which receives an immediately spendable primary channel balance in
+	/// a broadcaster's commitment transactions. This key is static across every commitment
 	/// transaction.
 	pub payment_point: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
@@ -386,7 +386,7 @@ impl TxCreationKeys {
 
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
-/// Encumbering a `to_local` output on a commitment transaction or 2nd-stage HTLC transactions.
+/// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
 pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u16, broadcaster_delayed_payment_key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::all::OP_IF)
 	              .push_slice(&revocation_key.serialize())
@@ -494,8 +494,8 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	}
 }
 
-/// note here that 'revocation_key' is generated using countersignatory_revocation_basepoint and broadcaster's
-/// commitment secret. 'htlc' does *not* need to have its previous_output_index filled.
+/// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
+/// does not need to have its previous_output_index filled.
 #[inline]
 pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Script {
 	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
@@ -696,14 +696,14 @@ impl HolderCommitmentTransaction {
 	/// The returned Vec has one entry for each HTLC, and in the same order. For HTLCs which were
 	/// considered dust and not included, a None entry exists, for all others a signature is
 	/// included.
-	pub fn get_htlc_sigs<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_base_key: &SecretKey, holder_selected_contest_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	pub fn get_htlc_sigs<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_base_key: &SecretKey, counterparty_selected_contest_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let txid = self.txid();
 		let mut ret = Vec::with_capacity(self.per_htlc.len());
 		let holder_htlc_key = derive_private_key(secp_ctx, &self.keys.per_commitment_point, htlc_base_key).map_err(|_| ())?;
 
 		for this_htlc in self.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, holder_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
+				let htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, counterparty_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
 
 				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.keys.broadcaster_htlc_key, &self.keys.countersignatory_htlc_key, &self.keys.revocation_key);
 
@@ -717,7 +717,7 @@ impl HolderCommitmentTransaction {
 	}
 
 	/// Gets a signed HTLC transaction given a preimage (for !htlc.offered) and the holder HTLC transaction signature.
-	pub(crate) fn get_signed_htlc_tx(&self, htlc_index: usize, signature: &Signature, preimage: &Option<PaymentPreimage>, holder_selected_contest_delay: u16) -> Transaction {
+	pub(crate) fn get_signed_htlc_tx(&self, htlc_index: usize, signature: &Signature, preimage: &Option<PaymentPreimage>, counterparty_selected_contest_delay: u16) -> Transaction {
 		let txid = self.txid();
 		let this_htlc = &self.per_htlc[htlc_index];
 		assert!(this_htlc.0.transaction_output_index.is_some());
@@ -726,7 +726,7 @@ impl HolderCommitmentTransaction {
 		// Further, we should never be provided the preimage for an HTLC-Timeout transaction.
 		if  this_htlc.0.offered && preimage.is_some() { unreachable!(); }
 
-		let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, holder_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
+		let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, counterparty_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
 		// Channel should have checked that we have a counterparty signature for this HTLC at
 		// creation, and we should have a sensible htlc transaction:
 		assert!(this_htlc.1.is_some());

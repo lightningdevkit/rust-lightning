@@ -319,13 +319,13 @@ pub trait ChannelKeys : Send+Clone {
 	/// protocol.
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Set the counterparty channel basepoints and counterparty_selected/locally_selected_contest_delay.
+	/// Set the counterparty channel basepoints and counterparty_selected/holder_selected_contest_delay.
 	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
 	///
-	/// We bind locally_selected_contest_delay late here for API convenience.
+	/// We bind holder_selected_contest_delay late here for API convenience.
 	///
 	/// Will be called before any signatures are applied.
-	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, locally_selected_contest_delay: u16);
+	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16);
 }
 
 /// A trait to describe an object which can get user secrets and key material.
@@ -356,7 +356,7 @@ pub trait KeysInterface: Send + Sync {
 struct AcceptedChannelData {
 	/// Counterparty public keys and base points
 	counterparty_channel_pubkeys: ChannelPublicKeys,
-	/// The contest_delay value specified by our counterparty and applied on locally-broadcastable
+	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction. You'll likely want to pass this to the
 	/// ln::chan_utils::build*_transaction functions when signing holder's transactions.
@@ -364,7 +364,7 @@ struct AcceptedChannelData {
 	/// The contest_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
-	locally_selected_contest_delay: u16,
+	holder_selected_contest_delay: u16,
 }
 
 #[derive(Clone)]
@@ -384,7 +384,7 @@ pub struct InMemoryChannelKeys {
 	pub commitment_seed: [u8; 32],
 	/// Holder public keys and basepoints
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
-	/// Counterparty public keys and counterparty/locally selected_contest_delay, populated on channel acceptance
+	/// Counterparty public keys and counterparty/holder selected_contest_delay, populated on channel acceptance
 	accepted_channel_data: Option<AcceptedChannelData>,
 	/// The total value of this channel
 	channel_value_satoshis: u64,
@@ -442,7 +442,7 @@ impl InMemoryChannelKeys {
 	/// Will panic if on_accept wasn't called.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.accepted_channel_data.as_ref().unwrap().counterparty_channel_pubkeys }
 
-	/// The contest_delay value specified by our counterparty and applied on locally-broadcastable
+	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction. You'll likely want to pass this to the
 	/// ln::chan_utils::build*_transaction functions when signing holder's transactions.
@@ -453,7 +453,7 @@ impl InMemoryChannelKeys {
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
 	/// Will panic if on_accept wasn't called.
-	pub fn locally_selected_contest_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().locally_selected_contest_delay }
+	pub fn holder_selected_contest_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().holder_selected_contest_delay }
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -485,7 +485,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let mut htlc_sigs = Vec::with_capacity(htlcs.len());
 		for ref htlc in htlcs {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.locally_selected_contest_delay, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.holder_selected_contest_delay, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
@@ -546,7 +546,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 				Ok(counterparty_delayedpubkey) => counterparty_delayedpubkey,
 				Err(_) => return Err(())
 			};
-			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.locally_selected_contest_delay(), &counterparty_delayedpubkey)
+			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.holder_selected_contest_delay(), &counterparty_delayedpubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
@@ -588,18 +588,18 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, locally_selected_contest_delay: u16) {
+	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16) {
 		assert!(self.accepted_channel_data.is_none(), "Already accepted");
 		self.accepted_channel_data = Some(AcceptedChannelData {
 			counterparty_channel_pubkeys: channel_pubkeys.clone(),
 			counterparty_selected_contest_delay,
-			locally_selected_contest_delay,
+			holder_selected_contest_delay,
 		});
 	}
 }
 
 impl_writeable!(AcceptedChannelData, 0,
- { counterparty_channel_pubkeys, counterparty_selected_contest_delay, locally_selected_contest_delay });
+ { counterparty_channel_pubkeys, counterparty_selected_contest_delay, holder_selected_contest_delay });
 
 impl Writeable for InMemoryChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {

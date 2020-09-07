@@ -347,7 +347,7 @@ pub extern "C" fn ChannelPublicKeys_set_revocation_basepoint(this_ptr: &mut Chan
 	unsafe { &mut *this_ptr.inner }.revocation_basepoint = val.into_rust();
 }
 /// The public key which receives our immediately spendable primary channel balance in
-/// remote-broadcasted commitment transactions. This key is static across every commitment
+/// counterparty-broadcasted commitment transactions. This key is static across every commitment
 /// transaction.
 #[no_mangle]
 pub extern "C" fn ChannelPublicKeys_get_payment_point(this_ptr: &ChannelPublicKeys) -> crate::c_types::PublicKey {
@@ -355,7 +355,7 @@ pub extern "C" fn ChannelPublicKeys_get_payment_point(this_ptr: &ChannelPublicKe
 	crate::c_types::PublicKey::from_rust(&(*inner_val))
 }
 /// The public key which receives our immediately spendable primary channel balance in
-/// remote-broadcasted commitment transactions. This key is static across every commitment
+/// counterparty-broadcasted commitment transactions. This key is static across every commitment
 /// transaction.
 #[no_mangle]
 pub extern "C" fn ChannelPublicKeys_set_payment_point(this_ptr: &mut ChannelPublicKeys, mut val: crate::c_types::PublicKey) {
@@ -484,7 +484,7 @@ pub(crate) extern "C" fn HTLCOutputInCommitment_clone_void(this_ptr: *const c_vo
 /// Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
 /// Note that this is not the same as whether it is ountbound *from us*. To determine that you
 /// need to compare this value to whether the commitment transaction in question is that of
-/// the remote party or our own.
+/// the counterparty or our own.
 #[no_mangle]
 pub extern "C" fn HTLCOutputInCommitment_get_offered(this_ptr: &HTLCOutputInCommitment) -> bool {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.offered;
@@ -493,7 +493,7 @@ pub extern "C" fn HTLCOutputInCommitment_get_offered(this_ptr: &HTLCOutputInComm
 /// Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
 /// Note that this is not the same as whether it is ountbound *from us*. To determine that you
 /// need to compare this value to whether the commitment transaction in question is that of
-/// the remote party or our own.
+/// the counterparty or our own.
 #[no_mangle]
 pub extern "C" fn HTLCOutputInCommitment_set_offered(this_ptr: &mut HTLCOutputInCommitment, mut val: bool) {
 	unsafe { &mut *this_ptr.inner }.offered = val;
@@ -573,7 +573,7 @@ pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate
 use lightning::ln::chan_utils::HolderCommitmentTransaction as nativeHolderCommitmentTransactionImport;
 type nativeHolderCommitmentTransaction = nativeHolderCommitmentTransactionImport;
 
-/// We use this to track local commitment transactions and put off signing them until we are ready
+/// We use this to track holder commitment transactions and put off signing them until we are ready
 /// to broadcast. This class can be used inside a signer implementation to generate a signature
 /// given the relevant secret key.
 #[must_use]
@@ -658,13 +658,13 @@ pub extern "C" fn HolderCommitmentTransaction_get_feerate_per_kw(this_ptr: &Hold
 pub extern "C" fn HolderCommitmentTransaction_set_feerate_per_kw(this_ptr: &mut HolderCommitmentTransaction, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.feerate_per_kw = val;
 }
-/// The HTLCs and remote htlc signatures which were included in this commitment transaction.
+/// The HTLCs and counterparty htlc signatures which were included in this commitment transaction.
 ///
 /// Note that this includes all HTLCs, including ones which were considered dust and not
 /// actually included in the transaction as it appears on-chain, but who's value is burned as
 /// fees and not included in the to_local or to_remote outputs.
 ///
-/// The remote HTLC signatures in the second element will always be set for non-dust HTLCs, ie
+/// The counterparty HTLC signatures in the second element will always be set for non-dust HTLCs, ie
 /// those for which transaction_output_index.is_some().
 #[no_mangle]
 pub extern "C" fn HolderCommitmentTransaction_set_per_htlc(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) {
@@ -672,15 +672,15 @@ pub extern "C" fn HolderCommitmentTransaction_set_per_htlc(this_ptr: &mut Holder
 	unsafe { &mut *this_ptr.inner }.per_htlc = local_val;
 }
 /// Generate a new HolderCommitmentTransaction based on a raw commitment transaction,
-/// remote signature and both parties keys.
+/// counterparty signature and both parties keys.
 ///
 /// The unsigned transaction outputs must be consistent with htlc_data.  This function
 /// only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_new_missing_holder_sig(mut unsigned_tx: crate::c_types::derived::CVec_u8Z, mut counterparty_sig: crate::c_types::Signature, our_funding_key: crate::c_types::PublicKey, their_funding_key: crate::c_types::PublicKey, mut local_keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::HolderCommitmentTransaction {
-	let mut local_htlc_data = Vec::new(); for mut item in htlc_data.into_rust().drain(..) { local_htlc_data.push( { let (mut orig_htlc_data_0_0, mut orig_htlc_data_0_1) = item.to_rust(); let mut local_orig_htlc_data_0_1 = if orig_htlc_data_0_1.is_null() { None } else { Some( { orig_htlc_data_0_1.into_rust() }) }; let mut local_htlc_data_0 = (*unsafe { Box::from_raw(orig_htlc_data_0_0.take_ptr()) }, local_orig_htlc_data_0_1); local_htlc_data_0 }); };
-	let mut ret = lightning::ln::chan_utils::HolderCommitmentTransaction::new_missing_holder_sig(::bitcoin::consensus::encode::deserialize(&unsigned_tx.into_rust()[..]).unwrap(), counterparty_sig.into_rust(), &our_funding_key.into_rust(), &their_funding_key.into_rust(), *unsafe { Box::from_raw(local_keys.take_ptr()) }, feerate_per_kw, local_htlc_data);
+pub extern "C" fn HolderCommitmentTransaction_new_missing_holder_sig(mut unsigned_tx: crate::c_types::derived::CVec_u8Z, mut counterparty_sig: crate::c_types::Signature, holder_funding_key: crate::c_types::PublicKey, counterparty_funding_key: crate::c_types::PublicKey, mut keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::HolderCommitmentTransaction {
+	let mut holder_htlc_data = Vec::new(); for mut item in htlc_data.into_rust().drain(..) { holder_htlc_data.push( { let (mut orig_htlc_data_0_0, mut orig_htlc_data_0_1) = item.to_rust(); let mut holder_orig_htlc_data_0_1 = if orig_htlc_data_0_1.is_null() { None } else { Some( { orig_htlc_data_0_1.into_rust() }) }; let mut holder_htlc_data_0 = (*unsafe { Box::from_raw(orig_htlc_data_0_0.take_ptr()) }, holder_orig_htlc_data_0_1); holder_htlc_data_0 }); };
+	let mut ret = lightning::ln::chan_utils::HolderCommitmentTransaction::new_missing_holder_sig(::bitcoin::consensus::encode::deserialize(&unsigned_tx.into_rust()[..]).unwrap(), counterparty_sig.into_rust(), &holder_funding_key.into_rust(), &counterparty_funding_key.into_rust(), *unsafe { Box::from_raw(keys.take_ptr()) }, feerate_per_kw, holder_htlc_data);
 	crate::ln::chan_utils::HolderCommitmentTransaction { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -693,7 +693,7 @@ pub extern "C" fn HolderCommitmentTransaction_trust_key_derivation(this_arg: &Ho
 	crate::ln::chan_utils::TxCreationKeys { inner: unsafe { ( (&(*ret) as *const _) as *mut _) }, is_owned: false }
 }
 
-/// Get the txid of the local commitment transaction contained in this
+/// Get the txid of the holder commitment transaction contained in this
 /// HolderCommitmentTransaction
 #[must_use]
 #[no_mangle]
@@ -708,7 +708,7 @@ pub extern "C" fn HolderCommitmentTransaction_txid(this_arg: &HolderCommitmentTr
 /// by your ChannelKeys.
 /// Funding redeemscript is script locking funding_outpoint. This is the mutlsig script
 /// between your own funding key and your counterparty's. Currently, this is provided in
-/// ChannelKeys::sign_local_commitment() calls directly.
+/// ChannelKeys::sign_holder_commitment() calls directly.
 /// Channel value is amount locked in funding_outpoint.
 #[must_use]
 #[no_mangle]
@@ -725,8 +725,8 @@ pub extern "C" fn HolderCommitmentTransaction_get_holder_sig(this_arg: &HolderCo
 /// included.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_get_htlc_sigs(this_arg: &HolderCommitmentTransaction, htlc_base_key: *const [u8; 32], mut local_csv: u16) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
-	let mut ret = unsafe { &*this_arg.inner }.get_htlc_sigs(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *htlc_base_key}[..]).unwrap(), local_csv, &bitcoin::secp256k1::Secp256k1::new());
+pub extern "C" fn HolderCommitmentTransaction_get_htlc_sigs(this_arg: &HolderCommitmentTransaction, htlc_base_key: *const [u8; 32], mut counterparty_selected_contest_delay: u16) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
+	let mut ret = unsafe { &*this_arg.inner }.get_htlc_sigs(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *htlc_base_key}[..]).unwrap(), counterparty_selected_contest_delay, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_none() { crate::c_types::Signature::null() } else {  { crate::c_types::Signature::from_rust(&(item.unwrap())) } }; local_ret_0_0 }); }; local_ret_0.into() }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
