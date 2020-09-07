@@ -16,10 +16,11 @@ mod utils;
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http_clients;
 
+use lightning::chain;
 use lightning::chain::{chaininterface, keysinterface};
-use lightning::chain::chaininterface::{BlockNotifierArc, ChainListener};
-use lightning::ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
+use lightning::chain::channelmonitor::ChannelMonitor;
 use lightning::ln::channelmanager::SimpleArcChannelManager;
+use lightning::util::logger;
 
 use bitcoin::hashes::hex::ToHex;
 
@@ -204,53 +205,38 @@ async fn find_fork<'a>(current_header: BlockHeaderData, prev_header: &'a BlockHe
 	Ok(steps_tx)
 }
 
-/// A dummy trait for capturing an object which wants the chain to be replayed.
-/// Implemented for lightning BlockNotifiers for general use, as well as
-/// ChannelManagers and ChannelMonitors to allow for easy replaying of chain
-/// data upon deserialization.
-pub trait AChainListener {
-	fn a_block_connected(&mut self, block: &Block, height: u32);
-	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32);
+/// Adaptor used for notifying when blocks have been connected or disconnected from the chain.
+/// Useful for replaying chain data upon deserialization.
+pub trait ChainListener {
+	fn block_connected(&mut self, block: &Block, height: u32);
+	fn block_disconnected(&mut self, header: &BlockHeader, height: u32);
 }
 
-impl AChainListener for &BlockNotifierArc {
-	fn a_block_connected(&mut self, block: &Block, height: u32) {
-		self.block_connected(block, height);
+impl<M, B, F, L> ChainListener for &SimpleArcChannelManager<M, B, F, L>
+		where M: chain::Watch<Keys=keysinterface::InMemoryChannelKeys>,
+		      B: chaininterface::BroadcasterInterface,
+		      F: chaininterface::FeeEstimator,
+		      L: logger::Logger {
+	fn block_connected(&mut self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		(**self).block_connected(&block.header, &txdata, height);
 	}
-	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-		self.block_disconnected(header, height);
-	}
-}
-
-impl<M, B, F> AChainListener for &SimpleArcChannelManager<M, B, F>
-		where M: ManyChannelMonitor<keysinterface::InMemoryChannelKeys>,
-		      B: chaininterface::BroadcasterInterface, F: chaininterface::FeeEstimator {
-	fn a_block_connected(&mut self, block: &Block, height: u32) {
-		let mut txn = Vec::with_capacity(block.txdata.len());
-		let mut idxn = Vec::with_capacity(block.txdata.len());
-		for (i, tx) in block.txdata.iter().enumerate() {
-			txn.push(tx);
-			idxn.push(i as u32);
-		}
-		self.block_connected(&block.header, height, &txn, &idxn);
-	}
-	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-		self.block_disconnected(header, height);
+	fn block_disconnected(&mut self, header: &BlockHeader, _height: u32) {
+		(**self).block_disconnected(header);
 	}
 }
 
-impl<CS, B, F> AChainListener for (&mut ChannelMonitor<CS>, &B, &F)
+impl<CS, B, F, L> ChainListener for (&mut ChannelMonitor<CS>, &B, &F, &L)
 		where CS: keysinterface::ChannelKeys,
-		      B: chaininterface::BroadcasterInterface, F: chaininterface::FeeEstimator {
-	fn a_block_connected(&mut self, block: &Block, height: u32) {
-		let mut txn = Vec::with_capacity(block.txdata.len());
-		for tx in block.txdata.iter() {
-			txn.push(tx);
-		}
-		self.0.block_connected(&txn, height, &block.block_hash(), self.1, self.2);
+		      B: chaininterface::BroadcasterInterface,
+		      F: chaininterface::FeeEstimator,
+		      L: logger::Logger {
+	fn block_connected(&mut self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		self.0.block_connected(&block.header, &txdata, height, self.1, self.2, self.3);
 	}
-	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-		self.0.block_disconnected(height, &header.block_hash(), self.1, self.2);
+	fn block_disconnected(&mut self, header: &BlockHeader, height: u32) {
+		self.0.block_disconnected(header, height, self.1, self.2, self.3);
 	}
 }
 
@@ -261,7 +247,7 @@ impl<CS, B, F> AChainListener for (&mut ChannelMonitor<CS>, &B, &F)
 /// disconnected to the fork point. Thus, we may return an Err() that includes where our tip ended
 /// up which may not be new_header. Note that iff the returned Err has a BlockHeaderData, the
 /// header transition from old_header to new_header is valid.
-async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeaderData, old_header: &BlockHeaderData, block_source: &mut dyn BlockSource, chain_notifier: &mut CL, head_blocks: &mut Vec<BlockHeaderData>, mainnet: bool)
+async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderData, old_header: &BlockHeaderData, block_source: &mut dyn BlockSource, chain_notifier: &mut CL, head_blocks: &mut Vec<BlockHeaderData>, mainnet: bool)
 		-> Result<(), (BlockSourceRespErr, Option<BlockHeaderData>)> {
 	let mut events = find_fork(new_header, old_header, block_source, &*head_blocks, mainnet).await.map_err(|e| (e, None))?;
 
@@ -274,7 +260,7 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 				if let Some(cached_head) = head_blocks.pop() {
 					assert_eq!(cached_head, *header);
 				}
-				chain_notifier.a_block_disconnected(&header.header, header.height);
+				chain_notifier.block_disconnected(&header.header, header.height);
 				last_disconnect_tip = Some(header.header.prev_blockhash);
 			},
 			&ForkStep::ForkPoint(ref header) => {
@@ -309,7 +295,7 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 				return Err((BlockSourceRespErr::BogusData, new_tip));
 			}
 			println!("Connecting block {}", header_data.header.block_hash().to_hex());
-			chain_notifier.a_block_connected(&block, header_data.height);
+			chain_notifier.block_connected(&block, header_data.height);
 			head_blocks.push(header_data.clone());
 			new_tip = Some(header_data);
 		}
@@ -322,7 +308,7 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 /// to bring each ChannelMonitor, as well as the overall ChannelManager, into sync with each other.
 ///
 /// Once you have them all at the same block, you should switch to using MicroSPVClient.
-pub async fn init_sync_chain_monitor<CL : AChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, mut chain_notifier: CL) {
+pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, mut chain_notifier: CL) {
 	if &old_block[..] == &[0; 32] { return; }
 
 	let new_header = block_source.get_header(&new_block, None).await.unwrap();
@@ -349,7 +335,7 @@ pub async fn init_sync_chain_monitor<CL : AChainListener + Sized, B: BlockSource
 /// This prevents one block source from being able to orphan us on a fork of its own creation by
 /// not responding to requests for old headers on that fork. However, if one block source is
 /// unreachable this may result in our memory usage growing in accordance with the chain.
-pub struct MicroSPVClient<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL : AChainListener + Sized> {
+pub struct MicroSPVClient<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: ChainListener + Sized> {
 	chain_tip: (BlockHash, BlockHeaderData),
 	block_sources: Vec<B>,
 	backup_block_sources: Vec<B>,
@@ -358,7 +344,7 @@ pub struct MicroSPVClient<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized +
 	chain_notifier: CL,
 	mainnet: bool
 }
-impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL : AChainListener + Sized> MicroSPVClient<'a, B, CL> {
+impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: ChainListener + Sized> MicroSPVClient<'a, B, CL> {
 	/// Create a new MicroSPVClient with a set of block sources and a chain listener which will
 	/// receive updates of the new tip.
 	///
@@ -485,15 +471,15 @@ mod tests {
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};
 
-	struct ChainListener {
+	struct TestChainListener {
 		blocks_connected: Mutex<Vec<(BlockHash, u32)>>,
 		blocks_disconnected: Mutex<Vec<(BlockHash, u32)>>,
 	}
-	impl AChainListener for Arc<ChainListener> {
-		fn a_block_connected(&mut self, block: &Block, height: u32) {
+	impl ChainListener for Arc<TestChainListener> {
+		fn block_connected(&mut self, block: &Block, height: u32) {
 			self.blocks_connected.lock().unwrap().push((block.header.block_hash(), height));
 		}
-		fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
+		fn block_disconnected(&mut self, header: &BlockHeader, height: u32) {
 			self.blocks_disconnected.lock().unwrap().push((header.block_hash(), height));
 		}
 	}
@@ -722,7 +708,7 @@ mod tests {
 		};
 
 		// Stand up a client at block_1a with all four sources:
-		let chain_notifier = Arc::new(ChainListener {
+		let chain_notifier = Arc::new(TestChainListener {
 			blocks_connected: Mutex::new(Vec::new()), blocks_disconnected: Mutex::new(Vec::new())
 		});
 		let mut source_one = &chain_one;
