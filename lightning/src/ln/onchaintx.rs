@@ -25,7 +25,7 @@ use ln::msgs::DecodeError;
 use ln::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, LocalCommitmentTransaction};
+use ln::chan_utils::{TxCreationKeys, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
 use util::logger::Logger;
@@ -241,13 +241,13 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 /// do RBF bumping if possible.
 pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	destination_script: Script,
-	holder_commitment: Option<LocalCommitmentTransaction>,
+	holder_commitment: Option<HolderCommitmentTransaction>,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
 	// transaction outputs (hence the Option<>s inside the Vec). The first usize is the index in
-	// the set of HTLCs in the LocalCommitmentTransaction (including those which do not appear in
+	// the set of HTLCs in the HolderCommitmentTransaction (including those which do not appear in
 	// the commitment transaction).
 	holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
-	prev_holder_commitment: Option<LocalCommitmentTransaction>,
+	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	on_holder_tx_csv: u16,
 
@@ -877,7 +877,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_holder_tx(&mut self, tx: LocalCommitmentTransaction) -> Result<(), ()> {
+	pub(super) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) -> Result<(), ()> {
 		// To prevent any unsafe state discrepancy between offchain and onchain, once holder
 		// commitment transaction has been signed due to an event (either block height for
 		// HTLC-timeout or channel force-closure), don't allow any further update of holder
@@ -931,7 +931,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	pub(super) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
 			match self.key_storage.sign_holder_commitment(holder_commitment, &self.secp_ctx) {
-				Ok(sig) => Some(holder_commitment.add_local_sig(funding_redeemscript, sig)),
+				Ok(sig) => Some(holder_commitment.add_holder_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}
 		} else {
@@ -944,7 +944,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
 			let holder_commitment = holder_commitment.clone();
 			match self.key_storage.sign_holder_commitment(&holder_commitment, &self.secp_ctx) {
-				Ok(sig) => Some(holder_commitment.add_local_sig(funding_redeemscript, sig)),
+				Ok(sig) => Some(holder_commitment.add_holder_sig(funding_redeemscript, sig)),
 				Err(_) => return None,
 			}
 		} else {

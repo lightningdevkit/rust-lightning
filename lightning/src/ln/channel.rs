@@ -27,7 +27,7 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{CounterpartyCommitmentSecrets, LocalCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, PreCalculatedTxCreationKeys};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, HolderCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, PreCalculatedTxCreationKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::transaction::OutPoint;
@@ -1471,7 +1471,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		Ok(())
 	}
 
-	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Transaction, LocalCommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
+	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Transaction, HolderCommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
 		let funding_script = self.get_funding_redeemscript();
 
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
@@ -1482,7 +1482,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&initial_commitment_tx), log_bytes!(sighash[..]), encode::serialize_hex(&funding_script));
 		secp_check!(self.secp_ctx.verify(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 
-		let tx = LocalCommitmentTransaction::new_missing_local_sig(initial_commitment_tx, sig.clone(), &self.holder_keys.pubkeys().funding_pubkey, self.counterparty_funding_pubkey(), keys, self.feerate_per_kw, Vec::new());
+		let tx = HolderCommitmentTransaction::new_missing_holder_sig(initial_commitment_tx, sig.clone(), &self.holder_keys.pubkeys().funding_pubkey, self.counterparty_funding_pubkey(), keys, self.feerate_per_kw, Vec::new());
 
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
@@ -1595,7 +1595,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		macro_rules! create_monitor {
 			() => { {
-				let commitment_tx = LocalCommitmentTransaction::new_missing_local_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, holder_keys.clone(), self.feerate_per_kw, Vec::new());
+				let commitment_tx = HolderCommitmentTransaction::new_missing_holder_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, holder_keys.clone(), self.feerate_per_kw, Vec::new());
 				let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
 				                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
 				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
@@ -2046,7 +2046,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx: LocalCommitmentTransaction::new_missing_local_sig(commitment_tx.0, msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, &counterparty_funding_pubkey, keys, self.feerate_per_kw, htlcs_without_source),
+				commitment_tx: HolderCommitmentTransaction::new_missing_holder_sig(commitment_tx.0, msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, &counterparty_funding_pubkey, keys, self.feerate_per_kw, htlcs_without_source),
 				htlc_outputs: htlcs_and_sigs
 			}]
 		};
@@ -4464,7 +4464,7 @@ mod tests {
 	use ln::features::InitFeatures;
 	use ln::msgs::{OptionalField, DataLossProtect};
 	use ln::chan_utils;
-	use ln::chan_utils::{LocalCommitmentTransaction, ChannelPublicKeys};
+	use ln::chan_utils::{HolderCommitmentTransaction, ChannelPublicKeys};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 	use chain::transaction::OutPoint;
@@ -4676,7 +4676,7 @@ mod tests {
 
 		let mut unsigned_tx: (Transaction, Vec<HTLCOutputInCommitment>);
 
-		let mut localtx;
+		let mut holdertx;
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
@@ -4701,15 +4701,15 @@ mod tests {
 				})*
 				assert_eq!(unsigned_tx.1.len(), per_htlc.len());
 
-				localtx = LocalCommitmentTransaction::new_missing_local_sig(unsigned_tx.0.clone(), counterparty_signature.clone(), &chan_keys.pubkeys().funding_pubkey, chan.counterparty_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
-				let local_sig = chan_keys.sign_holder_commitment(&localtx, &chan.secp_ctx).unwrap();
-				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), local_sig);
+				holdertx = HolderCommitmentTransaction::new_missing_holder_sig(unsigned_tx.0.clone(), counterparty_signature.clone(), &chan_keys.pubkeys().funding_pubkey, chan.counterparty_funding_pubkey(), keys.clone(), chan.feerate_per_kw, per_htlc);
+				let holder_sig = chan_keys.sign_holder_commitment(&holdertx, &chan.secp_ctx).unwrap();
+				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), holder_sig);
 
-				assert_eq!(serialize(&localtx.add_local_sig(&redeemscript, local_sig))[..],
+				assert_eq!(serialize(&holdertx.add_holder_sig(&redeemscript, holder_sig))[..],
 						hex::decode($tx_hex).unwrap()[..]);
 
-				let htlc_sigs = chan_keys.sign_holder_commitment_htlc_transactions(&localtx, &chan.secp_ctx).unwrap();
-				let mut htlc_sig_iter = localtx.per_htlc.iter().zip(htlc_sigs.iter().enumerate());
+				let htlc_sigs = chan_keys.sign_holder_commitment_htlc_transactions(&holdertx, &chan.secp_ctx).unwrap();
+				let mut htlc_sig_iter = holdertx.per_htlc.iter().zip(htlc_sigs.iter().enumerate());
 
 				$({
 					let remote_signature = Signature::from_der(&hex::decode($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
@@ -4738,7 +4738,7 @@ mod tests {
 
 					let signature = Signature::from_der(&hex::decode($htlc_sig_hex).unwrap()[..]).unwrap();
 					assert_eq!(Some(signature), *(htlc_sig.1).1);
-					assert_eq!(serialize(&localtx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.counterparty_selected_contest_delay))[..],
+					assert_eq!(serialize(&holdertx.get_signed_htlc_tx((htlc_sig.1).0, &(htlc_sig.1).1.unwrap(), &preimage, chan.counterparty_selected_contest_delay))[..],
 							hex::decode($htlc_tx_hex).unwrap()[..]);
 				})*
 				loop {

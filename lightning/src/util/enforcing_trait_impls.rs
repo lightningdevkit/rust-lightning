@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
+use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, HolderCommitmentTransaction, PreCalculatedTxCreationKeys};
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
@@ -87,29 +87,29 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_counterparty_commitment(feerate_per_kw, commitment_tx, pre_keys, htlcs, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
 		// TODO: need the commitment number
 		Ok(self.inner.sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		Ok(self.inner.unsafe_sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let commitment_txid = holder_commitment_tx.txid();
-		let local_csv = self.inner.counterparty_selected_contest_delay();
+		let holder_csv = self.inner.counterparty_selected_contest_delay();
 
 		for this_htlc in holder_commitment_tx.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, holder_commitment_tx.feerate_per_kw, local_csv, &this_htlc.0, &holder_commitment_tx.local_keys.broadcaster_delayed_payment_key, &holder_commitment_tx.local_keys.revocation_key);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, holder_commitment_tx.feerate_per_kw, holder_csv, &this_htlc.0, &holder_commitment_tx.keys.broadcaster_delayed_payment_key, &holder_commitment_tx.keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &holder_commitment_tx.local_keys);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &holder_commitment_tx.keys);
 
 				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
-				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &holder_commitment_tx.local_keys.countersignatory_htlc_key).unwrap();
+				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &holder_commitment_tx.keys.countersignatory_htlc_key).unwrap();
 			}
 		}
 

@@ -33,7 +33,7 @@ use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, LocalCommitmentTransaction, PreCalculatedTxCreationKeys};
+use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, PreCalculatedTxCreationKeys};
 use ln::msgs::UnsignedChannelAnnouncement;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -77,7 +77,7 @@ pub enum SpendableOutputDescriptor {
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
 	/// ChannelKeys::pubkeys().
 	///
-	/// To derive the counterparty_revocation_pubkey provided here (which is used in the witness
+	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
 	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
@@ -101,8 +101,8 @@ pub enum SpendableOutputDescriptor {
 		/// The channel keys state used to proceed to derivation of signing key. Must
 		/// be pass to KeysInterface::derive_channel_keys.
 		key_derivation_params: (u64, u64),
-		/// The counterparty_revocation_pubkey used to derive witnessScript
-		counterparty_revocation_pubkey: PublicKey
+		/// The revocation_pubkey used to derive witnessScript
+		revocation_pubkey: PublicKey
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -130,7 +130,7 @@ impl Writeable for SpendableOutputDescriptor {
 				outpoint.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey } => {
 				1u8.write(writer)?;
 				outpoint.write(writer)?;
 				per_commitment_point.write(writer)?;
@@ -138,7 +138,7 @@ impl Writeable for SpendableOutputDescriptor {
 				output.write(writer)?;
 				key_derivation_params.0.write(writer)?;
 				key_derivation_params.1.write(writer)?;
-				counterparty_revocation_pubkey.write(writer)?;
+				revocation_pubkey.write(writer)?;
 			},
 			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref key_derivation_params } => {
 				2u8.write(writer)?;
@@ -165,7 +165,7 @@ impl Readable for SpendableOutputDescriptor {
 				to_self_delay: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 				key_derivation_params: (Readable::read(reader)?, Readable::read(reader)?),
-				counterparty_revocation_pubkey: Readable::read(reader)?,
+				revocation_pubkey: Readable::read(reader)?,
 			}),
 			2u8 => Ok(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 				outpoint: Readable::read(reader)?,
@@ -242,14 +242,14 @@ pub trait ChannelKeys : Send+Clone {
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
-	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Same as sign_holder_commitment, but exists only for tests to get access to holder commitment
 	/// transactions which will be broadcasted later, after the channel has moved on to a newer
 	/// state. Thus, needs its own method as sign_holder_commitment may enforce that we only ever
 	/// get called once.
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
 	/// Create a signature for each HTLC transaction spending a holder's commitment transaction.
 	///
@@ -264,7 +264,7 @@ pub trait ChannelKeys : Send+Clone {
 	/// (implying they were considered dust at the time the commitment transaction was negotiated),
 	/// a corresponding None should be included in the return value. All other positions in the
 	/// return value must contain a signature.
-	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
+	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()>;
 
 	/// Create a signature for the given input in a transaction spending an HTLC or commitment
 	/// transaction output when our counterparty broadcasts an old state.
@@ -499,24 +499,24 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok((commitment_sig, htlc_sigs))
 	}
 
-	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_channel_data = self.accepted_channel_data.as_ref().expect("must accept before signing");
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_channel_data.counterparty_channel_pubkeys.funding_pubkey);
 
-		Ok(holder_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
+		Ok(holder_commitment_tx.get_holder_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let counterparty_channel_pubkeys = &self.accepted_channel_data.as_ref().expect("must accept before signing").counterparty_channel_pubkeys;
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_channel_pubkeys.funding_pubkey);
 
-		Ok(holder_commitment_tx.get_local_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
+		Ok(holder_commitment_tx.get_holder_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &LocalCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let counterparty_selected_contest_delay = self.accepted_channel_data.as_ref().unwrap().counterparty_selected_contest_delay;
 		holder_commitment_tx.get_htlc_sigs(&self.htlc_base_key, counterparty_selected_contest_delay, secp_ctx)
 	}

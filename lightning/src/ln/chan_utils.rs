@@ -350,7 +350,7 @@ pub struct ChannelPublicKeys {
 	/// states.
 	pub revocation_basepoint: PublicKey,
 	/// The public key which receives our immediately spendable primary channel balance in
-	/// remote-broadcasted commitment transactions. This key is static across every commitment
+	/// counterparty-broadcasted commitment transactions. This key is static across every commitment
 	/// transaction.
 	pub payment_point: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
@@ -406,7 +406,7 @@ pub struct HTLCOutputInCommitment {
 	/// Whether the HTLC was "offered" (ie outbound in relation to this commitment transaction).
 	/// Note that this is not the same as whether it is ountbound *from us*. To determine that you
 	/// need to compare this value to whether the commitment transaction in question is that of
-	/// the remote party or our own.
+	/// the counterparty or our own.
 	pub offered: bool,
 	/// The value, in msat, of the HTLC. The value as it appears in the commitment transaction is
 	/// this divided by 1000.
@@ -551,35 +551,35 @@ pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, contest_del
 }
 
 #[derive(Clone)]
-/// We use this to track local commitment transactions and put off signing them until we are ready
+/// We use this to track holder commitment transactions and put off signing them until we are ready
 /// to broadcast. This class can be used inside a signer implementation to generate a signature
 /// given the relevant secret key.
-pub struct LocalCommitmentTransaction {
+pub struct HolderCommitmentTransaction {
 	// TODO: We should migrate away from providing the transaction, instead providing enough to
 	// allow the ChannelKeys to construct it from scratch. Luckily we already have HTLC data here,
 	// so we're probably most of the way there.
 	/// The commitment transaction itself, in unsigned form.
 	pub unsigned_tx: Transaction,
 	/// Our counterparty's signature for the transaction, above.
-	pub their_sig: Signature,
+	pub counterparty_sig: Signature,
 	// Which order the signatures should go in when constructing the final commitment tx witness.
 	// The user should be able to reconstruc this themselves, so we don't bother to expose it.
-	our_sig_first: bool,
-	pub(crate) local_keys: TxCreationKeys,
+	holder_sig_first: bool,
+	pub(crate) keys: TxCreationKeys,
 	/// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 	/// controlled by the channel initiator.
 	pub feerate_per_kw: u32,
-	/// The HTLCs and remote htlc signatures which were included in this commitment transaction.
+	/// The HTLCs and counterparty htlc signatures which were included in this commitment transaction.
 	///
 	/// Note that this includes all HTLCs, including ones which were considered dust and not
 	/// actually included in the transaction as it appears on-chain, but who's value is burned as
-	/// fees and not included in the to_local or to_remote outputs.
+	/// fees and not included in the to_holder or to_counterparty outputs.
 	///
-	/// The remote HTLC signatures in the second element will always be set for non-dust HTLCs, ie
+	/// The counterparty HTLC signatures in the second element will always be set for non-dust HTLCs, ie
 	/// those for which transaction_output_index.is_some().
 	pub per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)>,
 }
-impl LocalCommitmentTransaction {
+impl HolderCommitmentTransaction {
 	#[cfg(test)]
 	pub fn dummy() -> Self {
 		let dummy_input = TxIn {
@@ -600,9 +600,9 @@ impl LocalCommitmentTransaction {
 				output: Vec::new(),
 				lock_time: 0,
 			},
-			their_sig: dummy_sig,
-			our_sig_first: false,
-			local_keys: TxCreationKeys {
+			counterparty_sig: dummy_sig,
+			holder_sig_first: false,
+			keys: TxCreationKeys {
 					per_commitment_point: dummy_key.clone(),
 					revocation_key: dummy_key.clone(),
 					broadcaster_htlc_key: dummy_key.clone(),
@@ -614,12 +614,12 @@ impl LocalCommitmentTransaction {
 		}
 	}
 
-	/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
-	/// remote signature and both parties keys.
+	/// Generate a new HolderCommitmentTransaction based on a raw commitment transaction,
+	/// counterparty signature and both parties keys.
 	///
 	/// The unsigned transaction outputs must be consistent with htlc_data.  This function
 	/// only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
-	pub fn new_missing_local_sig(unsigned_tx: Transaction, their_sig: Signature, our_funding_key: &PublicKey, their_funding_key: &PublicKey, local_keys: TxCreationKeys, feerate_per_kw: u32, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> LocalCommitmentTransaction {
+	pub fn new_missing_holder_sig(unsigned_tx: Transaction, counterparty_sig: Signature, holder_funding_key: &PublicKey, counterparty_funding_key: &PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlc_data: Vec<(HTLCOutputInCommitment, Option<Signature>)>) -> HolderCommitmentTransaction {
 		if unsigned_tx.input.len() != 1 { panic!("Tried to store a commitment transaction that had input count != 1!"); }
 		if unsigned_tx.input[0].witness.len() != 0 { panic!("Tried to store a signed commitment transaction?"); }
 
@@ -637,9 +637,9 @@ impl LocalCommitmentTransaction {
 
 		Self {
 			unsigned_tx,
-			their_sig,
-			our_sig_first: our_funding_key.serialize()[..] < their_funding_key.serialize()[..],
-			local_keys,
+			counterparty_sig,
+			holder_sig_first: holder_funding_key.serialize()[..] < counterparty_funding_key.serialize()[..],
+			keys,
 			feerate_per_kw,
 			per_htlc: htlc_data,
 		}
@@ -648,40 +648,40 @@ impl LocalCommitmentTransaction {
 	/// The pre-calculated transaction creation public keys.
 	/// An external validating signer should not trust these keys.
 	pub fn trust_key_derivation(&self) -> &TxCreationKeys {
-		&self.local_keys
+		&self.keys
 	}
 
-	/// Get the txid of the local commitment transaction contained in this
-	/// LocalCommitmentTransaction
+	/// Get the txid of the holder commitment transaction contained in this
+	/// HolderCommitmentTransaction
 	pub fn txid(&self) -> Txid {
 		self.unsigned_tx.txid()
 	}
 
-	/// Gets our signature for the contained commitment transaction given our funding private key.
+	/// Gets holder signature for the contained commitment transaction given holder funding private key.
 	///
 	/// Funding key is your key included in the 2-2 funding_outpoint lock. Should be provided
 	/// by your ChannelKeys.
 	/// Funding redeemscript is script locking funding_outpoint. This is the mutlsig script
 	/// between your own funding key and your counterparty's. Currently, this is provided in
-	/// ChannelKeys::sign_local_commitment() calls directly.
+	/// ChannelKeys::sign_holder_commitment() calls directly.
 	/// Channel value is amount locked in funding_outpoint.
-	pub fn get_local_sig<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	pub fn get_holder_sig<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(&self.unsigned_tx)
 			.signature_hash(0, funding_redeemscript, channel_value_satoshis, SigHashType::All)[..]);
 		secp_ctx.sign(&sighash, funding_key)
 	}
 
-	pub(crate) fn add_local_sig(&self, funding_redeemscript: &Script, our_sig: Signature) -> Transaction {
+	pub(crate) fn add_holder_sig(&self, funding_redeemscript: &Script, holder_sig: Signature) -> Transaction {
 		let mut tx = self.unsigned_tx.clone();
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		tx.input[0].witness.push(Vec::new());
 
-		if self.our_sig_first {
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(self.their_sig.serialize_der().to_vec());
+		if self.holder_sig_first {
+			tx.input[0].witness.push(holder_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(self.counterparty_sig.serialize_der().to_vec());
 		} else {
-			tx.input[0].witness.push(self.their_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(our_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(self.counterparty_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(holder_sig.serialize_der().to_vec());
 		}
 		tx.input[0].witness[1].push(SigHashType::All as u8);
 		tx.input[0].witness[2].push(SigHashType::All as u8);
@@ -696,19 +696,19 @@ impl LocalCommitmentTransaction {
 	/// The returned Vec has one entry for each HTLC, and in the same order. For HTLCs which were
 	/// considered dust and not included, a None entry exists, for all others a signature is
 	/// included.
-	pub fn get_htlc_sigs<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_base_key: &SecretKey, local_csv: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
+	pub fn get_htlc_sigs<T: secp256k1::Signing + secp256k1::Verification>(&self, htlc_base_key: &SecretKey, holder_selected_contest_delay: u16, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
 		let txid = self.txid();
 		let mut ret = Vec::with_capacity(self.per_htlc.len());
-		let our_htlc_key = derive_private_key(secp_ctx, &self.local_keys.per_commitment_point, htlc_base_key).map_err(|_| ())?;
+		let holder_htlc_key = derive_private_key(secp_ctx, &self.keys.per_commitment_point, htlc_base_key).map_err(|_| ())?;
 
 		for this_htlc in self.per_htlc.iter() {
 			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, local_csv, &this_htlc.0, &self.local_keys.broadcaster_delayed_payment_key, &self.local_keys.revocation_key);
+				let htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, holder_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
 
-				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.broadcaster_htlc_key, &self.local_keys.countersignatory_htlc_key, &self.local_keys.revocation_key);
+				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.keys.broadcaster_htlc_key, &self.keys.countersignatory_htlc_key, &self.keys.revocation_key);
 
 				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
-				ret.push(Some(secp_ctx.sign(&sighash, &our_htlc_key)));
+				ret.push(Some(secp_ctx.sign(&sighash, &holder_htlc_key)));
 			} else {
 				ret.push(None);
 			}
@@ -716,8 +716,8 @@ impl LocalCommitmentTransaction {
 		Ok(ret)
 	}
 
-	/// Gets a signed HTLC transaction given a preimage (for !htlc.offered) and the local HTLC transaction signature.
-	pub(crate) fn get_signed_htlc_tx(&self, htlc_index: usize, signature: &Signature, preimage: &Option<PaymentPreimage>, local_csv: u16) -> Transaction {
+	/// Gets a signed HTLC transaction given a preimage (for !htlc.offered) and the holder HTLC transaction signature.
+	pub(crate) fn get_signed_htlc_tx(&self, htlc_index: usize, signature: &Signature, preimage: &Option<PaymentPreimage>, holder_selected_contest_delay: u16) -> Transaction {
 		let txid = self.txid();
 		let this_htlc = &self.per_htlc[htlc_index];
 		assert!(this_htlc.0.transaction_output_index.is_some());
@@ -726,12 +726,12 @@ impl LocalCommitmentTransaction {
 		// Further, we should never be provided the preimage for an HTLC-Timeout transaction.
 		if  this_htlc.0.offered && preimage.is_some() { unreachable!(); }
 
-		let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, local_csv, &this_htlc.0, &self.local_keys.broadcaster_delayed_payment_key, &self.local_keys.revocation_key);
-		// Channel should have checked that we have a remote signature for this HTLC at
+		let mut htlc_tx = build_htlc_transaction(&txid, self.feerate_per_kw, holder_selected_contest_delay, &this_htlc.0, &self.keys.broadcaster_delayed_payment_key, &self.keys.revocation_key);
+		// Channel should have checked that we have a counterparty signature for this HTLC at
 		// creation, and we should have a sensible htlc transaction:
 		assert!(this_htlc.1.is_some());
 
-		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.broadcaster_htlc_key, &self.local_keys.countersignatory_htlc_key, &self.local_keys.revocation_key);
+		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.keys.broadcaster_htlc_key, &self.keys.countersignatory_htlc_key, &self.keys.revocation_key);
 
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		htlc_tx.input[0].witness.push(Vec::new());
@@ -752,23 +752,23 @@ impl LocalCommitmentTransaction {
 		htlc_tx
 	}
 }
-impl PartialEq for LocalCommitmentTransaction {
+impl PartialEq for HolderCommitmentTransaction {
 	// We dont care whether we are signed in equality comparison
 	fn eq(&self, o: &Self) -> bool {
 		self.txid() == o.txid()
 	}
 }
-impl Writeable for LocalCommitmentTransaction {
+impl Writeable for HolderCommitmentTransaction {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		if let Err(e) = self.unsigned_tx.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 			match e {
 				encode::Error::Io(e) => return Err(e),
-				_ => panic!("local tx must have been well-formed!"),
+				_ => panic!("holder tx must have been well-formed!"),
 			}
 		}
-		self.their_sig.write(writer)?;
-		self.our_sig_first.write(writer)?;
-		self.local_keys.write(writer)?;
+		self.counterparty_sig.write(writer)?;
+		self.holder_sig_first.write(writer)?;
+		self.keys.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 		writer.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
 		for &(ref htlc, ref sig) in self.per_htlc.iter() {
@@ -778,7 +778,7 @@ impl Writeable for LocalCommitmentTransaction {
 		Ok(())
 	}
 }
-impl Readable for LocalCommitmentTransaction {
+impl Readable for HolderCommitmentTransaction {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let unsigned_tx = match Transaction::consensus_decode(reader.by_ref()) {
 			Ok(tx) => tx,
@@ -787,9 +787,9 @@ impl Readable for LocalCommitmentTransaction {
 				_ => return Err(DecodeError::InvalidValue),
 			},
 		};
-		let their_sig = Readable::read(reader)?;
-		let our_sig_first = Readable::read(reader)?;
-		let local_keys = Readable::read(reader)?;
+		let counterparty_sig = Readable::read(reader)?;
+		let holder_sig_first = Readable::read(reader)?;
+		let keys = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 		let htlcs_count: u64 = Readable::read(reader)?;
 		let mut per_htlc = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / mem::size_of::<(HTLCOutputInCommitment, Option<Signature>)>()));
@@ -805,9 +805,9 @@ impl Readable for LocalCommitmentTransaction {
 		}
 		Ok(Self {
 			unsigned_tx,
-			their_sig,
-			our_sig_first,
-			local_keys,
+			counterparty_sig,
+			holder_sig_first,
+			keys,
 			feerate_per_kw,
 			per_htlc,
 		})

@@ -43,7 +43,7 @@ pub enum SpendableOutputDescriptor {
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
 	/// ChannelKeys::pubkeys().
 	///
-	/// To derive the counterparty_revocation_pubkey provided here (which is used in the witness
+	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the remote revocation_basepoint (which appears in the
 	/// call to ChannelKeys::on_accept) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
@@ -58,7 +58,7 @@ pub enum SpendableOutputDescriptor {
 		to_self_delay: u16,
 		output: crate::c_types::TxOut,
 		key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z,
-		counterparty_revocation_pubkey: crate::c_types::PublicKey,
+		revocation_pubkey: crate::c_types::PublicKey,
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -86,21 +86,21 @@ impl SpendableOutputDescriptor {
 					output: output_nonref.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey, } => {
+			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref.to_rust(); let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1);
-				let mut counterparty_revocation_pubkey_nonref = (*counterparty_revocation_pubkey).clone();
+				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_ptr()) },
 					per_commitment_point: per_commitment_point_nonref.into_rust(),
 					to_self_delay: to_self_delay_nonref,
 					output: output_nonref.into_rust(),
 					key_derivation_params: local_key_derivation_params_nonref,
-					counterparty_revocation_pubkey: counterparty_revocation_pubkey_nonref.into_rust(),
+					revocation_pubkey: revocation_pubkey_nonref.into_rust(),
 				}
 			},
 			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
@@ -125,7 +125,7 @@ impl SpendableOutputDescriptor {
 					output: output.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut counterparty_revocation_pubkey, } => {
+			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut revocation_pubkey, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint.take_ptr()) },
@@ -133,7 +133,7 @@ impl SpendableOutputDescriptor {
 					to_self_delay: to_self_delay,
 					output: output.into_rust(),
 					key_derivation_params: local_key_derivation_params,
-					counterparty_revocation_pubkey: counterparty_revocation_pubkey.into_rust(),
+					revocation_pubkey: revocation_pubkey.into_rust(),
 				}
 			},
 			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
@@ -157,21 +157,21 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref counterparty_revocation_pubkey, } => {
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
 				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
 				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref; let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1).into();
-				let mut counterparty_revocation_pubkey_nonref = (*counterparty_revocation_pubkey).clone();
+				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
 					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point_nonref),
 					to_self_delay: to_self_delay_nonref,
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 					key_derivation_params: local_key_derivation_params_nonref,
-					counterparty_revocation_pubkey: crate::c_types::PublicKey::from_rust(&counterparty_revocation_pubkey_nonref),
+					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey_nonref),
 				}
 			},
 			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
@@ -196,7 +196,7 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut counterparty_revocation_pubkey, } => {
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut revocation_pubkey, } => {
 				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params; let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1).into();
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
@@ -204,7 +204,7 @@ impl SpendableOutputDescriptor {
 					to_self_delay: to_self_delay,
 					output: crate::c_types::TxOut::from_rust(output),
 					key_derivation_params: local_key_derivation_params,
-					counterparty_revocation_pubkey: crate::c_types::PublicKey::from_rust(&counterparty_revocation_pubkey),
+					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey),
 				}
 			},
 			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
@@ -282,7 +282,7 @@ pub struct ChannelKeys {
 	/// that it will not be called multiple times.
 	/// An external signer implementation should check that the commitment has not been revoked.
 	#[must_use]
-	pub sign_holder_commitment: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ,
+	pub sign_holder_commitment: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ,
 	/// Create a signature for each HTLC transaction spending a holder commitment transaction.
 	///
 	/// Unlike sign_holder_commitment, this may be called multiple times with *different*
@@ -297,7 +297,7 @@ pub struct ChannelKeys {
 	/// a corresponding None should be included in the return value. All other positions in the
 	/// return value must contain a signature.
 	#[must_use]
-	pub sign_holder_commitment_htlc_transactions: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ,
+	pub sign_holder_commitment_htlc_transactions: extern "C" fn (this_arg: *const c_void, holder_commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ,
 	/// Create a signature for the given input in a transaction spending an HTLC or commitment
 	/// transaction output when our counterparty broadcasts an old state.
 	///
@@ -413,13 +413,13 @@ impl rustChannelKeys for ChannelKeys {
 		let mut local_ret = match ret.result_ok { true => Ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).to_rust(); let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.into_rust().drain(..) { local_orig_ret_0_1.push( { item.into_rust() }); }; let mut local_ret_0 = (orig_ret_0_0.into_rust(), local_orig_ret_0_1); local_ret_0 }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn sign_holder_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
-		let mut ret = (self.sign_holder_commitment)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
+	fn sign_holder_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::HolderCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<bitcoin::secp256k1::Signature, ()> {
+		let mut ret = (self.sign_holder_commitment)(self.this_arg, &crate::ln::chan_utils::HolderCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
 		let mut local_ret = match ret.result_ok { true => Ok( { (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust() }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
-	fn sign_holder_commitment_htlc_transactions<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::LocalCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<Vec<Option<bitcoin::secp256k1::Signature>>, ()> {
-		let mut ret = (self.sign_holder_commitment_htlc_transactions)(self.this_arg, &crate::ln::chan_utils::LocalCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
+	fn sign_holder_commitment_htlc_transactions<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, local_commitment_tx: &lightning::ln::chan_utils::HolderCommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<Vec<Option<bitcoin::secp256k1::Signature>>, ()> {
+		let mut ret = (self.sign_holder_commitment_htlc_transactions)(self.this_arg, &crate::ln::chan_utils::HolderCommitmentTransaction { inner: unsafe { (local_commitment_tx as *const _) as *mut _ }, is_owned: false });
 		let mut local_ret = match ret.result_ok { true => Ok( { let mut local_ret_0 = Vec::new(); for mut item in (*unsafe { Box::from_raw(ret.contents.result.take_ptr()) }).into_rust().drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_null() { None } else { Some( { item.into_rust() }) }; local_ret_0_0 }); }; local_ret_0 }), false => Err( { () /*(*unsafe { Box::from_raw(ret.contents.err.take_ptr()) })*/ })};
 		local_ret
 	}
@@ -757,13 +757,13 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment(this_
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ {
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction) -> crate::c_types::derived::CResult_SignatureNoneZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_holder_commitment(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::Signature::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_htlc_transactions(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::LocalCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
+extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_htlc_transactions(this_arg: *const c_void, local_commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_holder_commitment_htlc_transactions(unsafe { &*local_commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_none() { crate::c_types::Signature::null() } else {  { crate::c_types::Signature::from_rust(&(item.unwrap())) } }; local_ret_0_0 }); }; local_ret_0.into() }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret

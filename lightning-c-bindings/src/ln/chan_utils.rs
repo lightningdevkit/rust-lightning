@@ -570,22 +570,22 @@ pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate
 }
 
 
-use lightning::ln::chan_utils::LocalCommitmentTransaction as nativeLocalCommitmentTransactionImport;
-type nativeLocalCommitmentTransaction = nativeLocalCommitmentTransactionImport;
+use lightning::ln::chan_utils::HolderCommitmentTransaction as nativeHolderCommitmentTransactionImport;
+type nativeHolderCommitmentTransaction = nativeHolderCommitmentTransactionImport;
 
 /// We use this to track local commitment transactions and put off signing them until we are ready
 /// to broadcast. This class can be used inside a signer implementation to generate a signature
 /// given the relevant secret key.
 #[must_use]
 #[repr(C)]
-pub struct LocalCommitmentTransaction {
+pub struct HolderCommitmentTransaction {
 	/// Nearly everyhwere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
-	pub inner: *mut nativeLocalCommitmentTransaction,
+	pub inner: *mut nativeHolderCommitmentTransaction,
 	pub is_owned: bool,
 }
 
-impl Drop for LocalCommitmentTransaction {
+impl Drop for HolderCommitmentTransaction {
 	fn drop(&mut self) {
 		if self.is_owned && !self.inner.is_null() {
 			let _ = unsafe { Box::from_raw(self.inner) };
@@ -593,23 +593,23 @@ impl Drop for LocalCommitmentTransaction {
 	}
 }
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_free(this_ptr: LocalCommitmentTransaction) { }
+pub extern "C" fn HolderCommitmentTransaction_free(this_ptr: HolderCommitmentTransaction) { }
 #[allow(unused)]
 /// Used only if an object of this type is returned as a trait impl by a method
-extern "C" fn LocalCommitmentTransaction_free_void(this_ptr: *mut c_void) {
-	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeLocalCommitmentTransaction); }
+extern "C" fn HolderCommitmentTransaction_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeHolderCommitmentTransaction); }
 }
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
-impl LocalCommitmentTransaction {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeLocalCommitmentTransaction {
+impl HolderCommitmentTransaction {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeHolderCommitmentTransaction {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
 		ret
 	}
 }
-impl Clone for LocalCommitmentTransaction {
+impl Clone for HolderCommitmentTransaction {
 	fn clone(&self) -> Self {
 		Self {
 			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
@@ -619,43 +619,43 @@ impl Clone for LocalCommitmentTransaction {
 }
 #[allow(unused)]
 /// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn LocalCommitmentTransaction_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeLocalCommitmentTransaction)).clone() })) as *mut c_void
+pub(crate) extern "C" fn HolderCommitmentTransaction_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHolderCommitmentTransaction)).clone() })) as *mut c_void
 }
 /// The commitment transaction itself, in unsigned form.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_get_unsigned_tx(this_ptr: &LocalCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HolderCommitmentTransaction_get_unsigned_tx(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.unsigned_tx;
 	let mut local_inner_val = ::bitcoin::consensus::encode::serialize(inner_val);
 	local_inner_val.into()
 }
 /// The commitment transaction itself, in unsigned form.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_set_unsigned_tx(this_ptr: &mut LocalCommitmentTransaction, mut val: crate::c_types::derived::CVec_u8Z) {
+pub extern "C" fn HolderCommitmentTransaction_set_unsigned_tx(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_u8Z) {
 	unsafe { &mut *this_ptr.inner }.unsigned_tx = ::bitcoin::consensus::encode::deserialize(&val.into_rust()[..]).unwrap();
 }
 /// Our counterparty's signature for the transaction, above.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_get_their_sig(this_ptr: &LocalCommitmentTransaction) -> crate::c_types::Signature {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.their_sig;
+pub extern "C" fn HolderCommitmentTransaction_get_counterparty_sig(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::Signature {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.counterparty_sig;
 	crate::c_types::Signature::from_rust(&(*inner_val))
 }
 /// Our counterparty's signature for the transaction, above.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_set_their_sig(this_ptr: &mut LocalCommitmentTransaction, mut val: crate::c_types::Signature) {
-	unsafe { &mut *this_ptr.inner }.their_sig = val.into_rust();
+pub extern "C" fn HolderCommitmentTransaction_set_counterparty_sig(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::Signature) {
+	unsafe { &mut *this_ptr.inner }.counterparty_sig = val.into_rust();
 }
 /// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 /// controlled by the channel initiator.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_get_feerate_per_kw(this_ptr: &LocalCommitmentTransaction) -> u32 {
+pub extern "C" fn HolderCommitmentTransaction_get_feerate_per_kw(this_ptr: &HolderCommitmentTransaction) -> u32 {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.feerate_per_kw;
 	(*inner_val)
 }
 /// The feerate paid per 1000-weight-unit in this commitment transaction. This value is
 /// controlled by the channel initiator.
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_set_feerate_per_kw(this_ptr: &mut LocalCommitmentTransaction, mut val: u32) {
+pub extern "C" fn HolderCommitmentTransaction_set_feerate_per_kw(this_ptr: &mut HolderCommitmentTransaction, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.feerate_per_kw = val;
 }
 /// The HTLCs and remote htlc signatures which were included in this commitment transaction.
@@ -667,37 +667,37 @@ pub extern "C" fn LocalCommitmentTransaction_set_feerate_per_kw(this_ptr: &mut L
 /// The remote HTLC signatures in the second element will always be set for non-dust HTLCs, ie
 /// those for which transaction_output_index.is_some().
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_set_per_htlc(this_ptr: &mut LocalCommitmentTransaction, mut val: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) {
+pub extern "C" fn HolderCommitmentTransaction_set_per_htlc(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) {
 	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { let (mut orig_val_0_0, mut orig_val_0_1) = item.to_rust(); let mut local_orig_val_0_1 = if orig_val_0_1.is_null() { None } else { Some( { orig_val_0_1.into_rust() }) }; let mut local_val_0 = (*unsafe { Box::from_raw(orig_val_0_0.take_ptr()) }, local_orig_val_0_1); local_val_0 }); };
 	unsafe { &mut *this_ptr.inner }.per_htlc = local_val;
 }
-/// Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
+/// Generate a new HolderCommitmentTransaction based on a raw commitment transaction,
 /// remote signature and both parties keys.
 ///
 /// The unsigned transaction outputs must be consistent with htlc_data.  This function
 /// only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_new_missing_local_sig(mut unsigned_tx: crate::c_types::derived::CVec_u8Z, mut their_sig: crate::c_types::Signature, our_funding_key: crate::c_types::PublicKey, their_funding_key: crate::c_types::PublicKey, mut local_keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::LocalCommitmentTransaction {
+pub extern "C" fn HolderCommitmentTransaction_new_missing_holder_sig(mut unsigned_tx: crate::c_types::derived::CVec_u8Z, mut counterparty_sig: crate::c_types::Signature, our_funding_key: crate::c_types::PublicKey, their_funding_key: crate::c_types::PublicKey, mut local_keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::HolderCommitmentTransaction {
 	let mut local_htlc_data = Vec::new(); for mut item in htlc_data.into_rust().drain(..) { local_htlc_data.push( { let (mut orig_htlc_data_0_0, mut orig_htlc_data_0_1) = item.to_rust(); let mut local_orig_htlc_data_0_1 = if orig_htlc_data_0_1.is_null() { None } else { Some( { orig_htlc_data_0_1.into_rust() }) }; let mut local_htlc_data_0 = (*unsafe { Box::from_raw(orig_htlc_data_0_0.take_ptr()) }, local_orig_htlc_data_0_1); local_htlc_data_0 }); };
-	let mut ret = lightning::ln::chan_utils::LocalCommitmentTransaction::new_missing_local_sig(::bitcoin::consensus::encode::deserialize(&unsigned_tx.into_rust()[..]).unwrap(), their_sig.into_rust(), &our_funding_key.into_rust(), &their_funding_key.into_rust(), *unsafe { Box::from_raw(local_keys.take_ptr()) }, feerate_per_kw, local_htlc_data);
-	crate::ln::chan_utils::LocalCommitmentTransaction { inner: Box::into_raw(Box::new(ret)), is_owned: true }
+	let mut ret = lightning::ln::chan_utils::HolderCommitmentTransaction::new_missing_holder_sig(::bitcoin::consensus::encode::deserialize(&unsigned_tx.into_rust()[..]).unwrap(), counterparty_sig.into_rust(), &our_funding_key.into_rust(), &their_funding_key.into_rust(), *unsafe { Box::from_raw(local_keys.take_ptr()) }, feerate_per_kw, local_htlc_data);
+	crate::ln::chan_utils::HolderCommitmentTransaction { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
 /// The pre-calculated transaction creation public keys.
 /// An external validating signer should not trust these keys.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_trust_key_derivation(this_arg: &LocalCommitmentTransaction) -> crate::ln::chan_utils::TxCreationKeys {
+pub extern "C" fn HolderCommitmentTransaction_trust_key_derivation(this_arg: &HolderCommitmentTransaction) -> crate::ln::chan_utils::TxCreationKeys {
 	let mut ret = unsafe { &*this_arg.inner }.trust_key_derivation();
 	crate::ln::chan_utils::TxCreationKeys { inner: unsafe { ( (&(*ret) as *const _) as *mut _) }, is_owned: false }
 }
 
 /// Get the txid of the local commitment transaction contained in this
-/// LocalCommitmentTransaction
+/// HolderCommitmentTransaction
 #[must_use]
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_txid(this_arg: &LocalCommitmentTransaction) -> crate::c_types::ThirtyTwoBytes {
+pub extern "C" fn HolderCommitmentTransaction_txid(this_arg: &HolderCommitmentTransaction) -> crate::c_types::ThirtyTwoBytes {
 	let mut ret = unsafe { &*this_arg.inner }.txid();
 	crate::c_types::ThirtyTwoBytes { data: ret.into_inner() }
 }
@@ -712,8 +712,8 @@ pub extern "C" fn LocalCommitmentTransaction_txid(this_arg: &LocalCommitmentTran
 /// Channel value is amount locked in funding_outpoint.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_get_local_sig(this_arg: &LocalCommitmentTransaction, funding_key: *const [u8; 32], funding_redeemscript: crate::c_types::u8slice, mut channel_value_satoshis: u64) -> crate::c_types::Signature {
-	let mut ret = unsafe { &*this_arg.inner }.get_local_sig(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *funding_key}[..]).unwrap(), &::bitcoin::blockdata::script::Script::from(Vec::from(funding_redeemscript.to_slice())), channel_value_satoshis, &bitcoin::secp256k1::Secp256k1::new());
+pub extern "C" fn HolderCommitmentTransaction_get_holder_sig(this_arg: &HolderCommitmentTransaction, funding_key: *const [u8; 32], funding_redeemscript: crate::c_types::u8slice, mut channel_value_satoshis: u64) -> crate::c_types::Signature {
+	let mut ret = unsafe { &*this_arg.inner }.get_holder_sig(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *funding_key}[..]).unwrap(), &::bitcoin::blockdata::script::Script::from(Vec::from(funding_redeemscript.to_slice())), channel_value_satoshis, &bitcoin::secp256k1::Secp256k1::new());
 	crate::c_types::Signature::from_rust(&ret)
 }
 
@@ -725,21 +725,21 @@ pub extern "C" fn LocalCommitmentTransaction_get_local_sig(this_arg: &LocalCommi
 /// included.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_get_htlc_sigs(this_arg: &LocalCommitmentTransaction, htlc_base_key: *const [u8; 32], mut local_csv: u16) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
+pub extern "C" fn HolderCommitmentTransaction_get_htlc_sigs(this_arg: &HolderCommitmentTransaction, htlc_base_key: *const [u8; 32], mut local_csv: u16) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
 	let mut ret = unsafe { &*this_arg.inner }.get_htlc_sigs(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *htlc_base_key}[..]).unwrap(), local_csv, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = if item.is_none() { crate::c_types::Signature::null() } else {  { crate::c_types::Signature::from_rust(&(item.unwrap())) } }; local_ret_0_0 }); }; local_ret_0.into() }), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }) };
 	local_ret
 }
 
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_write(obj: *const LocalCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HolderCommitmentTransaction_write(obj: *const HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
-pub extern "C" fn LocalCommitmentTransaction_read(ser: crate::c_types::u8slice) -> LocalCommitmentTransaction {
+pub extern "C" fn HolderCommitmentTransaction_read(ser: crate::c_types::u8slice) -> HolderCommitmentTransaction {
 	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		LocalCommitmentTransaction { inner: Box::into_raw(Box::new(res)), is_owned: true }
+		HolderCommitmentTransaction { inner: Box::into_raw(Box::new(res)), is_owned: true }
 	} else {
-		LocalCommitmentTransaction { inner: std::ptr::null_mut(), is_owned: true }
+		HolderCommitmentTransaction { inner: std::ptr::null_mut(), is_owned: true }
 	}
 }
