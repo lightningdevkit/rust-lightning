@@ -17,7 +17,11 @@ const KEY_ROTATION_INDEX: u32 = 1000;
 /// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
 	pub(super) encryptor: Encryptor,
-	pub(super) decryptor: Decryptor
+
+	#[cfg(feature = "fuzztarget")]
+	pub decryptor: Decryptor,
+	#[cfg(not(feature = "fuzztarget"))]
+	pub(super) decryptor: Decryptor,
 
 }
 
@@ -27,7 +31,7 @@ pub(super) struct Encryptor {
 	sending_nonce: u32,
 }
 
-pub(super) struct Decryptor {
+pub struct Decryptor {
 	receiving_key: SymmetricKey,
 	receiving_chaining_key: SymmetricKey,
 	receiving_nonce: u32,
@@ -58,7 +62,7 @@ impl Conduit {
 				receiving_key,
 				receiving_chaining_key: chaining_key,
 				receiving_nonce: 0,
-				read_buffer: None,
+				read_buffer: Some(vec![]),
 				pending_message_length: None,
 				decrypted_payloads: VecDeque::new(),
 			}
@@ -72,15 +76,6 @@ impl Conduit {
 
 	pub(super) fn read(&mut self, data: &[u8]) -> Result<(), String>{
 		self.decryptor.read(data)
-	}
-
-	/// Decrypt a single message. If data containing more than one message has been received,
-	/// only the first message will be returned, and the rest stored in the internal buffer.
-	/// If a message pending in the buffer still hasn't been decrypted, that message will be
-	/// returned in lieu of anything new, even if new data is provided.
-	#[cfg(any(test, feature = "fuzztarget"))]
-	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
-		Ok(self.decryptor.decrypt_single_message(new_data)?)
 	}
 
 	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
@@ -120,49 +115,44 @@ impl Encryptor {
 }
 
 impl Decryptor {
-	pub(super) fn read(&mut self, data: &[u8]) -> Result<(), String> {
-		let mut input_data = Some(data);
 
+	// Read in new encrypted data and process it. This attempts to decrypt the input data and any
+	// existing data in the internal read buffer and can return an error if there is an error raised
+	// from the decryption code.
+	pub fn read(&mut self, data: &[u8]) -> Result<(), String> {
+		let mut read_buffer = self.read_buffer.take().unwrap();
+
+		let buffer = if read_buffer.is_empty() {
+			data
+		} else {
+			read_buffer.extend_from_slice(data);
+			read_buffer.as_slice()
+		};
+
+		let mut read_offset = 0;
 		loop {
-			match self.decrypt_single_message(input_data) {
-				Ok(Some(result)) => {
+			match self.decrypt_next(&buffer[read_offset..]) {
+				Ok((Some(result), bytes_read)) => {
+					read_offset += bytes_read;
 					self.decrypted_payloads.push_back(result);
 				},
-				Ok(None) => {
+				Ok((None, 0)) => {
+					self.read_buffer = Some(buffer[read_offset..].to_vec());
 					break;
 				}
 				Err(e) => {
 					return Err(e);
 				}
+				Ok((None, _)) => { panic!("Invalid return from decrypt_next()") }
 			}
-			input_data = None;
 		}
 
 		Ok(())
 	}
 
-	/// Decrypt a single message. If data containing more than one message has been received,
-	/// only the first message will be returned, and the rest stored in the internal buffer.
-	/// If a message pending in the buffer still hasn't been decrypted, that message will be
-	/// returned in lieu of anything new, even if new data is provided.
-	pub fn decrypt_single_message(&mut self, new_data: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
-		let mut read_buffer = if let Some(buffer) = self.read_buffer.take() {
-			buffer
-		} else {
-			Vec::new()
-		};
-
-		if let Some(data) = new_data {
-			read_buffer.extend_from_slice(data);
-		}
-
-		let (current_message, offset) = self.decrypt(&read_buffer[..])?;
-		read_buffer.drain(..offset); // drain the read buffer
-		self.read_buffer = Some(read_buffer); // assign the new value to the built-in buffer
-		Ok(current_message)
-	}
-
-	fn decrypt(&mut self, buffer: &[u8]) -> Result<(Option<Vec<u8>>, usize), String> {
+	// Decrypt the next payload from the slice returning the number of bytes consumed during the
+	// operation. This will always be (None, 0) if no payload could be decrypted.
+	fn decrypt_next(&mut self, buffer: &[u8]) -> Result<(Option<Vec<u8>>, usize), String> {
 		let message_length = if let Some(length) = self.pending_message_length {
 			// we have already decrypted the header
 			length
@@ -249,8 +239,45 @@ mod tests {
 		let encrypted_message = connected_peer.encrypt(&message);
 		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
 
-		let decrypted_message = remote_peer.decrypt_single_message(Some(&encrypted_message)).unwrap().unwrap();
+		remote_peer.decryptor.read(&encrypted_message[..]).unwrap();
+		let decrypted_message = remote_peer.decryptor.next().unwrap();
 		assert_eq!(decrypted_message, vec![]);
+	}
+
+	// Test that descrypting from a slice that is the partial data followed by another decrypt call
+	// with the remaining data works. This exercises the slow-path for decryption and ensures the
+	// data is written to the read_buffer properly.
+	#[test]
+	fn test_decrypt_from_slice_two_calls_no_header_then_rest() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+
+		let message: Vec<u8> = vec![1];
+		let encrypted_message = connected_peer.encrypt(&message);
+
+		remote_peer.decryptor.read(&encrypted_message[..1]).unwrap();
+		assert!(remote_peer.decryptor.next().is_none());
+
+		remote_peer.decryptor.read(&encrypted_message[1..]).unwrap();
+		let decrypted_message = remote_peer.decryptor.next().unwrap();
+
+		assert_eq!(decrypted_message, vec![1]);
+	}
+
+	// Include the header in the first slice
+	#[test]
+	fn test_decrypt_from_slice_two_calls_header_then_rest() {
+		let (mut connected_peer, mut remote_peer) = setup_peers();
+
+		let message: Vec<u8> = vec![1];
+		let encrypted_message = connected_peer.encrypt(&message);
+
+		remote_peer.decryptor.read(&encrypted_message[..20]).unwrap();
+		assert!(remote_peer.decryptor.next().is_none());
+
+		remote_peer.decryptor.read(&encrypted_message[20..]).unwrap();
+		let decrypted_message = remote_peer.decryptor.next().unwrap();
+
+		assert_eq!(decrypted_message, vec![1]);
 	}
 
 	#[test]
@@ -302,13 +329,16 @@ mod tests {
 			let mut current_encrypted_message = encrypted_messages.remove(0);
 			let next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
-			let decrypted_message = remote_peer.decrypt_single_message(Some(&current_encrypted_message)).unwrap().unwrap();
+			remote_peer.read(&current_encrypted_message[..]).unwrap();
+
+			let decrypted_message = remote_peer.decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
 
 		for _ in 0..501 {
 			// decrypt messages directly from buffer without adding to it
-			let decrypted_message = remote_peer.decrypt_single_message(None).unwrap().unwrap();
+			remote_peer.read(&[]).unwrap();
+			let decrypted_message = remote_peer.decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
 	}
