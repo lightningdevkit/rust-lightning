@@ -20,7 +20,7 @@ use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
-use std::collections::{HashMap,hash_map,HashSet};
+use std::collections::{HashMap,HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
@@ -46,7 +46,7 @@ pub(super) trait ITransport: MessageQueuer {
 	fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self;
 
 	/// Process input data similar to reading it off a descriptor directly.
-	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<(), String>;
+	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String>;
 
 	/// Returns true if the connection is established and encrypted messages can be sent.
 	fn is_connected(&self) -> bool;
@@ -238,7 +238,7 @@ struct PeerHolder<Descriptor: SocketDescriptor, TransportImpl: ITransport> {
 	/// Added to by do_read_event for cases where we pushed a message onto the send buffer but
 	/// didn't call do_attempt_write_data to avoid reentrancy. Cleared in process_events()
 	peers_needing_send: HashSet<Descriptor>,
-	/// Only add to this set when noise completes:
+	/// Peers in this map have completed the NOISE handshake and received an Init message
 	node_id_to_descriptor: HashMap<PublicKey, Descriptor>,
 }
 
@@ -641,6 +641,85 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		peers_needing_send.insert(descriptor.clone());
 	}
 
+	// Returns a valid PostInitState given a Init message
+	fn post_init_state_from_init_message(&self, init_message: &msgs::Init, their_node_id: &PublicKey) -> Result<PostInitState, PeerHandleError> {
+		if init_message.features.requires_unknown_bits() {
+			log_info!(self.logger, "Peer global features required unknown version bits");
+			return Err(PeerHandleError { no_connection_possible: true }.into());
+		}
+		if init_message.features.requires_unknown_bits() {
+			log_info!(self.logger, "Peer local features required unknown version bits");
+			return Err(PeerHandleError { no_connection_possible: true }.into());
+		}
+
+		log_info!(
+			self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags (local and global): {}",
+			if init_message.features.supports_data_loss_protect() { "supported" } else { "not supported"},
+			if init_message.features.initial_routing_sync() { "requested" } else { "not requested" },
+			if init_message.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+			if init_message.features.supports_static_remote_key() { "supported" } else { "not supported"},
+			if init_message.features.supports_unknown_bits() { "present" } else { "none" }
+		);
+
+		let sync_status = if init_message.features.initial_routing_sync() {
+			InitSyncTracker::ChannelsSyncing(0)
+		} else {
+			InitSyncTracker::NoSyncRequested
+		};
+
+		if !init_message.features.supports_static_remote_key() {
+			log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(their_node_id));
+			return Err(PeerHandleError { no_connection_possible: true }.into());
+		}
+
+		Ok(PostInitState::new(sync_status, init_message.features.clone()))
+	}
+
+	// Add an Init message to the outbound queue
+	fn queue_init_message(&self, peers_needing_send: &mut HashSet<Descriptor>, message_queuer: &mut impl MessageQueuer, pending_outbound_buffer: &mut impl PayloadQueuer, descriptor: &Descriptor, should_request_full_sync: bool) {
+		let mut features = InitFeatures::known();
+		if !should_request_full_sync {
+			features.clear_initial_routing_sync();
+		}
+
+		let resp = msgs::Init { features };
+		self.enqueue_message(peers_needing_send, message_queuer, pending_outbound_buffer, descriptor, &resp);
+	}
+
+	// Process an incoming Init message and set Peer and PeerManager state accordingly
+	fn process_init_message(&self, message: Message, descriptor: &Descriptor, peers_needing_send: &mut HashSet<Descriptor>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>, pending_outbound_buffer: &mut impl PayloadQueuer, outbound: bool, transport: &mut impl ITransport, post_init_state: &mut Option<PostInitState>) -> Result<(), PeerHandleError> {
+		let their_node_id = transport.get_their_node_id();
+
+		match message {
+			Message::Init(ref init_message) => {
+				log_trace!(self.logger, "Received Init message from {}", log_pubkey!(&their_node_id));
+				if node_id_to_descriptor.contains_key(&their_node_id) {
+					log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(&their_node_id));
+					return Err(PeerHandleError { no_connection_possible: false });
+				}
+
+				let new_post_init_state = self.post_init_state_from_init_message(init_message, &their_node_id)?;
+
+				if let InitSyncTracker::ChannelsSyncing(_) = new_post_init_state.sync_status {
+					peers_needing_send.insert(descriptor.clone());
+				}
+
+				if !outbound {
+					self.queue_init_message(peers_needing_send, transport, pending_outbound_buffer, descriptor, self.message_handler.route_handler.should_request_full_sync(&their_node_id));
+				}
+				node_id_to_descriptor.insert(their_node_id.clone(), descriptor.clone());
+				self.message_handler.chan_handler.peer_connected(&their_node_id, init_message);
+				*post_init_state = Some(new_post_init_state);
+			}
+			_ => {
+				log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(&their_node_id));
+				return Err(PeerHandleError { no_connection_possible: false })
+			},
+		}
+
+		Ok(())
+	}
+
 	fn do_read_event(&self,
 	                 peer_descriptor: &mut Descriptor,
 	                 data: &[u8],
@@ -656,48 +735,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					log_trace!(self.logger, "Error while processing input: {}", e);
 					return Err(PeerHandleError { no_connection_possible: false })
 				},
-				Ok(_) => {
+				Ok(newly_connected) => {
+					if newly_connected {
+						log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&transport.get_their_node_id()));
+					}
 
-					// If the transport is newly connected, do the appropriate set up for the connection
-					if transport.is_connected() {
-						let their_node_id = transport.get_their_node_id();
+					if newly_connected && outbound {
+						self.queue_init_message(peers_needing_send, transport, pending_outbound_buffer, peer_descriptor, self.message_handler.route_handler.should_request_full_sync(&transport.get_their_node_id()));
+					}
 
-						match node_id_to_descriptor.entry(their_node_id.clone()) {
-							hash_map::Entry::Occupied(entry) => {
-								if entry.get() != peer_descriptor {
-									// Existing entry in map is from a different descriptor, this is a duplicate
-									log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(&their_node_id));
-									return Err(PeerHandleError { no_connection_possible: false });
-								} else {
-									// read_event for existing peer
-								}
-							},
-							hash_map::Entry::Vacant(entry) => {
-								log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&their_node_id));
-
-								if outbound {
-									let mut features = InitFeatures::known();
-									if !self.message_handler.route_handler.should_request_full_sync(&their_node_id) {
-										features.clear_initial_routing_sync();
-									}
-
-									let resp = msgs::Init { features };
-									self.enqueue_message(peers_needing_send, transport, pending_outbound_buffer, peer_descriptor, &resp);
-								}
-								entry.insert(peer_descriptor.clone());
-							}
-						}
-					} else {
-						// If the transport layer placed items in the outbound queue, we need
-						// to schedule ourselves for flush during the next process_events()
-						if !pending_outbound_buffer.is_empty() {
-							peers_needing_send.insert(peer_descriptor.clone());
-						}
+					// If the transport layer placed items in the outbound queue, we need
+					// to schedule ourselves for flush during the next process_events()
+					if !pending_outbound_buffer.is_empty() {
+						peers_needing_send.insert(peer_descriptor.clone());
 					}
 				}
 			}
 
-			let received_messages = transport.drain_messages(&*self.logger)?;
+			let mut received_messages = transport.drain_messages(&*self.logger)?;
+
+			if transport.is_connected() && post_init_state.is_none() && received_messages.len() > 0 {
+				let init_message = received_messages.remove(0);
+				self.process_init_message(init_message, peer_descriptor, peers_needing_send, node_id_to_descriptor, pending_outbound_buffer, outbound, transport, post_init_state)?;
+			}
 
 			for message in received_messages {
 				macro_rules! try_potential_handleerror {
@@ -726,7 +786,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					}
 				}
 
-				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, outbound, post_init_state, transport.get_their_node_id(), transport, pending_outbound_buffer) {
+				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, post_init_state, transport.get_their_node_id(), transport, pending_outbound_buffer) {
 					match handling_error {
 						MessageHandlingError::PeerHandleError(e) => { return Err(e) },
 						MessageHandlingError::LightningError(e) => {
@@ -747,7 +807,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	                  peers_needing_send: &mut HashSet<Descriptor>,
 	                  peer_descriptor: &mut Descriptor,
 	                  message: wire::Message,
-					  outbound: bool,
 					  post_init_state: &mut Option<PostInitState>,
 					  their_node_id: PublicKey,
 					  message_queuer: &mut impl MessageQueuer,
@@ -755,63 +814,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					  ) -> Result<(), MessageHandlingError> {
 		log_trace!(self.logger, "Received message of type {} from {}", message.type_id(), log_pubkey!(&their_node_id));
 
-		// Need an Init as first message
-		if let wire::Message::Init(_) = message {
-		} else if post_init_state.is_none() {
-			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(&their_node_id));
-			return Err(PeerHandleError{ no_connection_possible: false }.into());
-		}
-
 		match message {
 			// Setup and Control messages:
-			wire::Message::Init(msg) => {
-				if msg.features.requires_unknown_bits() {
-					log_info!(self.logger, "Peer global features required unknown version bits");
-					return Err(PeerHandleError{ no_connection_possible: true }.into());
-				}
-				if msg.features.requires_unknown_bits() {
-					log_info!(self.logger, "Peer local features required unknown version bits");
-					return Err(PeerHandleError{ no_connection_possible: true }.into());
-				}
-				if post_init_state.is_some() {
-					return Err(PeerHandleError{ no_connection_possible: false }.into());
-				}
-
-				log_info!(
-					self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags (local and global): {}",
-					if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
-					if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
-					if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
-					if msg.features.supports_static_remote_key() { "supported" } else { "not supported"},
-					if msg.features.supports_unknown_bits() { "present" } else { "none" }
-				);
-
-				let sync_status = if msg.features.initial_routing_sync() {
-					peers_needing_send.insert(peer_descriptor.clone());
-					InitSyncTracker::ChannelsSyncing(0)
-				} else {
-					InitSyncTracker::NoSyncRequested
-				};
-
-				if !msg.features.supports_static_remote_key() {
-					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(&their_node_id));
-					return Err(PeerHandleError{ no_connection_possible: true }.into());
-				}
-
-				if !outbound {
-					let mut features = InitFeatures::known();
-					if !self.message_handler.route_handler.should_request_full_sync(&their_node_id) {
-						features.clear_initial_routing_sync();
-					}
-
-					let resp = msgs::Init { features };
-					self.enqueue_message(peers_needing_send, message_queuer, pending_outbound_buffer, &peer_descriptor, &resp);
-				}
-
-				self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
-
-				// Initialize the post_init_state now that the Init has been received
-				*post_init_state = Some(PostInitState::new(sync_status, msg.features));
+			wire::Message::Init(_) => {
+				// 1st Init message handled before handle_message() so this must be a non-first
+				return Err(PeerHandleError{ no_connection_possible: false }.into());
 			},
 			wire::Message::Error(msg) => {
 				let mut data_is_printable = true;
@@ -1220,17 +1227,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		match peer_option {
 			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
 			Some(peer) => {
-				if peer.transport.is_connected() {
-					let node_id = peer.transport.get_their_node_id();
+				if peer.is_initialized() {
+					let their_node_id = peer.transport.get_their_node_id();
 
-					if peers.node_id_to_descriptor.get(&node_id).unwrap() == descriptor {
-						peers.node_id_to_descriptor.remove(&node_id);
-						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
-					} else {
-						// This must have been generated from a duplicate connection error
+					match peers.node_id_to_descriptor.remove(&their_node_id) {
+						None => { panic!("Initialized peer must be in node_id_to_descriptor")}
+						Some(_) => {
+							peers.node_id_to_descriptor.remove(&their_node_id);
+							self.message_handler.chan_handler.peer_disconnected(&their_node_id, no_connection_possible);
+						}
 					}
-				} else {
-					// Unconnected nodes never make it into node_id_to_descriptor
 				}
 			}
 		};
@@ -1549,8 +1555,6 @@ mod unit_tests {
 
 	// Test that an outbound connection with a connected Transport, but no Init message
 	// * read_event() does not call peer_disconnected callback if an error is returned from Transport
-	// XXXBUG: peer_connected is called after the Init message, but peer_disconnected is called
-	//         with any error after the NOISE handshake is complete
 	#[test]
 	fn outbound_connected_transport_error_does_not_call_peer_disconnected_on_error() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1564,7 +1568,7 @@ mod unit_tests {
 		transport.borrow_mut().process_returns_error();
 		assert_read_event_errors!(peer_manager, &mut descriptor, false);
 		assert!(!channel_handler_called!(&test_ctx, peer_connected));
-		// assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an inbound connection with a connected Transport and queued Init message:
@@ -1655,7 +1659,7 @@ mod unit_tests {
 
 	// Test that an outbound connection with a connected Transport:
 	// * read_event() errors when receiving a Non-Init message first
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn inbound_connected_transport_non_init_first_fails() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1666,12 +1670,13 @@ mod unit_tests {
 
 		new_inbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, false);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an outbound connection with a connected Transport:
 	// * read_event() errors when receiving a Non-Init message first
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn outbound_connected_transport_non_init_first_fails() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1682,12 +1687,13 @@ mod unit_tests {
 
 		new_outbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, false);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an inbound connection with a connected Transport:
 	// * read_event() errors out with no_connection_possible if an Init message contains requires_unknown_bits
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn inbound_connected_transport_init_with_required_unknown_first_fails() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1700,12 +1706,13 @@ mod unit_tests {
 
 		new_inbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, true);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an outbound connection with a connected Transport:
 	// * read_event() errors out with no_connection_possible if an Init message contains requires_unknown_bits
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn outbound_connected_transport_init_with_required_unknown_first_fails() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1718,12 +1725,13 @@ mod unit_tests {
 
 		new_outbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, true);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an inbound connection with a connected Transport:
 	// * read_event() errors out with no_connection_possible if an Init message does not contain requires_static_remote_key
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn inbound_connected_transport_init_with_clear_requires_static_remote_key() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1736,12 +1744,13 @@ mod unit_tests {
 
 		new_inbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, true);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an outbound connection with a connected Transport:
 	// * read_event() errors out with no_connection_possible if an Init message does not contain requires_static_remote_key
-	// * read_event() calls the peer_disconnected channel manager callback
+	// * read_event() does not call the peer_connected/peer_disconnected callbacks
 	#[test]
 	fn outbound_connected_transport_init_with_clear_requires_static_remote_key() {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
@@ -1754,7 +1763,8 @@ mod unit_tests {
 
 		new_outbound!(peer_manager, descriptor, &mut transport);
 		assert_read_event_errors!(peer_manager, &mut descriptor, true);
-		assert!(channel_handler_called!(&test_ctx, peer_disconnected));
+		assert!(!channel_handler_called!(&test_ctx, peer_connected));
+		assert!(!channel_handler_called!(&test_ctx, peer_disconnected));
 	}
 
 	// Test that an inbound connection with a connected Transport and queued Init Message:
@@ -1823,11 +1833,14 @@ mod unit_tests {
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::new();
 		let mut descriptor = SocketDescriptorMock::new();
 		let transport = new_connected_transport!(&test_ctx);
-		// Create a duplicate connection from the same node_id
+
+		// Create a duplicate connection from the same node_id w/ pending Init message
 		let mut duplicate_connection_descriptor = SocketDescriptorMock::new();
 		let mut duplicate_connection_transport = RefCell::new(TransportStubBuilder::new()
 			.set_connected(&test_ctx.their_node_id)
 			.finish());
+		duplicate_connection_transport.borrow_mut().add_incoming_message(Message::Init(Init { features: InitFeatures::known() }));
+
 		let peer_manager = new_peer_manager_post_init!(&test_ctx, &mut descriptor, &transport);
 
 		assert!(peer_manager.get_peer_node_ids().contains(&test_ctx.their_node_id));
