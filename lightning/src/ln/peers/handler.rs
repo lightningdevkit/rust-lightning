@@ -1136,7 +1136,23 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 						log_trace!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
+						let route_handler_wants_broadcast = match self.message_handler.route_handler.handle_channel_announcement(msg) {
+							Err(e) => {
+								log_trace!(self.logger, "Ignoring because handle_channel_announcement returned error: {:?}", e);
+								false
+							}
+							Ok(false) => false,
+							Ok(true) => {
+								match self.message_handler.route_handler.handle_channel_update(update_msg) {
+									Err(e) => {
+										log_trace!(self.logger, "Ignoring because handle_channel_update returned error: {:?}", e);
+										false
+									},
+									Ok(result) => result
+								}
+							}
+						};
+						if route_handler_wants_broadcast {
 							for (descriptor, peer) in peers.initialized_peers_mut() {
 								if !peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 									continue
@@ -1154,26 +1170,38 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					},
 					MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
 						log_trace!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
-						if self.message_handler.route_handler.handle_node_announcement(msg).is_ok() {
-							for (descriptor, peer) in peers.initialized_peers_mut() {
-								if !peer.should_forward_node_announcement(msg.contents.node_id) {
-									continue
+						match self.message_handler.route_handler.handle_node_announcement(msg) {
+							Err(e) => {
+								log_trace!(self.logger, "Ignoring because handle_node_announcement returned error: {:?}", e);
+							},
+							Ok(true) => {
+								for (descriptor, peer) in peers.initialized_peers_mut() {
+									if !peer.should_forward_node_announcement(msg.contents.node_id) {
+										continue
+									}
+									peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
+									self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 								}
-								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
-							}
+							},
+							Ok(false) => { }
 						}
 					},
 					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 						log_trace!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
-							for (descriptor, peer) in peers.initialized_peers_mut() {
-								if !peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
-									continue
+						match self.message_handler.route_handler.handle_channel_update(msg) {
+							Err(e) => {
+								log_trace!(self.logger, "Ignoring because handle_channel_update returned error: {:?}", e);
+							},
+							Ok(true) => {
+								for (descriptor, peer) in peers.initialized_peers_mut() {
+									if !peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
+										continue
+									}
+									peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
+									self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 								}
-								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-								self.do_attempt_write_data(&mut (*descriptor).clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
-							}
+							},
+							Ok(false) => { }
 						}
 					},
 					MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
@@ -2468,7 +2496,6 @@ mod unit_tests {
 	// Test that a post-Init connection:
 	// * process_events() sends nothing when it receives a BroadcastChannelAnnouncement if the
 	//   route_handler.handle_channel_announcement returns false
-	// XXXBUG: Implementation does not check return value of handle_channel_announcement, only that it didn't error
 	#[test]
 	fn post_init_broadcast_channel_announcement_route_handler_handle_announcement_returns_false() {
 		let channel_handler = TestChannelMessageHandler::new();
@@ -2485,13 +2512,12 @@ mod unit_tests {
 		let peer_manager = new_peer_manager_post_init!(&test_ctx, &mut descriptor, &transport);
 
 		peer_manager.process_events();
-		// assert!(descriptor.get_recording().is_empty());
+		assert!(descriptor.get_recording().is_empty());
 	}
 
 	// Test that a post-Init connection:
 	// * process_events() sends nothing when it receives a BroadcastChannelAnnouncement if the
 	//   route_handler.handle_channel_update returns false
-	// XXXBUG: Implementation does not check return value of handle_channel_update, only that it didn't error
 	#[test]
 	fn post_init_broadcast_channel_announcement_route_handle_update_returns_false() {
 		let channel_handler = TestChannelMessageHandler::new();
@@ -2508,7 +2534,7 @@ mod unit_tests {
 		let peer_manager = new_peer_manager_post_init!(&test_ctx, &mut descriptor, &transport);
 
 		peer_manager.process_events();
-		// assert!(descriptor.get_recording().is_empty());
+		assert!(descriptor.get_recording().is_empty());
 	}
 
 	// To reduce test expansion, the unconnected and connected transport tests are only run on one
@@ -2673,7 +2699,6 @@ mod unit_tests {
 	// Test that a post-Init connection:
 	// * process_events() sends nothing when it receives a BroadcastNodeAnnouncement if the
 	//   route_handler.handle_node_announcement returns false
-	// XXXBUG: Implementation does not check return value of handle_node_announcement, only that it didn't error
 	#[test]
 	fn post_init_broadcast_node_announcement_route_handler_handle_announcement_returns_false() {
 		let channel_handler = TestChannelMessageHandler::new();
@@ -2689,7 +2714,7 @@ mod unit_tests {
 		let peer_manager = new_peer_manager_post_init!(&test_ctx, &mut descriptor, &transport);
 
 		peer_manager.process_events();
-		// assert!(descriptor.get_recording().is_empty());
+		assert!(descriptor.get_recording().is_empty());
 	}
 
 	// Test that a post-Init connection:
@@ -2737,7 +2762,6 @@ mod unit_tests {
 	// Test that a post-Init connection:
 	// * process_events() sends nothing when it receives a BroadcastChannelUpdate if the
 	//   route_handler.handle_channel_update returns false
-	// XXXBUG: Implementation does not check return value of handle_node_announcement, only that it didn't error
 	#[test]
 	fn post_init_broadcast_channel_update_route_handler_handle_update_returns_false() {
 		let channel_handler = TestChannelMessageHandler::new();
@@ -2753,7 +2777,7 @@ mod unit_tests {
 		let peer_manager = new_peer_manager_post_init!(&test_ctx, &mut descriptor, &transport);
 
 		peer_manager.process_events();
-		// assert!(descriptor.get_recording().is_empty());
+		assert!(descriptor.get_recording().is_empty());
 	}
 
 	// Test that a post-Init connection:
