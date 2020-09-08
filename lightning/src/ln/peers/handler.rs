@@ -359,7 +359,7 @@ struct PeerManagerImpl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	message_handler: MessageHandler<CM, RM>,
 	peers: Mutex<PeerHolder<Descriptor, TransportImpl>>,
 	our_node_secret: SecretKey,
-	ephemeral_key_midstate: Sha256Engine,
+	ephemeral_key_midstate: Mutex<Sha256Engine>,
 
 	// Usize needs to be at least 32 bits to avoid overflowing both low and high. If usize is 64
 	// bits we will never realistically count into high:
@@ -512,7 +512,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				node_id_to_descriptor: HashMap::new()
 			}),
 			our_node_secret,
-			ephemeral_key_midstate,
+			ephemeral_key_midstate: Mutex::new(ephemeral_key_midstate),
 			peer_counter_low: AtomicUsize::new(0),
 			peer_counter_high: AtomicUsize::new(0),
 			logger,
@@ -525,7 +525,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
-		let mut ephemeral_hash = self.ephemeral_key_midstate.clone();
+		let mut ephemeral_hash = self.ephemeral_key_midstate.lock().unwrap().clone();
 		let low = self.peer_counter_low.fetch_add(1, Ordering::AcqRel);
 		let high = if low == 0 {
 			self.peer_counter_high.fetch_add(1, Ordering::AcqRel)
