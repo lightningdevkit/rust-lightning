@@ -732,77 +732,74 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, peer: &mut Peer<TransportImpl>, peers_needing_send: &mut HashSet<Descriptor>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>, data: &[u8]) -> Result<bool, PeerHandleError> {
-		let pause_read = {
-			match peer.transport.process_input(data, &mut peer.pending_outbound_buffer) {
-				Err(e) => {
-					log_trace!(self.logger, "Error while processing input: {}", e);
-					return Err(PeerHandleError { no_connection_possible: false })
-				},
-				Ok(newly_connected) => {
-					if newly_connected {
-						log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&peer.transport.get_their_node_id()));
-					}
 
-					if newly_connected && peer.outbound {
-						self.queue_init_message(peer_descriptor, peer, peers_needing_send);
-					}
+		match peer.transport.process_input(data, &mut peer.pending_outbound_buffer) {
+			Err(e) => {
+				log_trace!(self.logger, "Error while processing input: {}", e);
+				return Err(PeerHandleError { no_connection_possible: false })
+			},
+			Ok(newly_connected) => {
+				if newly_connected {
+					log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&peer.transport.get_their_node_id()));
+				}
 
-					// If the transport layer placed items in the outbound queue, we need
-					// to schedule ourselves for flush during the next process_events()
-					if !peer.pending_outbound_buffer.is_empty() {
-						peers_needing_send.insert(peer_descriptor.clone());
-					}
+				if newly_connected && peer.outbound {
+					self.queue_init_message(peer_descriptor, peer, peers_needing_send);
+				}
+
+				// If the transport layer placed items in the outbound queue, we need
+				// to schedule ourselves for flush during the next process_events()
+				if !peer.pending_outbound_buffer.is_empty() {
+					peers_needing_send.insert(peer_descriptor.clone());
 				}
 			}
+		}
 
-			let mut received_messages = peer.transport.drain_messages(&*self.logger)?;
+		let mut received_messages = peer.transport.drain_messages(&*self.logger)?;
 
-			if peer.transport.is_connected() && peer.post_init_state.is_none() && received_messages.len() > 0 {
-				let init_message = received_messages.remove(0);
-				self.process_init_message(init_message, peer_descriptor, peer, peers_needing_send, node_id_to_descriptor)?;
-			}
+		if peer.transport.is_connected() && peer.post_init_state.is_none() && received_messages.len() > 0 {
+			let init_message = received_messages.remove(0);
+			self.process_init_message(init_message, peer_descriptor, peer, peers_needing_send, node_id_to_descriptor)?;
+		}
 
-			for message in received_messages {
-				macro_rules! try_potential_handleerror {
-					($thing: expr) => {
-						match $thing {
-							Ok(x) => x,
-							Err(e) => {
-								match e.action {
-									msgs::ErrorAction::DisconnectPeer { msg: _ } => {
-										//TODO: Try to push msg
-										log_trace!(self.logger, "Got Err handling message, disconnecting peer because {}", e.err);
-										return Err(PeerHandleError{ no_connection_possible: false });
-									},
-									msgs::ErrorAction::IgnoreError => {
-										log_trace!(self.logger, "Got Err handling message, ignoring because {}", e.err);
-										continue;
-									},
-									msgs::ErrorAction::SendErrorMessage { msg } => {
-										log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
-										self.enqueue_message(peers_needing_send, &mut peer.transport, &mut peer.pending_outbound_buffer, peer_descriptor, &msg);
-										continue;
-									},
-								}
+		for message in received_messages {
+			macro_rules! try_potential_handleerror {
+				($thing: expr) => {
+					match $thing {
+						Ok(x) => x,
+						Err(e) => {
+							match e.action {
+								msgs::ErrorAction::DisconnectPeer { msg: _ } => {
+									//TODO: Try to push msg
+									log_trace!(self.logger, "Got Err handling message, disconnecting peer because {}", e.err);
+									return Err(PeerHandleError{ no_connection_possible: false });
+								},
+								msgs::ErrorAction::IgnoreError => {
+									log_trace!(self.logger, "Got Err handling message, ignoring because {}", e.err);
+									continue;
+								},
+								msgs::ErrorAction::SendErrorMessage { msg } => {
+									log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
+									self.enqueue_message(peers_needing_send, &mut peer.transport, &mut peer.pending_outbound_buffer, peer_descriptor, &msg);
+									continue;
+								},
 							}
-						};
-					}
-				}
-
-				if let Err(handling_error) = self.handle_message(message, peer_descriptor, peer, peers_needing_send) {
-					match handling_error {
-						MessageHandlingError::PeerHandleError(e) => { return Err(e) },
-						MessageHandlingError::LightningError(e) => {
-							try_potential_handleerror!(Err(e));
-						},
-					}
+						}
+					};
 				}
 			}
 
-			peer.pending_outbound_buffer.queue_space() == 0 // pause_read
-		};
+			if let Err(handling_error) = self.handle_message(message, peer_descriptor, peer, peers_needing_send) {
+				match handling_error {
+					MessageHandlingError::PeerHandleError(e) => { return Err(e) },
+					MessageHandlingError::LightningError(e) => {
+						try_potential_handleerror!(Err(e));
+					},
+				}
+			}
+		}
 
-		Ok(pause_read)
+		Ok(peer.pending_outbound_buffer.queue_space() == 0) // pause_read
 	}
 
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
