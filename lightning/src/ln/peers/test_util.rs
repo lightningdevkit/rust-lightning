@@ -251,6 +251,7 @@ impl TransportStubBuilder {
 				is_connected: false,
 				messages: vec![],
 				process_returns_error: false,
+				returned_newly_connected: false,
 				their_node_id: None,
 			}
 		}
@@ -276,6 +277,7 @@ pub(super) struct TransportStub {
 	is_connected: bool,
 	messages: Vec<Message>,
 	process_returns_error: bool,
+	returned_newly_connected: bool,
 	their_node_id: Option<PublicKey>,
 }
 
@@ -294,7 +296,7 @@ impl<'a> ITransport for &'a RefCell<TransportStub> {
 		unimplemented!()
 	}
 
-	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<(), String> {
+	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
 		self.borrow_mut().process_input(input, output_buffer)
 	}
 
@@ -343,11 +345,19 @@ impl ITransport for TransportStub {
 		unimplemented!()
 	}
 
-	fn process_input(&mut self, _input: &[u8], _output_buffer: &mut impl PayloadQueuer) -> Result<(), String> {
+	fn process_input(&mut self, _input: &[u8], _output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
 		if self.process_returns_error {
 			Err("Oh no!".to_string())
 		} else {
-			Ok(())
+			if self.is_connected() {
+
+				// Simulate the newly_connected behavior by returning Ok(true) on the first call
+				if !self.returned_newly_connected {
+					self.returned_newly_connected = true;
+					return Ok(true)
+				}
+			}
+			return Ok(false)
 		}
 	}
 

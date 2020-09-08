@@ -76,7 +76,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		}
 	}
 
-	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<(), String> {
+	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
 		match self.conduit {
 			// Continue handshake
 			None => {
@@ -91,14 +91,16 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 				if let Some((conduit, remote_pubkey)) = conduit_and_remote_pubkey_option {
 					self.conduit = Some(conduit);
 					self.their_node_id = Some(remote_pubkey);
+					Ok(true) // newly connected
+				} else {
+					Ok(false) // newly connected
 				}
 			}
 			Some(ref mut conduit) => {
 				conduit.read(input);
+				Ok(false) // newly connected
 			}
-		};
-
-		Ok(())
+		}
 	}
 
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError>
@@ -255,7 +257,7 @@ mod tests {
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubBytes>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(false));
 		assert!(!transport.is_connected());
 
 		assert_matches!(&spy[..], [_]);
@@ -267,7 +269,7 @@ mod tests {
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubBytes>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(false));
 		assert!(!transport.is_connected());
 
 		assert_matches!(&spy[..], [_]);
@@ -278,7 +280,7 @@ mod tests {
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 		assert!(transport.is_connected());
 	}
 
@@ -305,7 +307,7 @@ mod tests {
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 		let _no_panic = transport.get_their_node_id();
 	}
 
@@ -314,7 +316,7 @@ mod tests {
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 		let _no_panic = transport.get_their_node_id();
 	}
 
@@ -324,7 +326,7 @@ mod tests {
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 		assert!(transport.is_connected());
 		let _no_panic = transport.get_their_node_id();
 	}
@@ -365,7 +367,7 @@ mod tests {
 		let mut transport = create_inbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 
 		let ping = msgs::Ping {
 			ponglen: 0,
@@ -382,7 +384,7 @@ mod tests {
 		let mut transport = create_outbound_for_test::<PeerHandshakeTestStubComplete>();
 		let mut spy = Vec::new();
 
-		transport.process_input(&[], &mut spy).unwrap();
+		assert_eq!(transport.process_input(&[], &mut spy), Ok(true));
 
 		let ping = msgs::Ping {
 			ponglen: 0,
