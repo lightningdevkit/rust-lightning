@@ -31,6 +31,8 @@ use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 use ln::peers::outbound_queue::OutboundQueue;
 use ln::peers::transport::{PayloadQueuer, Transport};
+use bitcoin::hashes::core::iter::Filter;
+use std::collections::hash_map::IterMut;
 
 const MSG_BUFF_SIZE: usize = 10;
 
@@ -243,7 +245,7 @@ struct PeerHolder<Descriptor: SocketDescriptor, TransportImpl: ITransport> {
 }
 
 impl<Descriptor: SocketDescriptor, TransportImpl: ITransport> PeerHolder<Descriptor, TransportImpl> {
-	fn initialized_peer_by_node_id(&mut self, node_id: &PublicKey) -> Option<(Descriptor, &mut Peer<TransportImpl>)> {
+	fn initialized_peer_by_node_id_mut(&mut self, node_id: &PublicKey) -> Option<(Descriptor, &mut Peer<TransportImpl>)> {
 		match self.node_id_to_descriptor.get_mut(node_id) {
 			None => None,
 			Some(descriptor) => {
@@ -254,13 +256,47 @@ impl<Descriptor: SocketDescriptor, TransportImpl: ITransport> PeerHolder<Descrip
 					Some(peer) => {
 
 						// their_features is set after receiving an Init message
-						if !peer.is_initialized() {
+						if peer.post_init_state.is_none() {
 							None
 						} else {
 							Some((descriptor.clone(), peer))
 						}
 					}
 				}
+			}
+		}
+	}
+
+	// Returns the subset of peers that are initialized w/ their SocketDescriptor (mutable)
+	fn initialized_peers_mut<'a>(&'a mut self) -> Filter<IterMut<'a, Descriptor, Peer<TransportImpl>>, fn(&(&'a Descriptor, &'a mut Peer<TransportImpl>)) -> bool> {
+		self.peers.iter_mut().filter(| entry | {
+			entry.1.post_init_state.is_some()
+		})
+	}
+
+	// Returns the node id's of the subset of peers that are initialized
+	fn initialized_peer_node_ids(&self) -> Vec<PublicKey> {
+		self.node_id_to_descriptor.keys().cloned().collect()
+	}
+
+	// Removes all associated metadata for descriptor and returns the Peer object associated with it
+	fn remove_peer_by_descriptor(&mut self, descriptor: &Descriptor) -> Peer<TransportImpl> {
+		// may or may not be in this set depending on in-flight messages
+		self.peers_needing_send.remove(descriptor);
+
+		let peer_option = self.peers.remove(descriptor);
+		match peer_option {
+			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
+			Some(peer) => {
+				if peer.post_init_state.is_some() {
+					let their_node_id = peer.transport.get_their_node_id();
+
+					match self.node_id_to_descriptor.remove(&their_node_id) {
+						None => { panic!("Initialized peer must be in node_id_to_descriptor")}
+						Some(removed_descriptor) => { assert!(&removed_descriptor == descriptor, "Invalid PeerHolder state. Descriptors do not match!") }
+					}
+				}
+				peer
 			}
 		}
 	}
@@ -476,12 +512,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 	fn get_peer_node_ids(&self) -> Vec<PublicKey> {
 		let peers = self.peers.lock().unwrap();
-		peers.peers.values().filter_map(|p| {
-			if !p.is_initialized() {
-				return None;
-			}
-			Some(p.transport.get_their_node_id())
-		}).collect()
+		peers.initialized_peer_node_ids()
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -617,8 +648,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	fn read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
-		let result = {
-			let peers = &mut *self.peers.lock().unwrap();
+		let peers = &mut *self.peers.lock().unwrap();
+		let result  = {
 			let peer = match peers.peers.get_mut(peer_descriptor) {
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => peer
@@ -629,7 +660,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		match result {
 			Ok(res) => Ok(res),
 			Err(e) => {
-				self.disconnect_event_internal(peer_descriptor, e.no_connection_possible);
+				self.disconnect_event_internal(peer_descriptor, e.no_connection_possible, peers);
 				Err(e)
 			}
 		}
@@ -955,7 +986,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -966,7 +997,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -978,7 +1009,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id),
 								log_funding_channel_id!(msg.funding_txid, msg.funding_output_index));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -990,7 +1021,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1002,7 +1033,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1013,7 +1044,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1028,7 +1059,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								update_fulfill_htlcs.len(),
 								update_fail_htlcs.len(),
 								log_bytes!(commitment_signed.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							for msg in update_add_htlcs {
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							}
@@ -1054,7 +1085,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1065,7 +1096,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1076,7 +1107,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling Shutdown event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1087,7 +1118,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						log_trace!(self.logger, "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+						if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 							peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 							self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 						} else {
@@ -1097,9 +1128,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 						log_trace!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_announcement(msg).is_ok() && self.message_handler.route_handler.handle_channel_update(update_msg).is_ok() {
-							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.is_initialized() ||
-									!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
+							for (descriptor, peer) in peers.initialized_peers_mut() {
+								if !peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 									continue
 								}
 
@@ -1116,9 +1146,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
 						log_trace!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
 						if self.message_handler.route_handler.handle_node_announcement(msg).is_ok() {
-							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.is_initialized() ||
-										!peer.should_forward_node_announcement(msg.contents.node_id) {
+							for (descriptor, peer) in peers.initialized_peers_mut() {
+								if !peer.should_forward_node_announcement(msg.contents.node_id) {
 									continue
 								}
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
@@ -1129,9 +1158,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 						log_trace!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_update(msg).is_ok() {
-							for (ref descriptor, ref mut peer) in peers.peers.iter_mut() {
-								if !peer.is_initialized() ||
-									!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
+							for (descriptor, peer) in peers.initialized_peers_mut() {
+								if !peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 									continue
 								}
 								peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
@@ -1145,25 +1173,28 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					MessageSendEvent::HandleError { ref node_id, ref action } => {
 						match *action {
 							msgs::ErrorAction::DisconnectPeer { ref msg } => {
-								if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
-									peers.peers_needing_send.remove(&descriptor);
-									if let Some(mut peer) = peers.peers.remove(&descriptor) {
+								let descriptor_to_disconnect_option = match peers.initialized_peer_by_node_id_mut(node_id) {
+									None => { None /* ignore unknown or uninitialized peers */ }
+									Some((mut descriptor, peer)) => {
 										if let Some(ref msg) = *msg {
 											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
 													log_pubkey!(node_id),
 													msg.data);
-											if peer.transport.is_connected() {
-												peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
-											}
+											peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
+
 											// This isn't guaranteed to work, but if there is enough free
 											// room in the send buffer, put the error message there...
 											self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 										} else {
 											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 										}
+										Some(descriptor)
 									}
+								};
+
+								if let Some(mut descriptor) = descriptor_to_disconnect_option {
+									self.disconnect_event_internal(&descriptor, false, peers);
 									descriptor.disconnect_socket();
-									self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 								}
 							},
 							msgs::ErrorAction::IgnoreError => {},
@@ -1171,7 +1202,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id),
 										msg.data);
-								if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id(node_id) {
+								if let Some((mut descriptor, peer)) = peers.initialized_peer_by_node_id_mut(node_id) {
 									peer.transport.enqueue_message(msg, &mut peer.pending_outbound_buffer, &*self.logger);
 									self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
 								} else {
@@ -1193,81 +1224,41 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	fn socket_disconnected(&self, descriptor: &Descriptor) {
-		self.disconnect_event_internal(descriptor, false);
+		let peers = &mut *self.peers.lock().unwrap();
+		self.disconnect_event_internal(descriptor, false, peers);
 	}
 
-	fn disconnect_event_internal(&self, descriptor: &Descriptor, no_connection_possible: bool) {
-		let mut peers = self.peers.lock().unwrap();
-		peers.peers_needing_send.remove(descriptor);
-		let peer_option = peers.peers.remove(descriptor);
-		match peer_option {
-			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
-			Some(peer) => {
-				if peer.is_initialized() {
-					let their_node_id = peer.transport.get_their_node_id();
+	fn disconnect_event_internal(&self, descriptor: &Descriptor, no_connection_possible: bool, peers: &mut PeerHolder<Descriptor, TransportImpl>) {
+		let peer = peers.remove_peer_by_descriptor(descriptor);
 
-					match peers.node_id_to_descriptor.remove(&their_node_id) {
-						None => { panic!("Initialized peer must be in node_id_to_descriptor")}
-						Some(_) => {
-							peers.node_id_to_descriptor.remove(&their_node_id);
-							self.message_handler.chan_handler.peer_disconnected(&their_node_id, no_connection_possible);
-						}
-					}
-				}
-			}
-		};
+		if peer.is_initialized() {
+			self.message_handler.chan_handler.peer_disconnected(&peer.transport.get_their_node_id(), no_connection_possible);
+		}
 	}
 
 	fn timer_tick_occured(&self) {
-		let mut peers_lock = self.peers.lock().unwrap();
-		{
-			let peers = &mut *peers_lock;
-			let peers_needing_send = &mut peers.peers_needing_send;
-			let node_id_to_descriptor = &mut peers.node_id_to_descriptor;
-			let peers = &mut peers.peers;
-			let mut descriptors_needing_disconnect = Vec::new();
+		let peers = &mut *self.peers.lock().unwrap();
+		let mut descriptors_needing_disconnect = Vec::new();
 
-			peers.retain(|descriptor, peer| {
-				let needs_to_write_data = match peer.post_init_state {
-					None => return true, // retain
-					Some(ref mut post_init_state) => {
-						if post_init_state.awaiting_pong {
-							peers_needing_send.remove(descriptor);
-							descriptors_needing_disconnect.push(descriptor.clone());
-							let their_node_id = peer.transport.get_their_node_id();
-							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", their_node_id);
-							node_id_to_descriptor.remove(&their_node_id);
-							self.message_handler.chan_handler.peer_disconnected(&their_node_id, false);
-
-							return false; // retain
-						}
-
-						if peer.transport.is_connected() {
-							let ping = msgs::Ping {
-								ponglen: 0,
-								byteslen: 64,
-							};
-							peer.transport.enqueue_message(&ping, &mut peer.pending_outbound_buffer, &*self.logger);
-							post_init_state.awaiting_pong = true;
-
-							true // needs_to_write_data
-						} else {
-							false // !needs_to_write_data
-						}
-					}
+		for (descriptor, peer) in peers.initialized_peers_mut() {
+			// Mark peers that haven't sent a pong for disconnect
+			if peer.post_init_state.as_ref().unwrap().awaiting_pong {
+				log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", &peer.transport.get_their_node_id());
+				descriptors_needing_disconnect.push(descriptor.clone());
+			} else {
+				let ping = msgs::Ping {
+					ponglen: 0,
+					byteslen: 64,
 				};
-
-				if needs_to_write_data {
-					let mut descriptor_clone = descriptor.clone();
-					self.do_attempt_write_data(&mut descriptor_clone, &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
-				}
-
-				true // retain
-			});
-
-			for mut descriptor in descriptors_needing_disconnect.drain(..) {
-				descriptor.disconnect_socket();
+				peer.transport.enqueue_message(&ping, &mut peer.pending_outbound_buffer, &*self.logger);
+				self.do_attempt_write_data(&mut descriptor.clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.pending_outbound_buffer);
+				peer.post_init_state.as_mut().unwrap().awaiting_pong = true;
 			}
+		}
+
+		for mut descriptor in descriptors_needing_disconnect.drain(..) {
+			self.disconnect_event_internal(&descriptor, false, peers);
+			descriptor.disconnect_socket();
 		}
 	}
 }
