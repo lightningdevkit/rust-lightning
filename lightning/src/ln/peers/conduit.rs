@@ -28,18 +28,12 @@ const KEY_ROTATION_INDEX: u32 = 1000;
 /// Returned after a successful handshake to encrypt and decrypt communication with peer nodes.
 /// It should not normally be manually instantiated.
 /// Automatically handles key rotation.
-/// For decryption, it is recommended to call `decrypt_message_stream` for automatic buffering.
 pub struct Conduit {
-	pub(super) encryptor: Encryptor,
-
-	#[cfg(feature = "fuzztarget")]
+	pub encryptor: Encryptor,
 	pub decryptor: Decryptor,
-	#[cfg(not(feature = "fuzztarget"))]
-	pub(super) decryptor: Decryptor,
-
 }
 
-pub(super) struct Encryptor {
+pub struct Encryptor {
 	sending_key: SymmetricKey,
 	sending_chaining_key: SymmetricKey,
 	sending_nonce: u32,
@@ -83,15 +77,6 @@ impl Conduit {
 		}
 	}
 
-	/// Encrypt data to be sent to peer
-	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
-		self.encryptor.encrypt(buffer)
-	}
-
-	pub(super) fn read(&mut self, data: &[u8]) -> Result<(), String>{
-		self.decryptor.read(data)
-	}
-
 	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
 		*nonce += 1;
 		if *nonce == KEY_ROTATION_INDEX {
@@ -108,7 +93,7 @@ impl Conduit {
 }
 
 impl Encryptor {
-	pub(super) fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
+	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
 		if buffer.len() > LN_MAX_MSG_LEN {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
@@ -259,7 +244,7 @@ mod tests {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
 
 		let message: Vec<u8> = vec![];
-		let encrypted_message = connected_peer.encrypt(&message);
+		let encrypted_message = connected_peer.encryptor.encrypt(&message);
 		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
 
 		remote_peer.decryptor.read(&encrypted_message[..]).unwrap();
@@ -275,7 +260,7 @@ mod tests {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
 
 		let message: Vec<u8> = vec![1];
-		let encrypted_message = connected_peer.encrypt(&message);
+		let encrypted_message = connected_peer.encryptor.encrypt(&message);
 
 		remote_peer.decryptor.read(&encrypted_message[..1]).unwrap();
 		assert!(remote_peer.decryptor.next().is_none());
@@ -292,7 +277,7 @@ mod tests {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
 
 		let message: Vec<u8> = vec![1];
-		let encrypted_message = connected_peer.encrypt(&message);
+		let encrypted_message = connected_peer.encryptor.encrypt(&message);
 
 		remote_peer.decryptor.read(&encrypted_message[..20]).unwrap();
 		assert!(remote_peer.decryptor.next().is_none());
@@ -308,11 +293,11 @@ mod tests {
 		let (mut connected_peer, _remote_peer) = setup_peers();
 		let message = hex::decode("68656c6c6f").unwrap();
 
-		let encrypted_message = connected_peer.encrypt(&message);
+		let encrypted_message = connected_peer.encryptor.encrypt(&message);
 		assert_eq!(encrypted_message, hex::decode("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
 
 		// the second time the same message is encrypted, the ciphertext should be different
-		let encrypted_message = connected_peer.encrypt(&message);
+		let encrypted_message = connected_peer.encryptor.encrypt(&message);
 		assert_eq!(encrypted_message, hex::decode("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
 	}
 
@@ -325,7 +310,7 @@ mod tests {
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
 		for _ in 0..1002 {
-			let encrypted_message = connected_peer.encrypt(&message);
+			let encrypted_message = connected_peer.encryptor.encrypt(&message);
 			encrypted_messages.push(encrypted_message);
 		}
 
@@ -343,7 +328,7 @@ mod tests {
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
 		for _ in 0..1002 {
-			let encrypted_message = connected_peer.encrypt(&message);
+			let encrypted_message = connected_peer.encryptor.encrypt(&message);
 			encrypted_messages.push(encrypted_message);
 		}
 
@@ -352,7 +337,7 @@ mod tests {
 			let mut current_encrypted_message = encrypted_messages.remove(0);
 			let next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
-			remote_peer.read(&current_encrypted_message[..]).unwrap();
+			remote_peer.decryptor.read(&current_encrypted_message[..]).unwrap();
 
 			let decrypted_message = remote_peer.decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
@@ -360,7 +345,7 @@ mod tests {
 
 		for _ in 0..501 {
 			// decrypt messages directly from buffer without adding to it
-			remote_peer.read(&[]).unwrap();
+			remote_peer.decryptor.read(&[]).unwrap();
 			let decrypted_message = remote_peer.decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
@@ -370,10 +355,10 @@ mod tests {
 	#[test]
 	fn decryption_failure_errors() {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
+		let encrypted = remote_peer.encryptor.encrypt(&[1]);
 
 		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.read(&encrypted), Err("invalid hmac".to_string()));
+		assert_eq!(connected_peer.decryptor.read(&encrypted), Err("invalid hmac".to_string()));
 	}
 
 	// Test next()::None
@@ -388,8 +373,8 @@ mod tests {
 	#[test]
 	fn decryptor_iterator_one_item_valid() {
 		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encrypt(&[1]);
-		connected_peer.read(&encrypted).unwrap();
+		let encrypted = remote_peer.encryptor.encrypt(&[1]);
+		connected_peer.decryptor.read(&encrypted).unwrap();
 
 		assert_eq!(connected_peer.decryptor.next(), Some(vec![1]));
 		assert_eq!(connected_peer.decryptor.next(), None);
@@ -406,7 +391,7 @@ mod tests {
 	fn max_message_len_encryption() {
 		let (mut connected_peer, _) = setup_peers();
 		let msg = [4u8; LN_MAX_MSG_LEN + 1];
-		let _should_panic = connected_peer.encrypt(&msg);
+		let _should_panic = connected_peer.encryptor.encrypt(&msg);
 	}
 
 	#[test]
@@ -416,6 +401,6 @@ mod tests {
 
 		// MSG should not exceed LN_MAX_MSG_LEN + 16
 		let msg = [4u8; LN_MAX_MSG_LEN + 17];
-		connected_peer.read(&msg).unwrap();
+		connected_peer.decryptor.read(&msg).unwrap();
 	}
 }
