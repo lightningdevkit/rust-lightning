@@ -45,7 +45,7 @@ use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
 use chain::Filter;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use chain::transaction::OutPoint;
+use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
 use util::ser::{Readable, MaybeReadable, Writer, Writeable, U48};
@@ -230,7 +230,7 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// [`ChannelMonitor::block_connected`]: struct.ChannelMonitor.html#method.block_connected
 	/// [`chain::Watch::release_pending_monitor_events`]: ../../chain/trait.Watch.html#tymethod.release_pending_monitor_events
 	/// [`chain::Filter`]: ../../chain/trait.Filter.html
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) -> bool {
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> bool {
 		let mut has_new_outputs_to_watch = false;
 		{
 			let mut monitors = self.monitors.lock().unwrap();
@@ -1865,7 +1865,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// [`get_outputs_to_watch`].
 	///
 	/// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<TxOut>)>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -1995,7 +1995,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
 	/// transactions thereof.
-	fn filter_block<'a>(&self, txdata: &[(usize, &'a Transaction)]) -> Vec<&'a Transaction> {
+	fn filter_block<'a>(&self, txdata: &TransactionData<'a>) -> Vec<&'a Transaction> {
 		let mut matched_txn = HashSet::new();
 		txdata.iter().filter(|&&(_, tx)| {
 			let mut matches = self.spends_watched_output(tx);

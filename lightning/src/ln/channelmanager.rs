@@ -19,7 +19,6 @@
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -37,7 +36,7 @@ use bitcoin::secp256k1;
 use chain;
 use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use chain::transaction::OutPoint;
+use chain::transaction::{OutPoint, TransactionData};
 use ln::channel::{Channel, ChannelError};
 use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use ln::features::{InitFeatures, NodeFeatures};
@@ -3060,7 +3059,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
         L::Target: Logger,
 {
 	/// Updates channel state based on transactions seen in a connected block.
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &[(usize, &Transaction)], height: u32) {
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		let header_hash = header.block_hash();
 		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
 		let _ = self.total_consistency_lock.read().unwrap();
