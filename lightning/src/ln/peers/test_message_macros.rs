@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 /// Helper macros that construct fake Messages. Useful in tests that don't care about the contents.
 
 macro_rules! fake_public_key {
@@ -259,6 +268,7 @@ macro_rules! fake_channel_update_msg {
 				flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
+				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				excess_data: vec![]

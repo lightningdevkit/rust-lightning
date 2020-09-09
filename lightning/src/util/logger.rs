@@ -1,11 +1,11 @@
 // Pruned copy of crate rust log, without global logger
 // https://github.com/rust-lang-nursery/log #7a60286
 //
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
 
 //! Log traits live here, which are called throughout the library to provide useful information for
 //! debugging purposes.
@@ -86,6 +86,7 @@ impl Level {
 
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
+/// (C-not exported) - we convert to a const char* instead
 #[derive(Clone,Debug)]
 pub struct Record<'a> {
 	/// The verbosity level of the message.
@@ -102,6 +103,7 @@ pub struct Record<'a> {
 
 impl<'a> Record<'a> {
 	/// Returns a new Record.
+	/// (C-not exported) as fmt can't be used in C
 	#[inline]
 	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'a str, file: &'a str, line: u32) -> Record<'a> {
 		Record {

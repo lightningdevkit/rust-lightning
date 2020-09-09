@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 use chain::chaininterface;
 use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
 use chain::transaction::OutPoint;
@@ -5,13 +14,13 @@ use chain::keysinterface;
 use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::channelmonitor::HTLCUpdate;
+use ln::msgs::*;
+use ln::channelmonitor::MonitorEvent;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
-use bitcoin::BitcoinHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::{Builder, Script};
@@ -22,9 +31,10 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
-use ln::msgs::*;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::{Mutex};
+use regex;
+
+use std::time::Duration;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
 use std::collections::HashMap;
@@ -41,10 +51,10 @@ impl Writer for TestVecWriter {
 }
 
 pub struct TestFeeEstimator {
-	pub sat_per_kw: u64,
+	pub sat_per_kw: u32,
 }
 impl chaininterface::FeeEstimator for TestFeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, _confirmation_target: ConfirmationTarget) -> u64 {
+	fn get_est_sat_per_1000_weight(&self, _confirmation_target: ConfirmationTarget) -> u32 {
 		self.sat_per_kw
 	}
 }
@@ -118,8 +128,8 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 		ret
 	}
 
-	fn get_and_clear_pending_htlcs_updated(&self) -> Vec<HTLCUpdate> {
-		return self.simple_monitor.get_and_clear_pending_htlcs_updated();
+	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.simple_monitor.get_and_clear_pending_monitor_events();
 	}
 }
 
@@ -408,7 +418,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
 		features: ChannelFeatures::known(),
-		chain_hash: genesis_block(network).header.bitcoin_hash(),
+		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
 		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
 		node_id_2: PublicKey::from_secret_key(&secp_ctx, &node_2_privkey),
@@ -432,12 +442,13 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	msgs::ChannelUpdate {
 		signature: Signature::from(FFISignature::new()),
 		contents: msgs::UnsignedChannelUpdate {
-			chain_hash: genesis_block(network).header.bitcoin_hash(),
+			chain_hash: genesis_block(network).header.block_hash(),
 			short_channel_id: short_chan_id,
 			timestamp: 0,
 			flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: vec![],
@@ -590,15 +601,15 @@ impl TestRoutingMessageHandler {
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError })
+		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
@@ -650,6 +661,30 @@ impl TestLogger {
 		let log_entries = self.lines.lock().unwrap();
 		assert_eq!(log_entries.get(&(module, line)), Some(&count));
 	}
+
+	/// Search for the number of occurrence of the logged lines which
+	/// 1. belongs to the specified module and
+	/// 2. contains `line` in it.
+	/// And asserts if the number of occurrences is the same with the given `count`
+	pub fn assert_log_contains(&self, module: String, line: String, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
+			m == &module && l.contains(line.as_str())
+		}).map(|(_, c) | { c }).sum();
+		assert_eq!(l, count)
+	}
+
+    /// Search for the number of occurrences of logged lines which
+    /// 1. belong to the specified module and
+    /// 2. match the given regex pattern.
+    /// Assert that the number of occurrences equals the given `count`
+	pub fn assert_log_regex(&self, module: String, pattern: regex::Regex, count: usize) {
+		let log_entries = self.lines.lock().unwrap();
+		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
+			m == &module && pattern.is_match(&l)
+		}).map(|(_, c) | { c }).sum();
+		assert_eq!(l, count)
+	}
 }
 
 impl Logger for TestLogger {
@@ -663,7 +698,7 @@ impl Logger for TestLogger {
 
 pub struct TestKeysInterface {
 	backing: keysinterface::KeysManager,
-	pub override_session_priv: Mutex<Option<SecretKey>>,
+	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 }
 
@@ -677,24 +712,25 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		EnforcingChannelKeys::new(self.backing.get_channel_keys(inbound, channel_value_satoshis))
 	}
 
-	fn get_onion_rand(&self) -> (SecretKey, [u8; 32]) {
-		match *self.override_session_priv.lock().unwrap() {
-			Some(key) => (key.clone(), [0; 32]),
-			None => self.backing.get_onion_rand()
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let override_channel_id = self.override_channel_id_priv.lock().unwrap();
+		let override_session_key = self.override_session_priv.lock().unwrap();
+		if override_channel_id.is_some() && override_session_key.is_some() {
+			panic!("We don't know which override key to use!");
 		}
-	}
-
-	fn get_channel_id(&self) -> [u8; 32] {
-		match *self.override_channel_id_priv.lock().unwrap() {
-			Some(key) => key.clone(),
-			None => self.backing.get_channel_id()
+		if let Some(key) = &*override_channel_id {
+			return *key;
 		}
+		if let Some(key) = &*override_session_key {
+			return *key;
+		}
+		self.backing.get_secure_random_bytes()
 	}
 }
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
-		let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards");
+		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
 			backing: keysinterface::KeysManager::new(seed, network, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),
@@ -721,8 +757,8 @@ impl ChainWatchInterface for TestChainWatcher {
 	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
 	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
 	fn watch_all_txn(&self) { }
-	fn filter_block<'a>(&self, _block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
-		(Vec::new(), Vec::new())
+	fn filter_block<'a>(&self, _block: &'a Block) -> Vec<usize> {
+		Vec::new()
 	}
 	fn reentered(&self) -> usize { 0 }
 

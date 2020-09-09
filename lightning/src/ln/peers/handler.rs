@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Top level peer message handling and socket handling logic lives here.
 //!
 //! Instead of actually servicing sockets ourselves we require that you implement the
@@ -20,7 +29,7 @@ use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cmp,error,hash,fmt};
@@ -237,7 +246,10 @@ impl<TransportImpl: ITransport> Peer<TransportImpl> {
 
 struct PeerHolder<Descriptor: SocketDescriptor, TransportImpl: ITransport> {
 	peers: HashMap<Descriptor, Peer<TransportImpl>>,
-	/// Peers in this map have completed the NOISE handshake and received an Init message
+	/// Added to by do_read_event for cases where we pushed a message onto the send buffer but
+	/// didn't call do_attempt_write_data to avoid reentrancy. Cleared in process_events()
+	peers_needing_send: HashSet<Descriptor>,
+	/// Only add to this set when noise completes:
 	node_id_to_descriptor: HashMap<PublicKey, Descriptor>,
 }
 
@@ -278,6 +290,9 @@ impl<Descriptor: SocketDescriptor, TransportImpl: ITransport> PeerHolder<Descrip
 
 	// Removes all associated metadata for descriptor and returns the Peer object associated with it
 	fn remove_peer_by_descriptor(&mut self, descriptor: &Descriptor) -> Peer<TransportImpl> {
+		// may or may not be in this set depending on in-flight messages
+		self.peers_needing_send.remove(descriptor);
+
 		let peer_option = self.peers.remove(descriptor);
 		match peer_option {
 			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
@@ -293,23 +308,6 @@ impl<Descriptor: SocketDescriptor, TransportImpl: ITransport> PeerHolder<Descrip
 				peer
 			}
 		}
-	}
-
-	// Returns the collection of peers that have data to send. Could be due to items in their outbound
-	// queue or sync messages that need to be sent out.
-	fn peers_needing_send<'a>(&'a mut self) -> Filter<IterMut<'a, Descriptor, Peer<TransportImpl>>, fn(&(&'a Descriptor, &'a mut Peer<TransportImpl>)) -> bool> {
-		self.peers.iter_mut().filter(|(_, peer)| {
-			let has_outbound_sync = match &peer.post_init_state {
-				None => false,
-				Some(post_init_state) => match &post_init_state.sync_status {
-					InitSyncTracker::NoSyncRequested => false,
-					InitSyncTracker::ChannelsSyncing(_) => true,
-					InitSyncTracker::NodesSyncing(_) => true,
-				}
-			};
-
-			has_outbound_sync || !peer.outbound_queue.is_empty()
-		})
 	}
 }
 
@@ -510,6 +508,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			message_handler,
 			peers: Mutex::new(PeerHolder {
 				peers: HashMap::new(),
+				peers_needing_send: HashSet::new(),
 				node_id_to_descriptor: HashMap::new()
 			}),
 			our_node_secret,
@@ -568,7 +567,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 	// Fill remaining slots in output queue with sync messages, updating the sync state when
 	// appropriate
-	fn fill_outbound_queue_with_sync<Q: PayloadQueuer + SocketDescriptorFlusher>(
+	fn fill_message_queue_with_sync<Q: PayloadQueuer + SocketDescriptorFlusher>(
 		&self,
 		sync_status: &mut InitSyncTracker,
 		message_queuer: &mut impl MessageQueuer,
@@ -633,7 +632,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			// If connected, fill output queue with sync messages
 			match post_init_state {
 				None => {},
-				&mut Some(ref mut state) => self.fill_outbound_queue_with_sync(&mut state.sync_status, message_queuer, outbound_queue)
+				&mut Some(ref mut state) => self.fill_message_queue_with_sync(&mut state.sync_status, message_queuer, outbound_queue)
 			}
 
 			// No messages to send
@@ -664,7 +663,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => peer
 			};
-			self.do_read_event(peer_descriptor, peer, &mut peers.node_id_to_descriptor, data)
+			self.do_read_event(peer_descriptor, peer, &mut peers.peers_needing_send, &mut peers.node_id_to_descriptor, data)
 		};
 
 		match result {
@@ -674,6 +673,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				Err(e)
 			}
 		}
+	}
+
+	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
+	fn enqueue_message<M: Encode + Writeable>(&self, peers_needing_send: &mut HashSet<Descriptor>, message_queuer: &mut impl MessageQueuer, output_buffer: &mut impl PayloadQueuer, descriptor: &Descriptor, message: &M) {
+		message_queuer.enqueue_message(message, output_buffer, &*self.logger);
+		peers_needing_send.insert(descriptor.clone());
 	}
 
 	// Returns a valid PostInitState given a Init message
@@ -711,18 +716,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	// Add an Init message to the outbound queue
-	fn enqueue_init_message(&self, peer: &mut Peer<TransportImpl>) {
+	fn queue_init_message(&self, descriptor: &Descriptor, peer: &mut Peer<TransportImpl>, peers_needing_send: &mut HashSet<Descriptor>) {
 		let mut features = InitFeatures::known();
 		if !self.message_handler.route_handler.should_request_full_sync(&peer.transport.get_their_node_id()) {
 			features.clear_initial_routing_sync();
 		}
 
 		let resp = msgs::Init { features };
-		peer.transport.enqueue_message(&resp, &mut peer.outbound_queue, &*self.logger);
+		self.enqueue_message(peers_needing_send, &mut peer.transport, &mut peer.outbound_queue, descriptor, &resp);
 	}
 
 	// Process an incoming Init message and set Peer and PeerManager state accordingly
-	fn process_init_message(&self, message: Message, descriptor: &Descriptor, peer: &mut Peer<TransportImpl>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>) -> Result<(), PeerHandleError> {
+	fn process_init_message(&self, message: Message, descriptor: &Descriptor, peer: &mut Peer<TransportImpl>, peers_needing_send: &mut HashSet<Descriptor>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>) -> Result<(), PeerHandleError> {
 		let their_node_id = peer.transport.get_their_node_id();
 
 		match message {
@@ -735,10 +740,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 				let new_post_init_state = self.post_init_state_from_init_message(init_message, &their_node_id)?;
 
-				if !peer.outbound {
-					self.enqueue_init_message(peer);
+				if let InitSyncTracker::ChannelsSyncing(_) = new_post_init_state.sync_status {
+					peers_needing_send.insert(descriptor.clone());
 				}
 
+				if !peer.outbound {
+					self.queue_init_message(descriptor, peer, peers_needing_send);
+				}
 				node_id_to_descriptor.insert(their_node_id.clone(), descriptor.clone());
 				self.message_handler.chan_handler.peer_connected(&their_node_id, init_message);
 
@@ -754,7 +762,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		Ok(())
 	}
 
-	fn do_read_event(&self, peer_descriptor: &mut Descriptor, peer: &mut Peer<TransportImpl>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>, data: &[u8]) -> Result<bool, PeerHandleError> {
+	fn do_read_event(&self, peer_descriptor: &mut Descriptor, peer: &mut Peer<TransportImpl>, peers_needing_send: &mut HashSet<Descriptor>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>, data: &[u8]) -> Result<bool, PeerHandleError> {
 
 		match peer.transport.process_input(data, &mut peer.outbound_queue) {
 			Err(e) => {
@@ -767,7 +775,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 
 				if newly_connected && peer.outbound {
-					self.enqueue_init_message(peer);
+					self.queue_init_message(peer_descriptor, peer, peers_needing_send);
+				}
+
+				// If the transport layer placed items in the outbound queue, we need
+				// to schedule ourselves for flush during the next process_events()
+				if !peer.outbound_queue.is_empty() {
+					peers_needing_send.insert(peer_descriptor.clone());
 				}
 			}
 		}
@@ -776,7 +790,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 		if peer.transport.is_connected() && peer.post_init_state.is_none() && received_messages.len() > 0 {
 			let init_message = received_messages.remove(0);
-			self.process_init_message(init_message, peer_descriptor, peer, node_id_to_descriptor)?;
+			self.process_init_message(init_message, peer_descriptor, peer, peers_needing_send, node_id_to_descriptor)?;
 		}
 
 		for message in received_messages {
@@ -797,7 +811,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 								},
 								msgs::ErrorAction::SendErrorMessage { msg } => {
 									log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
-									peer.transport.enqueue_message(&msg, &mut peer.outbound_queue, &*self.logger);
+									self.enqueue_message(peers_needing_send, &mut peer.transport, &mut peer.outbound_queue, peer_descriptor, &msg);
 									continue;
 								},
 							}
@@ -806,7 +820,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 			}
 
-			if let Err(handling_error) = self.handle_message(message, peer) {
+			if let Err(handling_error) = self.handle_message(message, peer_descriptor, peer, peers_needing_send) {
 				match handling_error {
 					MessageHandlingError::PeerHandleError(e) => { return Err(e) },
 					MessageHandlingError::LightningError(e) => {
@@ -822,7 +836,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
 	fn handle_message(&self,
 	                  message: wire::Message,
-	                  peer: &mut Peer<TransportImpl>) -> Result<(), MessageHandlingError> {
+	                  peer_descriptor: &mut Descriptor,
+	                  peer: &mut Peer<TransportImpl>,
+	                  peers_needing_send: &mut HashSet<Descriptor>) -> Result<(), MessageHandlingError> {
 
 		let their_node_id = peer.transport.get_their_node_id();
 		let post_init_state = peer.post_init_state.as_mut().unwrap();
@@ -857,7 +873,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			wire::Message::Ping(msg) => {
 				if msg.ponglen < 65532 {
 					let resp = msgs::Pong { byteslen: msg.ponglen };
-					peer.transport.enqueue_message(&resp, &mut peer.outbound_queue, &*self.logger);
+					self.enqueue_message(peers_needing_send, &mut peer.transport, &mut peer.outbound_queue, &peer_descriptor, &resp);
 				}
 			},
 			wire::Message::Pong(_msg) => {
@@ -1194,28 +1210,25 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					MessageSendEvent::HandleError { ref node_id, ref action } => {
 						match *action {
 							msgs::ErrorAction::DisconnectPeer { ref msg } => {
-								let descriptor_to_disconnect_option = match peers.initialized_peer_by_node_id_mut(node_id) {
-									None => { None /* ignore unknown or uninitialized peers */ }
-									Some((mut descriptor, peer)) => {
+								if let Some(mut descriptor) = peers.node_id_to_descriptor.remove(node_id) {
+									peers.peers_needing_send.remove(&descriptor);
+									if let Some(mut peer) = peers.peers.remove(&descriptor) {
 										if let Some(ref msg) = *msg {
 											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
 													log_pubkey!(node_id),
 													msg.data);
-											peer.transport.enqueue_message(msg, &mut peer.outbound_queue, &*self.logger);
-
+											if peer.transport.is_connected() {
+												peer.transport.enqueue_message(msg, &mut peer.outbound_queue, &*self.logger);
+											}
 											// This isn't guaranteed to work, but if there is enough free
 											// room in the send buffer, put the error message there...
 											self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.outbound_queue);
 										} else {
 											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 										}
-										Some(descriptor)
 									}
-								};
-
-								if let Some(mut descriptor) = descriptor_to_disconnect_option {
-									self.disconnect_event_internal(&descriptor, false, peers);
 									descriptor.disconnect_socket();
+									self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 								}
 							},
 							msgs::ErrorAction::IgnoreError => {},
@@ -1235,8 +1248,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 			}
 
-			for (descriptor, peer) in peers.peers_needing_send() {
-				self.do_attempt_write_data(&mut descriptor.clone(), &mut peer.post_init_state, &mut peer.transport, &mut peer.outbound_queue);
+			for mut descriptor in peers.peers_needing_send.drain() {
+				match peers.peers.get_mut(&descriptor) {
+					Some(peer) => self.do_attempt_write_data(&mut descriptor, &mut peer.post_init_state, &mut peer.transport, &mut peer.outbound_queue),
+					None => panic!("Inconsistent peers set state!"),
+				}
 			}
 		}
 	}
@@ -2000,7 +2016,7 @@ mod unit_tests {
 	#[test]
 	fn post_init_handle_channel_announcement_disconnect_peer() {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::DisconnectPeer { msg: None } });
+		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::DisconnectPeer { msg: None } });
 		let test_ctx = TestCtx::<ChannelMessageHandlerTestSpy, RoutingMessageHandlerTestStub>::with_routing_handler(routing_handler);
 		let mut descriptor = SocketDescriptorMock::new();
 		let transport = new_connected_transport!(&test_ctx);
@@ -2039,7 +2055,7 @@ mod unit_tests {
 	//   returns ErrorAction::IgnoreError
 	generate_broadcast_message_test!(post_init_handle_channel_announcement_ignore_error, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		routing_handler
 	},
 	Message::ChannelAnnouncement(fake_channel_announcement_msg!(0, fake_public_key!(), fake_public_key!())),
@@ -2052,7 +2068,7 @@ mod unit_tests {
 	// * process_events() sends an ErrorMessage
 	generate_broadcast_message_test!(post_init_handle_channel_announcement_send_error_message, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
+		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
 		routing_handler
 	},
 	Message::ChannelAnnouncement(fake_channel_announcement_msg!(0, fake_public_key!(), fake_public_key!())),
@@ -2091,7 +2107,7 @@ mod unit_tests {
 	//   returns ErrorAction::IgnoreError
 	generate_broadcast_message_test!(post_init_handle_node_announcement_ignore_error, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		routing_handler
 	},
 	Message::NodeAnnouncement(fake_node_announcement_msg!()),
@@ -2104,7 +2120,7 @@ mod unit_tests {
 	// * process_events() sends an ErrorMessage
 	generate_broadcast_message_test!(post_init_handle_node_announcement_send_error_message, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
+		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
 		routing_handler
 	},
 	Message::NodeAnnouncement(fake_node_announcement_msg!()),
@@ -2143,7 +2159,7 @@ mod unit_tests {
 	//   returns ErrorAction::IgnoreError
 	generate_broadcast_message_test!(post_init_handle_channel_update_ignore_error, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		routing_handler
 	},
 	Message::ChannelUpdate(fake_channel_update_msg!()),
@@ -2156,7 +2172,7 @@ mod unit_tests {
 	// * process_events() sends an ErrorMessage
 	generate_broadcast_message_test!(post_init_handle_channel_update_send_error_message, {
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
+		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::SendErrorMessage { msg: ErrorMessage { channel_id: [0; 32], data: "".to_string() } } });
 		routing_handler
 	},
 	Message::ChannelUpdate(fake_channel_update_msg!()),
@@ -2437,7 +2453,7 @@ mod unit_tests {
 	fn post_init_broadcast_channel_announcement_route_handler_handle_announcement_errors() {
 		let channel_handler = TestChannelMessageHandler::new();
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_channel_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		channel_handler.pending_events.lock().unwrap().push(BroadcastChannelAnnouncement {
 			msg: fake_channel_announcement_msg!(0, fake_public_key!(), fake_public_key!()),
 			update_msg: fake_channel_update_msg!()
@@ -2459,7 +2475,7 @@ mod unit_tests {
 	fn post_init_broadcast_channel_announcement_route_handler_handle_update_errors() {
 		let channel_handler = TestChannelMessageHandler::new();
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		channel_handler.pending_events.lock().unwrap().push(BroadcastChannelAnnouncement {
 			msg: fake_channel_announcement_msg!(0, fake_public_key!(), fake_public_key!()),
 			update_msg: fake_channel_update_msg!()
@@ -2663,7 +2679,7 @@ mod unit_tests {
 	fn post_init_broadcast_node_announcement_route_handler_handle_announcement_errors() {
 		let channel_handler = TestChannelMessageHandler::new();
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_node_announcement_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		channel_handler.pending_events.lock().unwrap().push(BroadcastNodeAnnouncement {
 			msg: fake_node_announcement_msg!()
 		});
@@ -2726,7 +2742,7 @@ mod unit_tests {
 	fn post_init_broadcast_channel_update_route_handler_handle_update_errors() {
 		let channel_handler = TestChannelMessageHandler::new();
 		let mut routing_handler = RoutingMessageHandlerTestStub::new();
-		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "", action: msgs::ErrorAction::IgnoreError });
+		routing_handler.handle_channel_update_return = Err(msgs::LightningError { err: "".to_string(), action: msgs::ErrorAction::IgnoreError });
 		channel_handler.pending_events.lock().unwrap().push(BroadcastChannelUpdate {
 			msg: fake_channel_update_msg!()
 		});
@@ -3059,8 +3075,6 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
-	use rand::{thread_rng, Rng};
-
 	use std;
 	use std::sync::{Arc, Mutex};
 	use std::sync::atomic::Ordering;
@@ -3114,18 +3128,12 @@ mod tests {
 
 	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>> {
 		let mut peers = Vec::new();
-		let mut rng = thread_rng();
-		let mut ephemeral_bytes = [0; 32];
-		rng.fill_bytes(&mut ephemeral_bytes);
 
 		for i in 0..peer_count {
-			let node_id = {
-				let mut key_slice = [0;32];
-				rng.fill_bytes(&mut key_slice);
-				SecretKey::from_slice(&key_slice).unwrap()
-			};
+			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler };
-			let peer = PeerManager::new(msg_handler, node_id, &ephemeral_bytes, &cfgs[i].logger);
+			let peer = PeerManager::new(msg_handler, node_secret, &ephemeral_bytes, &cfgs[i].logger);
 			peers.push(peer);
 		}
 

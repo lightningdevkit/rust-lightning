@@ -8,8 +8,8 @@ jobs:
       matrix:
         toolchain: [ stable,
                      beta,
-                     # 1.22.0 is MSRV for rust-lightning in general:
-                     1.22.0,
+                     # 1.30.0 is MSRV for Rust-Lightning
+                     1.30.0,
                      # 1.34.2 is Debian stable
                      1.34.2,
                      # 1.39.0 is MSRV for lightning-net-tokio and generates coverage
@@ -22,6 +22,7 @@ jobs:
           - toolchain: 1.39.0
             build-net-tokio: true
             coverage: true
+          - toolchain: 1.34.2
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -71,6 +72,10 @@ jobs:
         if: matrix.coverage
         uses: codecov/codecov-action@v1
         with:
+          # Could you use this to fake the coverage report for your PR? Sure.
+          # Will anyone be impressed by your amazing coverage? No
+          # Maybe if codecov wasn't broken we wouldn't need to do this...
+          token: f421b687-4dc2-4387-ac3d-dc3b2528af57
           fail_ci_if_error: true
 
   fuzz:
@@ -94,3 +99,51 @@ jobs:
         run: cd fuzz && cargo test --verbose --color always
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh
+
+  check_bindings:
+    runs-on: ubuntu-latest
+    # Ubuntu's version of rustc uses its own LLVM instead of being a real native package.
+    # This leaves us with an incompatible LLVM version when linking. Instead, use a real OS.
+    # We further (temporarily) use Debian experimental since testing links rustc against the
+    # brand-new llvm-10, but clang/llvm still default to LLVM 9.
+    container: debian:experimental
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Install native Rust toolchain, Valgrind, and build utilitis
+        run: |
+          echo 'Package: llvm llvm-runtime clang lld' > /etc/apt/preferences.d/99-llvm10
+          echo 'Pin: release n=experimental' >> /etc/apt/preferences.d/99-llvm10
+          echo 'Pin-Priority: 995' >> /etc/apt/preferences.d/99-llvm10
+          apt-get update
+          apt-get -y dist-upgrade
+          apt-get -y install cargo valgrind lld git g++ clang
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Sanity test bindings
+        working-directory: lightning-c-bindings
+        run: cargo check
+      - name: Install cbindgen
+        run: cargo install --force cbindgen
+      - name: Rebuild bindings, and check the sample app builds + links
+        run: ./genbindings.sh
+      - name: Check that the latest bindings are in git
+        run: |
+          if [ "$(git diff)" != "" ]; then
+            # cbindgen's bindings output order can be FS-dependant, so check that the lines are all the same:
+            mv lightning-c-bindings/include/lightning.h lightning-c-bindings/include/lightning.h.new
+            git checkout lightning-c-bindings/include/lightning.h
+            cat lightning-c-bindings/include/lightning.h | sort > lightning-c-bindings/include/lightning.h.sorted
+            cat lightning-c-bindings/include/lightning.h.new | sort > lightning-c-bindings/include/lightning.h.new.sorted
+            diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted
+            #
+            mv lightning-c-bindings/include/lightningpp.hpp lightning-c-bindings/include/lightningpp.hpp.new
+            git checkout lightning-c-bindings/include/lightningpp.hpp
+            cat lightning-c-bindings/include/lightningpp.hpp | sort > lightning-c-bindings/include/lightningpp.hpp.sorted
+            cat lightning-c-bindings/include/lightningpp.hpp.new | sort > lightning-c-bindings/include/lightningpp.hpp.new.sorted
+            diff lightning-c-bindings/include/lightningpp.hpp.sorted lightning-c-bindings/include/lightningpp.hpp.new.sorted
+            #
+            [ "$(diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted)" != "" ] && exit 2
+            [ "$(diff lightning-c-bindings/include/lightningpp.hpp.sorted lightning-c-bindings/include/lightningpp.hpp.new.sorted)" != "" ] && exit 3
+            git diff --exit-code
+          fi

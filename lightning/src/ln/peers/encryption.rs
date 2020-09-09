@@ -1,8 +1,22 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Handles all over the wire message encryption and decryption upon handshake completion.
 
 use ln::peers::{chacha, hkdf5869rfc};
 use util::byte_utils;
 use std::collections::VecDeque;
+
+/// Maximum Lightning message data length according to
+/// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification)
+/// and [BOLT-1](https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md#lightning-message-format):
+pub const LN_MAX_MSG_LEN: usize = ::std::u16::MAX as usize; // Must be equal to 65535
 
 pub(super) type SymmetricKey = [u8; 32];
 
@@ -70,6 +84,10 @@ impl Iterator for Decryptor {
 
 impl Encryptor {
 	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
+		if buffer.len() > LN_MAX_MSG_LEN {
+			panic!("Attempted to encrypt message longer than 65535 bytes!");
+		}
+
 		let length = buffer.len() as u16;
 		let length_bytes = byte_utils::be16_to_array(length);
 
@@ -128,6 +146,10 @@ impl Decryptor {
 	// Decrypt the next payload from the slice returning the number of bytes consumed during the
 	// operation. This will always be (None, 0) if no payload could be decrypted.
 	fn decrypt_next(&mut self, buffer: &[u8]) -> Result<(Option<Vec<u8>>, usize), String> {
+		if buffer.len() > LN_MAX_MSG_LEN + 16 {
+			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
+		}
+
 		let message_length = if let Some(length) = self.pending_message_length {
 			// we have already decrypted the header
 			length
@@ -215,7 +237,7 @@ mod tests {
 
 		remote_decryptor.read(&encrypted_message[..]).unwrap();
 		let decrypted_message = remote_decryptor.next().unwrap();
-		assert_eq!(decrypted_message, vec![]);
+		assert_eq!(decrypted_message, Vec::<u8>::new());
 	}
 
 	// Test that descrypting from a slice that is the partial data followed by another decrypt call
@@ -344,5 +366,29 @@ mod tests {
 
 		assert_eq!(remote_decryptor.next(), Some(vec![1]));
 		assert_eq!(remote_decryptor.next(), None);
+	}
+
+	#[test]
+	fn max_msg_len_limit_value() {
+		assert_eq!(LN_MAX_MSG_LEN, 65535);
+		assert_eq!(LN_MAX_MSG_LEN, ::std::u16::MAX as usize);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to encrypt message longer than 65535 bytes!")]
+	fn max_message_len_encryption() {
+		let ((mut connected_encryptor, _), _) = setup_peers();
+		let msg = [4u8; LN_MAX_MSG_LEN + 1];
+		let _should_panic = connected_encryptor.encrypt(&msg);
+	}
+
+	#[test]
+	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
+	fn max_message_len_decryption() {
+		let ((_, mut connected_decryptor), _) = setup_peers();
+
+		// MSG should not exceed LN_MAX_MSG_LEN + 16
+		let msg = [4u8; LN_MAX_MSG_LEN + 17];
+		connected_decryptor.read(&msg).unwrap();
 	}
 }

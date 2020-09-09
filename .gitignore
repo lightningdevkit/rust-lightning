@@ -1,4 +1,7 @@
 /target/
+c-bindings-gen/target/
+lightning-c-bindings/target/
+lightning-c-bindings/a.out
 /hfuzz_target/
 /net-tokio/target/
 **/*.rs.bk

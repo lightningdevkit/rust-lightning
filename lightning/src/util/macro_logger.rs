@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 
@@ -127,13 +136,13 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
 		match self.0 {
 			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
-				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, .. } => {
-				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
-			&SpendableOutputDescriptor::StaticOutputRemotePayment { ref outpoint, .. } => {
-				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.vout)?;
+			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, .. } => {
+				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
 		}
 		Ok(())

@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Feature flag definitions for the Lightning protocol according to [BOLT #9].
 //!
 //! Lightning nodes advertise a supported set of operation through feature flags. Features are
@@ -270,6 +279,8 @@ mod sealed {
 
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
+///
+/// (C-not exported) as we map the concrete feature types below directly instead
 pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,

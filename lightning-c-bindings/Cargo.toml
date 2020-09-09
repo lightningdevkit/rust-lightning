@@ -1,0 +1,24 @@
+[package]
+name = "lightning-c-bindings"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+license = "Apache-2.0"
+edition = "2018"
+description = """
+Utilities to fetch the chain from Bitcoin Core REST/RPC Interfaces and feed them into Rust Lightning.
+"""
+
+[lib]
+name = "ldk"
+crate-type = ["staticlib"
+# Note that the following line is matched exactly by genbindings to turn off dylib creation
+,"cdylib"]
+
+[dependencies]
+bitcoin = "0.24"
+lightning = { version = "0.0.11", path = "../lightning" }
+
+# We eventually want to join the root workspace, but for now, the bindings generation is
+# a bit brittle and we don't want to hold up other developers from making changes just
+# because they break the bindings
+[workspace]

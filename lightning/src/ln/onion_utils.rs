@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 use ln::channelmanager::{PaymentHash, PaymentSecret, HTLCSource};
 use ln::msgs;
 use routing::router::RouteHop;
@@ -146,11 +155,11 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
-			return Err(APIError::RouteError{err: "Channel fees overflowed?!"});
+			return Err(APIError::RouteError{err: "Channel fees overflowed?"});
 		}
 		cur_cltv += hop.cltv_expiry_delta as u32;
 		if cur_cltv >= 500000000 {
-			return Err(APIError::RouteError{err: "Channel CLTV overflowed?!"});
+			return Err(APIError::RouteError{err: "Channel CLTV overflowed?"});
 		}
 		last_short_channel_id = hop.short_channel_id;
 	}

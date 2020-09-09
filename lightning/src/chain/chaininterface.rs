@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Traits and utility impls which allow other parts of rust-lightning to interact with the
 //! blockchain.
 //!
@@ -8,7 +17,6 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{Txid, BlockHash};
 
@@ -53,9 +61,9 @@ pub trait ChainWatchInterface: Sync + Send {
 	/// final two the output within the transaction.
 	fn get_chain_utxo(&self, genesis_hash: BlockHash, unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError>;
 
-	/// Gets the list of transactions and transaction indices that the ChainWatchInterface is
+	/// Gets the list of transaction indices within a given block that the ChainWatchInterface is
 	/// watching for.
-	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>);
+	fn filter_block(&self, block: &Block) -> Vec<usize>;
 
 	/// Returns a usize that changes when the ChainWatchInterface's watched data is modified.
 	/// Users of `filter_block` should pre-save a copy of `reentered`'s return value and use it to
@@ -86,7 +94,7 @@ pub trait ChainListener: Sync + Send {
 	///
 	/// This also means those counting confirmations using block_connected callbacks should watch
 	/// for duplicate headers and not count them towards confirmations!
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]);
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]);
 	/// Notifies a listener that a block was disconnected.
 	/// Unlike block_connected, this *must* never be called twice for the same disconnect event.
 	/// Height must be the one of the block which was disconnected (not new height of the best chain)
@@ -119,7 +127,7 @@ pub trait FeeEstimator: Sync + Send {
 	/// This translates to:
 	///  * satoshis-per-byte * 250
 	///  * ceil(satoshis-per-kbyte / 4)
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u64;
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
 /// Minimum relay fee as required by bitcoin network mempool policy.
@@ -218,6 +226,8 @@ impl ChainWatchedUtil {
 /// parameters with static lifetimes). Other times you can afford a reference, which is more
 /// efficient, in which case BlockNotifierRef is a more appropriate type. Defining these type
 /// aliases prevents issues such as overly long function definitions.
+///
+/// (C-not exported) as we let clients handle any reference counting they need to do
 pub type BlockNotifierArc<C> = Arc<BlockNotifier<'static, Arc<ChainListener>, C>>;
 
 /// BlockNotifierRef is useful when you want a BlockNotifier that points to ChainListeners
@@ -236,13 +246,15 @@ pub type BlockNotifierRef<'a, C> = BlockNotifier<'a, &'a ChainListener, C>;
 /// or a BlockNotifierRef for conciseness. See their documentation for more details, but essentially
 /// you should default to using a BlockNotifierRef, and use a BlockNotifierArc instead when you
 /// require ChainListeners with static lifetimes, such as when you're using lightning-net-tokio.
-pub struct BlockNotifier<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> where C::Target: ChainWatchInterface {
+pub struct BlockNotifier<'a, CL: Deref + 'a, C: Deref>
+		where CL::Target: ChainListener + 'a, C::Target: ChainWatchInterface {
 	listeners: Mutex<Vec<CL>>,
 	chain_monitor: C,
 	phantom: PhantomData<&'a ()>,
 }
 
-impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a, CL, C> where C::Target: ChainWatchInterface {
+impl<'a, CL: Deref + 'a, C: Deref> BlockNotifier<'a, CL, C>
+		where CL::Target: ChainListener + 'a, C::Target: ChainWatchInterface {
 	/// Constructs a new BlockNotifier without any listeners.
 	pub fn new(chain_monitor: C) -> BlockNotifier<'a, CL, C> {
 		BlockNotifier {
@@ -263,6 +275,8 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	/// If the same listener is registered multiple times, unregistering
 	/// will remove ALL occurrences of that listener. Comparison is done using
 	/// the pointer returned by the Deref trait implementation.
+	///
+	/// (C-not exported) because the equality check would always fail
 	pub fn unregister_listener(&self, listener: CL) {
 		let mut vec = self.listeners.lock().unwrap();
 		// item is a ref to an abstract thing that dereferences to a ChainListener,
@@ -274,11 +288,15 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	///
 	/// Handles re-scanning the block and calling block_connected again if listeners register new
 	/// watch data during the callbacks for you (see ChainListener::block_connected for more info).
-	pub fn block_connected<'b>(&self, block: &'b Block, height: u32) {
+	pub fn block_connected(&self, block: &Block, height: u32) {
 		let mut reentered = true;
 		while reentered {
-			let (matched, matched_index) = self.chain_monitor.filter_block(block);
-			reentered = self.block_connected_checked(&block.header, height, matched.as_slice(), matched_index.as_slice());
+			let matched_indexes = self.chain_monitor.filter_block(block);
+			let mut matched_txn = Vec::new();
+			for index in matched_indexes.iter() {
+				matched_txn.push(&block.txdata[*index]);
+			}
+			reentered = self.block_connected_checked(&block.header, height, matched_txn.as_slice(), matched_indexes.as_slice());
 		}
 	}
 
@@ -288,7 +306,7 @@ impl<'a, CL: Deref<Target = ChainListener + 'a> + 'a, C: Deref> BlockNotifier<'a
 	/// Returns true if notified listeners registered additional watch data (implying that the
 	/// block must be re-scanned and this function called again prior to further block_connected
 	/// calls, see ChainListener::block_connected for more info).
-	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) -> bool {
+	pub fn block_connected_checked(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) -> bool {
 		let last_seen = self.chain_monitor.reentered();
 
 		let listeners = self.listeners.lock().unwrap();
@@ -351,25 +369,23 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 	}
 
 	fn get_chain_utxo(&self, genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
-		if genesis_hash != genesis_block(self.network).header.bitcoin_hash() {
+		if genesis_hash != genesis_block(self.network).header.block_hash() {
 			return Err(ChainError::NotWatched);
 		}
 		Err(ChainError::NotSupported)
 	}
 
-	fn filter_block<'a>(&self, block: &'a Block) -> (Vec<&'a Transaction>, Vec<u32>) {
-		let mut matched = Vec::new();
+	fn filter_block(&self, block: &Block) -> Vec<usize> {
 		let mut matched_index = Vec::new();
 		{
 			let watched = self.watched.lock().unwrap();
 			for (index, transaction) in block.txdata.iter().enumerate() {
 				if self.does_match_tx_unguarded(transaction, &watched) {
-					matched.push(transaction);
-					matched_index.push(index as u32);
+					matched_index.push(index);
 				}
 			}
 		}
-		(matched, matched_index)
+		matched_index
 	}
 
 	fn reentered(&self) -> usize {

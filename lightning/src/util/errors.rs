@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Error types live here.
 
 use std::fmt;
@@ -9,7 +18,7 @@ pub enum APIError {
 	/// are documented, but generally indicates some precondition of a function was violated.
 	APIMisuseError {
 		/// A human-readable error message
-		err: &'static str
+		err: String
 	},
 	/// Due to a high feerate, we were unable to complete the request.
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
@@ -18,7 +27,7 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String,
 		/// The feerate which was too high.
-		feerate: u64
+		feerate: u32
 	},
 	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
 	/// too-many-hops, etc).
@@ -31,7 +40,7 @@ pub enum APIError {
 	/// peer, channel at capacity, channel shutting down, etc.
 	ChannelUnavailable {
 		/// A human-readable error message
-		err: &'static str
+		err: String
 	},
 	/// An attempt to call add/update_monitor returned an Err (ie you did this!), causing the
 	/// attempted action to fail.

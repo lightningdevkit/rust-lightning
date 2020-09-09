@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! The top-level channel management and payment tracking stuff lives here.
 //!
 //! The ChannelManager is the main chunk of logic implementing the lightning protocol and is
@@ -12,7 +21,6 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -29,14 +37,16 @@ use bitcoin::secp256k1;
 use chain::chaininterface::{BroadcasterInterface,ChainListener,FeeEstimator};
 use chain::transaction::OutPoint;
 use ln::channel::{Channel, ChannelError};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, ManyChannelMonitor, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
+use ln::msgs::NetAddress;
 use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
+use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
 use util::config::UserConfig;
+use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -51,6 +61,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use std::marker::{Sync, Send};
 use std::ops::Deref;
+use bitcoin::hashes::hex::ToHex;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -169,12 +180,15 @@ pub(super) enum HTLCFailReason {
 }
 
 /// payment_hash type, use to cross-lock hop
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentHash(pub [u8;32]);
 /// payment_preimage type, use to route payment between hop
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentPreimage(pub [u8;32]);
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8;32]);
 
@@ -192,14 +206,14 @@ struct MsgHandleErrInternal {
 }
 impl MsgHandleErrInternal {
 	#[inline]
-	fn send_err_msg_no_close(err: &'static str, channel_id: [u8; 32]) -> Self {
+	fn send_err_msg_no_close(err: String, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: LightningError {
-				err,
+				err: err.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
-						data: err.to_string()
+						data: err
 					},
 				},
 			},
@@ -207,7 +221,7 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn ignore_no_close(err: &'static str) -> Self {
+	fn ignore_no_close(err: String) -> Self {
 		Self {
 			err: LightningError {
 				err,
@@ -221,14 +235,14 @@ impl MsgHandleErrInternal {
 		Self { err, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: &'static str, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
-				err,
+				err: err.clone(),
 				action: msgs::ErrorAction::SendErrorMessage {
 					msg: msgs::ErrorMessage {
 						channel_id,
-						data: err.to_string()
+						data: err
 					},
 				},
 			},
@@ -244,20 +258,20 @@ impl MsgHandleErrInternal {
 					action: msgs::ErrorAction::IgnoreError,
 				},
 				ChannelError::Close(msg) => LightningError {
-					err: msg,
+					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
-							data: msg.to_string()
+							data: msg
 						},
 					},
 				},
 				ChannelError::CloseDelayBroadcast(msg) => LightningError {
-					err: msg,
+					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
 							channel_id,
-							data: msg.to_string()
+							data: msg
 						},
 					},
 				},
@@ -302,7 +316,7 @@ pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
 	claimable_htlcs: HashMap<(PaymentHash, Option<PaymentSecret>), Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
-	pub(super) pending_msg_events: Vec<events::MessageSendEvent>,
+	pub(super) pending_msg_events: Vec<MessageSendEvent>,
 }
 
 /// State we hold per-peer. In the future we should put channels in here, but for now we only hold
@@ -521,7 +535,7 @@ pub enum PaymentSendFailure {
 }
 
 macro_rules! handle_error {
-	($self: ident, $internal: expr, $their_node_id: expr) => {
+	($self: ident, $internal: expr, $counterparty_node_id: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
@@ -547,7 +561,7 @@ macro_rules! handle_error {
 				if let msgs::ErrorAction::IgnoreError = err.action {
 				} else {
 					msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: $their_node_id,
+						node_id: $counterparty_node_id,
 						action: err.action.clone()
 					});
 				}
@@ -632,7 +646,7 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
 				res
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -655,7 +669,7 @@ macro_rules! handle_monitor_err {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
 				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor"), *$entry.key()))
+				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$entry.key()))
 			},
 		}
 	}
@@ -712,7 +726,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 		ChannelManager {
 			default_configuration: config.clone(),
-			genesis_hash: genesis_block(network).header.bitcoin_hash(),
+			genesis_hash: genesis_block(network).header.block_hash(),
 			fee_estimator: fee_est,
 			monitor,
 			tx_broadcaster,
@@ -757,19 +771,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: "channel_value must be at least 1000 satoshis" });
+			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
 		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, config)?;
-		let res = channel.get_open_channel(self.genesis_hash.clone(), &self.fee_estimator);
+		let res = channel.get_open_channel(self.genesis_hash.clone());
 
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(feature = "fuzztarget") {
-					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG" });
+					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
 				} else {
 					panic!("RNG is bad???");
 				}
@@ -793,7 +807,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
 					short_channel_id: channel.get_short_channel_id(),
-					remote_network_id: channel.get_their_node_id(),
+					remote_network_id: channel.get_counterparty_node_id(),
 					counterparty_features: InitFeatures::empty(),
 					channel_value_satoshis: channel.get_value_satoshis(),
 					inbound_capacity_msat,
@@ -845,7 +859,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					let (shutdown_msg, failed_htlcs) = chan_entry.get_mut().get_shutdown()?;
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: chan_entry.get().get_their_node_id(),
+						node_id: chan_entry.get().get_counterparty_node_id(),
 						msg: shutdown_msg
 					});
 					if chan_entry.get().is_shutdown() {
@@ -855,7 +869,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(failed_htlcs, Some(chan_entry.remove_entry().1))
 					} else { (failed_htlcs, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel"})
+				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()})
 			}
 		};
 		for htlc_source in failed_htlcs.drain(..) {
@@ -1148,10 +1162,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					if !chan.is_live() { // channel_disabled
 						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
 					}
-					if *amt_to_forward < chan.get_their_htlc_minimum_msat() { // amount_below_minimum
+					if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
 					}
-					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_our_fee_base_msat(&self.fee_estimator) as u64) });
+					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_holder_fee_base_msat(&self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
 					}
@@ -1185,7 +1199,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
 						}
 						else if code == 0x1000 | 20 {
-							res.extend_from_slice(&byte_utils::be16_to_array(chan_update.contents.flags));
+							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+							res.extend_from_slice(&byte_utils::be16_to_array(0));
 						}
 						res.extend_from_slice(&chan_update.encode_with_len()[..]);
 					}
@@ -1201,20 +1216,21 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// May be called with channel_state already locked!
 	fn get_channel_update(&self, chan: &Channel<ChanSigner>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
-			None => return Err(LightningError{err: "Channel not yet established", action: msgs::ErrorAction::IgnoreError}),
+			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
 
-		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_their_node_id().serialize()[..];
+		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id: short_channel_id,
 			timestamp: chan.get_update_time_counter(),
-			flags: (!were_node_one) as u16 | ((!chan.is_live() as u16) << 1),
+			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
-			htlc_minimum_msat: chan.get_our_htlc_minimum_msat(),
-			fee_base_msat: chan.get_our_fee_base_msat(&self.fee_estimator),
+			htlc_minimum_msat: chan.get_holder_htlc_minimum_msat(),
+			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
+			fee_base_msat: chan.get_holder_fee_base_msat(&self.fee_estimator),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -1231,7 +1247,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	// Only public for testing, this should otherwise never be called direcly
 	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
-		let (session_priv, prng_seed) = self.keys_manager.get_onion_rand();
+		let prng_seed = self.keys_manager.get_secure_random_bytes();
+		let session_priv = SecretKey::from_slice(&self.keys_manager.get_secure_random_bytes()[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
@@ -1246,18 +1263,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let id = match channel_lock.short_to_id.get(&path.first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!"}),
+				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
 				Some(id) => id.clone(),
 			};
 
 			let channel_state = &mut *channel_lock;
 			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
 				match {
-					if chan.get().get_their_node_id() != path.first().unwrap().pubkey {
+					if chan.get().get_counterparty_node_id() != path.first().unwrap().pubkey {
 						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
 					}
 					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!"});
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
 					}
 					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 						path: path.clone(),
@@ -1422,7 +1439,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				},
 				None => return
 			};
-			match handle_error!(self, res, chan.get_their_node_id()) {
+			match handle_error!(self, res, chan.get_counterparty_node_id()) {
 				Ok(funding_msg) => {
 					(chan, funding_msg)
 				},
@@ -1432,7 +1449,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 		let mut channel_state = self.channel_state.lock().unwrap();
 		channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-			node_id: chan.get_their_node_id(),
+			node_id: chan.get_counterparty_node_id(),
 			msg: msg,
 		});
 		match channel_state.by_id.entry(chan.channel_id()) {
@@ -1471,7 +1488,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	// be absurd. We ensure this by checking that at least 500 (our stated public contract on when
 	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
 	// message...
-	const HALF_MESSAGE_IS_ADDRS: u32 = ::std::u16::MAX as u32 / (msgs::NetAddress::MAX_LEN as u32 + 1) / 2;
+	const HALF_MESSAGE_IS_ADDRS: u32 = ::std::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
 	#[deny(const_err)]
 	#[allow(dead_code)]
 	// ...by failing to compile if the number of addresses that would be half of a message is
@@ -1491,7 +1508,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// only Tor Onion addresses.
 	///
 	/// Panics if addresses is absurdly large (more than 500).
-	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<msgs::NetAddress>) {
+	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<NetAddress>) {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		if addresses.len() > 500 {
@@ -1643,7 +1660,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case
 									// close channel and then send error message to peer.
-									let their_node_id = chan.get().get_their_node_id();
+									let counterparty_node_id = chan.get().get_counterparty_node_id();
 									let err: Result<(), _>  = match e {
 										ChannelError::Ignore(_) => {
 											panic!("Stated return value requirements in send_commitment() were not met");
@@ -1658,16 +1675,16 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 										},
 										ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
-									handle_errors.push((their_node_id, err));
+									handle_errors.push((counterparty_node_id, err));
 									continue;
 								}
 							};
 							if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
-								handle_errors.push((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
+								handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
 							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-								node_id: chan.get().get_their_node_id(),
+								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
 									update_add_htlcs: add_htlc_msgs,
 									update_fulfill_htlcs: Vec::new(),
@@ -1760,8 +1777,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, failure_reason);
 		}
 
-		for (their_node_id, err) in handle_errors.drain(..) {
-			let _ = handle_error!(self, err, their_node_id);
+		for (counterparty_node_id, err) in handle_errors.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
 		if new_events.is_empty() { return }
@@ -1817,6 +1834,44 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			}
 			true
 		} else { false }
+	}
+
+	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
+	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
+	// be surfaced to the user.
+	fn fail_holding_cell_htlcs(&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32]) {
+		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
+			match htlc_src {
+				HTLCSource::PreviousHopData(HTLCPreviousHopData { .. }) => {
+					let (failure_code, onion_failure_data) =
+						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
+							hash_map::Entry::Occupied(chan_entry) => {
+								if let Ok(upd) = self.get_channel_update(&chan_entry.get()) {
+									(0x1000|7, upd.encode_with_len())
+								} else {
+									(0x4000|10, Vec::new())
+								}
+							},
+							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
+						};
+					let channel_state = self.channel_state.lock().unwrap();
+					self.fail_htlc_backwards_internal(channel_state,
+						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
+				},
+				HTLCSource::OutboundRoute { .. } => {
+					self.pending_events.lock().unwrap().push(
+						events::Event::PaymentFailed {
+							payment_hash,
+							rejected_by_dest: false,
+#[cfg(test)]
+							error_code: None,
+#[cfg(test)]
+							error_data: None,
+						}
+					)
+				},
+			};
+		}
 	}
 
 	/// Fails an HTLC backwards to the sender of it to us.
@@ -2010,9 +2065,9 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			// which were generated.
 			channel_state.take();
 
-			for (their_node_id, err) in errs.drain(..) {
+			for (counterparty_node_id, err) in errs.drain(..) {
 				let res: Result<(), _> = Err(err);
-				let _ = handle_error!(self, res, their_node_id);
+				let _ = handle_error!(self, res, counterparty_node_id);
 			}
 
 			claimed_any_htlcs
@@ -2038,13 +2093,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							if was_frozen_for_monitor {
 								assert!(msgs.is_none());
 							} else {
-								return Err(Some((chan.get().get_their_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err())));
+								return Err(Some((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err())));
 							}
 						}
 					}
 					if let Some((msg, commitment_signed)) = msgs {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get().get_their_node_id(),
+							node_id: chan.get().get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: Vec::new(),
 								update_fulfill_htlcs: vec![msg],
@@ -2082,7 +2137,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				});
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
-				if let Err((their_node_id, err)) = match self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage) {
+				if let Err((counterparty_node_id, err)) = match self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage) {
 					Ok(()) => Ok(()),
 					Err(None) => {
 						// TODO: There is probably a channel monitor somewhere that needs to
@@ -2094,7 +2149,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				} {
 					mem::drop(channel_state_lock);
 					let res: Result<(), _> = Err(err);
-					let _ = handle_error!(self, res, their_node_id);
+					let _ = handle_error!(self, res, counterparty_node_id);
 				}
 			},
 		}
@@ -2155,7 +2210,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			macro_rules! handle_cs { () => {
 				if let Some(update) = commitment_update {
 					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: channel.get_their_node_id(),
+						node_id: channel.get_counterparty_node_id(),
 						updates: update,
 					});
 				}
@@ -2163,7 +2218,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			macro_rules! handle_raa { () => {
 				if let Some(revoke_and_ack) = raa {
 					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-						node_id: channel.get_their_node_id(),
+						node_id: channel.get_counterparty_node_id(),
 						msg: revoke_and_ack,
 					});
 				}
@@ -2186,12 +2241,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			}
 			if let Some(msg) = funding_locked {
 				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: channel.get_their_node_id(),
+					node_id: channel.get_counterparty_node_id(),
 					msg,
 				});
 				if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
 					pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: channel.get_their_node_id(),
+						node_id: channel.get_counterparty_node_id(),
 						msg: announcement_sigs,
 					});
 				}
@@ -2211,20 +2266,20 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 	}
 
-	fn internal_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash", msg.temporary_channel_id.clone()));
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, their_node_id.clone(), their_features, msg, 0, &self.default_configuration)
+		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(), their_features, msg, 0, &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(channel.channel_id()) {
-			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!", msg.temporary_channel_id.clone())),
+			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!".to_owned(), msg.temporary_channel_id.clone())),
 			hash_map::Entry::Vacant(entry) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: their_node_id.clone(),
+					node_id: counterparty_node_id.clone(),
 					msg: channel.get_accept_channel(),
 				});
 				entry.insert(channel);
@@ -2233,19 +2288,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_accept_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
 		let (value, output_script, user_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, their_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2258,30 +2313,30 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
+	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let ((funding_msg, monitor_update), mut chan) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.temporary_channel_id));
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg, &self.logger), channel_state, chan), chan.remove())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before add_monitor
-		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo(), monitor_update) {
+		if let Err(e) = self.monitor.add_monitor(monitor_update.get_funding_txo().0, monitor_update) {
 			match e {
 				ChannelMonitorUpdateErr::PermanentFailure => {
 					// Note that we reply with the new channel_id in error messages if we gave up on the
 					// channel, not the temporary_channel_id. This is compatible with ourselves, but the
 					// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
 					// any messages referencing a previously-closed channel anyway.
-					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure", funding_msg.channel_id, chan.force_shutdown(true), None));
+					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id, chan.force_shutdown(true), None));
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
 					// There's no problem signing a counterparty's funding transaction if our monitor
@@ -2296,11 +2351,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id", funding_msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-					node_id: their_node_id.clone(),
+					node_id: counterparty_node_id.clone(),
 					msg: funding_msg,
 				});
 				e.insert(chan);
@@ -2309,14 +2364,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
+	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let (funding_txo, user_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let monitor = match chan.get_mut().funding_signed(&msg, &self.logger) {
 						Ok(update) => update,
@@ -2327,7 +2382,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					}
 					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2338,13 +2393,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), MsgHandleErrInternal> {
+	fn internal_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
@@ -2359,36 +2414,36 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					// failures is an issue. Note, to achieve its goal, only one of the announcement_sigs needs
 					// to be received, from then sigs are going to be flood to the whole network.
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: their_node_id.clone(),
+						node_id: counterparty_node_id.clone(),
 						msg: announcement_sigs,
 					});
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
-	fn internal_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
+	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
 		let (mut dropped_htlcs, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let (shutdown, closing_signed, dropped_htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							msg,
 						});
 					}
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							msg,
 						});
 					}
@@ -2399,7 +2454,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(dropped_htlcs, Some(chan_entry.remove_entry().1))
 					} else { (dropped_htlcs, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
@@ -2416,19 +2471,19 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
+	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
 		let (tx, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			match channel_state.by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), channel_state, chan_entry);
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							msg,
 						});
 					}
@@ -2444,7 +2499,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						(tx, Some(chan_entry.remove_entry().1))
 					} else { (tx, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		if let Some(broadcast_tx) = tx {
@@ -2462,7 +2517,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn internal_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) -> Result<(), MsgHandleErrInternal> {
 		//TODO: BOLT 4 points out a specific attack where a peer may re-send an onion packet and
 		//determine the state of the payment based on our response/if we forward anything/the time
 		//we take to respond. We should take care to avoid allowing such an attack.
@@ -2472,112 +2527,120 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (mut pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = &mut *channel_state_lock;
 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				if !chan.get().is_usable() {
+
+				let create_pending_htlc_status = |chan: &Channel<ChanSigner>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+					// Ensure error_code has the UPDATE flag set, since by default we send a
+					// channel update along as part of failing the HTLC.
+					assert!((error_code & 0x1000) != 0);
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let PendingHTLCStatus::Forward(PendingHTLCInfo { incoming_shared_secret, .. }) = pending_forward_info {
-						let chan_update = self.get_channel_update(chan.get());
-						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
-							channel_id: msg.channel_id,
-							htlc_id: msg.htlc_id,
-							reason: if let Ok(update) = chan_update {
-								// TODO: Note that |20 is defined as "channel FROM the processing
-								// node has been disabled" (emphasis mine), which seems to imply
-								// that we can't return |20 for an inbound channel being disabled.
-								// This probably needs a spec update but should definitely be
-								// allowed.
-								onion_utils::build_first_hop_failure_packet(&incoming_shared_secret, 0x1000|20, &{
+					match pending_forward_info {
+						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
+							let reason = if let Ok(upd) = self.get_channel_update(chan) {
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
 									let mut res = Vec::with_capacity(8 + 128);
-									res.extend_from_slice(&byte_utils::be16_to_array(update.contents.flags));
-									res.extend_from_slice(&update.encode_with_len()[..]);
+									// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+									res.extend_from_slice(&byte_utils::be16_to_array(0));
+									res.extend_from_slice(&upd.encode_with_len()[..]);
 									res
 								}[..])
 							} else {
-								// This can only happen if the channel isn't in the fully-funded
-								// state yet, implying our counterparty is trying to route payments
-								// over the channel back to themselves (cause no one else should
-								// know the short_id is a lightning channel yet). We should have no
-								// problem just calling this unknown_next_peer
-								onion_utils::build_first_hop_failure_packet(&incoming_shared_secret, 0x4000|10, &[])
-							},
-						}));
+								// The only case where we'd be unable to
+								// successfully get a channel update is if the
+								// channel isn't in the fully-funded state yet,
+								// implying our counterparty is trying to route
+								// payments over the channel back to themselves
+								// (cause no one else should know the short_id
+								// is a lightning channel yet). We should have
+								// no problem just calling this
+								// unknown_next_peer (0x4000|10).
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+							};
+							let msg = msgs::UpdateFailHTLC {
+								channel_id: msg.channel_id,
+								htlc_id: msg.htlc_id,
+								reason
+							};
+							PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg))
+						},
+						_ => pending_forward_info
 					}
-				}
-				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info), channel_state, chan);
+				};
+				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.logger), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
 
-	fn internal_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let htlc_source = {
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					try_chan_entry!(self, chan.get_mut().update_fulfill_htlc(&msg), channel_state, chan)
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		self.claim_funds_internal(channel_lock, htlc_source, msg.payment_preimage.clone());
 		Ok(())
 	}
 
-	fn internal_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
 
-	fn internal_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set");
+					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_entry!(self, Err(chan_err), channel_state, chan);
 				}
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
-	fn internal_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
+	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
 					match chan.get_mut().commitment_signed(&msg, &self.fee_estimator, &self.logger) {
@@ -2595,12 +2658,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-					node_id: their_node_id.clone(),
+					node_id: counterparty_node_id.clone(),
 					msg: revoke_and_ack,
 				});
 				if let Some(msg) = commitment_signed {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: their_node_id.clone(),
+						node_id: counterparty_node_id.clone(),
 						updates: msgs::CommitmentUpdate {
 							update_add_htlcs: Vec::new(),
 							update_fulfill_htlcs: Vec::new(),
@@ -2613,13 +2676,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				if let Some(msg) = closing_signed {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-						node_id: their_node_id.clone(),
+						node_id: counterparty_node_id.clone(),
 						msg,
 					});
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2658,77 +2721,86 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 	}
 
-	fn internal_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
-		let (pending_forwards, mut pending_failures, short_channel_id) = {
+	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
+		let mut htlcs_to_fail = Vec::new();
+		let res = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_their_node_id() != *their_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update) =
-						try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
+					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update, htlcs_to_fail_in) =
+						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
+					htlcs_to_fail = htlcs_to_fail_in;
 					if let Err(e) = self.monitor.update_monitor(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
 							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
-							return Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA"));
+							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
-							return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures);
+							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures) {
+								break Err(e);
+							} else { unreachable!(); }
 						}
 					}
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							updates,
 						});
 					}
 					if let Some(msg) = closing_signed {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							msg,
 						});
 					}
-					(pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"))
+					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel")))
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		for failure in pending_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id);
+		match res {
+			Ok((pending_forwards, mut pending_failures, short_channel_id)) => {
+				for failure in pending_failures.drain(..) {
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+				}
+				self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
+				Ok(())
+			},
+			Err(e) => Err(e)
 		}
-		self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
-
-		Ok(())
 	}
 
-	fn internal_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				try_chan_entry!(self, chan.get_mut().update_fee(&self.fee_estimator, &msg), channel_state, chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
 
-	fn internal_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
+	fn internal_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 				if !chan.get().is_usable() {
-					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it", action: msgs::ErrorAction::IgnoreError}));
+					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 				}
 
 				let our_node_id = self.get_our_node_id();
@@ -2737,10 +2809,21 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 				let were_node_one = announcement.node_id_1 == our_node_id;
 				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-				if self.secp_ctx.verify(&msghash, &msg.node_signature, if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 }).is_err() ||
-						self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 }).is_err() {
-					let chan_err: ChannelError = ChannelError::Close("Bad announcement_signatures node_signature");
-					try_chan_entry!(self, Err(chan_err), channel_state, chan);
+				{
+					let their_node_key = if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 };
+					let their_bitcoin_key = if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 };
+					match (self.secp_ctx.verify(&msghash, &msg.node_signature, their_node_key),
+						   self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, their_bitcoin_key)) {
+						(Err(e), _) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify node_signature: {:?}. Maybe using different node_secret for transport and routing msg? UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}", e, &announcement, their_node_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						(_, Err(e)) => {
+							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify bitcoin_signature: {:?}. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})", e, &announcement, their_bitcoin_key));
+							try_chan_entry!(self, Err(chan_err), channel_state, chan);
+						},
+						_ => {}
+					}
 				}
 
 				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
@@ -2756,20 +2839,24 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					update_msg: self.get_channel_update(chan.get()).unwrap(), // can only fail if we're not in a ready state
 				});
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 		Ok(())
 	}
 
-	fn internal_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
+	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_their_node_id() != *their_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!", msg.channel_id));
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
+				// Currently, we expect all holding cell update_adds to be dropped on peer
+				// disconnect, so Channel's reestablish will never hand us any holding cell
+				// freed HTLCs to fail backwards. If in the future we no longer drop pending
+				// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
 					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 				if let Some(monitor_update) = monitor_update_opt {
@@ -2789,14 +2876,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				if let Some(msg) = funding_locked {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-						node_id: their_node_id.clone(),
+						node_id: counterparty_node_id.clone(),
 						msg
 					});
 				}
 				macro_rules! send_raa { () => {
 					if let Some(msg) = revoke_and_ack {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							msg
 						});
 					}
@@ -2804,7 +2891,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				macro_rules! send_cu { () => {
 					if let Some(updates) = commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: their_node_id.clone(),
+							node_id: counterparty_node_id.clone(),
 							updates
 						});
 					}
@@ -2821,13 +2908,13 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				if let Some(msg) = shutdown {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: their_node_id.clone(),
+						node_id: counterparty_node_id.clone(),
 						msg,
 					});
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel", msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
 	}
 
@@ -2835,27 +2922,28 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// If successful, will generate a UpdateHTLCs event, so you should probably poll
 	/// PeerManager::process_events afterwards.
 	/// Note: This API is likely to change!
+	/// (C-not exported) Cause its doc(hidden) anyway
 	#[doc(hidden)]
-	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u64) -> Result<(), APIError> {
+	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let their_node_id;
+		let counterparty_node_id;
 		let err: Result<(), _> = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
 			match channel_state.by_id.entry(channel_id) {
-				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: "Failed to find corresponding channel"}),
+				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: format!("Failed to find corresponding channel for id {}", channel_id.to_hex())}),
 				hash_map::Entry::Occupied(mut chan) => {
 					if !chan.get().is_outbound() {
-						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel"});
+						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel".to_owned()});
 					}
 					if chan.get().is_awaiting_monitor_update() {
 						return Err(APIError::MonitorUpdateFailed);
 					}
 					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected"});
+						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected".to_owned()});
 					}
-					their_node_id = chan.get().get_their_node_id();
+					counterparty_node_id = chan.get().get_counterparty_node_id();
 					if let Some((update_fee, commitment_signed, monitor_update)) =
 							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw, &self.logger), channel_state, chan)
 					{
@@ -2863,7 +2951,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							unimplemented!();
 						}
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get().get_their_node_id(),
+							node_id: chan.get().get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: Vec::new(),
 								update_fulfill_htlcs: Vec::new(),
@@ -2879,36 +2967,66 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			return Ok(())
 		};
 
-		match handle_error!(self, err, their_node_id) {
+		match handle_error!(self, err, counterparty_node_id) {
 			Ok(_) => unreachable!(),
 			Err(e) => { Err(APIError::APIMisuseError { err: e.err })}
 		}
 	}
+
+	/// Process pending events from the ManyChannelMonitor.
+	fn process_pending_monitor_events(&self) {
+		let mut failed_channels = Vec::new();
+		{
+			for monitor_event in self.monitor.get_and_clear_pending_monitor_events() {
+				match monitor_event {
+					MonitorEvent::HTLCEvent(htlc_update) => {
+						if let Some(preimage) = htlc_update.payment_preimage {
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+						} else {
+							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+						}
+					},
+					MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
+						let mut channel_lock = self.channel_state.lock().unwrap();
+						let channel_state = &mut *channel_lock;
+						let by_id = &mut channel_state.by_id;
+						let short_to_id = &mut channel_state.short_to_id;
+						let pending_msg_events = &mut channel_state.pending_msg_events;
+						if let Some(mut chan) = by_id.remove(&funding_outpoint.to_channel_id()) {
+							if let Some(short_id) = chan.get_short_channel_id() {
+								short_to_id.remove(&short_id);
+							}
+							failed_channels.push(chan.force_shutdown(false));
+							if let Ok(update) = self.get_channel_update(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+						}
+					},
+				}
+			}
+		}
+
+		for failure in failed_channels.drain(..) {
+			self.finish_force_close_channel(failure);
+		}
+	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
-		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
-		// user to serialize a ChannelManager with pending events in it and lose those events on
-		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
-		{
-			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
-				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-				} else {
-					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
-				}
-			}
-		}
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		//TODO: This behavior should be documented. It's non-intuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
 
 		let mut ret = Vec::new();
 		let mut channel_state = self.channel_state.lock().unwrap();
@@ -2917,29 +3035,17 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> events::EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		// TODO: Event release to users and serialization is currently race-y: it's very easy for a
-		// user to serialize a ChannelManager with pending events in it and lose those events on
-		// restart. This is doubly true for the fail/fulfill-backs from monitor events!
-		{
-			//TODO: This behavior should be documented.
-			for htlc_update in self.monitor.get_and_clear_pending_htlcs_updated() {
-				if let Some(preimage) = htlc_update.payment_preimage {
-					log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-					self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-				} else {
-					log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
-				}
-			}
-		}
+	fn get_and_clear_pending_events(&self) -> Vec<Event> {
+		//TODO: This behavior should be documented. It's non-intuitive that we query
+		// ChannelMonitors when clearing other events.
+		self.process_pending_monitor_events();
 
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2956,8 +3062,8 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
-	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[u32]) {
-		let header_hash = header.bitcoin_hash();
+	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) {
+		let header_hash = header.block_hash();
 		log_trace!(self.logger, "Block {} at height {} connected with {} txn matched", header_hash, height, txn_matched.len());
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
@@ -2979,13 +3085,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					}
 					if let Some(funding_locked) = chan_res {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-							node_id: channel.get_their_node_id(),
+							node_id: channel.get_counterparty_node_id(),
 							msg: funding_locked,
 						});
 						if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
 							log_trace!(self.logger, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
 							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-								node_id: channel.get_their_node_id(),
+								node_id: channel.get_counterparty_node_id(),
 								msg: announcement_sigs,
 							});
 						} else {
@@ -2995,7 +3101,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					}
 				} else if let Err(e) = res {
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: channel.get_their_node_id(),
+						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
 					});
 					return false;
@@ -3021,21 +3127,6 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 							}
 						}
 					}
-				}
-				if channel.is_funding_initiated() && channel.channel_monitor().would_broadcast_at_height(height, &self.logger) {
-					if let Some(short_id) = channel.get_short_channel_id() {
-						short_to_id.remove(&short_id);
-					}
-					// If would_broadcast_at_height() is true, the channel_monitor will broadcast
-					// the latest local tx for us, so we should skip that here (it doesn't really
-					// hurt anything, but does make tests a bit simpler).
-					failed_channels.push(channel.force_shutdown(false));
-					if let Ok(update) = self.get_channel_update(&channel) {
-						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					return false;
 				}
 				true
 			});
@@ -3112,7 +3203,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			self.finish_force_close_channel(failure);
 		}
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.bitcoin_hash();
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.block_hash();
 	}
 }
 
@@ -3124,87 +3215,87 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
+	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_open_channel(their_node_id, their_features, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_open_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) {
+	fn handle_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_accept_channel(their_node_id, their_features, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_accept_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
+	fn handle_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_funding_created(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_funding_created(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
+	fn handle_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_funding_signed(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) {
+	fn handle_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_funding_locked(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_funding_locked(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) {
+	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_shutdown(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
+	fn handle_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_closing_signed(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_closing_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
+	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_update_add_htlc(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
+	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_update_fulfill_htlc(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_update_fulfill_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
+	fn handle_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_update_fail_htlc(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_update_fail_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
+	fn handle_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_commitment_signed(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_commitment_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
+	fn handle_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_revoke_and_ack(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_revoke_and_ack(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) {
+	fn handle_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_update_fee(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
+	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_announcement_signatures(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
+	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		let _ = self.total_consistency_lock.read().unwrap();
-		let _ = handle_error!(self, self.internal_channel_reestablish(their_node_id, msg), *their_node_id);
+		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool) {
+	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
 		let _ = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut failed_payments = Vec::new();
@@ -3215,9 +3306,9 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			if no_connection_possible {
-				log_debug!(self.logger, "Failing all channels with {} due to no_connection_possible", log_pubkey!(their_node_id));
+				log_debug!(self.logger, "Failing all channels with {} due to no_connection_possible", log_pubkey!(counterparty_node_id));
 				channel_state.by_id.retain(|_, chan| {
-					if chan.get_their_node_id() == *their_node_id {
+					if chan.get_counterparty_node_id() == *counterparty_node_id {
 						if let Some(short_id) = chan.get_short_channel_id() {
 							short_to_id.remove(&short_id);
 						}
@@ -3233,9 +3324,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					}
 				});
 			} else {
-				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(their_node_id));
+				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(counterparty_node_id));
 				channel_state.by_id.retain(|_, chan| {
-					if chan.get_their_node_id() == *their_node_id {
+					if chan.get_counterparty_node_id() == *counterparty_node_id {
+						// Note that currently on channel reestablish we assert that there are no
+						// holding cell add-HTLCs, so if in the future we stop removing uncommitted HTLCs
+						// on peer disconnect here, there will need to be corresponding changes in
+						// reestablish logic.
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
@@ -3256,27 +3351,27 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 			}
 			pending_msg_events.retain(|msg| {
 				match msg {
-					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendFundingLocked { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != their_node_id,
-					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendFundingLocked { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
-					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != their_node_id,
+					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
 				}
 			});
 		}
 		if no_channels_remain {
-			self.per_peer_state.write().unwrap().remove(their_node_id);
+			self.per_peer_state.write().unwrap().remove(counterparty_node_id);
 		}
 
 		for failure in failed_channels.drain(..) {
@@ -3289,14 +3384,14 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		}
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
-		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(their_node_id));
+	fn peer_connected(&self, counterparty_node_id: &PublicKey, init_msg: &msgs::Init) {
+		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
 
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		{
 			let mut peer_state_lock = self.per_peer_state.write().unwrap();
-			match peer_state_lock.entry(their_node_id.clone()) {
+			match peer_state_lock.entry(counterparty_node_id.clone()) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(Mutex::new(PeerState {
 						latest_features: init_msg.features.clone(),
@@ -3312,7 +3407,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		let channel_state = &mut *channel_state_lock;
 		let pending_msg_events = &mut channel_state.pending_msg_events;
 		channel_state.by_id.retain(|_, chan| {
-			if chan.get_their_node_id() == *their_node_id {
+			if chan.get_counterparty_node_id() == *counterparty_node_id {
 				if !chan.have_received_message() {
 					// If we created this (outbound) channel while we were disconnected from the
 					// peer we probably failed to send the open_channel message, which is now
@@ -3321,7 +3416,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 					false
 				} else {
 					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-						node_id: chan.get_their_node_id(),
+						node_id: chan.get_counterparty_node_id(),
 						msg: chan.get_channel_reestablish(&self.logger),
 					});
 					true
@@ -3331,12 +3426,12 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		//TODO: Also re-broadcast announcement_signatures
 	}
 
-	fn handle_error(&self, their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
+	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
 		let _ = self.total_consistency_lock.read().unwrap();
 
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
-				if chan.remote_network_id == *their_node_id {
+				if chan.remote_network_id == *counterparty_node_id {
 					self.force_close_channel(&chan.channel_id);
 				}
 			}
@@ -3647,7 +3742,6 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: K,
@@ -3684,7 +3778,29 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	///
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
-	pub channel_monitors: &'a mut HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
+	///
+	/// (C-not exported) because we have no HashMap bindings
+	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
+}
+
+impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>
+	where M::Target: ManyChannelMonitor<Keys=ChanSigner>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
+	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
+	/// populate a HashMap directly from C.
+	pub fn new(keys_manager: K, fee_estimator: F, monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
+			mut channel_monitors: Vec<&'a mut ChannelMonitor<ChanSigner>>) -> Self {
+		Self {
+			keys_manager, fee_estimator, monitor, tx_broadcaster, logger, default_config,
+			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
+		}
+	}
 }
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
@@ -3711,7 +3827,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -3737,20 +3853,20 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
-				if channel.get_cur_local_commitment_transaction_number() < monitor.get_cur_local_commitment_number() ||
-						channel.get_revoked_remote_commitment_transaction_number() < monitor.get_min_seen_secret() ||
-						channel.get_cur_remote_commitment_transaction_number() < monitor.get_cur_remote_commitment_number() ||
+				if channel.get_cur_holder_commitment_transaction_number() < monitor.get_cur_holder_commitment_number() ||
+						channel.get_revoked_counterparty_commitment_transaction_number() < monitor.get_min_seen_secret() ||
+						channel.get_cur_counterparty_commitment_transaction_number() < monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() > monitor.get_latest_update_id() {
 					// If the channel is ahead of the monitor, return InvalidValue:
 					return Err(DecodeError::InvalidValue);
-				} else if channel.get_cur_local_commitment_transaction_number() > monitor.get_cur_local_commitment_number() ||
-						channel.get_revoked_remote_commitment_transaction_number() > monitor.get_min_seen_secret() ||
-						channel.get_cur_remote_commitment_transaction_number() > monitor.get_cur_remote_commitment_number() ||
+				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
+						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
+						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
 					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
-					monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
+					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, channel.channel_id());
@@ -3764,7 +3880,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 
 		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
-				monitor.broadcast_latest_local_commitment_txn(&args.tx_broadcaster, &args.logger);
+				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 			}
 		}
 

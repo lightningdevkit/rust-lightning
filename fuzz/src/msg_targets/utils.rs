@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 #![macro_use]
 
 use lightning::util::ser::Writer;
@@ -78,8 +87,8 @@ macro_rules! test_msg_exact {
 	}
 }
 
-// Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to 0s on
-// re-serialization.
+// Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to
+// any value on re-serialization.
 #[macro_export]
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {

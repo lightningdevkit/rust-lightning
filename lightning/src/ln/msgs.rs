@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! Wire messages, traits representing wire message handlers, and a few error types live here.
 //!
 //! For a normal node you probably don't need to use anything here, however, if you wish to split a
@@ -25,7 +34,6 @@ use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 use std::{cmp, fmt};
 use std::io::Read;
-use std::result::Result;
 
 use util::events;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
@@ -66,185 +74,278 @@ pub struct Init {
 /// An error message to be sent or received from a peer
 #[derive(Clone)]
 pub struct ErrorMessage {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) data: String,
+	/// The channel ID involved in the error
+	pub channel_id: [u8; 32],
+	/// A possibly human-readable error description.
+	/// The string should be sanitized before it is used (e.g. emitted to logs
+	/// or printed to stdout).  Otherwise, a well crafted error message may trigger a security
+	/// vulnerability in the terminal emulator or the logging subsystem.
+	pub data: String,
 }
 
 /// A ping message to be sent or received from a peer
 pub struct Ping {
-	pub(crate) ponglen: u16,
-	pub(crate) byteslen: u16,
+	/// The desired response length
+	pub ponglen: u16,
+	/// The ping packet size.
+	/// This field is not sent on the wire. byteslen zeros are sent.
+	pub byteslen: u16,
 }
 
 /// A pong message to be sent or received from a peer
 pub struct Pong {
-	pub(crate) byteslen: u16,
+	/// The pong packet size.
+	/// This field is not sent on the wire. byteslen zeros are sent.
+	pub byteslen: u16,
 }
 
 /// An open_channel message to be sent or received from a peer
 #[derive(Clone)]
 pub struct OpenChannel {
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) funding_satoshis: u64,
-	pub(crate) push_msat: u64,
-	pub(crate) dust_limit_satoshis: u64,
-	pub(crate) max_htlc_value_in_flight_msat: u64,
-	pub(crate) channel_reserve_satoshis: u64,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) feerate_per_kw: u32,
-	pub(crate) to_self_delay: u16,
-	pub(crate) max_accepted_htlcs: u16,
-	pub(crate) funding_pubkey: PublicKey,
-	pub(crate) revocation_basepoint: PublicKey,
-	pub(crate) payment_point: PublicKey,
-	pub(crate) delayed_payment_basepoint: PublicKey,
-	pub(crate) htlc_basepoint: PublicKey,
-	pub(crate) first_per_commitment_point: PublicKey,
-	pub(crate) channel_flags: u8,
-	pub(crate) shutdown_scriptpubkey: OptionalField<Script>,
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// A temporary channel ID, until the funding outpoint is announced
+	pub temporary_channel_id: [u8; 32],
+	/// The channel value
+	pub funding_satoshis: u64,
+	/// The amount to push to the counterparty as part of the open, in milli-satoshi
+	pub push_msat: u64,
+	/// The threshold below which outputs on transactions broadcast by sender will be omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// The feerate per 1000-weight of sender generated transactions, until updated by update_fee
+	pub feerate_per_kw: u32,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards sender
+	pub max_accepted_htlcs: u16,
+	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to sender for transactions broadcast by counterparty
+	pub payment_point: PublicKey,
+	/// Used to derive a payment key to sender for transactions broadcast by sender
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to sender
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-sender transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// Channel flags
+	pub channel_flags: u8,
+	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: OptionalField<Script>,
 }
 
 /// An accept_channel message to be sent or received from a peer
 #[derive(Clone)]
 pub struct AcceptChannel {
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) dust_limit_satoshis: u64,
-	pub(crate) max_htlc_value_in_flight_msat: u64,
-	pub(crate) channel_reserve_satoshis: u64,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) minimum_depth: u32,
-	pub(crate) to_self_delay: u16,
-	pub(crate) max_accepted_htlcs: u16,
-	pub(crate) funding_pubkey: PublicKey,
-	pub(crate) revocation_basepoint: PublicKey,
-	pub(crate) payment_point: PublicKey,
-	pub(crate) delayed_payment_basepoint: PublicKey,
-	pub(crate) htlc_basepoint: PublicKey,
-	pub(crate) first_per_commitment_point: PublicKey,
-	pub(crate) shutdown_scriptpubkey: OptionalField<Script>
+	/// A temporary channel ID, until the funding outpoint is announced
+	pub temporary_channel_id: [u8; 32],
+	/// The threshold below which outputs on transactions broadcast by sender will be omitted
+	pub dust_limit_satoshis: u64,
+	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
+	pub max_htlc_value_in_flight_msat: u64,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// Minimum depth of the funding transaction before the channel is considered open
+	pub minimum_depth: u32,
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
+	pub to_self_delay: u16,
+	/// The maximum number of inbound HTLCs towards sender
+	pub max_accepted_htlcs: u16,
+	/// The sender's key controlling the funding transaction
+	pub funding_pubkey: PublicKey,
+	/// Used to derive a revocation key for transactions broadcast by counterparty
+	pub revocation_basepoint: PublicKey,
+	/// A payment key to sender for transactions broadcast by counterparty
+	pub payment_point: PublicKey,
+	/// Used to derive a payment key to sender for transactions broadcast by sender
+	pub delayed_payment_basepoint: PublicKey,
+	/// Used to derive an HTLC payment key to sender for transactions broadcast by counterparty
+	pub htlc_basepoint: PublicKey,
+	/// The first to-be-broadcast-by-sender transaction's per commitment point
+	pub first_per_commitment_point: PublicKey,
+	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	pub shutdown_scriptpubkey: OptionalField<Script>,
 }
 
 /// A funding_created message to be sent or received from a peer
 #[derive(Clone)]
 pub struct FundingCreated {
-	pub(crate) temporary_channel_id: [u8; 32],
-	pub(crate) funding_txid: Txid,
-	pub(crate) funding_output_index: u16,
-	pub(crate) signature: Signature,
+	/// A temporary channel ID, until the funding is established
+	pub temporary_channel_id: [u8; 32],
+	/// The funding transaction ID
+	pub funding_txid: Txid,
+	/// The specific output index funding this channel
+	pub funding_output_index: u16,
+	/// The signature of the channel initiator (funder) on the funding transaction
+	pub signature: Signature,
 }
 
 /// A funding_signed message to be sent or received from a peer
 #[derive(Clone)]
 pub struct FundingSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The signature of the channel acceptor (fundee) on the funding transaction
+	pub signature: Signature,
 }
 
 /// A funding_locked message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
-#[allow(missing_docs)]
 pub struct FundingLocked {
+	/// The channel ID
 	pub channel_id: [u8; 32],
+	/// The per-commitment point of the second commitment transaction
 	pub next_per_commitment_point: PublicKey,
 }
 
 /// A shutdown message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct Shutdown {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) scriptpubkey: Script,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The destination of this peer's funds on closing.
+	/// Must be in one of these forms: p2pkh, p2sh, p2wpkh, p2wsh.
+	pub scriptpubkey: Script,
 }
 
 /// A closing_signed message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct ClosingSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) fee_satoshis: u64,
-	pub(crate) signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The proposed total fee for the closing transaction
+	pub fee_satoshis: u64,
+	/// A signature on the closing transaction
+	pub signature: Signature,
 }
 
 /// An update_add_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateAddHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
-	pub(crate) amount_msat: u64,
-	pub(crate) payment_hash: PaymentHash,
-	pub(crate) cltv_expiry: u32,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
+	/// The HTLC value in milli-satoshi
+	pub amount_msat: u64,
+	/// The payment hash, the pre-image of which controls HTLC redemption
+	pub payment_hash: PaymentHash,
+	/// The expiry height of the HTLC
+	pub cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFulfillHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
-	pub(crate) payment_preimage: PaymentPreimage,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
+	/// The pre-image of the payment hash, allowing HTLC redemption
+	pub payment_preimage: PaymentPreimage,
 }
 
 /// An update_fail_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFailHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
 	pub(crate) reason: OnionErrorPacket,
 }
 
 /// An update_fail_malformed_htlc message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct UpdateFailMalformedHTLC {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) htlc_id: u64,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The HTLC ID
+	pub htlc_id: u64,
 	pub(crate) sha256_of_onion: [u8; 32],
-	pub(crate) failure_code: u16,
+	/// The failure code
+	pub failure_code: u16,
 }
 
 /// A commitment_signed message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct CommitmentSigned {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) signature: Signature,
-	pub(crate) htlc_signatures: Vec<Signature>,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// A signature on the commitment transaction
+	pub signature: Signature,
+	/// Signatures on the HTLC transactions
+	pub htlc_signatures: Vec<Signature>,
 }
 
 /// A revoke_and_ack message to be sent or received from a peer
 #[derive(Clone, PartialEq)]
 pub struct RevokeAndACK {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) per_commitment_secret: [u8; 32],
-	pub(crate) next_per_commitment_point: PublicKey,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The secret corresponding to the per-commitment point
+	pub per_commitment_secret: [u8; 32],
+	/// The next sender-broadcast commitment transaction's per-commitment point
+	pub next_per_commitment_point: PublicKey,
 }
 
 /// An update_fee message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct UpdateFee {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) feerate_per_kw: u32,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// Fee rate per 1000-weight of the transaction
+	pub feerate_per_kw: u32,
 }
 
 #[derive(PartialEq, Clone)]
-pub(crate) struct DataLossProtect {
-	pub(crate) your_last_per_commitment_secret: [u8; 32],
-	pub(crate) my_current_per_commitment_point: PublicKey,
+/// Proof that the sender knows the per-commitment secret of the previous commitment transaction.
+/// This is used to convince the recipient that the channel is at a certain commitment
+/// number even if they lost that data due to a local failure.  Of course, the peer may lie
+/// and even later commitments may have been revoked.
+pub struct DataLossProtect {
+	/// Proof that the sender knows the per-commitment secret of a specific commitment transaction
+	/// belonging to the recipient
+	pub your_last_per_commitment_secret: [u8; 32],
+	/// The sender's per-commitment point for their current commitment transaction
+	pub my_current_per_commitment_point: PublicKey,
 }
 
 /// A channel_reestablish message to be sent or received from a peer
 #[derive(PartialEq, Clone)]
 pub struct ChannelReestablish {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) next_local_commitment_number: u64,
-	pub(crate) next_remote_commitment_number: u64,
-	pub(crate) data_loss_protect: OptionalField<DataLossProtect>,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The next commitment number for the sender
+	pub next_local_commitment_number: u64,
+	/// The next commitment number for the recipient
+	pub next_remote_commitment_number: u64,
+	/// Optionally, a field proving that next_remote_commitment_number-1 has been revoked
+	pub data_loss_protect: OptionalField<DataLossProtect>,
 }
 
 /// An announcement_signatures message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct AnnouncementSignatures {
-	pub(crate) channel_id: [u8; 32],
-	pub(crate) short_channel_id: u64,
-	pub(crate) node_signature: Signature,
-	pub(crate) bitcoin_signature: Signature,
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The short channel ID
+	pub short_channel_id: u64,
+	/// A signature by the node key
+	pub node_signature: Signature,
+	/// A signature by the funding key
+	pub bitcoin_signature: Signature,
 }
 
 /// An address which can be used to connect to a remote peer
@@ -374,72 +475,183 @@ impl Readable for Result<NetAddress, u8> {
 	}
 }
 
-// Only exposed as broadcast of node_announcement should be filtered by node_id
 /// The unsigned part of a node_announcement
 #[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedNodeAnnouncement {
-	pub(crate) features: NodeFeatures,
-	pub(crate) timestamp: u32,
+	/// The advertised features
+	pub features: NodeFeatures,
+	/// A strictly monotonic announcement counter, with gaps allowed
+	pub timestamp: u32,
 	/// The node_id this announcement originated from (don't rebroadcast the node_announcement back
 	/// to this node).
-	pub        node_id: PublicKey,
-	pub(crate) rgb: [u8; 3],
-	pub(crate) alias: [u8; 32],
-	/// List of addresses on which this node is reachable. Note that you may only have up to one
-	/// address of each type, if you have more, they may be silently discarded or we may panic!
-	pub(crate) addresses: Vec<NetAddress>,
+	pub node_id: PublicKey,
+	/// An RGB color for UI purposes
+	pub rgb: [u8; 3],
+	/// An alias, for UI purposes.  This should be sanitized before use.  There is no guarantee
+	/// of uniqueness.
+	pub alias: [u8; 32],
+	/// List of addresses on which this node is reachable
+	pub addresses: Vec<NetAddress>,
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
 #[derive(PartialEq, Clone, Debug)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
-	pub(crate) signature: Signature,
-	pub(crate) contents: UnsignedNodeAnnouncement,
+	/// The signature by the node key
+	pub signature: Signature,
+	/// The actual content of the announcement
+	pub contents: UnsignedNodeAnnouncement,
 }
 
-// Only exposed as broadcast of channel_announcement should be filtered by node_id
 /// The unsigned part of a channel_announcement
 #[derive(PartialEq, Clone, Debug)]
 pub struct UnsignedChannelAnnouncement {
-	pub(crate) features: ChannelFeatures,
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) short_channel_id: u64,
+	/// The advertised channel features
+	pub features: ChannelFeatures,
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The short channel ID
+	pub short_channel_id: u64,
 	/// One of the two node_ids which are endpoints of this channel
-	pub        node_id_1: PublicKey,
+	pub node_id_1: PublicKey,
 	/// The other of the two node_ids which are endpoints of this channel
-	pub        node_id_2: PublicKey,
-	pub(crate) bitcoin_key_1: PublicKey,
-	pub(crate) bitcoin_key_2: PublicKey,
+	pub node_id_2: PublicKey,
+	/// The funding key for the first node
+	pub bitcoin_key_1: PublicKey,
+	/// The funding key for the second node
+	pub bitcoin_key_2: PublicKey,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_announcement message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct ChannelAnnouncement {
-	pub(crate) node_signature_1: Signature,
-	pub(crate) node_signature_2: Signature,
-	pub(crate) bitcoin_signature_1: Signature,
-	pub(crate) bitcoin_signature_2: Signature,
-	pub(crate) contents: UnsignedChannelAnnouncement,
+	/// Authentication of the announcement by the first public node
+	pub node_signature_1: Signature,
+	/// Authentication of the announcement by the second public node
+	pub node_signature_2: Signature,
+	/// Proof of funding UTXO ownership by the first public node
+	pub bitcoin_signature_1: Signature,
+	/// Proof of funding UTXO ownership by the second public node
+	pub bitcoin_signature_2: Signature,
+	/// The actual announcement
+	pub contents: UnsignedChannelAnnouncement,
 }
 
+/// The unsigned part of a channel_update
 #[derive(PartialEq, Clone, Debug)]
-pub(crate) struct UnsignedChannelUpdate {
-	pub(crate) chain_hash: BlockHash,
-	pub(crate) short_channel_id: u64,
-	pub(crate) timestamp: u32,
-	pub(crate) flags: u16,
-	pub(crate) cltv_expiry_delta: u16,
-	pub(crate) htlc_minimum_msat: u64,
-	pub(crate) fee_base_msat: u32,
-	pub(crate) fee_proportional_millionths: u32,
+pub struct UnsignedChannelUpdate {
+	/// The genesis hash of the blockchain where the channel is to be opened
+	pub chain_hash: BlockHash,
+	/// The short channel ID
+	pub short_channel_id: u64,
+	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
+	pub timestamp: u32,
+	/// Channel flags
+	pub flags: u8,
+	/// The number of blocks to subtract from incoming HTLC cltv_expiry values
+	pub cltv_expiry_delta: u16,
+	/// The minimum HTLC size incoming to sender, in milli-satoshi
+	pub htlc_minimum_msat: u64,
+	/// Optionally, the maximum HTLC value incoming to sender, in milli-satoshi
+	pub htlc_maximum_msat: OptionalField<u64>,
+	/// The base HTLC fee charged by sender, in milli-satoshi
+	pub fee_base_msat: u32,
+	/// The amount to fee multiplier, in micro-satoshi
+	pub fee_proportional_millionths: u32,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_update message to be sent or received from a peer
 #[derive(PartialEq, Clone, Debug)]
 pub struct ChannelUpdate {
-	pub(crate) signature: Signature,
-	pub(crate) contents: UnsignedChannelUpdate,
+	/// A signature of the channel update
+	pub signature: Signature,
+	/// The actual channel update
+	pub contents: UnsignedChannelUpdate,
+}
+
+/// A query_channel_range message is used to query a peer for channel
+/// UTXOs in a range of blocks. The recipient of a query makes a best
+/// effort to reply to the query using one or more reply_channel_range
+/// messages.
+#[derive(Clone, Debug)]
+pub struct QueryChannelRange {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The height of the first block for the channel UTXOs being queried
+	pub first_blocknum: u32,
+	/// The number of blocks to include in the query results
+	pub number_of_blocks: u32,
+}
+
+/// A reply_channel_range message is a reply to a query_channel_range
+/// message. Multiple reply_channel_range messages can be sent in reply
+/// to a single query_channel_range message. The query recipient makes a
+/// best effort to respond based on their local network view which may
+/// not be a perfect view of the network. The short_channel_ids in the
+/// reply are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[derive(Clone, Debug)]
+pub struct ReplyChannelRange {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The height of the first block in the range of the reply
+	pub first_blocknum: u32,
+	/// The number of blocks included in the range of the reply
+	pub number_of_blocks: u32,
+	/// Indicates if the query recipient maintains up-to-date channel
+	/// information for the chain_hash
+	pub full_information: bool,
+	/// The short_channel_ids in the channel range
+	pub short_channel_ids: Vec<u64>,
+}
+
+/// A query_short_channel_ids message is used to query a peer for
+/// routing gossip messages related to one or more short_channel_ids.
+/// The query recipient will reply with the latest, if available,
+/// channel_announcement, channel_update and node_announcement messages
+/// it maintains for the requested short_channel_ids followed by a
+/// reply_short_channel_ids_end message. The short_channel_ids sent in
+/// this query are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[derive(Clone, Debug)]
+pub struct QueryShortChannelIds {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The short_channel_ids that are being queried
+	pub short_channel_ids: Vec<u64>,
+}
+
+/// A reply_short_channel_ids_end message is sent as a reply to a
+/// query_short_channel_ids message. The query recipient makes a best
+/// effort to respond based on their local network view which may not be
+/// a perfect view of the network.
+#[derive(Clone, Debug)]
+pub struct ReplyShortChannelIdsEnd {
+	/// The genesis hash of the blockchain that was queried
+	pub chain_hash: BlockHash,
+	/// Indicates if the query recipient maintains up-to-date channel
+	/// information for the chain_hash
+	pub full_information: bool,
+}
+
+/// A gossip_timestamp_filter message is used by a node to request
+/// gossip relay for messages in the requested time range when the
+/// gossip_queries feature has been negotiated.
+#[derive(Clone, Debug)]
+pub struct GossipTimestampFilter {
+	/// The genesis hash of the blockchain for channel and node information
+	pub chain_hash: BlockHash,
+	/// The starting unix timestamp
+	pub first_timestamp: u32,
+	/// The range of information in seconds
+	pub timestamp_range: u32,
+}
+
+/// Encoding type for data compression of collections in gossip queries.
+/// We do not support encoding_type=1 zlib serialization defined in BOLT #7.
+enum EncodingType {
+	Uncompressed = 0x00,
 }
 
 /// Used to put an error message in a LightningError
@@ -463,7 +675,7 @@ pub enum ErrorAction {
 #[derive(Clone)]
 pub struct LightningError {
 	/// A human-readable message describing the error
-	pub err: &'static str,
+	pub err: String,
 	/// The action which should be taken against the offending peer.
 	pub action: ErrorAction,
 }
@@ -519,7 +731,8 @@ pub enum HTLCFailChannelUpdate {
 /// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
 /// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
 /// separate enum type for them.
-#[derive(Clone, PartialEq)]
+/// (C-not exported) due to a free generic in T
+#[derive(Clone, PartialEq, Debug)]
 pub enum OptionalField<T> {
 	/// Optional field is included in message
 	Present(T),
@@ -703,7 +916,7 @@ impl fmt::Display for DecodeError {
 
 impl fmt::Debug for LightningError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self.err)
+		f.write_str(self.err.as_str())
 	}
 }
 
@@ -743,6 +956,26 @@ impl Readable for OptionalField<Script> {
 		}
 	}
 }
+
+impl Writeable for OptionalField<u64> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		match *self {
+			OptionalField::Present(ref value) => {
+				value.write(w)?;
+			},
+			OptionalField::Absent => {}
+		}
+		Ok(())
+	}
+}
+
+impl Readable for OptionalField<u64> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let value: u64 = Readable::read(r)?;
+		Ok(OptionalField::Present(value))
+	}
+}
+
 
 impl_writeable_len_match!(AcceptChannel, {
 		{AcceptChannel{ shutdown_scriptpubkey: OptionalField::Present(ref script), .. }, 270 + 2 + script.len()},
@@ -1182,15 +1415,23 @@ impl_writeable_len_match!(ChannelAnnouncement, {
 
 impl Writeable for UnsignedChannelUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(64 + self.excess_data.len());
+		let mut size = 64 + self.excess_data.len();
+		let mut message_flags: u8 = 0;
+		if let OptionalField::Present(_) = self.htlc_maximum_msat {
+			size += 8;
+			message_flags = 1;
+		}
+		w.size_hint(size);
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
-		self.flags.write(w)?;
+		let all_flags = self.flags as u16 | ((message_flags as u16) << 8);
+		all_flags.write(w)?;
 		self.cltv_expiry_delta.write(w)?;
 		self.htlc_minimum_msat.write(w)?;
 		self.fee_base_msat.write(w)?;
 		self.fee_proportional_millionths.write(w)?;
+		self.htlc_maximum_msat.write(w)?;
 		w.write_all(&self.excess_data[..])?;
 		Ok(())
 	}
@@ -1198,15 +1439,22 @@ impl Writeable for UnsignedChannelUpdate {
 
 impl Readable for UnsignedChannelUpdate {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let has_htlc_maximum_msat;
 		Ok(Self {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
 			timestamp: Readable::read(r)?,
-			flags: Readable::read(r)?,
+			flags: {
+				let flags: u16 = Readable::read(r)?;
+				let message_flags = flags >> 8;
+				has_htlc_maximum_msat = (message_flags as i32 & 1) == 1;
+				flags as u8
+			},
 			cltv_expiry_delta: Readable::read(r)?,
 			htlc_minimum_msat: Readable::read(r)?,
 			fee_base_msat: Readable::read(r)?,
 			fee_proportional_millionths: Readable::read(r)?,
+			htlc_maximum_msat: if has_htlc_maximum_msat { Readable::read(r)? } else { OptionalField::Absent },
 			excess_data: {
 				let mut excess_data = vec![];
 				r.read_to_end(&mut excess_data)?;
@@ -1352,6 +1600,184 @@ impl_writeable_len_match!(NodeAnnouncement, {
 	signature,
 	contents
 });
+
+impl Readable for QueryShortChannelIds {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		let encoding_len: u16 = Readable::read(r)?;
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Must be encoding_type=0 uncompressed serialization. We do not
+		// support encoding_type=1 zlib serialization.
+		let encoding_type: u8 = Readable::read(r)?;
+		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
+		// less the 1-byte encoding_type
+		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
+		for _ in 0..short_channel_id_count {
+			short_channel_ids.push(Readable::read(r)?);
+		}
+
+		Ok(QueryShortChannelIds {
+			chain_hash,
+			short_channel_ids,
+		})
+	}
+}
+
+impl Writeable for QueryShortChannelIds {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		// Calculated from 1-byte encoding_type plus 8-bytes per short_channel_id
+		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
+
+		w.size_hint(32 + 2 + encoding_len as usize);
+		self.chain_hash.write(w)?;
+		encoding_len.write(w)?;
+
+		// We only support type=0 uncompressed serialization
+		(EncodingType::Uncompressed as u8).write(w)?;
+
+		for scid in self.short_channel_ids.iter() {
+			scid.write(w)?;
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for ReplyShortChannelIdsEnd {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let full_information: bool = Readable::read(r)?;
+		Ok(ReplyShortChannelIdsEnd {
+			chain_hash,
+			full_information,
+		})
+	}
+}
+
+impl Writeable for ReplyShortChannelIdsEnd {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 1);
+		self.chain_hash.write(w)?;
+		self.full_information.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for QueryChannelRange {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_blocknum: u32 = Readable::read(r)?;
+		let number_of_blocks: u32 = Readable::read(r)?;
+		Ok(QueryChannelRange {
+			chain_hash,
+			first_blocknum,
+			number_of_blocks
+		})
+	}
+}
+
+impl Writeable for QueryChannelRange {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 4 + 4);
+		self.chain_hash.write(w)?;
+		self.first_blocknum.write(w)?;
+		self.number_of_blocks.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for ReplyChannelRange {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_blocknum: u32 = Readable::read(r)?;
+		let number_of_blocks: u32 = Readable::read(r)?;
+		let full_information: bool = Readable::read(r)?;
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		let encoding_len: u16 = Readable::read(r)?;
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Must be encoding_type=0 uncompressed serialization. We do not
+		// support encoding_type=1 zlib serialization.
+		let encoding_type: u8 = Readable::read(r)?;
+		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
+		// less the 1-byte encoding_type
+		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
+		for _ in 0..short_channel_id_count {
+			short_channel_ids.push(Readable::read(r)?);
+		}
+
+		Ok(ReplyChannelRange {
+			chain_hash,
+			first_blocknum,
+			number_of_blocks,
+			full_information,
+			short_channel_ids
+		})
+	}
+}
+
+impl Writeable for ReplyChannelRange {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
+		w.size_hint(32 + 4 + 4 + 1 + 2 + encoding_len as usize);
+		self.chain_hash.write(w)?;
+		self.first_blocknum.write(w)?;
+		self.number_of_blocks.write(w)?;
+		self.full_information.write(w)?;
+
+		encoding_len.write(w)?;
+		(EncodingType::Uncompressed as u8).write(w)?;
+		for scid in self.short_channel_ids.iter() {
+			scid.write(w)?;
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for GossipTimestampFilter {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_timestamp: u32 = Readable::read(r)?;
+		let timestamp_range: u32 = Readable::read(r)?;
+		Ok(GossipTimestampFilter {
+			chain_hash,
+			first_timestamp,
+			timestamp_range,
+		})
+	}
+}
+
+impl Writeable for GossipTimestampFilter {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 4 + 4);
+		self.chain_hash.write(w)?;
+		self.first_timestamp.write(w)?;
+		self.timestamp_range.write(w)?;
+		Ok(())
+	}
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1599,7 +2025,7 @@ mod tests {
 		do_encoding_node_announcement(false, false, true, false, true, false, false);
 	}
 
-	fn do_encoding_channel_update(direction: bool, disable: bool, htlc_maximum_msat: bool) {
+	fn do_encoding_channel_update(direction: bool, disable: bool, htlc_maximum_msat: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
@@ -1607,12 +2033,13 @@ mod tests {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
-			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 } | if htlc_maximum_msat { 1 << 8 } else { 0 },
+			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
+			htlc_maximum_msat: if htlc_maximum_msat { OptionalField::Present(131355275467161) } else { OptionalField::Absent },
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
-			excess_data: if htlc_maximum_msat { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() }
+			excess_data: if excess_data { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() }
 		};
 		let channel_update = msgs::ChannelUpdate {
 			signature: sig_1,
@@ -1638,6 +2065,9 @@ mod tests {
 		}
 		target_value.append(&mut hex::decode("009000000000000f42400000271000000014").unwrap());
 		if htlc_maximum_msat {
+			target_value.append(&mut hex::decode("0000777788889999").unwrap());
+		}
+		if excess_data {
 			target_value.append(&mut hex::decode("000000003b9aca00").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
@@ -1645,11 +2075,16 @@ mod tests {
 
 	#[test]
 	fn encoding_channel_update() {
-		do_encoding_channel_update(false, false, false);
-		do_encoding_channel_update(true, false, false);
-		do_encoding_channel_update(false, true, false);
-		do_encoding_channel_update(false, false, true);
-		do_encoding_channel_update(true, true, true);
+		do_encoding_channel_update(false, false, false, false);
+		do_encoding_channel_update(false, false, false, true);
+		do_encoding_channel_update(true, false, false, false);
+		do_encoding_channel_update(true, false, false, true);
+		do_encoding_channel_update(false, true, false, false);
+		do_encoding_channel_update(false, true, false, true);
+		do_encoding_channel_update(false, false, true, false);
+		do_encoding_channel_update(false, false, true, true);
+		do_encoding_channel_update(true, true, true, false);
+		do_encoding_channel_update(true, true, true, true);
 	}
 
 	fn do_encoding_open_channel(random_bit: bool, shutdown: bool) {
@@ -1792,7 +2227,11 @@ mod tests {
 		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let shutdown = msgs::Shutdown {
 			channel_id: [2; 32],
-			scriptpubkey: if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() } else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() } else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() } else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+			scriptpubkey:
+				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() }
+				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() }
+				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
+				else                     { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
@@ -2074,5 +2513,123 @@ mod tests {
 		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+	}
+
+	#[test]
+	fn encoding_query_channel_range() {
+		let mut query_channel_range = msgs::QueryChannelRange {
+			chain_hash: BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap(),
+			first_blocknum: 100000,
+			number_of_blocks: 1500,
+		};
+		let encoded_value = query_channel_range.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000186a0000005dc").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(query_channel_range.first_blocknum, 100000);
+		assert_eq!(query_channel_range.number_of_blocks, 1500);
+	}
+
+	#[test]
+	fn encoding_reply_channel_range() {
+		do_encoding_reply_channel_range(0);
+		do_encoding_reply_channel_range(1);
+	}
+
+	fn do_encoding_reply_channel_range(encoding_type: u8) {
+		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000b8a06000005dc01").unwrap();
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut reply_channel_range = msgs::ReplyChannelRange {
+			chain_hash: expected_chain_hash,
+			first_blocknum: 756230,
+			number_of_blocks: 1500,
+			full_information: true,
+			short_channel_ids: vec![0x000000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
+		};
+
+		if encoding_type == 0 {
+			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			let encoded_value = reply_channel_range.encode();
+			assert_eq!(encoded_value, target_value);
+
+			reply_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			assert_eq!(reply_channel_range.chain_hash, expected_chain_hash);
+			assert_eq!(reply_channel_range.first_blocknum, 756230);
+			assert_eq!(reply_channel_range.number_of_blocks, 1500);
+			assert_eq!(reply_channel_range.full_information, true);
+			assert_eq!(reply_channel_range.short_channel_ids[0], 0x000000000000008e);
+			assert_eq!(reply_channel_range.short_channel_ids[1], 0x0000000000003c69);
+			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
+		} else {
+			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
+		}
+	}
+
+	#[test]
+	fn encoding_query_short_channel_ids() {
+		do_encoding_query_short_channel_ids(0);
+		do_encoding_query_short_channel_ids(1);
+	}
+
+	fn do_encoding_query_short_channel_ids(encoding_type: u8) {
+		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206").unwrap();
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
+			chain_hash: expected_chain_hash,
+			short_channel_ids: vec![0x0000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
+		};
+
+		if encoding_type == 0 {
+			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			let encoded_value = query_short_channel_ids.encode();
+			assert_eq!(encoded_value, target_value);
+
+			query_short_channel_ids = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			assert_eq!(query_short_channel_ids.chain_hash, expected_chain_hash);
+			assert_eq!(query_short_channel_ids.short_channel_ids[0], 0x000000000000008e);
+			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
+			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
+		} else {
+			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
+		}
+	}
+
+	#[test]
+	fn encoding_reply_short_channel_ids_end() {
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut reply_short_channel_ids_end = msgs::ReplyShortChannelIdsEnd {
+			chain_hash: expected_chain_hash,
+			full_information: true,
+		};
+		let encoded_value = reply_short_channel_ids_end.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e220601").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(reply_short_channel_ids_end.chain_hash, expected_chain_hash);
+		assert_eq!(reply_short_channel_ids_end.full_information, true);
+	}
+
+	#[test]
+	fn encoding_gossip_timestamp_filter(){
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut gossip_timestamp_filter = msgs::GossipTimestampFilter {
+			chain_hash: expected_chain_hash,
+			first_timestamp: 1590000000,
+			timestamp_range: 0xffff_ffff,
+		};
+		let encoded_value = gossip_timestamp_filter.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e22065ec57980ffffffff").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(gossip_timestamp_filter.chain_hash, expected_chain_hash);
+		assert_eq!(gossip_timestamp_filter.first_timestamp, 1590000000);
+		assert_eq!(gossip_timestamp_filter.timestamp_range, 0xffff_ffff);
 	}
 }

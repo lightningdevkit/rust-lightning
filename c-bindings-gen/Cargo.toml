@@ -1,0 +1,12 @@
+[package]
+name = "c-bindings-gen"
+version = "0.0.1"
+authors = ["Matt Corallo"]
+edition = "2018"
+
+[dependencies]
+syn = { version = "1", features = ["full", "extra-traits"] }
+proc-macro2 = "1"
+
+# We're not in the workspace as we're just a binary code generator:
+[workspace]

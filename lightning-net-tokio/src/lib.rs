@@ -1,3 +1,12 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
 //! A socket handling library for those running in Tokio environments who wish to use
 //! rust-lightning with native TcpStreams.
 //!
@@ -90,7 +99,7 @@ struct Connection {
 	event_notify: mpsc::Sender<()>,
 	// Because our PeerManager is templated by user-provided types, and we can't (as far as I can
 	// tell) have a const RawWakerVTable built out of templated functions, we need some indirection
-	// between being woken up with write-ready and calling PeerManager::write_buffer_spce_avail.
+	// between being woken up with write-ready and calling PeerManager::write_buffer_space_avail.
 	// This provides that indirection, with a Sender which gets handed to the PeerManager Arc on
 	// the schedule_read stack.
 	//
