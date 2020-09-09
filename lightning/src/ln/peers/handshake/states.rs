@@ -391,7 +391,7 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
 		// to the Conduit for future use.
-		conduit.read(&input[bytes_read..])?;
+		conduit.decryptor.read(&input[bytes_read..])?;
 
 		Ok((
 			None,

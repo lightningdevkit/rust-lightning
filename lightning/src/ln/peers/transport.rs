@@ -88,7 +88,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 				}
 			}
 			Some(ref mut conduit) => {
-				conduit.read(input)?;
+				conduit.decryptor.read(input)?;
 				Ok(false) // newly connected
 			}
 		}
@@ -157,7 +157,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> MessageQueuer for Transport<PeerHandshak
 
 				let mut buffer = VecWriter(Vec::new());
 				wire::write(message, &mut buffer).unwrap();
-				output_buffer.push_back(conduit.encrypt(&buffer.0));
+				output_buffer.push_back(conduit.encryptor.encrypt(&buffer.0));
 			}
 		}
 	}
