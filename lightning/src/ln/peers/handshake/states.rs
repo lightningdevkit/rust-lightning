@@ -5,7 +5,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::{chacha, hkdf5869rfc};
-use ln::peers::conduit::{Conduit, SymmetricKey};
+use ln::peers::conduit::{SymmetricKey, create_encryptor_decryptor};
 use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
 use ln::peers::handshake::{CompletedHandshakeInfo, IHandshakeState};
 
@@ -303,8 +303,8 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		let (sending_key, receiving_key) = hkdf5869rfc::derive(&chaining_key, &[0; 0]);
 
 		// 7. rn = 0, sn = 0
-		// - done by Conduit
-		let conduit = Conduit::new(sending_key, receiving_key, chaining_key);
+		// - done by encryptor/decryptor initialization
+		let (encryptor, decryptor)  = create_encryptor_decryptor(sending_key, receiving_key, chaining_key);
 
 		// 8. Send m = 0 || c || t
 		act_three[0] = 0;
@@ -312,7 +312,8 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 			Some(Act::Three(act_three)),
 			HandshakeState::Complete(Some(
 				CompletedHandshakeInfo {
-					conduit,
+					decryptor,
+					encryptor,
 					their_node_id: responder_static_public_key
 				}
 			))
@@ -386,18 +387,19 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 		let (receiving_key, sending_key) = hkdf5869rfc::derive(&chaining_key, &[0; 0]);
 
 		// 10. rn = 0, sn = 0
-		// - done by Conduit
-		let mut conduit = Conduit::new(sending_key, receiving_key, chaining_key);
+		// - done by encryptor/decryptor initialization
+		let (encryptor, mut decryptor)  = create_encryptor_decryptor(sending_key, receiving_key, chaining_key);
 
 		// Any remaining data in the read buffer would be encrypted, so transfer ownership
-		// to the Conduit for future use.
-		conduit.decryptor.read(&input[bytes_read..])?;
+		// to the Decryptor for future use.
+		decryptor.read(&input[bytes_read..])?;
 
 		Ok((
 			None,
 			HandshakeState::Complete(Some(
 				CompletedHandshakeInfo {
-					conduit,
+					decryptor,
+					encryptor,
 					their_node_id: initiator_pubkey
 				}
 			))
@@ -699,7 +701,7 @@ mod test {
 
 		assert_eq!(act3.as_ref(), test_ctx.valid_act3.as_slice());
 		assert_eq!(completed_handshake_info.their_node_id, test_ctx.responder_static_public_key);
-		assert_eq!(0, completed_handshake_info.conduit.decryptor.read_buffer_length());
+		assert_eq!(0, completed_handshake_info.decryptor.read_buffer_length());
 	}
 
 	// Initiator::AwaitingActTwo -> Complete (segmented calls)
@@ -765,7 +767,7 @@ mod test {
 		};
 
 		assert_eq!(completed_handshake_info.their_node_id, test_ctx.initiator_public_key);
-		assert_eq!(0, completed_handshake_info.conduit.decryptor.read_buffer_length());
+		assert_eq!(0, completed_handshake_info.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> None (with extra bytes)
@@ -785,7 +787,7 @@ mod test {
 		};
 
 		assert_eq!(completed_handshake_info.their_node_id, test_ctx.initiator_public_key);
-		assert_eq!(16, completed_handshake_info.conduit.decryptor.read_buffer_length());
+		assert_eq!(16, completed_handshake_info.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> Error (bad version bytes)

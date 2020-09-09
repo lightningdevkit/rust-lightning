@@ -11,12 +11,37 @@ const TAGGED_MESSAGE_LENGTH_HEADER_SIZE: usize = MESSAGE_LENGTH_HEADER_SIZE + ch
 
 const KEY_ROTATION_INDEX: u32 = 1000;
 
-/// Returned after a successful handshake to encrypt and decrypt communication with peer nodes.
-/// It should not normally be manually instantiated.
-/// Automatically handles key rotation.
-pub struct Conduit {
-	pub encryptor: Encryptor,
-	pub decryptor: Decryptor,
+/// Instantiate a new (Encryptor, Decryptor) with specified sending and receiving keys
+pub fn create_encryptor_decryptor(sending_key: SymmetricKey, receiving_key: SymmetricKey, chaining_key: SymmetricKey) -> (Encryptor, Decryptor) {
+	(Encryptor {
+		sending_key,
+		sending_chaining_key: chaining_key,
+		sending_nonce: 0
+	},
+	Decryptor {
+		receiving_key,
+		receiving_chaining_key: chaining_key,
+		receiving_nonce: 0,
+		read_buffer: Some(vec![]),
+		pending_message_length: None,
+		decrypted_payloads: VecDeque::new(),
+	})
+}
+
+// Shared helper for the Encryptor and Decryptor
+fn increment_nonce_helper(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
+	*nonce += 1;
+	if *nonce == KEY_ROTATION_INDEX {
+		rotate_key(chaining_key, key);
+		*nonce = 0;
+	}
+}
+
+// Shared helper for the Encryptor and Decryptor
+fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
+	let (new_chaining_key, new_key) = hkdf5869rfc::derive(chaining_key, key);
+	chaining_key.copy_from_slice(&new_chaining_key);
+	key.copy_from_slice(&new_key);
 }
 
 pub struct Encryptor {
@@ -43,41 +68,6 @@ impl Iterator for Decryptor {
 	}
 }
 
-impl Conduit {
-	/// Instantiate a new Conduit with specified sending and receiving keys
-	pub fn new(sending_key: SymmetricKey, receiving_key: SymmetricKey, chaining_key: SymmetricKey) -> Self {
-		Conduit {
-			encryptor: Encryptor {
-				sending_key,
-				sending_chaining_key: chaining_key,
-				sending_nonce: 0
-			},
-			decryptor: Decryptor {
-				receiving_key,
-				receiving_chaining_key: chaining_key,
-				receiving_nonce: 0,
-				read_buffer: Some(vec![]),
-				pending_message_length: None,
-				decrypted_payloads: VecDeque::new(),
-			}
-		}
-	}
-
-	fn increment_nonce(nonce: &mut u32, chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
-		*nonce += 1;
-		if *nonce == KEY_ROTATION_INDEX {
-			Self::rotate_key(chaining_key, key);
-			*nonce = 0;
-		}
-	}
-
-	fn rotate_key(chaining_key: &mut SymmetricKey, key: &mut SymmetricKey) {
-		let (new_chaining_key, new_key) = hkdf5869rfc::derive(chaining_key, key);
-		chaining_key.copy_from_slice(&new_chaining_key);
-		key.copy_from_slice(&new_key);
-	}
-}
-
 impl Encryptor {
 	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
 		let length = buffer.len() as u16;
@@ -95,7 +85,7 @@ impl Encryptor {
 	}
 
 	fn increment_nonce(&mut self) {
-		Conduit::increment_nonce(&mut self.sending_nonce, &mut self.sending_chaining_key, &mut self.sending_key);
+		increment_nonce_helper(&mut self.sending_nonce, &mut self.sending_chaining_key, &mut self.sending_key);
 	}
 }
 
@@ -177,7 +167,7 @@ impl Decryptor {
 	}
 
 	fn increment_nonce(&mut self) {
-		Conduit::increment_nonce(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
+		increment_nonce_helper(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
 	}
 
 	// Used in tests to determine whether or not excess bytes entered the conduit without needing to bring up
@@ -193,11 +183,10 @@ impl Decryptor {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
 	use hex;
 
-	use ln::peers::conduit::Conduit;
-
-	fn setup_peers() -> (Conduit, Conduit) {
+	fn setup_peers() -> ((Encryptor, Decryptor), (Encryptor, Decryptor)) {
 		let chaining_key_vec = hex::decode("919219dbb2920afa8db80f9a51787a840bcf111ed8d588caf9ab4be716e42b01").unwrap();
 		let mut chaining_key = [0u8; 32];
 		chaining_key.copy_from_slice(&chaining_key_vec);
@@ -210,22 +199,22 @@ mod tests {
 		let mut receiving_key = [0u8; 32];
 		receiving_key.copy_from_slice(&receiving_key_vec);
 
-		let connected_peer = Conduit::new(sending_key, receiving_key, chaining_key);
-		let remote_peer = Conduit::new(receiving_key, sending_key, chaining_key);
+		let connected_peer = create_encryptor_decryptor(sending_key, receiving_key, chaining_key);
+		let remote_peer = create_encryptor_decryptor(receiving_key, sending_key, chaining_key);
 
 		(connected_peer, remote_peer)
 	}
 
 	#[test]
 	fn test_empty_message() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
 
 		let message: Vec<u8> = vec![];
-		let encrypted_message = connected_peer.encryptor.encrypt(&message);
+		let encrypted_message = connected_encryptor.encrypt(&message);
 		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
 
-		remote_peer.decryptor.read(&encrypted_message[..]).unwrap();
-		let decrypted_message = remote_peer.decryptor.next().unwrap();
+		remote_decryptor.read(&encrypted_message[..]).unwrap();
+		let decrypted_message = remote_decryptor.next().unwrap();
 		assert_eq!(decrypted_message, vec![]);
 	}
 
@@ -234,16 +223,16 @@ mod tests {
 	// data is written to the read_buffer properly.
 	#[test]
 	fn test_decrypt_from_slice_two_calls_no_header_then_rest() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
 
 		let message: Vec<u8> = vec![1];
-		let encrypted_message = connected_peer.encryptor.encrypt(&message);
+		let encrypted_message = connected_encryptor.encrypt(&message);
 
-		remote_peer.decryptor.read(&encrypted_message[..1]).unwrap();
-		assert!(remote_peer.decryptor.next().is_none());
+		remote_decryptor.read(&encrypted_message[..1]).unwrap();
+		assert!(remote_decryptor.next().is_none());
 
-		remote_peer.decryptor.read(&encrypted_message[1..]).unwrap();
-		let decrypted_message = remote_peer.decryptor.next().unwrap();
+		remote_decryptor.read(&encrypted_message[1..]).unwrap();
+		let decrypted_message = remote_decryptor.next().unwrap();
 
 		assert_eq!(decrypted_message, vec![1]);
 	}
@@ -251,43 +240,43 @@ mod tests {
 	// Include the header in the first slice
 	#[test]
 	fn test_decrypt_from_slice_two_calls_header_then_rest() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
 
 		let message: Vec<u8> = vec![1];
-		let encrypted_message = connected_peer.encryptor.encrypt(&message);
+		let encrypted_message = connected_encryptor.encrypt(&message);
 
-		remote_peer.decryptor.read(&encrypted_message[..20]).unwrap();
-		assert!(remote_peer.decryptor.next().is_none());
+		remote_decryptor.read(&encrypted_message[..20]).unwrap();
+		assert!(remote_decryptor.next().is_none());
 
-		remote_peer.decryptor.read(&encrypted_message[20..]).unwrap();
-		let decrypted_message = remote_peer.decryptor.next().unwrap();
+		remote_decryptor.read(&encrypted_message[20..]).unwrap();
+		let decrypted_message = remote_decryptor.next().unwrap();
 
 		assert_eq!(decrypted_message, vec![1]);
 	}
 
 	#[test]
 	fn test_nonce_chaining() {
-		let (mut connected_peer, _remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), _) = setup_peers();
 		let message = hex::decode("68656c6c6f").unwrap();
 
-		let encrypted_message = connected_peer.encryptor.encrypt(&message);
+		let encrypted_message = connected_encryptor.encrypt(&message);
 		assert_eq!(encrypted_message, hex::decode("cf2b30ddf0cf3f80e7c35a6e6730b59fe802473180f396d88a8fb0db8cbcf25d2f214cf9ea1d95").unwrap());
 
 		// the second time the same message is encrypted, the ciphertext should be different
-		let encrypted_message = connected_peer.encryptor.encrypt(&message);
+		let encrypted_message = connected_encryptor.encrypt(&message);
 		assert_eq!(encrypted_message, hex::decode("72887022101f0b6753e0c7de21657d35a4cb2a1f5cde2650528bbc8f837d0f0d7ad833b1a256a1").unwrap());
 	}
 
 	#[test]
 	/// Based on RFC test vectors: https://github.com/lightningnetwork/lightning-rfc/blob/master/08-transport.md#message-encryption-tests
 	fn test_key_rotation() {
-		let (mut connected_peer, _remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), _) = setup_peers();
 
 		let message = hex::decode("68656c6c6f").unwrap();
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
 		for _ in 0..1002 {
-			let encrypted_message = connected_peer.encryptor.encrypt(&message);
+			let encrypted_message = connected_encryptor.encrypt(&message);
 			encrypted_messages.push(encrypted_message);
 		}
 
@@ -299,13 +288,13 @@ mod tests {
 
 	#[test]
 	fn test_decryption_buffering() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
 
 		let message = hex::decode("68656c6c6f").unwrap();
 		let mut encrypted_messages: Vec<Vec<u8>> = Vec::new();
 
 		for _ in 0..1002 {
-			let encrypted_message = connected_peer.encryptor.encrypt(&message);
+			let encrypted_message = connected_encryptor.encrypt(&message);
 			encrypted_messages.push(encrypted_message);
 		}
 
@@ -314,16 +303,16 @@ mod tests {
 			let mut current_encrypted_message = encrypted_messages.remove(0);
 			let next_encrypted_message = encrypted_messages.remove(0);
 			current_encrypted_message.extend_from_slice(&next_encrypted_message);
-			remote_peer.decryptor.read(&current_encrypted_message[..]).unwrap();
+			remote_decryptor.read(&current_encrypted_message[..]).unwrap();
 
-			let decrypted_message = remote_peer.decryptor.next().unwrap();
+			let decrypted_message = remote_decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
 
 		for _ in 0..501 {
 			// decrypt messages directly from buffer without adding to it
-			remote_peer.decryptor.read(&[]).unwrap();
-			let decrypted_message = remote_peer.decryptor.next().unwrap();
+			remote_decryptor.read(&[]).unwrap();
+			let decrypted_message = remote_decryptor.next().unwrap();
 			assert_eq!(decrypted_message, message);
 		}
 	}
@@ -331,29 +320,29 @@ mod tests {
 	// Decryption errors should result in Err
 	#[test]
 	fn decryption_failure_errors() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encryptor.encrypt(&[1]);
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
+		let encrypted = connected_encryptor.encrypt(&[1]);
 
-		connected_peer.decryptor.receiving_key = [0; 32];
-		assert_eq!(connected_peer.decryptor.read(&encrypted), Err("invalid hmac".to_string()));
+		remote_decryptor.receiving_key = [0; 32];
+		assert_eq!(remote_decryptor.read(&encrypted), Err("invalid hmac".to_string()));
 	}
 
 	// Test next()::None
 	#[test]
 	fn decryptor_iterator_empty() {
-		let (mut connected_peer, _) = setup_peers();
+		let (_, (_, mut remote_decryptor)) = setup_peers();
 
-		assert_eq!(connected_peer.decryptor.next(), None);
+		assert_eq!(remote_decryptor.next(), None);
 	}
 
 	// Test next() -> next()::None
 	#[test]
 	fn decryptor_iterator_one_item_valid() {
-		let (mut connected_peer, mut remote_peer) = setup_peers();
-		let encrypted = remote_peer.encryptor.encrypt(&[1]);
-		connected_peer.decryptor.read(&encrypted).unwrap();
+		let ((mut connected_encryptor, _), (_, mut remote_decryptor)) = setup_peers();
+		let encrypted = connected_encryptor.encrypt(&[1]);
+		remote_decryptor.read(&encrypted).unwrap();
 
-		assert_eq!(connected_peer.decryptor.next(), Some(vec![1]));
-		assert_eq!(connected_peer.decryptor.next(), None);
+		assert_eq!(remote_decryptor.next(), Some(vec![1]));
+		assert_eq!(remote_decryptor.next(), None);
 	}
 }

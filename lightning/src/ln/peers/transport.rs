@@ -2,7 +2,6 @@
 
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-use ln::peers::conduit::Conduit;
 use ln::peers::handler::{ITransport, PeerHandleError, MessageQueuer};
 use ln::peers::handshake::{CompletedHandshakeInfo, PeerHandshake};
 use ln::{wire, msgs};
@@ -23,7 +22,7 @@ pub trait IPeerHandshake {
 	/// Instantiate a new inbound handshake
 	fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self;
 
-	/// Progress the handshake given bytes received from the peer. Returns Some(Conduit, PublicKey) when the handshake
+	/// Progress the handshake given bytes received from the peer. Returns Some(CompletedHandshakeInfo) when the handshake
 	/// is complete.
 	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<CompletedHandshakeInfo>), String>;
 }
@@ -41,17 +40,15 @@ pub(super) trait PayloadQueuer {
 }
 
 pub(super) struct Transport<PeerHandshakeImpl: IPeerHandshake=PeerHandshake> {
-	pub(super) conduit: Option<Conduit>,
 	handshake: PeerHandshakeImpl,
-	their_node_id: Option<PublicKey>,
+	completed_handshake_info: Option<CompletedHandshakeInfo>
 }
 
 impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeImpl> {
 	fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			conduit: None,
+			completed_handshake_info: None,
 			handshake: PeerHandshakeImpl::new_outbound(initiator_static_private_key, responder_static_public_key, initiator_ephemeral_private_key),
-			their_node_id: None,
 		}
 	}
 
@@ -61,14 +58,13 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 
 	fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self {
 		Self {
-			conduit: None,
+			completed_handshake_info: None,
 			handshake: PeerHandshakeImpl::new_inbound(responder_static_private_key, responder_ephemeral_private_key),
-			their_node_id: None,
 		}
 	}
 
 	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
-		match self.conduit {
+		match self.completed_handshake_info {
 			// Continue handshake
 			None => {
 				let (response_option, completed_handshake_info_option) = self.handshake.process_act(input)?;
@@ -80,15 +76,14 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 
 				// If handshake is complete change the state
 				if let Some(completed_handshake_info) = completed_handshake_info_option {
-					self.conduit = Some(completed_handshake_info.conduit);
-					self.their_node_id = Some(completed_handshake_info.their_node_id);
+					self.completed_handshake_info = Some(completed_handshake_info);
 					Ok(true) // newly connected
 				} else {
 					Ok(false) // newly connected
 				}
 			}
-			Some(ref mut conduit) => {
-				conduit.decryptor.read(input)?;
+			Some(ref mut completed_handshake_info) => {
+				completed_handshake_info.decryptor.read(input)?;
 				Ok(false) // newly connected
 			}
 		}
@@ -99,10 +94,10 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 
 		let mut received_messages = vec![];
 
-		match self.conduit {
+		match self.completed_handshake_info {
 			None => {}
-			Some(ref mut conduit) => {
-				for msg_data in &mut conduit.decryptor {
+			Some(ref mut completed_handshake_info) => {
+				for msg_data in &mut completed_handshake_info.decryptor {
 					let mut reader = ::std::io::Cursor::new(&msg_data[..]);
 					let message_result = wire::read(&mut reader);
 					let message = match message_result {
@@ -137,12 +132,12 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 	}
 
 	fn is_connected(&self) -> bool {
-		self.conduit.is_some()
+		self.completed_handshake_info.is_some()
 	}
 
 	fn get_their_node_id(&self) -> PublicKey {
 		assert!(self.is_connected(), "Retrieving the remote node_id is only supported after transport is connected");
-		self.their_node_id.unwrap()
+		self.completed_handshake_info.as_ref().unwrap().their_node_id
 	}
 }
 
@@ -150,14 +145,14 @@ impl<PeerHandshakeImpl: IPeerHandshake> MessageQueuer for Transport<PeerHandshak
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L)
 		where L::Target: Logger {
 
-		match self.conduit {
+		match self.completed_handshake_info {
 			None => panic!("Enqueueing messages only supported after transport is connected"),
-			Some(ref mut conduit) => {
-				log_trace!(logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(self.their_node_id.unwrap()));
+			Some(ref mut completed_handshake_info) => {
+				log_trace!(logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(completed_handshake_info.their_node_id));
 
 				let mut buffer = VecWriter(Vec::new());
 				wire::write(message, &mut buffer).unwrap();
-				output_buffer.push_back(conduit.encryptor.encrypt(&buffer.0));
+				output_buffer.push_back(completed_handshake_info.encryptor.encrypt(&buffer.0));
 			}
 		}
 	}
