@@ -13,8 +13,7 @@ use std::{error, fmt};
 use bitcoin::secp256k1;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
-use lightning::ln::peers::conduit::Conduit;
-use lightning::ln::peers::handshake::PeerHandshake;
+use lightning::ln::peers::handshake::{CompletedHandshakeInfo, PeerHandshake};
 use lightning::ln::peers::transport::IPeerHandshake;
 use utils::test_logger;
 
@@ -122,10 +121,13 @@ impl TestCtx {
 	}
 }
 
-// Common test function that sends encrypted messages between two conduits until the source data
-// runs out.
+// Common test function that sends encrypted messages between an encryptor/decryptor until the source
+// data runs out.
 #[inline]
-fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, responder_conduit: &mut Conduit, failures_expected: bool) -> Result<(), GeneratorFinishedError> {
+fn do_encrypted_communication_tests(generator: &mut FuzzGen,
+                                    initiator_completed_handshake_info: &mut CompletedHandshakeInfo,
+                                    responder_completed_handshake_info: &mut CompletedHandshakeInfo,
+                                    failures_expected: bool) -> Result<(), GeneratorFinishedError> {
 	// Keep sending messages back and forth until the input data is consumed
 	loop {
 		// Randomly generate message length
@@ -137,9 +139,9 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 
 		// randomly choose sender of message
 		let receiver_unencrypted_msg = if generator.generate_bool()? {
-			let encrypted_msg = initiator_conduit.encryptor.encrypt(sender_unencrypted_msg);
-			if let Ok(_) = responder_conduit.decryptor.read(&encrypted_msg) {
-				if let Some(msg) = responder_conduit.decryptor.next() {
+			let encrypted_msg = initiator_completed_handshake_info.encryptor.encrypt(sender_unencrypted_msg);
+			if let Ok(_) = responder_completed_handshake_info.decryptor.read(&encrypted_msg) {
+				if let Some(msg) = responder_completed_handshake_info.decryptor.next() {
 					msg
 				} else {
 					assert!(failures_expected);
@@ -150,9 +152,9 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 				return Ok(());
 			}
 		} else {
-			let encrypted_msg = responder_conduit.encryptor.encrypt(sender_unencrypted_msg);
-			if let Ok(_) = initiator_conduit.decryptor.read(&encrypted_msg) {
-				if let Some(msg) = initiator_conduit.decryptor.next() {
+			let encrypted_msg = responder_completed_handshake_info.encryptor.encrypt(sender_unencrypted_msg);
+			if let Ok(_) = initiator_completed_handshake_info.decryptor.read(&encrypted_msg) {
+				if let Some(msg) = initiator_completed_handshake_info.decryptor.next() {
 					msg
 				} else {
 					assert!(failures_expected);
@@ -169,33 +171,33 @@ fn do_conduit_tests(generator: &mut FuzzGen, initiator_conduit: &mut Conduit, re
 }
 
 // This test completes a valid handshake based on fuzzer-provided private keys and then sends
-// variable length encrypted messages between two conduits to validate that they can communicate.
+// variable length encrypted messages between two encryptor/decryptor to verify they can communicate.
 #[inline]
 fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedError> {
 	let mut test_ctx = TestCtx::make(generator)?;
 
 	// The handshake should complete with any valid private keys
 	let act2 = test_ctx.responder_handshake.process_act(&test_ctx.act1).unwrap().0.unwrap();
-	let (act3, (mut initiator_conduit, responder_pubkey)) = match test_ctx.initiator_handshake.process_act(&act2) {
+	let (act3, mut initiator_completed_handshake_info) = match test_ctx.initiator_handshake.process_act(&act2) {
 		Ok((Some(act3), Some(completed_handshake_info))) => {
-			(act3, (completed_handshake_info.conduit, completed_handshake_info.their_node_id))
+			(act3, completed_handshake_info)
 		}
 		_ => panic!("handshake failed")
 	};
 
-	let (mut responder_conduit, initiator_pubkey) = match test_ctx.responder_handshake.process_act(&act3) {
+	let mut responder_completed_handshake_info = match test_ctx.responder_handshake.process_act(&act3) {
 		Ok((None, Some(completed_handshake_info))) => {
-			(completed_handshake_info.conduit, completed_handshake_info.their_node_id)
+			completed_handshake_info
 		}
 		_ => panic!("handshake failed")
 	};
 
 	// The handshake should complete with each peer knowing the static_public_key of the remote peer
-	assert_eq!(initiator_pubkey, test_ctx.initiator_static_public_key);
-	assert_eq!(responder_pubkey, test_ctx.responder_static_public_key);
+	assert_eq!(responder_completed_handshake_info.their_node_id, test_ctx.initiator_static_public_key);
+	assert_eq!(initiator_completed_handshake_info.their_node_id, test_ctx.responder_static_public_key);
 
-	// The nodes should be able to communicate over the conduit.
-	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit, false)
+	// The nodes should be able to communicate with the Encryptor/Decryptors
+	do_encrypted_communication_tests(generator, &mut initiator_completed_handshake_info, &mut responder_completed_handshake_info, false)
 }
 
 // Either returns (act, false) or (random_bytes, true) where random_bytes is the same len as act
@@ -258,7 +260,7 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 				assert!(used_generated_data);
 				return Ok(());
 			}
-			_ => panic!("responder required to output act bytes and no conduit/pubkey")
+			_ => panic!("responder required to output act bytes and no completed_handshake_info")
 		};
 	}
 	let act2 = act2_option.unwrap();
@@ -283,7 +285,7 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 				act3_option = Some(act3);
 				initiator_completed_handshake_info_option = Some(completed_handshake_info_option_inner);
 
-				// Valid conduit and pubkey indicates handshake is over
+				// Valid completed_handshake_info indicates handshake is over
 				break;
 			}
 			// Partial act
@@ -293,11 +295,11 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 				assert!(used_generated_data);
 				return Ok(());
 			}
-			_ => panic!("initiator required to output act bytes, conduit, and pubkey")
+			_ => panic!("initiator required to output act bytes and completed_handshake_info")
 		};
 	}
 
-	// Ensure we actually received act3 bytes, conduit, and remote pubkey from process_act()
+	// Ensure we actually received act3 bytes, completed_handshake_info from process_act()
 	let act3 = act3_option.unwrap();
 	let mut initiator_completed_handshake_info = initiator_completed_handshake_info_option.unwrap();
 
@@ -319,7 +321,7 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 			Ok((None, Some(completed_handshake_info_inner))) => {
 				responder_completed_handshake_info = Some(completed_handshake_info_inner);
 
-				// Valid conduit and pubkey indicates handshake is over
+				// Valid completed_handshake_info indicates handshake is over
 				break;
 			},
 			// partial act
@@ -329,10 +331,10 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 				assert!(used_generated_data);
 				return Ok(());
 			},
-			_ => panic!("responder required to output conduit, and pubkey")
+			_ => panic!("responder required to output completed_handshake_info")
 		};
 	}
-	// Ensure we actually received conduit and remote pubkey from process_act()
+	// Ensure we actually received completed_handshake_info from process_act()
 	let mut responder_completed_handshake_info = responder_completed_handshake_info.unwrap();
 
 	// The handshake should complete with each peer knowing the static_public_key of the remote peer
@@ -345,8 +347,8 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 		return Ok(());
 	}
 
-	// The nodes should be able to communicate over the conduit
-	do_conduit_tests(generator, &mut initiator_completed_handshake_info.conduit, &mut responder_completed_handshake_info.conduit, used_generated_data)
+	// The nodes should be able to communicate over the encryptor/decryptor
+	do_encrypted_communication_tests(generator, &mut initiator_completed_handshake_info, &mut responder_completed_handshake_info, used_generated_data)
 }
 
 #[inline]
