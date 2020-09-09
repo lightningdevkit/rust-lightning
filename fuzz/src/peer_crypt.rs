@@ -101,8 +101,8 @@ impl TestCtx {
 	}
 }
 
-// Common test function that sends encrypted messages between an encryptor/decryptor until the source
-// data runs out.
+// Common test function that sends encrypted messages between an encryptor/decryptor until the
+// source data runs out.
 #[inline]
 fn do_encrypted_communication_tests(generator: &mut FuzzGen,
                                     initiator_completed_handshake_info: &mut CompletedHandshakeInfo,

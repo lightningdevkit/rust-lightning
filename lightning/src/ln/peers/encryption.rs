@@ -170,8 +170,8 @@ impl Decryptor {
 		increment_nonce_helper(&mut self.receiving_nonce, &mut self.receiving_chaining_key, &mut self.receiving_key);
 	}
 
-	// Used in tests to determine whether or not excess bytes entered the conduit without needing to bring up
-	// infrastructure to properly encode it
+	// Used in tests to determine whether or not excess bytes entered the Decryptor without needing
+	// to bring up infrastructure to properly encode it
 	#[cfg(test)]
 	pub fn read_buffer_length(&self) -> usize {
 		match &self.read_buffer {

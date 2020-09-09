@@ -5,7 +5,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 use ln::peers::{chacha, hkdf5869rfc};
-use ln::peers::conduit::{SymmetricKey, create_encryptor_decryptor};
+use ln::peers::encryption::{SymmetricKey, create_encryptor_decryptor};
 use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
 use ln::peers::handshake::{CompletedHandshakeInfo, IHandshakeState};
 
@@ -771,10 +771,10 @@ mod test {
 	}
 
 	// Responder::AwaitingActThree -> None (with extra bytes)
-	// Ensures that any remaining data in the read buffer is transferred to the conduit once
+	// Ensures that any remaining data in the read buffer is transferred to the Decryptor once
 	// the handshake is complete
 	#[test]
-	fn awaiting_act_three_excess_bytes_after_complete_are_in_conduit() {
+	fn awaiting_act_three_excess_bytes_after_complete_are_in_decryptor() {
 		let test_ctx = TestCtx::new();
 		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
 		let mut act3 = test_ctx.valid_act3;

@@ -1,7 +1,8 @@
 //! Everything that has to do with over-the-wire peer communication.
 //! The handshake module exposes mechanisms to conduct inbound and outbound handshakes.
-//! When a handshake completes, it returns an instance of Conduit.
-//! Conduit enables message encryption and decryption, and automatically handles key rotation.
+//! When a handshake completes, it returns an instance of CompletedPeerHandshake containing an
+//! Encryptor/Decryptor used for encrypted communication and the remote static public key used for
+//! identification.
 
 #[cfg(test)]
 #[macro_use]
@@ -17,9 +18,9 @@ mod hkdf5869rfc;
 mod outbound_queue;
 
 #[cfg(feature = "fuzztarget")]
-pub mod conduit;
+pub mod encryption;
 #[cfg(not(feature = "fuzztarget"))]
-mod conduit;
+mod encryption;
 
 #[cfg(feature = "fuzztarget")]
 pub mod handshake;

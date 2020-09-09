@@ -4,7 +4,7 @@
 
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-use ln::peers::conduit::{Decryptor, Encryptor};
+use ln::peers::encryption::{Decryptor, Encryptor};
 use ln::peers::handshake::acts::Act;
 use ln::peers::handshake::states::HandshakeState;
 use ln::peers::transport::IPeerHandshake;
@@ -52,8 +52,8 @@ impl IPeerHandshake for PeerHandshake {
 		self.ready_to_process = true;
 
 		// This transition does not have a failure path
-		let (response_vec_option, conduit_and_remote_static_public_key_option) = self.process_act(&[]).unwrap();
-		assert!(conduit_and_remote_static_public_key_option.is_none());
+		let (response_vec_option, completed_handshake_info) = self.process_act(&[]).unwrap();
+		assert!(completed_handshake_info.is_none());
 
 		response_vec_option.unwrap()
 	}

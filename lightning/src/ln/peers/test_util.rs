@@ -3,7 +3,7 @@
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
-use ln::peers::conduit;
+use ln::peers::encryption::{create_encryptor_decryptor};
 use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer};
 use ln::peers::handshake::CompletedHandshakeInfo;
 use ln::peers::transport::{IPeerHandshake, PayloadQueuer};
@@ -74,7 +74,7 @@ impl IPeerHandshake for PeerHandshakeTestStubBytes {
 	}
 }
 
-/// Stub implementation of IPeerhandshake that returns Some(Conduit, PublicKey)
+/// Stub implementation of IPeerhandshake that returns Some(CompletedHandshakeInfo)
 pub(super) struct PeerHandshakeTestStubComplete { }
 
 impl IPeerHandshake for PeerHandshakeTestStubComplete {
@@ -94,7 +94,7 @@ impl IPeerHandshake for PeerHandshakeTestStubComplete {
 		let curve = secp256k1::Secp256k1::new();
 		let private_key = SecretKey::from_slice(&[0x_21_u8; 32]).unwrap();
 		let public_key = PublicKey::from_secret_key(&curve, &private_key);
-		let (encryptor, decryptor) = conduit::create_encryptor_decryptor([0;32], [0;32], [0;32]);
+		let (encryptor, decryptor) = create_encryptor_decryptor([0;32], [0;32], [0;32]);
 
 		Ok((None, Some(
 			CompletedHandshakeInfo {
