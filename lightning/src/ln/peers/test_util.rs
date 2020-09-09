@@ -5,6 +5,7 @@ use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
 use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer};
+use ln::peers::handshake::CompletedHandshakeInfo;
 use ln::peers::transport::{IPeerHandshake, PayloadQueuer};
 
 use std::rc::Rc;
@@ -42,7 +43,7 @@ impl IPeerHandshake for PeerHandshakeTestStubFail {
 		PeerHandshakeTestStubFail { }
 	}
 
-	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<CompletedHandshakeInfo>), String> {
 		Err("Oh no!".to_string())
 	}
 }
@@ -68,7 +69,7 @@ impl IPeerHandshake for PeerHandshakeTestStubBytes {
 		PeerHandshakeTestStubBytes { }
 	}
 
-	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<CompletedHandshakeInfo>), String> {
 		Ok((Some(Self::RETURNED_BYTES[..].to_vec()), None))
 	}
 }
@@ -89,13 +90,18 @@ impl IPeerHandshake for PeerHandshakeTestStubComplete {
 		PeerHandshakeTestStubComplete { }
 	}
 
-	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+	fn process_act(&mut self, _input: &[u8]) -> Result<(Option<Vec<u8>>, Option<CompletedHandshakeInfo>), String> {
 		let curve = secp256k1::Secp256k1::new();
 		let private_key = SecretKey::from_slice(&[0x_21_u8; 32]).unwrap();
 		let public_key = PublicKey::from_secret_key(&curve, &private_key);
 		let conduit = Conduit::new([0;32], [0;32], [0;32]);
 
-		Ok((None, Some((conduit, public_key))))
+		Ok((None, Some(
+			CompletedHandshakeInfo {
+				conduit,
+				their_node_id: public_key
+			}
+		)))
 	}
 }
 

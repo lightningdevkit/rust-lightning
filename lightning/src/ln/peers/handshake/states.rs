@@ -7,7 +7,7 @@ use bitcoin::secp256k1::{SecretKey, PublicKey};
 use ln::peers::{chacha, hkdf5869rfc};
 use ln::peers::conduit::{Conduit, SymmetricKey};
 use ln::peers::handshake::acts::{Act, ActBuilder, ACT_ONE_LENGTH, ACT_TWO_LENGTH, ACT_THREE_LENGTH, EMPTY_ACT_ONE, EMPTY_ACT_TWO, EMPTY_ACT_THREE};
-use ln::peers::handshake::IHandshakeState;
+use ln::peers::handshake::{CompletedHandshakeInfo, IHandshakeState};
 
 // Alias type to help differentiate between temporary key and chaining key when passing bytes around
 type ChainingKey = [u8; 32];
@@ -28,7 +28,7 @@ pub(super) enum HandshakeState {
 	ResponderAwaitingActOne(ResponderAwaitingActOneState),
 	InitiatorAwaitingActTwo(InitiatorAwaitingActTwoState),
 	ResponderAwaitingActThree(ResponderAwaitingActThreeState),
-	Complete(Option<(Conduit, PublicKey)>),
+	Complete(Option<CompletedHandshakeInfo>),
 }
 
 // Enum dispatch for state machine. Single public interface can statically dispatch to all states
@@ -48,7 +48,7 @@ impl IHandshakeState for HandshakeState {
 			HandshakeState::ResponderAwaitingActOne(state) => { state.next(input) },
 			HandshakeState::InitiatorAwaitingActTwo(state) => { state.next(input) },
 			HandshakeState::ResponderAwaitingActThree(state) => { state.next(input) },
-			HandshakeState::Complete(_conduit) => { panic!("no acts left to process") }
+			HandshakeState::Complete(_completed_handshake_info) => { panic!("no acts left to process") }
 		}
 	}
 }
@@ -310,7 +310,12 @@ impl IHandshakeState for InitiatorAwaitingActTwoState {
 		act_three[0] = 0;
 		Ok((
 			Some(Act::Three(act_three)),
-			HandshakeState::Complete(Some((conduit, responder_static_public_key)))
+			HandshakeState::Complete(Some(
+				CompletedHandshakeInfo {
+					conduit,
+					their_node_id: responder_static_public_key
+				}
+			))
 		))
 	}
 }
@@ -390,7 +395,12 @@ impl IHandshakeState for ResponderAwaitingActThreeState {
 
 		Ok((
 			None,
-			HandshakeState::Complete(Some((conduit, initiator_pubkey)))
+			HandshakeState::Complete(Some(
+				CompletedHandshakeInfo {
+					conduit,
+					their_node_id: initiator_pubkey
+				}
+			))
 		))
 	}
 }
@@ -681,15 +691,15 @@ mod test {
 		let (_act1, awaiting_act_two_state) = do_next_or_panic!(test_ctx.initiator, &[]);
 		let (act3, complete_state) = do_next_or_panic!(awaiting_act_two_state, &test_ctx.valid_act2);
 
-		let (conduit, remote_pubkey) = if let Complete(Some((conduit, remote_pubkey))) = complete_state {
-			(conduit, remote_pubkey)
+		let completed_handshake_info = if let Complete(Some(completed_handshake_info)) = complete_state {
+			completed_handshake_info
 		} else {
 			panic!();
 		};
 
 		assert_eq!(act3.as_ref(), test_ctx.valid_act3.as_slice());
-		assert_eq!(remote_pubkey, test_ctx.responder_static_public_key);
-		assert_eq!(0, conduit.decryptor.read_buffer_length());
+		assert_eq!(completed_handshake_info.their_node_id, test_ctx.responder_static_public_key);
+		assert_eq!(0, completed_handshake_info.conduit.decryptor.read_buffer_length());
 	}
 
 	// Initiator::AwaitingActTwo -> Complete (segmented calls)
@@ -748,14 +758,14 @@ mod test {
 		let test_ctx = TestCtx::new();
 		let (_act2, awaiting_act_three_state) = do_next_or_panic!(test_ctx.responder, &test_ctx.valid_act1);
 
-		let (conduit, remote_pubkey) = if let (None, Complete(Some((conduit, remote_pubkey)))) = awaiting_act_three_state.next(&test_ctx.valid_act3).unwrap() {
-			(conduit, remote_pubkey)
+		let completed_handshake_info = if let (None, Complete(Some(completed_handshake_info))) = awaiting_act_three_state.next(&test_ctx.valid_act3).unwrap() {
+			completed_handshake_info
 		} else {
 			panic!();
 		};
 
-		assert_eq!(remote_pubkey, test_ctx.initiator_public_key);
-		assert_eq!(0, conduit.decryptor.read_buffer_length());
+		assert_eq!(completed_handshake_info.their_node_id, test_ctx.initiator_public_key);
+		assert_eq!(0, completed_handshake_info.conduit.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> None (with extra bytes)
@@ -768,14 +778,14 @@ mod test {
 		let mut act3 = test_ctx.valid_act3;
 		act3.extend_from_slice(&[2; 16]);
 
-		let (conduit, remote_pubkey) = if let (None, Complete(Some((conduit, remote_pubkey)))) = awaiting_act_three_state.next(&act3).unwrap() {
-			(conduit, remote_pubkey)
+		let completed_handshake_info = if let (None, Complete(Some(completed_handshake_info))) = awaiting_act_three_state.next(&act3).unwrap() {
+			completed_handshake_info
 		} else {
 			panic!();
 		};
 
-		assert_eq!(remote_pubkey, test_ctx.initiator_public_key);
-		assert_eq!(16, conduit.decryptor.read_buffer_length());
+		assert_eq!(completed_handshake_info.their_node_id, test_ctx.initiator_public_key);
+		assert_eq!(16, completed_handshake_info.conduit.decryptor.read_buffer_length());
 	}
 
 	// Responder::AwaitingActThree -> Error (bad version bytes)

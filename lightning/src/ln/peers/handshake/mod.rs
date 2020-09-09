@@ -27,6 +27,12 @@ pub struct PeerHandshake {
 	ready_to_process: bool,
 }
 
+/// Container for the information returned from a successfully completed handshake
+pub struct CompletedHandshakeInfo {
+	pub conduit: Conduit,
+	pub their_node_id: PublicKey,
+}
+
 impl IPeerHandshake for PeerHandshake {
 	/// Instantiate a handshake given the peer's static public key. The ephemeral private key MUST
 	/// generate a new session with strong cryptographic randomness.
@@ -66,8 +72,8 @@ impl IPeerHandshake for PeerHandshake {
 	/// # Return values
 	/// Returns a tuple with the following components:
 	/// `.0`: Byte vector containing the next act to send back to the peer per the handshake protocol
-	/// `.1`: Some(Conduit, PublicKey) if the handshake was just processed to completion and messages can now be encrypted and decrypted
-	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String> {
+	/// `.1`: Some(CompleteHandshakeInfo) if the handshake was just processed to completion and messages can now be encrypted and decrypted
+	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<CompletedHandshakeInfo>), String> {
 		assert!(self.ready_to_process);
 		let cur_state = self.state.take().unwrap();
 
@@ -77,8 +83,8 @@ impl IPeerHandshake for PeerHandshake {
 		};
 
 		let result = match next_state {
-			HandshakeState::Complete(ref mut conduit_and_pubkey) => {
-				Ok((act_option, conduit_and_pubkey.take()))
+			HandshakeState::Complete(ref mut complete_handshake_info) => {
+				Ok((act_option, complete_handshake_info.take()))
 			},
 			_ => { Ok((act_option, None)) }
 		};
@@ -188,14 +194,14 @@ mod test {
 		let mut test_ctx = TestCtx::new();
 		let act2 = do_process_act_or_panic!(test_ctx.inbound_handshake, &test_ctx.act1);
 
-		let (act3, inbound_remote_pubkey) = if let (Some(act3), Some((_, remote_pubkey))) = test_ctx.outbound_handshake.process_act(&act2).unwrap() {
-			(act3, remote_pubkey)
+		let (act3, inbound_remote_pubkey) = if let (Some(act3), Some(completed_handshake_info)) = test_ctx.outbound_handshake.process_act(&act2).unwrap() {
+			(act3, completed_handshake_info.their_node_id)
 		} else {
 			panic!();
 		};
 
-		let outbound_remote_pubkey = if let (None, Some((_, remote_pubkey))) = test_ctx.inbound_handshake.process_act(&act3).unwrap() {
-			remote_pubkey
+		let outbound_remote_pubkey = if let (None, Some(completed_handshake_info)) = test_ctx.inbound_handshake.process_act(&act3).unwrap() {
+			completed_handshake_info.their_node_id
 		} else {
 			panic!();
 		};

@@ -157,15 +157,15 @@ fn do_completed_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorF
 	// The handshake should complete with any valid private keys
 	let act2 = test_ctx.responder_handshake.process_act(&test_ctx.act1).unwrap().0.unwrap();
 	let (act3, (mut initiator_conduit, responder_pubkey)) = match test_ctx.initiator_handshake.process_act(&act2) {
-		Ok((Some(act3), Some((conduit, remote_pubkey)))) => {
-			(act3, (conduit, remote_pubkey))
+		Ok((Some(act3), Some(completed_handshake_info))) => {
+			(act3, (completed_handshake_info.conduit, completed_handshake_info.their_node_id))
 		}
 		_ => panic!("handshake failed")
 	};
 
 	let (mut responder_conduit, initiator_pubkey) = match test_ctx.responder_handshake.process_act(&act3) {
-		Ok((None, Some((conduit, remote_pubkey)))) => {
-			(conduit, remote_pubkey)
+		Ok((None, Some(completed_handshake_info))) => {
+			(completed_handshake_info.conduit, completed_handshake_info.their_node_id)
 		}
 		_ => panic!("handshake failed")
 	};
@@ -256,12 +256,12 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 	let act2_chunks = split_vec(generator, &act2)?;
 
 	let mut act3_option = None;
-	let mut conduit_and_remote_pubkey_option = None;
+	let mut initiator_completed_handshake_info_option = None;
 	for partial_act2 in act2_chunks {
 		match test_ctx.initiator_handshake.process_act(&partial_act2) {
-			Ok((Some(act3), Some(conduit_and_remote_pubkey_option_inner))) => {
+			Ok((Some(act3), Some(completed_handshake_info_option_inner))) => {
 				act3_option = Some(act3);
-				conduit_and_remote_pubkey_option = Some(conduit_and_remote_pubkey_option_inner);
+				initiator_completed_handshake_info_option = Some(completed_handshake_info_option_inner);
 
 				// Valid conduit and pubkey indicates handshake is over
 				break;
@@ -279,7 +279,7 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 
 	// Ensure we actually received act3 bytes, conduit, and remote pubkey from process_act()
 	let act3 = act3_option.unwrap();
-	let (mut initiator_conduit, responder_pubkey) = conduit_and_remote_pubkey_option.unwrap();
+	let mut initiator_completed_handshake_info = initiator_completed_handshake_info_option.unwrap();
 
 	// Possibly generate bad data for act3
 	let (mut act3, is_bad_data) = maybe_generate_bad_act(generator, act3)?;
@@ -293,11 +293,11 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 	// Split act3 into between 1..7 chunks
 	let act3_chunks = split_vec(generator, &act3)?;
 
-	let mut conduit_and_remote_pubkey_option = None;
+	let mut responder_completed_handshake_info = None;
 	for partial_act3 in act3_chunks {
 		match test_ctx.responder_handshake.process_act(&partial_act3) {
-			Ok((None, Some(conduit_and_remote_pubkey_option_inner))) => {
-				conduit_and_remote_pubkey_option = Some(conduit_and_remote_pubkey_option_inner);
+			Ok((None, Some(completed_handshake_info_inner))) => {
+				responder_completed_handshake_info = Some(completed_handshake_info_inner);
 
 				// Valid conduit and pubkey indicates handshake is over
 				break;
@@ -313,20 +313,20 @@ fn do_handshake_test(generator: &mut FuzzGen) -> Result<(), GeneratorFinishedErr
 		};
 	}
 	// Ensure we actually received conduit and remote pubkey from process_act()
-	let (mut responder_conduit, initiator_pubkey) = conduit_and_remote_pubkey_option.unwrap();
+	let mut responder_completed_handshake_info = responder_completed_handshake_info.unwrap();
 
 	// The handshake should complete with each peer knowing the static_public_key of the remote peer
-	if initiator_pubkey != test_ctx.initiator_static_public_key {
+	if responder_completed_handshake_info.their_node_id != test_ctx.initiator_static_public_key {
 		assert!(used_generated_data);
 		return Ok(());
 	}
-	if responder_pubkey != test_ctx.responder_static_public_key {
+	if initiator_completed_handshake_info.their_node_id != test_ctx.responder_static_public_key {
 		assert!(used_generated_data);
 		return Ok(());
 	}
 
 	// The nodes should be able to communicate over the conduit
-	do_conduit_tests(generator, &mut initiator_conduit, &mut responder_conduit, used_generated_data)
+	do_conduit_tests(generator, &mut initiator_completed_handshake_info.conduit, &mut responder_completed_handshake_info.conduit, used_generated_data)
 }
 
 #[inline]
