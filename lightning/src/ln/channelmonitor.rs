@@ -261,14 +261,7 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 		}
 	}
-}
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
 	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
