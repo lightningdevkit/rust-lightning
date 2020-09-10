@@ -30,6 +30,11 @@ GEN_TEST UpdateFulfillHTLC test_msg ""
 
 GEN_TEST ChannelAnnouncement test_msg_exact ""
 GEN_TEST NodeAnnouncement test_msg_exact ""
+GEN_TEST QueryShortChannelIds test_msg ""
+GEN_TEST ReplyShortChannelIdsEnd test_msg ""
+GEN_TEST QueryChannelRange test_msg ""
+GEN_TEST ReplyChannelRange test_msg ""
+GEN_TEST GossipTimestampFilter test_msg ""
 
 GEN_TEST UpdateAddHTLC test_msg_hole ", 85, 33"
 GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
