@@ -838,7 +838,6 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::util::hash::BitcoinHash;
 
 	use hex;
 
@@ -906,7 +905,7 @@ mod tests {
 			// Announce a channel to add a corresponding node.
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::known(),
-				chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 				short_channel_id: 0,
 				node_id_1,
 				node_id_2,
@@ -996,7 +995,7 @@ mod tests {
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
 			features: ChannelFeatures::known(),
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			node_id_1,
 			node_id_2,
@@ -1176,7 +1175,7 @@ mod tests {
 
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let short_channel_id = 0;
-		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let amount_sats = 1000_000;
 
 		{
@@ -1339,7 +1338,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let short_channel_id = 0;
-		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		{
 			// There is no nodes in the table at the beginning.
@@ -1454,7 +1453,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let short_channel_id = 1;
-		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		// Channels were not announced yet.
 		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(0, 1);
@@ -1588,7 +1587,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let short_channel_id = 1;
-		let chain_hash = genesis_block(Network::Testnet).header.bitcoin_hash();
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		// No nodes yet.
 		let next_announcements = net_graph_msg_handler.get_next_node_announcements(None, 10);
@@ -1708,7 +1707,7 @@ mod tests {
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
 		let unsigned_announcement = UnsignedChannelAnnouncement {
 			features: ChannelFeatures::known(),
-			chain_hash: genesis_block(Network::Testnet).header.bitcoin_hash(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			node_id_1,
 			node_id_2,

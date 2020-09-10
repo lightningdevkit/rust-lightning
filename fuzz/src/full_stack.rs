@@ -19,7 +19,6 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
-use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::HashEngine as TraitImportEngine;
@@ -204,10 +203,10 @@ impl<'a> MoneyLossDetector<'a> {
 		self.manager.block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
 		(*self.monitor).block_connected(&header, self.height as u32, &txn[..], &txn_idxs[..]);
 		if self.header_hashes.len() > self.height {
-			self.header_hashes[self.height] = header.bitcoin_hash();
+			self.header_hashes[self.height] = header.block_hash();
 		} else {
 			assert_eq!(self.header_hashes.len(), self.height);
-			self.header_hashes.push(header.bitcoin_hash());
+			self.header_hashes.push(header.block_hash());
 		}
 		self.max_height = cmp::max(self.height, self.max_height);
 	}

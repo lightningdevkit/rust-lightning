@@ -11,7 +11,6 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
@@ -1477,7 +1476,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw, logger).0;
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
+		let local_sighash = hash_to_message!(&bip143::SigHashCache::new(&local_initial_commitment_tx).signature_hash(0, &funding_script, self.channel_value_satoshis, SigHashType::All)[..]);
 
 		// They sign the "local" commitment transaction...
 		log_trace!(logger, "Checking funding_created tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_initial_commitment_tx), log_bytes!(local_sighash[..]), encode::serialize_hex(&funding_script));
@@ -1581,7 +1580,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let local_keys = self.build_local_transaction_keys(self.cur_local_commitment_transaction_number)?;
 		let local_initial_commitment_tx = self.build_commitment_transaction(self.cur_local_commitment_transaction_number, &local_keys, true, false, self.feerate_per_kw, logger).0;
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_initial_commitment_tx).sighash_all(&local_initial_commitment_tx.input[0], &funding_script, self.channel_value_satoshis)[..]);
+		let local_sighash = hash_to_message!(&bip143::SigHashCache::new(&local_initial_commitment_tx).signature_hash(0, &funding_script, self.channel_value_satoshis, SigHashType::All)[..]);
 
 		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
 
@@ -1982,7 +1981,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			(commitment_tx.0, commitment_tx.1, htlcs_cloned)
 		};
 		let local_commitment_txid = local_commitment_tx.0.txid();
-		let local_sighash = hash_to_message!(&bip143::SighashComponents::new(&local_commitment_tx.0).sighash_all(&local_commitment_tx.0.input[0], &funding_script, self.channel_value_satoshis)[..]);
+		let local_sighash = hash_to_message!(&bip143::SigHashCache::new(&local_commitment_tx.0).signature_hash(0, &funding_script, self.channel_value_satoshis, SigHashType::All)[..]);
 		log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.signature.serialize_compact()[..]), log_bytes!(self.their_funding_pubkey().serialize()), encode::serialize_hex(&local_commitment_tx.0), log_bytes!(local_sighash[..]), encode::serialize_hex(&funding_script));
 		if let Err(_) = self.secp_ctx.verify(&local_sighash, &msg.signature, &self.their_funding_pubkey()) {
 			return Err((None, ChannelError::Close("Invalid commitment tx signature from peer".to_owned())));
@@ -2011,7 +2010,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = self.build_htlc_transaction(&local_commitment_txid, &htlc, true, &local_keys, feerate_per_kw);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &local_keys);
-				let htlc_sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]);
+				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}", log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(local_keys.b_htlc_key.serialize()), encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript));
 				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &local_keys.b_htlc_key) {
 					return Err((None, ChannelError::Close("Invalid HTLC tx signature from peer".to_owned())));
@@ -3015,7 +3014,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee greater than the value they can claim. Fee in message: {}", msg.fee_satoshis)));
 		}
-		let mut sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
+		let mut sighash = hash_to_message!(&bip143::SigHashCache::new(&closing_tx).signature_hash(0, &funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
 
 		let their_funding_pubkey = &self.their_pubkeys.as_ref().unwrap().funding_pubkey;
 
@@ -3025,7 +3024,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
-				sighash = hash_to_message!(&bip143::SighashComponents::new(&closing_tx).sighash_all(&closing_tx.input[0], &funding_redeemscript, self.channel_value_satoshis)[..]);
+				sighash = hash_to_message!(&bip143::SigHashCache::new(&closing_tx).signature_hash(0, &funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
 				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, self.their_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
 			},
 		};
@@ -3327,7 +3326,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		});
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if header.bitcoin_hash() != self.last_block_connected {
+		if header.block_hash() != self.last_block_connected {
 			if self.funding_tx_confirmations > 0 {
 				self.funding_tx_confirmations += 1;
 			}
@@ -3376,8 +3375,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				}
 			}
 		}
-		if header.bitcoin_hash() != self.last_block_connected {
-			self.last_block_connected = header.bitcoin_hash();
+		if header.block_hash() != self.last_block_connected {
+			self.last_block_connected = header.block_hash();
 			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
 			if self.funding_tx_confirmations > 0 {
 				if self.funding_tx_confirmations == self.minimum_depth as u64 {
@@ -3399,7 +3398,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 						// funding_tx_confirmed_in and return.
 						false
 					};
-					self.funding_tx_confirmed_in = Some(header.bitcoin_hash());
+					self.funding_tx_confirmed_in = Some(self.last_block_connected);
 
 					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
@@ -3433,10 +3432,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				return true;
 			}
 		}
-		if Some(header.bitcoin_hash()) == self.funding_tx_confirmed_in {
+		self.last_block_connected = header.block_hash();
+		if Some(self.last_block_connected) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
-		self.last_block_connected = header.bitcoin_hash();
 		false
 	}
 
@@ -4451,11 +4450,10 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::BitcoinHash;
 	use bitcoin::util::bip143;
 	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut, SigHashType};
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
@@ -4545,7 +4543,7 @@ mod tests {
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
 		fee_est.fee_est = 500;
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
 	}
 
@@ -4566,7 +4564,7 @@ mod tests {
 		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.bitcoin_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
@@ -4693,7 +4691,7 @@ mod tests {
 				};
 				let redeemscript = chan.get_funding_redeemscript();
 				let their_signature = Signature::from_der(&hex::decode($their_sig_hex).unwrap()[..]).unwrap();
-				let sighash = Message::from_slice(&bip143::SighashComponents::new(&unsigned_tx.0).sighash_all(&unsigned_tx.0.input[0], &redeemscript, chan.channel_value_satoshis)[..]).unwrap();
+				let sighash = Message::from_slice(&bip143::SigHashCache::new(&unsigned_tx.0).signature_hash(0, &redeemscript, chan.channel_value_satoshis, SigHashType::All)[..]).unwrap();
 				secp_ctx.verify(&sighash, &their_signature, chan.their_funding_pubkey()).unwrap();
 
 				let mut per_htlc = Vec::new();
@@ -4720,7 +4718,7 @@ mod tests {
 					let ref htlc = unsigned_tx.1[$htlc_idx];
 					let htlc_tx = chan.build_htlc_transaction(&unsigned_tx.0.txid(), &htlc, true, &keys, chan.feerate_per_kw);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
-					let htlc_sighash = Message::from_slice(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, htlc.amount_msat / 1000)[..]).unwrap();
+					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]).unwrap();
 					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.b_htlc_key).unwrap();
 
 					let mut preimage: Option<PaymentPreimage> = None;

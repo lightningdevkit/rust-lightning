@@ -1963,7 +1963,11 @@ mod tests {
 		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let shutdown = msgs::Shutdown {
 			channel_id: [2; 32],
-			scriptpubkey: if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() } else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() } else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() } else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+			scriptpubkey:
+				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() }
+				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() }
+				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
+				else                     { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap();

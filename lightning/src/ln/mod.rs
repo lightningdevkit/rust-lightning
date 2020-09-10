@@ -35,12 +35,18 @@ mod channel;
 mod onion_utils;
 mod wire;
 
+// Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
+// without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
+// about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
+
 #[cfg(test)]
 #[macro_use]
 pub(crate) mod functional_test_utils;
 #[cfg(test)]
+#[allow(unused_mut)]
 mod functional_tests;
 #[cfg(test)]
+#[allow(unused_mut)]
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 mod reorg_tests;

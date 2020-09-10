@@ -27,7 +27,6 @@ use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
 
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
@@ -45,12 +44,12 @@ use std::mem;
 use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 100;
-pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: u32) {
+pub fn confirm_transaction<'a, 'b: 'a>(notifier: &'a chaininterface::BlockNotifierRef<'b, &chaininterface::ChainWatchInterfaceUtil>, chain: &chaininterface::ChainWatchInterfaceUtil, tx: &Transaction, chan_id: i32) {
 	assert!(chain.does_match_tx(tx));
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, 1, &[tx; 1], &[chan_id as usize; 1]);
 	for i in 2..CHAN_CONFIRM_DEPTH {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		notifier.block_connected_checked(&header, i, &vec![], &[0; 0]);
 	}
 }
@@ -59,10 +58,10 @@ pub fn connect_blocks<'a, 'b>(notifier: &'a chaininterface::BlockNotifierRef<'b,
 	let mut header = BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { Default::default() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	notifier.block_connected_checked(&header, height + 1, &Vec::new(), &Vec::new());
 	for i in 2..depth + 1 {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.bitcoin_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		notifier.block_connected_checked(&header, height + i, &Vec::new(), &Vec::new());
 	}
-	header.bitcoin_hash()
+	header.block_hash()
 }
 
 pub struct TestChanMonCfg {
@@ -324,7 +323,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 			assert_eq!(*channel_value_satoshis, expected_chan_value);
 			assert_eq!(user_channel_id, expected_user_chan_id);
 
-			let tx = Transaction { version: chan_id as u32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			let tx = Transaction { version: chan_id as i32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };

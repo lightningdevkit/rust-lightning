@@ -651,8 +651,8 @@ impl LocalCommitmentTransaction {
 	/// ChannelKeys::sign_local_commitment() calls directly.
 	/// Channel value is amount locked in funding_outpoint.
 	pub fn get_local_sig<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
-		let sighash = hash_to_message!(&bip143::SighashComponents::new(&self.unsigned_tx)
-			.sighash_all(&self.unsigned_tx.input[0], funding_redeemscript, channel_value_satoshis)[..]);
+		let sighash = hash_to_message!(&bip143::SigHashCache::new(&self.unsigned_tx)
+			.signature_hash(0, funding_redeemscript, channel_value_satoshis, SigHashType::All)[..]);
 		secp_ctx.sign(&sighash, funding_key)
 	}
 
@@ -692,7 +692,7 @@ impl LocalCommitmentTransaction {
 
 				let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc.0, &self.local_keys.a_htlc_key, &self.local_keys.b_htlc_key, &self.local_keys.revocation_key);
 
-				let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
+				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
 				ret.push(Some(secp_ctx.sign(&sighash, &our_htlc_key)));
 			} else {
 				ret.push(None);

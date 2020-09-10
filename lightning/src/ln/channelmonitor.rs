@@ -26,7 +26,6 @@ use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode;
-use bitcoin::util::hash::BitcoinHash;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -203,7 +202,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
         C::Target: ChainWatchInterface,
 {
 	fn block_connected(&self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], _indexes_of_txn_matched: &[usize]) {
-		let block_hash = header.bitcoin_hash();
+		let block_hash = header.block_hash();
 		{
 			let mut monitors = self.monitors.lock().unwrap();
 			for monitor in monitors.values_mut() {
@@ -219,7 +218,7 @@ impl<Key : Send + cmp::Eq + hash::Hash, ChanSigner: ChannelKeys, T: Deref + Sync
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let block_hash = header.bitcoin_hash();
+		let block_hash = header.block_hash();
 		let mut monitors = self.monitors.lock().unwrap();
 		for monitor in monitors.values_mut() {
 			monitor.block_disconnected(disconnected_height, &block_hash, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
@@ -2706,33 +2705,33 @@ mod tests {
 		let mut sum_actual_sigs = 0;
 
 		macro_rules! sign_input {
-			($sighash_parts: expr, $input: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
+			($sighash_parts: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
 				let htlc = HTLCOutputInCommitment {
 					offered: if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::OfferedHTLC { true } else { false },
 					amount_msat: 0,
 					cltv_expiry: 2 << 16,
 					payment_hash: PaymentHash([1; 32]),
-					transaction_output_index: Some($idx),
+					transaction_output_index: Some($idx as u32),
 				};
 				let redeem_script = if *$input_type == InputDescriptors::RevokedOutput { chan_utils::get_revokeable_redeemscript(&pubkey, 256, &pubkey) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &pubkey, &pubkey, &pubkey) };
-				let sighash = hash_to_message!(&$sighash_parts.sighash_all(&$input, &redeem_script, $amount)[..]);
+				let sighash = hash_to_message!(&$sighash_parts.signature_hash($idx, &redeem_script, $amount, SigHashType::All)[..]);
 				let sig = secp_ctx.sign(&sighash, &privkey);
-				$input.witness.push(sig.serialize_der().to_vec());
-				$input.witness[0].push(SigHashType::All as u8);
-				sum_actual_sigs += $input.witness[0].len();
+				$sighash_parts.access_witness($idx).push(sig.serialize_der().to_vec());
+				$sighash_parts.access_witness($idx)[0].push(SigHashType::All as u8);
+				sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
 				if *$input_type == InputDescriptors::RevokedOutput {
-					$input.witness.push(vec!(1));
+					$sighash_parts.access_witness($idx).push(vec!(1));
 				} else if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::RevokedReceivedHTLC {
-					$input.witness.push(pubkey.clone().serialize().to_vec());
+					$sighash_parts.access_witness($idx).push(pubkey.clone().serialize().to_vec());
 				} else if *$input_type == InputDescriptors::ReceivedHTLC {
-					$input.witness.push(vec![0]);
+					$sighash_parts.access_witness($idx).push(vec![0]);
 				} else {
-					$input.witness.push(PaymentPreimage([1; 32]).0.to_vec());
+					$sighash_parts.access_witness($idx).push(PaymentPreimage([1; 32]).0.to_vec());
 				}
-				$input.witness.push(redeem_script.into_bytes());
-				println!("witness[0] {}", $input.witness[0].len());
-				println!("witness[1] {}", $input.witness[1].len());
-				println!("witness[2] {}", $input.witness[2].len());
+				$sighash_parts.access_witness($idx).push(redeem_script.into_bytes());
+				println!("witness[0] {}", $sighash_parts.access_witness($idx)[0].len());
+				println!("witness[1] {}", $sighash_parts.access_witness($idx)[1].len());
+				println!("witness[2] {}", $sighash_parts.access_witness($idx)[2].len());
 			}
 		}
 
@@ -2757,10 +2756,12 @@ mod tests {
 			value: 0,
 		});
 		let base_weight = claim_tx.get_weight();
-		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
 		let inputs_des = vec![InputDescriptors::RevokedOutput, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedReceivedHTLC];
-		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
-			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		{
+			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+			for (idx, inp) in inputs_des.iter().enumerate() {
+				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+			}
 		}
 		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
@@ -2779,10 +2780,12 @@ mod tests {
 			});
 		}
 		let base_weight = claim_tx.get_weight();
-		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
 		let inputs_des = vec![InputDescriptors::OfferedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC];
-		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
-			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		{
+			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+			for (idx, inp) in inputs_des.iter().enumerate() {
+				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+			}
 		}
 		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
@@ -2799,10 +2802,12 @@ mod tests {
 			witness: Vec::new(),
 		});
 		let base_weight = claim_tx.get_weight();
-		let sighash_parts = bip143::SighashComponents::new(&claim_tx);
 		let inputs_des = vec![InputDescriptors::RevokedOutput];
-		for (idx, inp) in claim_tx.input.iter_mut().zip(inputs_des.iter()).enumerate() {
-			sign_input!(sighash_parts, inp.0, idx as u32, 0, inp.1, sum_actual_sigs);
+		{
+			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+			for (idx, inp) in inputs_des.iter().enumerate() {
+				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+			}
 		}
 		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}

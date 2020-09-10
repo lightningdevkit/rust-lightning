@@ -14,7 +14,7 @@ use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 use std::cmp;
 use std::sync::{Mutex, Arc};
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, SigHashType};
 use bitcoin::util::bip143;
 
 use bitcoin::secp256k1;
@@ -108,7 +108,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &local_commitment_tx.local_keys);
 
-				let sighash = hash_to_message!(&bip143::SighashComponents::new(&htlc_tx).sighash_all(&htlc_tx.input[0], &htlc_redeemscript, this_htlc.0.amount_msat / 1000)[..]);
+				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
 				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &local_commitment_tx.local_keys.b_htlc_key).unwrap();
 			}
 		}
