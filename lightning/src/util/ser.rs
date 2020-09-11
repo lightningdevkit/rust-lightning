@@ -37,6 +37,8 @@ const MAX_BUF_SIZE: usize = 64 * 1024;
 /// buffers being written into.
 /// An impl is provided for any type that also impls std::io::Write which simply ignores size
 /// hints.
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Writer {
 	/// Writes the given buf out. See std::io::Write::write_all for more
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error>;
@@ -159,6 +161,8 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 }
 
 /// A trait that various rust-lightning types implement allowing them to be written out to a Writer
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Writeable {
 	/// Writes self out to the given Writer
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error>;
@@ -186,6 +190,8 @@ impl<'a, T: Writeable> Writeable for &'a T {
 }
 
 /// A trait that various rust-lightning types implement allowing them to be read in from a Read
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Readable
 	where Self: Sized
 {
@@ -195,6 +201,8 @@ pub trait Readable
 
 /// A trait that various higher-level rust-lightning types implement allowing them to be read in
 /// from a Read given some additional set of arguments which is required to deserialize.
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait ReadableArgs<P>
 	where Self: Sized
 {
@@ -203,6 +211,8 @@ pub trait ReadableArgs<P>
 }
 
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait MaybeReadable
 	where Self: Sized
 {

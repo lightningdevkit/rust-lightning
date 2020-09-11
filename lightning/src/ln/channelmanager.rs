@@ -180,12 +180,15 @@ pub(super) enum HTLCFailReason {
 }
 
 /// payment_hash type, use to cross-lock hop
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentHash(pub [u8;32]);
 /// payment_preimage type, use to route payment between hop
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentPreimage(pub [u8;32]);
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8;32]);
 
@@ -2919,6 +2922,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// If successful, will generate a UpdateHTLCs event, so you should probably poll
 	/// PeerManager::process_events afterwards.
 	/// Note: This API is likely to change!
+	/// (C-not exported) Cause its doc(hidden) anyway
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
 		let _ = self.total_consistency_lock.read().unwrap();
@@ -3738,7 +3742,6 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization.
 	pub keys_manager: K,
@@ -3775,6 +3778,8 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	///
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
+	///
+	/// (C-not exported) because we have no HashMap bindings
 	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
 }
 

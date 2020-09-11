@@ -279,6 +279,8 @@ mod sealed {
 
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
+///
+/// (C-not exported) as we map the concrete feature types below directly instead
 pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,

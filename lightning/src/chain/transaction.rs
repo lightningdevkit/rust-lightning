@@ -35,6 +35,7 @@ impl OutPoint {
 	}
 
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
+	/// (C-not exported) as the same type is used universally in the C bindings for all outpoints
 	pub fn into_bitcoin_outpoint(self) -> BitcoinOutPoint {
 		BitcoinOutPoint {
 			txid: self.txid,
