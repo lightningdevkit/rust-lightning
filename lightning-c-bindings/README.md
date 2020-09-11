@@ -222,6 +222,12 @@ These include:
 **It is highly recommended that you test any code which relies on the C (or C++) bindings in
 valgrind, AddressSanitizer, MemorySanitizer, or other similar tools to ensure correctness.**
 
+Process
+=======
+
+`genbindings.sh` is currently a catch-all script for bindings - it generates the latest Rust/C/C++
+code for bindings from the rust-lightning source code, builds it, and then runs various test apps.
+
 Note that after running `genbindings.sh`, if possible, the static lib in target/debug (eg
 target/debug/liblightning.a) will be linked with address sanitizer. In order to build against it,
 you will need to link with `clang` with `-fsanitize=address` with the same version of LLVM as
