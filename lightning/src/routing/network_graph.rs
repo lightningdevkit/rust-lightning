@@ -260,7 +260,7 @@ pub struct DirectionalChannelInfo {
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
-	pub last_update_message: Option<msgs::ChannelUpdate>,
+	pub last_update_message: Option<ChannelUpdate>,
 }
 
 impl fmt::Display for DirectionalChannelInfo {
@@ -300,7 +300,7 @@ pub struct ChannelInfo {
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
-	pub announcement_message: Option<msgs::ChannelAnnouncement>,
+	pub announcement_message: Option<ChannelAnnouncement>,
 }
 
 impl fmt::Display for ChannelInfo {
@@ -371,7 +371,7 @@ pub struct NodeAnnouncementInfo {
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
-	pub announcement_message: Option<msgs::NodeAnnouncement>
+	pub announcement_message: Option<NodeAnnouncement>
 }
 
 impl Writeable for NodeAnnouncementInfo {

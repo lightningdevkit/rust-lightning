@@ -188,7 +188,7 @@ impl Readable for CounterpartyCommitmentSecrets {
 ///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
+pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, SecpError> {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
@@ -205,7 +205,7 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 ///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, SecpError> {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
@@ -219,7 +219,7 @@ pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_com
 ///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, secp256k1::Error> {
+pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, revocation_base_secret: &SecretKey) -> Result<SecretKey, SecpError> {
 	let revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &revocation_base_secret);
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
@@ -252,7 +252,7 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 ///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, secp256k1::Error> {
+pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, revocation_base_point: &PublicKey) -> Result<PublicKey, SecpError> {
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&revocation_base_point.serialize());
