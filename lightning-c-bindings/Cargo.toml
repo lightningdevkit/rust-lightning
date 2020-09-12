@@ -9,7 +9,7 @@ Utilities to fetch the chain from Bitcoin Core REST/RPC Interfaces and feed them
 """
 
 [lib]
-name = "lightning"
+name = "ldk"
 crate-type = ["staticlib"
 # Note that the following line is matched exactly by genbindings to turn off dylib creation
 ,"cdylib"]
