@@ -40,7 +40,7 @@ typedef enum LDKChannelMonitorUpdateErr {
     * our state failed, but is expected to succeed at some point in the future).
     *
     * Such a failure will \"freeze\" a channel, preventing us from revoking old states or
-    * submitting new commitment transactions to the remote party. Once the update(s) which failed
+    * submitting new commitment transactions to the counterparty. Once the update(s) which failed
     * have been successfully applied, ChannelManager::channel_monitor_updated can be used to
     * restore the channel to an operational state.
     *
@@ -75,11 +75,19 @@ typedef enum LDKChannelMonitorUpdateErr {
    /**
     * Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
     * different watchtower and cannot update with all watchtowers that were previously informed
-    * of this channel). This will force-close the channel in question (which will generate one
-    * final ChannelMonitorUpdate which must be delivered to at least one ChannelMonitor copy).
+    * of this channel).
     *
-    * Should also be used to indicate a failure to update the local persisted copy of the channel
-    * monitor.
+    * At reception of this error, ChannelManager will force-close the channel and return at
+    * least a final ChannelMonitorUpdate::ChannelForceClosed which must be delivered to at
+    * least one ChannelMonitor copy. Revocation secret MUST NOT be released and offchain channel
+    * update must be rejected.
+    *
+    * This failure may also signal a failure to update the local persisted copy of one of
+    * the channel monitor instance.
+    *
+    * Note that even when you fail a holder commitment transaction update, you must store the
+    * update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
+    * broadcasts it (e.g distributed channel-monitor deployment)
     */
    LDKChannelMonitorUpdateErr_PermanentFailure,
    /**
@@ -571,14 +579,14 @@ typedef enum LDKSpendableOutputDescriptor_Tag {
     * it is an output from an old state which we broadcast (which should never happen).
     *
     * To derive the delayed_payment key which is used to sign for this input, you must pass the
-    * local delayed_payment_base_key (ie the private key which corresponds to the pubkey in
+    * holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
     * ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
     * chan_utils::derive_private_key. The public key can be generated without the secret key
     * using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
     * ChannelKeys::pubkeys().
     *
-    * To derive the remote_revocation_pubkey provided here (which is used in the witness
-    * script generation), you must pass the remote revocation_basepoint (which appears in the
+    * To derive the revocation_pubkey provided here (which is used in the witness
+    * script generation), you must pass the counterparty revocation_basepoint (which appears in the
     * call to ChannelKeys::on_accept) and the provided per_commitment point
     * to chan_utils::derive_public_revocation_key.
     *
@@ -597,7 +605,7 @@ typedef enum LDKSpendableOutputDescriptor_Tag {
     * These are generally the result of our counterparty having broadcast the current state,
     * allowing us to claim the non-HTLC-encumbered outputs immediately.
     */
-   LDKSpendableOutputDescriptor_StaticOutputRemotePayment,
+   LDKSpendableOutputDescriptor_StaticOutputCounterpartyPayment,
    /**
     * Must be last for serialization purposes
     */
@@ -615,21 +623,21 @@ typedef struct LDKSpendableOutputDescriptor_LDKDynamicOutputP2WSH_Body {
    uint16_t to_self_delay;
    LDKTxOut output;
    LDKC2Tuple_u64u64Z key_derivation_params;
-   LDKPublicKey remote_revocation_pubkey;
+   LDKPublicKey revocation_pubkey;
 } LDKSpendableOutputDescriptor_LDKDynamicOutputP2WSH_Body;
 
-typedef struct LDKSpendableOutputDescriptor_LDKStaticOutputRemotePayment_Body {
+typedef struct LDKSpendableOutputDescriptor_LDKStaticOutputCounterpartyPayment_Body {
    LDKOutPoint outpoint;
    LDKTxOut output;
    LDKC2Tuple_u64u64Z key_derivation_params;
-} LDKSpendableOutputDescriptor_LDKStaticOutputRemotePayment_Body;
+} LDKSpendableOutputDescriptor_LDKStaticOutputCounterpartyPayment_Body;
 
 typedef struct LDKSpendableOutputDescriptor {
    LDKSpendableOutputDescriptor_Tag tag;
    union {
       LDKSpendableOutputDescriptor_LDKStaticOutput_Body static_output;
       LDKSpendableOutputDescriptor_LDKDynamicOutputP2WSH_Body dynamic_output_p2wsh;
-      LDKSpendableOutputDescriptor_LDKStaticOutputRemotePayment_Body static_output_remote_payment;
+      LDKSpendableOutputDescriptor_LDKStaticOutputCounterpartyPayment_Body static_output_counterparty_payment;
    };
 } LDKSpendableOutputDescriptor;
 
@@ -1582,18 +1590,18 @@ typedef LDKCVecTempl_HTLCOutputInCommitment LDKCVec_HTLCOutputInCommitmentZ;
 
 
 /**
- * We use this to track local commitment transactions and put off signing them until we are ready
+ * We use this to track holder commitment transactions and put off signing them until we are ready
  * to broadcast. This class can be used inside a signer implementation to generate a signature
  * given the relevant secret key.
  */
-typedef struct MUST_USE_STRUCT LDKLocalCommitmentTransaction {
+typedef struct MUST_USE_STRUCT LDKHolderCommitmentTransaction {
    /**
     * Nearly everyhwere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
-   LDKnativeLocalCommitmentTransaction *inner;
+   LDKnativeHolderCommitmentTransaction *inner;
    bool is_owned;
-} LDKLocalCommitmentTransaction;
+} LDKHolderCommitmentTransaction;
 
 
 
@@ -1654,7 +1662,7 @@ typedef struct LDKChannelKeys {
     */
    LDKThirtyTwoBytes (*release_commitment_secret)(const void *this_arg, uint64_t idx);
    /**
-    * Gets the local channel public keys and basepoints
+    * Gets the holder's channel public keys and basepoints
     */
    LDKChannelPublicKeys pubkeys;
    /**
@@ -1670,34 +1678,34 @@ typedef struct LDKChannelKeys {
     */
    LDKC2Tuple_u64u64Z (*key_derivation_params)(const void *this_arg);
    /**
-    * Create a signature for a remote commitment transaction and associated HTLC transactions.
+    * Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
     *
     * Note that if signing fails or is rejected, the channel will be force-closed.
     */
-   LDKCResult_C2Tuple_SignatureCVec_SignatureZZNoneZ (*sign_remote_commitment)(const void *this_arg, uint32_t feerate_per_kw, LDKTransaction commitment_tx, const LDKPreCalculatedTxCreationKeys *keys, LDKCVec_HTLCOutputInCommitmentZ htlcs);
+   LDKCResult_C2Tuple_SignatureCVec_SignatureZZNoneZ (*sign_counterparty_commitment)(const void *this_arg, uint32_t feerate_per_kw, LDKTransaction commitment_tx, const LDKPreCalculatedTxCreationKeys *keys, LDKCVec_HTLCOutputInCommitmentZ htlcs);
    /**
-    * Create a signature for a local commitment transaction. This will only ever be called with
-    * the same local_commitment_tx (or a copy thereof), though there are currently no guarantees
+    * Create a signature for a holder's commitment transaction. This will only ever be called with
+    * the same holder_commitment_tx (or a copy thereof), though there are currently no guarantees
     * that it will not be called multiple times.
     * An external signer implementation should check that the commitment has not been revoked.
     */
-   LDKCResult_SignatureNoneZ (*sign_local_commitment)(const void *this_arg, const LDKLocalCommitmentTransaction *local_commitment_tx);
+   LDKCResult_SignatureNoneZ (*sign_holder_commitment)(const void *this_arg, const LDKHolderCommitmentTransaction *holder_commitment_tx);
    /**
-    * Create a signature for each HTLC transaction spending a local commitment transaction.
+    * Create a signature for each HTLC transaction spending a holder's commitment transaction.
     *
-    * Unlike sign_local_commitment, this may be called multiple times with *different*
-    * local_commitment_tx values. While this will never be called with a revoked
-    * local_commitment_tx, it is possible that it is called with the second-latest
-    * local_commitment_tx (only if we haven't yet revoked it) if some watchtower/secondary
+    * Unlike sign_holder_commitment, this may be called multiple times with *different*
+    * holder_commitment_tx values. While this will never be called with a revoked
+    * holder_commitment_tx, it is possible that it is called with the second-latest
+    * holder_commitment_tx (only if we haven't yet revoked it) if some watchtower/secondary
     * ChannelMonitor decided to broadcast before it had been updated to the latest.
     *
     * Either an Err should be returned, or a Vec with one entry for each HTLC which exists in
-    * local_commitment_tx. For those HTLCs which have transaction_output_index set to None
+    * holder_commitment_tx. For those HTLCs which have transaction_output_index set to None
     * (implying they were considered dust at the time the commitment transaction was negotiated),
     * a corresponding None should be included in the return value. All other positions in the
     * return value must contain a signature.
     */
-   LDKCResult_CVec_SignatureZNoneZ (*sign_local_commitment_htlc_transactions)(const void *this_arg, const LDKLocalCommitmentTransaction *local_commitment_tx);
+   LDKCResult_CVec_SignatureZNoneZ (*sign_holder_commitment_htlc_transactions)(const void *this_arg, const LDKHolderCommitmentTransaction *holder_commitment_tx);
    /**
     * Create a signature for the given input in a transaction spending an HTLC or commitment
     * transaction output when our counterparty broadcasts an old state.
@@ -1710,8 +1718,8 @@ typedef struct LDKChannelKeys {
     * Amount is value of the output spent by this input, committed to in the BIP 143 signature.
     *
     * per_commitment_key is revocation secret which was provided by our counterparty when they
-    * revoked the state which they eventually broadcast. It's not a _local_ secret key and does
-    * not allow the spending of any funds by itself (you need our local revocation_secret to do
+    * revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
+    * not allow the spending of any funds by itself (you need our holder revocation_secret to do
     * so).
     *
     * htlc holds HTLC elements (hash, timelock) if the output being spent is a HTLC output, thus
@@ -1720,7 +1728,7 @@ typedef struct LDKChannelKeys {
     */
    LDKCResult_SignatureNoneZ (*sign_justice_transaction)(const void *this_arg, LDKTransaction justice_tx, uintptr_t input, uint64_t amount, const uint8_t (*per_commitment_key)[32], const LDKHTLCOutputInCommitment *htlc);
    /**
-    * Create a signature for a claiming transaction for a HTLC output on a remote commitment
+    * Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
     * transaction, either offered or received.
     *
     * Such a transaction may claim multiples offered outputs at same time if we know the
@@ -1738,7 +1746,7 @@ typedef struct LDKChannelKeys {
     * channel state keys, which are then included in the witness script and committed to in the
     * BIP 143 signature.
     */
-   LDKCResult_SignatureNoneZ (*sign_remote_htlc_transaction)(const void *this_arg, LDKTransaction htlc_tx, uintptr_t input, uint64_t amount, LDKPublicKey per_commitment_point, const LDKHTLCOutputInCommitment *htlc);
+   LDKCResult_SignatureNoneZ (*sign_counterparty_htlc_transaction)(const void *this_arg, LDKTransaction htlc_tx, uintptr_t input, uint64_t amount, LDKPublicKey per_commitment_point, const LDKHTLCOutputInCommitment *htlc);
    /**
     * Create a signature for a (proposed) closing transaction.
     *
@@ -1756,14 +1764,14 @@ typedef struct LDKChannelKeys {
     */
    LDKCResult_SignatureNoneZ (*sign_channel_announcement)(const void *this_arg, const LDKUnsignedChannelAnnouncement *msg);
    /**
-    * Set the remote channel basepoints and remote/local to_self_delay.
+    * Set the counterparty channel basepoints and counterparty_selected/holder_selected_contest_delay.
     * This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
     *
-    * We bind local_to_self_delay late here for API convenience.
+    * We bind holder_selected_contest_delay late here for API convenience.
     *
     * Will be called before any signatures are applied.
     */
-   void (*on_accept)(void *this_arg, const LDKChannelPublicKeys *channel_points, uint16_t remote_to_self_delay, uint16_t local_to_self_delay);
+   void (*on_accept)(void *this_arg, const LDKChannelPublicKeys *channel_points, uint16_t counterparty_selected_contest_delay, uint16_t holder_selected_contest_delay);
    void *(*clone)(const void *this_arg);
    void (*free)(void *this_arg);
 } LDKChannelKeys;
@@ -1950,6 +1958,11 @@ typedef struct LDKManyChannelMonitor {
     *
     * Any spends of outputs which should have been registered which aren't passed to
     * ChannelMonitors via block_connected may result in FUNDS LOSS.
+    *
+    * In case of distributed watchtowers deployment, even if an Err is return, the new version
+    * must be written to disk, as state may have been stored but rejected due to a block forcing
+    * a commitment broadcast. This storage is used to claim outputs of rejected state confirmed
+    * onchain by another watchtower, lagging behind on block processing.
     */
    LDKCResult_NoneChannelMonitorUpdateErrZ (*update_monitor)(const void *this_arg, LDKOutPoint funding_txo, LDKChannelMonitorUpdate monitor);
    /**
@@ -2475,6 +2488,104 @@ typedef struct MUST_USE_STRUCT LDKUnsignedChannelUpdate {
 
 
 /**
+ * A query_channel_range message is used to query a peer for channel
+ * UTXOs in a range of blocks. The recipient of a query makes a best
+ * effort to reply to the query using one or more reply_channel_range
+ * messages.
+ */
+typedef struct MUST_USE_STRUCT LDKQueryChannelRange {
+   /**
+    * Nearly everyhwere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeQueryChannelRange *inner;
+   bool is_owned;
+} LDKQueryChannelRange;
+
+
+
+/**
+ * A reply_channel_range message is a reply to a query_channel_range
+ * message. Multiple reply_channel_range messages can be sent in reply
+ * to a single query_channel_range message. The query recipient makes a
+ * best effort to respond based on their local network view which may
+ * not be a perfect view of the network. The short_channel_ids in the
+ * reply are encoded. We only support encoding_type=0 uncompressed
+ * serialization and do not support encoding_type=1 zlib serialization.
+ */
+typedef struct MUST_USE_STRUCT LDKReplyChannelRange {
+   /**
+    * Nearly everyhwere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeReplyChannelRange *inner;
+   bool is_owned;
+} LDKReplyChannelRange;
+
+typedef struct LDKCVecTempl_u64 {
+   uint64_t *data;
+   uintptr_t datalen;
+} LDKCVecTempl_u64;
+
+typedef LDKCVecTempl_u64 LDKCVec_u64Z;
+
+
+
+/**
+ * A query_short_channel_ids message is used to query a peer for
+ * routing gossip messages related to one or more short_channel_ids.
+ * The query recipient will reply with the latest, if available,
+ * channel_announcement, channel_update and node_announcement messages
+ * it maintains for the requested short_channel_ids followed by a
+ * reply_short_channel_ids_end message. The short_channel_ids sent in
+ * this query are encoded. We only support encoding_type=0 uncompressed
+ * serialization and do not support encoding_type=1 zlib serialization.
+ */
+typedef struct MUST_USE_STRUCT LDKQueryShortChannelIds {
+   /**
+    * Nearly everyhwere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeQueryShortChannelIds *inner;
+   bool is_owned;
+} LDKQueryShortChannelIds;
+
+
+
+/**
+ * A reply_short_channel_ids_end message is sent as a reply to a
+ * query_short_channel_ids message. The query recipient makes a best
+ * effort to respond based on their local network view which may not be
+ * a perfect view of the network.
+ */
+typedef struct MUST_USE_STRUCT LDKReplyShortChannelIdsEnd {
+   /**
+    * Nearly everyhwere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeReplyShortChannelIdsEnd *inner;
+   bool is_owned;
+} LDKReplyShortChannelIdsEnd;
+
+
+
+/**
+ * A gossip_timestamp_filter message is used by a node to request
+ * gossip relay for messages in the requested time range when the
+ * gossip_queries feature has been negotiated.
+ */
+typedef struct MUST_USE_STRUCT LDKGossipTimestampFilter {
+   /**
+    * Nearly everyhwere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeGossipTimestampFilter *inner;
+   bool is_owned;
+} LDKGossipTimestampFilter;
+
+
+
+/**
  * An Err type for failure to process messages.
  */
 typedef struct MUST_USE_STRUCT LDKLightningError {
@@ -2726,6 +2837,10 @@ typedef LDKCResultTempl_PublicKey__Secp256k1Error LDKCResult_PublicKeySecpErrorZ
  * The set of public keys which are used in the creation of one commitment transaction.
  * These are derived from the channel base keys and per-commitment data.
  *
+ * A broadcaster key is provided from potential broadcaster of the computed transaction.
+ * A countersignatory key is coming from a protocol participant unable to broadcast the
+ * transaction.
+ *
  * These keys are assumed to be good, either because the code derived them from
  * channel basepoints via the new function, or they were obtained via
  * PreCalculatedTxCreationKeys.trust_key_derivation because we trusted the source of the
@@ -2965,13 +3080,6 @@ typedef struct MUST_USE_STRUCT LDKNodeInfo {
    LDKnativeNodeInfo *inner;
    bool is_owned;
 } LDKNodeInfo;
-
-typedef struct LDKCVecTempl_u64 {
-   uint64_t *data;
-   uintptr_t datalen;
-} LDKCVecTempl_u64;
-
-typedef LDKCVecTempl_u64 LDKCVec_u64Z;
 
 typedef LDKCVecTempl_RouteHop LDKCVec_RouteHopZ;
 
@@ -3728,42 +3836,42 @@ const uint8_t (*InMemoryChannelKeys_get_funding_key(const LDKInMemoryChannelKeys
 void InMemoryChannelKeys_set_funding_key(LDKInMemoryChannelKeys *this_ptr, LDKSecretKey val);
 
 /**
- * Local secret key for blinded revocation pubkey
+ * Holder secret key for blinded revocation pubkey
  */
 const uint8_t (*InMemoryChannelKeys_get_revocation_base_key(const LDKInMemoryChannelKeys *this_ptr))[32];
 
 /**
- * Local secret key for blinded revocation pubkey
+ * Holder secret key for blinded revocation pubkey
  */
 void InMemoryChannelKeys_set_revocation_base_key(LDKInMemoryChannelKeys *this_ptr, LDKSecretKey val);
 
 /**
- * Local secret key used for our balance in remote-broadcasted commitment transactions
+ * Holder secret key used for our balance in counterparty-broadcasted commitment transactions
  */
 const uint8_t (*InMemoryChannelKeys_get_payment_key(const LDKInMemoryChannelKeys *this_ptr))[32];
 
 /**
- * Local secret key used for our balance in remote-broadcasted commitment transactions
+ * Holder secret key used for our balance in counterparty-broadcasted commitment transactions
  */
 void InMemoryChannelKeys_set_payment_key(LDKInMemoryChannelKeys *this_ptr, LDKSecretKey val);
 
 /**
- * Local secret key used in HTLC tx
+ * Holder secret key used in HTLC tx
  */
 const uint8_t (*InMemoryChannelKeys_get_delayed_payment_base_key(const LDKInMemoryChannelKeys *this_ptr))[32];
 
 /**
- * Local secret key used in HTLC tx
+ * Holder secret key used in HTLC tx
  */
 void InMemoryChannelKeys_set_delayed_payment_base_key(LDKInMemoryChannelKeys *this_ptr, LDKSecretKey val);
 
 /**
- * Local htlc secret key used in commitment tx htlc outputs
+ * Holder htlc secret key used in commitment tx htlc outputs
  */
 const uint8_t (*InMemoryChannelKeys_get_htlc_base_key(const LDKInMemoryChannelKeys *this_ptr))[32];
 
 /**
- * Local htlc secret key used in commitment tx htlc outputs
+ * Holder htlc secret key used in commitment tx htlc outputs
  */
 void InMemoryChannelKeys_set_htlc_base_key(LDKInMemoryChannelKeys *this_ptr, LDKSecretKey val);
 
@@ -3783,27 +3891,27 @@ void InMemoryChannelKeys_set_commitment_seed(LDKInMemoryChannelKeys *this_ptr, L
 MUST_USE_RES LDKInMemoryChannelKeys InMemoryChannelKeys_new(LDKSecretKey funding_key, LDKSecretKey revocation_base_key, LDKSecretKey payment_key, LDKSecretKey delayed_payment_base_key, LDKSecretKey htlc_base_key, LDKThirtyTwoBytes commitment_seed, uint64_t channel_value_satoshis, LDKC2Tuple_u64u64Z key_derivation_params);
 
 /**
- * Remote pubkeys.
+ * Counterparty pubkeys.
  * Will panic if on_accept wasn't called.
  */
-MUST_USE_RES LDKChannelPublicKeys InMemoryChannelKeys_remote_pubkeys(const LDKInMemoryChannelKeys *this_arg);
+MUST_USE_RES LDKChannelPublicKeys InMemoryChannelKeys_counterparty_pubkeys(const LDKInMemoryChannelKeys *this_arg);
 
 /**
- * The to_self_delay value specified by our counterparty and applied on locally-broadcastable
+ * The contest_delay value specified by our counterparty and applied on holder-broadcastable
  * transactions, ie the amount of time that we have to wait to recover our funds if we
  * broadcast a transaction. You'll likely want to pass this to the
- * ln::chan_utils::build*_transaction functions when signing local transactions.
+ * ln::chan_utils::build*_transaction functions when signing holder's transactions.
  * Will panic if on_accept wasn't called.
  */
-MUST_USE_RES uint16_t InMemoryChannelKeys_remote_to_self_delay(const LDKInMemoryChannelKeys *this_arg);
+MUST_USE_RES uint16_t InMemoryChannelKeys_counterparty_selected_contest_delay(const LDKInMemoryChannelKeys *this_arg);
 
 /**
- * The to_self_delay value specified by us and applied on transactions broadcastable
+ * The contest_delay value specified by us and applied on transactions broadcastable
  * by our counterparty, ie the amount of time that they have to wait to recover their funds
  * if they broadcast a transaction.
  * Will panic if on_accept wasn't called.
  */
-MUST_USE_RES uint16_t InMemoryChannelKeys_local_to_self_delay(const LDKInMemoryChannelKeys *this_arg);
+MUST_USE_RES uint16_t InMemoryChannelKeys_holder_selected_contest_delay(const LDKInMemoryChannelKeys *this_arg);
 
 LDKChannelKeys InMemoryChannelKeys_as_ChannelKeys(const LDKInMemoryChannelKeys *this_arg);
 
@@ -4360,17 +4468,17 @@ MUST_USE_RES LDKCVec_MonitorEventZ ChannelMonitor_get_and_clear_pending_monitor_
 MUST_USE_RES LDKCVec_EventZ ChannelMonitor_get_and_clear_pending_events(LDKChannelMonitor *this_arg);
 
 /**
- * Used by ChannelManager deserialization to broadcast the latest local state if its copy of
- * the Channel was out-of-date. You may use it to get a broadcastable local toxic tx in case of
- * fallen-behind, i.e when receiving a channel_reestablish with a proof that our remote side knows
- * a higher revocation secret than the local commitment number we are aware of. Broadcasting these
- * transactions are UNSAFE, as they allow remote side to punish you. Nevertheless you may want to
- * broadcast them if remote don't close channel with his higher commitment transaction after a
+ * Used by ChannelManager deserialization to broadcast the latest holder state if its copy of
+ * the Channel was out-of-date. You may use it to get a broadcastable holder toxic tx in case of
+ * fallen-behind, i.e when receiving a channel_reestablish with a proof that our counterparty side knows
+ * a higher revocation secret than the holder commitment number we are aware of. Broadcasting these
+ * transactions are UNSAFE, as they allow counterparty side to punish you. Nevertheless you may want to
+ * broadcast them if counterparty don't close channel with his higher commitment transaction after a
  * substantial amount of time (a month or even a year) to get back funds. Best may be to contact
  * out-of-band the other node operator to coordinate with him if option is available to you.
  * In any-case, choice is up to the user.
  */
-MUST_USE_RES LDKCVec_TransactionZ ChannelMonitor_get_latest_local_commitment_txn(LDKChannelMonitor *this_arg, const LDKLogger *logger);
+MUST_USE_RES LDKCVec_TransactionZ ChannelMonitor_get_latest_holder_commitment_txn(LDKChannelMonitor *this_arg, const LDKLogger *logger);
 
 void DecodeError_free(LDKDecodeError this_ptr);
 
@@ -5552,6 +5660,170 @@ void ChannelUpdate_set_contents(LDKChannelUpdate *this_ptr, LDKUnsignedChannelUp
 
 MUST_USE_RES LDKChannelUpdate ChannelUpdate_new(LDKSignature signature_arg, LDKUnsignedChannelUpdate contents_arg);
 
+void QueryChannelRange_free(LDKQueryChannelRange this_ptr);
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+const uint8_t (*QueryChannelRange_get_chain_hash(const LDKQueryChannelRange *this_ptr))[32];
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+void QueryChannelRange_set_chain_hash(LDKQueryChannelRange *this_ptr, LDKThirtyTwoBytes val);
+
+/**
+ * The height of the first block for the channel UTXOs being queried
+ */
+uint32_t QueryChannelRange_get_first_blocknum(const LDKQueryChannelRange *this_ptr);
+
+/**
+ * The height of the first block for the channel UTXOs being queried
+ */
+void QueryChannelRange_set_first_blocknum(LDKQueryChannelRange *this_ptr, uint32_t val);
+
+/**
+ * The number of blocks to include in the query results
+ */
+uint32_t QueryChannelRange_get_number_of_blocks(const LDKQueryChannelRange *this_ptr);
+
+/**
+ * The number of blocks to include in the query results
+ */
+void QueryChannelRange_set_number_of_blocks(LDKQueryChannelRange *this_ptr, uint32_t val);
+
+MUST_USE_RES LDKQueryChannelRange QueryChannelRange_new(LDKThirtyTwoBytes chain_hash_arg, uint32_t first_blocknum_arg, uint32_t number_of_blocks_arg);
+
+void ReplyChannelRange_free(LDKReplyChannelRange this_ptr);
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+const uint8_t (*ReplyChannelRange_get_chain_hash(const LDKReplyChannelRange *this_ptr))[32];
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+void ReplyChannelRange_set_chain_hash(LDKReplyChannelRange *this_ptr, LDKThirtyTwoBytes val);
+
+/**
+ * The height of the first block in the range of the reply
+ */
+uint32_t ReplyChannelRange_get_first_blocknum(const LDKReplyChannelRange *this_ptr);
+
+/**
+ * The height of the first block in the range of the reply
+ */
+void ReplyChannelRange_set_first_blocknum(LDKReplyChannelRange *this_ptr, uint32_t val);
+
+/**
+ * The number of blocks included in the range of the reply
+ */
+uint32_t ReplyChannelRange_get_number_of_blocks(const LDKReplyChannelRange *this_ptr);
+
+/**
+ * The number of blocks included in the range of the reply
+ */
+void ReplyChannelRange_set_number_of_blocks(LDKReplyChannelRange *this_ptr, uint32_t val);
+
+/**
+ * Indicates if the query recipient maintains up-to-date channel
+ * information for the chain_hash
+ */
+bool ReplyChannelRange_get_full_information(const LDKReplyChannelRange *this_ptr);
+
+/**
+ * Indicates if the query recipient maintains up-to-date channel
+ * information for the chain_hash
+ */
+void ReplyChannelRange_set_full_information(LDKReplyChannelRange *this_ptr, bool val);
+
+/**
+ * The short_channel_ids in the channel range
+ */
+void ReplyChannelRange_set_short_channel_ids(LDKReplyChannelRange *this_ptr, LDKCVec_u64Z val);
+
+MUST_USE_RES LDKReplyChannelRange ReplyChannelRange_new(LDKThirtyTwoBytes chain_hash_arg, uint32_t first_blocknum_arg, uint32_t number_of_blocks_arg, bool full_information_arg, LDKCVec_u64Z short_channel_ids_arg);
+
+void QueryShortChannelIds_free(LDKQueryShortChannelIds this_ptr);
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+const uint8_t (*QueryShortChannelIds_get_chain_hash(const LDKQueryShortChannelIds *this_ptr))[32];
+
+/**
+ * The genesis hash of the blockchain being queried
+ */
+void QueryShortChannelIds_set_chain_hash(LDKQueryShortChannelIds *this_ptr, LDKThirtyTwoBytes val);
+
+/**
+ * The short_channel_ids that are being queried
+ */
+void QueryShortChannelIds_set_short_channel_ids(LDKQueryShortChannelIds *this_ptr, LDKCVec_u64Z val);
+
+MUST_USE_RES LDKQueryShortChannelIds QueryShortChannelIds_new(LDKThirtyTwoBytes chain_hash_arg, LDKCVec_u64Z short_channel_ids_arg);
+
+void ReplyShortChannelIdsEnd_free(LDKReplyShortChannelIdsEnd this_ptr);
+
+/**
+ * The genesis hash of the blockchain that was queried
+ */
+const uint8_t (*ReplyShortChannelIdsEnd_get_chain_hash(const LDKReplyShortChannelIdsEnd *this_ptr))[32];
+
+/**
+ * The genesis hash of the blockchain that was queried
+ */
+void ReplyShortChannelIdsEnd_set_chain_hash(LDKReplyShortChannelIdsEnd *this_ptr, LDKThirtyTwoBytes val);
+
+/**
+ * Indicates if the query recipient maintains up-to-date channel
+ * information for the chain_hash
+ */
+bool ReplyShortChannelIdsEnd_get_full_information(const LDKReplyShortChannelIdsEnd *this_ptr);
+
+/**
+ * Indicates if the query recipient maintains up-to-date channel
+ * information for the chain_hash
+ */
+void ReplyShortChannelIdsEnd_set_full_information(LDKReplyShortChannelIdsEnd *this_ptr, bool val);
+
+MUST_USE_RES LDKReplyShortChannelIdsEnd ReplyShortChannelIdsEnd_new(LDKThirtyTwoBytes chain_hash_arg, bool full_information_arg);
+
+void GossipTimestampFilter_free(LDKGossipTimestampFilter this_ptr);
+
+/**
+ * The genesis hash of the blockchain for channel and node information
+ */
+const uint8_t (*GossipTimestampFilter_get_chain_hash(const LDKGossipTimestampFilter *this_ptr))[32];
+
+/**
+ * The genesis hash of the blockchain for channel and node information
+ */
+void GossipTimestampFilter_set_chain_hash(LDKGossipTimestampFilter *this_ptr, LDKThirtyTwoBytes val);
+
+/**
+ * The starting unix timestamp
+ */
+uint32_t GossipTimestampFilter_get_first_timestamp(const LDKGossipTimestampFilter *this_ptr);
+
+/**
+ * The starting unix timestamp
+ */
+void GossipTimestampFilter_set_first_timestamp(LDKGossipTimestampFilter *this_ptr, uint32_t val);
+
+/**
+ * The range of information in seconds
+ */
+uint32_t GossipTimestampFilter_get_timestamp_range(const LDKGossipTimestampFilter *this_ptr);
+
+/**
+ * The range of information in seconds
+ */
+void GossipTimestampFilter_set_timestamp_range(LDKGossipTimestampFilter *this_ptr, uint32_t val);
+
+MUST_USE_RES LDKGossipTimestampFilter GossipTimestampFilter_new(LDKThirtyTwoBytes chain_hash_arg, uint32_t first_timestamp_arg, uint32_t timestamp_range_arg);
+
 void ErrorAction_free(LDKErrorAction this_ptr);
 
 void LightningError_free(LDKLightningError this_ptr);
@@ -5738,6 +6010,26 @@ LDKCVec_u8Z NodeAnnouncement_write(const LDKNodeAnnouncement *obj);
 
 LDKNodeAnnouncement NodeAnnouncement_read(LDKu8slice ser);
 
+LDKQueryShortChannelIds QueryShortChannelIds_read(LDKu8slice ser);
+
+LDKCVec_u8Z QueryShortChannelIds_write(const LDKQueryShortChannelIds *obj);
+
+LDKReplyShortChannelIdsEnd ReplyShortChannelIdsEnd_read(LDKu8slice ser);
+
+LDKCVec_u8Z ReplyShortChannelIdsEnd_write(const LDKReplyShortChannelIdsEnd *obj);
+
+LDKQueryChannelRange QueryChannelRange_read(LDKu8slice ser);
+
+LDKCVec_u8Z QueryChannelRange_write(const LDKQueryChannelRange *obj);
+
+LDKReplyChannelRange ReplyChannelRange_read(LDKu8slice ser);
+
+LDKCVec_u8Z ReplyChannelRange_write(const LDKReplyChannelRange *obj);
+
+LDKGossipTimestampFilter GossipTimestampFilter_read(LDKu8slice ser);
+
+LDKCVec_u8Z GossipTimestampFilter_write(const LDKGossipTimestampFilter *obj);
+
 void MessageHandler_free(LDKMessageHandler this_ptr);
 
 /**
@@ -5913,76 +6205,88 @@ LDKCResult_PublicKeySecpErrorZ derive_public_key(LDKPublicKey per_commitment_poi
 /**
  * Derives a per-commitment-transaction revocation key from its constituent parts.
  *
+ * Only the cheating participant owns a valid witness to propagate a revoked
+ * commitment transaction, thus per_commitment_secret always come from cheater
+ * and revocation_base_secret always come from punisher, which is the broadcaster
+ * of the transaction spending with this key knowledge.
+ *
  * Note that this is infallible iff we trust that at least one of the two input keys are randomly
  * generated (ie our own).
  */
-LDKCResult_SecretKeySecpErrorZ derive_private_revocation_key(const uint8_t (*per_commitment_secret)[32], const uint8_t (*revocation_base_secret)[32]);
+LDKCResult_SecretKeySecpErrorZ derive_private_revocation_key(const uint8_t (*per_commitment_secret)[32], const uint8_t (*countersignatory_revocation_base_secret)[32]);
 
 /**
  * Derives a per-commitment-transaction revocation public key from its constituent parts. This is
  * the public equivalend of derive_private_revocation_key - using only public keys to derive a
  * public key instead of private keys.
  *
+ * Only the cheating participant owns a valid witness to propagate a revoked
+ * commitment transaction, thus per_commitment_point always come from cheater
+ * and revocation_base_point always come from punisher, which is the broadcaster
+ * of the transaction spending with this key knowledge.
+ *
  * Note that this is infallible iff we trust that at least one of the two input keys are randomly
  * generated (ie our own).
  */
-LDKCResult_PublicKeySecpErrorZ derive_public_revocation_key(LDKPublicKey per_commitment_point, LDKPublicKey revocation_base_point);
+LDKCResult_PublicKeySecpErrorZ derive_public_revocation_key(LDKPublicKey per_commitment_point, LDKPublicKey countersignatory_revocation_base_point);
 
 void TxCreationKeys_free(LDKTxCreationKeys this_ptr);
 
 /**
- * The per-commitment public key which was used to derive the other keys.
+ * The broadcaster's per-commitment public key which was used to derive the other keys.
  */
 LDKPublicKey TxCreationKeys_get_per_commitment_point(const LDKTxCreationKeys *this_ptr);
 
 /**
- * The per-commitment public key which was used to derive the other keys.
+ * The broadcaster's per-commitment public key which was used to derive the other keys.
  */
 void TxCreationKeys_set_per_commitment_point(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
 
 /**
- * The revocation key which is used to allow the owner of the commitment transaction to
- * provide their counterparty the ability to punish them if they broadcast an old state.
+ * The revocation key which is used to allow the broadcaster of the commitment
+ * transaction to provide their counterparty the ability to punish them if they broadcast
+ * an old state.
  */
 LDKPublicKey TxCreationKeys_get_revocation_key(const LDKTxCreationKeys *this_ptr);
 
 /**
- * The revocation key which is used to allow the owner of the commitment transaction to
- * provide their counterparty the ability to punish them if they broadcast an old state.
+ * The revocation key which is used to allow the broadcaster of the commitment
+ * transaction to provide their counterparty the ability to punish them if they broadcast
+ * an old state.
  */
 void TxCreationKeys_set_revocation_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
 
 /**
- * A's HTLC Key
+ * Broadcaster's HTLC Key
  */
-LDKPublicKey TxCreationKeys_get_a_htlc_key(const LDKTxCreationKeys *this_ptr);
+LDKPublicKey TxCreationKeys_get_broadcaster_htlc_key(const LDKTxCreationKeys *this_ptr);
 
 /**
- * A's HTLC Key
+ * Broadcaster's HTLC Key
  */
-void TxCreationKeys_set_a_htlc_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
+void TxCreationKeys_set_broadcaster_htlc_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
 
 /**
- * B's HTLC Key
+ * Countersignatory's HTLC Key
  */
-LDKPublicKey TxCreationKeys_get_b_htlc_key(const LDKTxCreationKeys *this_ptr);
+LDKPublicKey TxCreationKeys_get_countersignatory_htlc_key(const LDKTxCreationKeys *this_ptr);
 
 /**
- * B's HTLC Key
+ * Countersignatory's HTLC Key
  */
-void TxCreationKeys_set_b_htlc_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
+void TxCreationKeys_set_countersignatory_htlc_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
 
 /**
- * A's Payment Key (which isn't allowed to be spent from for some delay)
+ * Broadcaster's Payment Key (which isn't allowed to be spent from for some delay)
  */
-LDKPublicKey TxCreationKeys_get_a_delayed_payment_key(const LDKTxCreationKeys *this_ptr);
+LDKPublicKey TxCreationKeys_get_broadcaster_delayed_payment_key(const LDKTxCreationKeys *this_ptr);
 
 /**
- * A's Payment Key (which isn't allowed to be spent from for some delay)
+ * Broadcaster's Payment Key (which isn't allowed to be spent from for some delay)
  */
-void TxCreationKeys_set_a_delayed_payment_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
+void TxCreationKeys_set_broadcaster_delayed_payment_key(LDKTxCreationKeys *this_ptr, LDKPublicKey val);
 
-MUST_USE_RES LDKTxCreationKeys TxCreationKeys_new(LDKPublicKey per_commitment_point_arg, LDKPublicKey revocation_key_arg, LDKPublicKey a_htlc_key_arg, LDKPublicKey b_htlc_key_arg, LDKPublicKey a_delayed_payment_key_arg);
+MUST_USE_RES LDKTxCreationKeys TxCreationKeys_new(LDKPublicKey per_commitment_point_arg, LDKPublicKey revocation_key_arg, LDKPublicKey broadcaster_htlc_key_arg, LDKPublicKey countersignatory_htlc_key_arg, LDKPublicKey broadcaster_delayed_payment_key_arg);
 
 LDKCVec_u8Z TxCreationKeys_write(const LDKTxCreationKeys *obj);
 
@@ -6037,16 +6341,16 @@ LDKPublicKey ChannelPublicKeys_get_revocation_basepoint(const LDKChannelPublicKe
 void ChannelPublicKeys_set_revocation_basepoint(LDKChannelPublicKeys *this_ptr, LDKPublicKey val);
 
 /**
- * The public key which receives our immediately spendable primary channel balance in
- * remote-broadcasted commitment transactions. This key is static across every commitment
- * transaction.
+ * The public key on which the non-broadcaster (ie the countersignatory) receives an immediately
+ * spendable primary channel balance on the broadcaster's commitment transaction. This key is
+ * static across every commitment transaction.
  */
 LDKPublicKey ChannelPublicKeys_get_payment_point(const LDKChannelPublicKeys *this_ptr);
 
 /**
- * The public key which receives our immediately spendable primary channel balance in
- * remote-broadcasted commitment transactions. This key is static across every commitment
- * transaction.
+ * The public key on which the non-broadcaster (ie the countersignatory) receives an immediately
+ * spendable primary channel balance on the broadcaster's commitment transaction. This key is
+ * static across every commitment transaction.
  */
 void ChannelPublicKeys_set_payment_point(LDKChannelPublicKeys *this_ptr, LDKPublicKey val);
 
@@ -6085,14 +6389,14 @@ LDKChannelPublicKeys ChannelPublicKeys_read(LDKu8slice ser);
 /**
  * Create a new TxCreationKeys from channel base points and the per-commitment point
  */
-MUST_USE_RES LDKCResult_TxCreationKeysSecpErrorZ TxCreationKeys_derive_new(LDKPublicKey per_commitment_point, LDKPublicKey a_delayed_payment_base, LDKPublicKey a_htlc_base, LDKPublicKey b_revocation_base, LDKPublicKey b_htlc_base);
+MUST_USE_RES LDKCResult_TxCreationKeysSecpErrorZ TxCreationKeys_derive_new(LDKPublicKey per_commitment_point, LDKPublicKey broadcaster_delayed_payment_base, LDKPublicKey broadcaster_htlc_base, LDKPublicKey countersignatory_revocation_base, LDKPublicKey countersignatory_htlc_base);
 
 /**
  * A script either spendable by the revocation
- * key or the delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
- * Encumbering a `to_local` output on a commitment transaction or 2nd-stage HTLC transactions.
+ * key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
+ * Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
  */
-LDKCVec_u8Z get_revokeable_redeemscript(LDKPublicKey revocation_key, uint16_t to_self_delay, LDKPublicKey delayed_payment_key);
+LDKCVec_u8Z get_revokeable_redeemscript(LDKPublicKey revocation_key, uint16_t contest_delay, LDKPublicKey broadcaster_delayed_payment_key);
 
 void HTLCOutputInCommitment_free(LDKHTLCOutputInCommitment this_ptr);
 
@@ -6100,7 +6404,7 @@ void HTLCOutputInCommitment_free(LDKHTLCOutputInCommitment this_ptr);
  * Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
  * Note that this is not the same as whether it is ountbound *from us*. To determine that you
  * need to compare this value to whether the commitment transaction in question is that of
- * the remote party or our own.
+ * the counterparty or our own.
  */
 bool HTLCOutputInCommitment_get_offered(const LDKHTLCOutputInCommitment *this_ptr);
 
@@ -6108,7 +6412,7 @@ bool HTLCOutputInCommitment_get_offered(const LDKHTLCOutputInCommitment *this_pt
  * Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
  * Note that this is not the same as whether it is ountbound *from us*. To determine that you
  * need to compare this value to whether the commitment transaction in question is that of
- * the remote party or our own.
+ * the counterparty or our own.
  */
 void HTLCOutputInCommitment_set_offered(LDKHTLCOutputInCommitment *this_ptr, bool val);
 
@@ -6149,8 +6453,8 @@ LDKCVec_u8Z HTLCOutputInCommitment_write(const LDKHTLCOutputInCommitment *obj);
 LDKHTLCOutputInCommitment HTLCOutputInCommitment_read(LDKu8slice ser);
 
 /**
- * note here that 'a_revocation_key' is generated using b_revocation_basepoint and a's
- * commitment secret. 'htlc' does *not* need to have its previous_output_index filled.
+ * Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
+ * does not need to have its previous_output_index filled.
  */
 LDKCVec_u8Z get_htlc_redeemscript(const LDKHTLCOutputInCommitment *htlc, const LDKTxCreationKeys *keys);
 
@@ -6158,91 +6462,91 @@ LDKCVec_u8Z get_htlc_redeemscript(const LDKHTLCOutputInCommitment *htlc, const L
  * Gets the redeemscript for a funding output from the two funding public keys.
  * Note that the order of funding public keys does not matter.
  */
-LDKCVec_u8Z make_funding_redeemscript(LDKPublicKey a, LDKPublicKey b);
+LDKCVec_u8Z make_funding_redeemscript(LDKPublicKey broadcaster, LDKPublicKey countersignatory);
 
 /**
  * panics if htlc.transaction_output_index.is_none()!
  */
-LDKCVec_u8Z build_htlc_transaction(const uint8_t (*prev_hash)[32], uint32_t feerate_per_kw, uint16_t to_self_delay, const LDKHTLCOutputInCommitment *htlc, LDKPublicKey a_delayed_payment_key, LDKPublicKey revocation_key);
+LDKCVec_u8Z build_htlc_transaction(const uint8_t (*prev_hash)[32], uint32_t feerate_per_kw, uint16_t contest_delay, const LDKHTLCOutputInCommitment *htlc, LDKPublicKey broadcaster_delayed_payment_key, LDKPublicKey revocation_key);
 
-void LocalCommitmentTransaction_free(LDKLocalCommitmentTransaction this_ptr);
-
-/**
- * The commitment transaction itself, in unsigned form.
- */
-LDKCVec_u8Z LocalCommitmentTransaction_get_unsigned_tx(const LDKLocalCommitmentTransaction *this_ptr);
+void HolderCommitmentTransaction_free(LDKHolderCommitmentTransaction this_ptr);
 
 /**
  * The commitment transaction itself, in unsigned form.
  */
-void LocalCommitmentTransaction_set_unsigned_tx(LDKLocalCommitmentTransaction *this_ptr, LDKCVec_u8Z val);
+LDKCVec_u8Z HolderCommitmentTransaction_get_unsigned_tx(const LDKHolderCommitmentTransaction *this_ptr);
+
+/**
+ * The commitment transaction itself, in unsigned form.
+ */
+void HolderCommitmentTransaction_set_unsigned_tx(LDKHolderCommitmentTransaction *this_ptr, LDKCVec_u8Z val);
 
 /**
  * Our counterparty's signature for the transaction, above.
  */
-LDKSignature LocalCommitmentTransaction_get_their_sig(const LDKLocalCommitmentTransaction *this_ptr);
+LDKSignature HolderCommitmentTransaction_get_counterparty_sig(const LDKHolderCommitmentTransaction *this_ptr);
 
 /**
  * Our counterparty's signature for the transaction, above.
  */
-void LocalCommitmentTransaction_set_their_sig(LDKLocalCommitmentTransaction *this_ptr, LDKSignature val);
+void HolderCommitmentTransaction_set_counterparty_sig(LDKHolderCommitmentTransaction *this_ptr, LDKSignature val);
 
 /**
  * The feerate paid per 1000-weight-unit in this commitment transaction. This value is
  * controlled by the channel initiator.
  */
-uint32_t LocalCommitmentTransaction_get_feerate_per_kw(const LDKLocalCommitmentTransaction *this_ptr);
+uint32_t HolderCommitmentTransaction_get_feerate_per_kw(const LDKHolderCommitmentTransaction *this_ptr);
 
 /**
  * The feerate paid per 1000-weight-unit in this commitment transaction. This value is
  * controlled by the channel initiator.
  */
-void LocalCommitmentTransaction_set_feerate_per_kw(LDKLocalCommitmentTransaction *this_ptr, uint32_t val);
+void HolderCommitmentTransaction_set_feerate_per_kw(LDKHolderCommitmentTransaction *this_ptr, uint32_t val);
 
 /**
- * The HTLCs and remote htlc signatures which were included in this commitment transaction.
+ * The HTLCs and counterparty htlc signatures which were included in this commitment transaction.
  *
  * Note that this includes all HTLCs, including ones which were considered dust and not
  * actually included in the transaction as it appears on-chain, but who's value is burned as
- * fees and not included in the to_local or to_remote outputs.
+ * fees and not included in the to_holder or to_counterparty outputs.
  *
- * The remote HTLC signatures in the second element will always be set for non-dust HTLCs, ie
+ * The counterparty HTLC signatures in the second element will always be set for non-dust HTLCs, ie
  * those for which transaction_output_index.is_some().
  */
-void LocalCommitmentTransaction_set_per_htlc(LDKLocalCommitmentTransaction *this_ptr, LDKCVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ val);
+void HolderCommitmentTransaction_set_per_htlc(LDKHolderCommitmentTransaction *this_ptr, LDKCVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ val);
 
 /**
- * Generate a new LocalCommitmentTransaction based on a raw commitment transaction,
- * remote signature and both parties keys.
+ * Generate a new HolderCommitmentTransaction based on a raw commitment transaction,
+ * counterparty signature and both parties keys.
  *
  * The unsigned transaction outputs must be consistent with htlc_data.  This function
  * only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
  */
-MUST_USE_RES LDKLocalCommitmentTransaction LocalCommitmentTransaction_new_missing_local_sig(LDKCVec_u8Z unsigned_tx, LDKSignature their_sig, LDKPublicKey our_funding_key, LDKPublicKey their_funding_key, LDKTxCreationKeys local_keys, uint32_t feerate_per_kw, LDKCVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ htlc_data);
+MUST_USE_RES LDKHolderCommitmentTransaction HolderCommitmentTransaction_new_missing_holder_sig(LDKCVec_u8Z unsigned_tx, LDKSignature counterparty_sig, LDKPublicKey holder_funding_key, LDKPublicKey counterparty_funding_key, LDKTxCreationKeys keys, uint32_t feerate_per_kw, LDKCVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ htlc_data);
 
 /**
  * The pre-calculated transaction creation public keys.
  * An external validating signer should not trust these keys.
  */
-MUST_USE_RES LDKTxCreationKeys LocalCommitmentTransaction_trust_key_derivation(const LDKLocalCommitmentTransaction *this_arg);
+MUST_USE_RES LDKTxCreationKeys HolderCommitmentTransaction_trust_key_derivation(const LDKHolderCommitmentTransaction *this_arg);
 
 /**
- * Get the txid of the local commitment transaction contained in this
- * LocalCommitmentTransaction
+ * Get the txid of the holder commitment transaction contained in this
+ * HolderCommitmentTransaction
  */
-MUST_USE_RES LDKThirtyTwoBytes LocalCommitmentTransaction_txid(const LDKLocalCommitmentTransaction *this_arg);
+MUST_USE_RES LDKThirtyTwoBytes HolderCommitmentTransaction_txid(const LDKHolderCommitmentTransaction *this_arg);
 
 /**
- * Gets our signature for the contained commitment transaction given our funding private key.
+ * Gets holder signature for the contained commitment transaction given holder funding private key.
  *
  * Funding key is your key included in the 2-2 funding_outpoint lock. Should be provided
  * by your ChannelKeys.
  * Funding redeemscript is script locking funding_outpoint. This is the mutlsig script
  * between your own funding key and your counterparty's. Currently, this is provided in
- * ChannelKeys::sign_local_commitment() calls directly.
+ * ChannelKeys::sign_holder_commitment() calls directly.
  * Channel value is amount locked in funding_outpoint.
  */
-MUST_USE_RES LDKSignature LocalCommitmentTransaction_get_local_sig(const LDKLocalCommitmentTransaction *this_arg, const uint8_t (*funding_key)[32], LDKu8slice funding_redeemscript, uint64_t channel_value_satoshis);
+MUST_USE_RES LDKSignature HolderCommitmentTransaction_get_holder_sig(const LDKHolderCommitmentTransaction *this_arg, const uint8_t (*funding_key)[32], LDKu8slice funding_redeemscript, uint64_t channel_value_satoshis);
 
 /**
  * Get a signature for each HTLC which was included in the commitment transaction (ie for
@@ -6252,11 +6556,11 @@ MUST_USE_RES LDKSignature LocalCommitmentTransaction_get_local_sig(const LDKLoca
  * considered dust and not included, a None entry exists, for all others a signature is
  * included.
  */
-MUST_USE_RES LDKCResult_CVec_SignatureZNoneZ LocalCommitmentTransaction_get_htlc_sigs(const LDKLocalCommitmentTransaction *this_arg, const uint8_t (*htlc_base_key)[32], uint16_t local_csv);
+MUST_USE_RES LDKCResult_CVec_SignatureZNoneZ HolderCommitmentTransaction_get_htlc_sigs(const LDKHolderCommitmentTransaction *this_arg, const uint8_t (*htlc_base_key)[32], uint16_t counterparty_selected_contest_delay);
 
-LDKCVec_u8Z LocalCommitmentTransaction_write(const LDKLocalCommitmentTransaction *obj);
+LDKCVec_u8Z HolderCommitmentTransaction_write(const LDKHolderCommitmentTransaction *obj);
 
-LDKLocalCommitmentTransaction LocalCommitmentTransaction_read(LDKu8slice ser);
+LDKHolderCommitmentTransaction HolderCommitmentTransaction_read(LDKu8slice ser);
 
 void InitFeatures_free(LDKInitFeatures this_ptr);
 

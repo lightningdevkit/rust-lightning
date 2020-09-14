@@ -217,6 +217,11 @@ pub extern "C" fn C2Tuple_OutPointScriptZ_new(a: crate::chain::transaction::OutP
 }
 
 #[no_mangle]
+pub type CVec_u64Z = crate::c_types::CVecTempl<u64>;
+#[no_mangle]
+pub static CVec_u64Z_free: extern "C" fn(CVec_u64Z) = crate::c_types::CVecTempl_free::<u64>;
+
+#[no_mangle]
 pub type CVec_UpdateAddHTLCZ = crate::c_types::CVecTempl<crate::ln::msgs::UpdateAddHTLC>;
 #[no_mangle]
 pub static CVec_UpdateAddHTLCZ_free: extern "C" fn(CVec_UpdateAddHTLCZ) = crate::c_types::CVecTempl_free::<crate::ln::msgs::UpdateAddHTLC>;
@@ -397,9 +402,4 @@ pub static CResult_RouteLightningErrorZ_ok: extern "C" fn (crate::routing::route
 #[no_mangle]
 pub static CResult_RouteLightningErrorZ_err: extern "C" fn (crate::ln::msgs::LightningError) -> CResult_RouteLightningErrorZ =
 	crate::c_types::CResultTempl::<crate::routing::router::Route, crate::ln::msgs::LightningError>::err;
-
-#[no_mangle]
-pub type CVec_u64Z = crate::c_types::CVecTempl<u64>;
-#[no_mangle]
-pub static CVec_u64Z_free: extern "C" fn(CVec_u64Z) = crate::c_types::CVecTempl_free::<u64>;
 
