@@ -570,6 +570,90 @@ pub struct ChannelUpdate {
 	pub contents: UnsignedChannelUpdate,
 }
 
+/// A query_channel_range message is used to query a peer for channel
+/// UTXOs in a range of blocks. The recipient of a query makes a best
+/// effort to reply to the query using one or more reply_channel_range
+/// messages.
+#[derive(Clone, Debug)]
+pub struct QueryChannelRange {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The height of the first block for the channel UTXOs being queried
+	pub first_blocknum: u32,
+	/// The number of blocks to include in the query results
+	pub number_of_blocks: u32,
+}
+
+/// A reply_channel_range message is a reply to a query_channel_range
+/// message. Multiple reply_channel_range messages can be sent in reply
+/// to a single query_channel_range message. The query recipient makes a
+/// best effort to respond based on their local network view which may
+/// not be a perfect view of the network. The short_channel_ids in the
+/// reply are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[derive(Clone, Debug)]
+pub struct ReplyChannelRange {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The height of the first block in the range of the reply
+	pub first_blocknum: u32,
+	/// The number of blocks included in the range of the reply
+	pub number_of_blocks: u32,
+	/// Indicates if the query recipient maintains up-to-date channel
+	/// information for the chain_hash
+	pub full_information: bool,
+	/// The short_channel_ids in the channel range
+	pub short_channel_ids: Vec<u64>,
+}
+
+/// A query_short_channel_ids message is used to query a peer for
+/// routing gossip messages related to one or more short_channel_ids.
+/// The query recipient will reply with the latest, if available,
+/// channel_announcement, channel_update and node_announcement messages
+/// it maintains for the requested short_channel_ids followed by a
+/// reply_short_channel_ids_end message. The short_channel_ids sent in
+/// this query are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[derive(Clone, Debug)]
+pub struct QueryShortChannelIds {
+	/// The genesis hash of the blockchain being queried
+	pub chain_hash: BlockHash,
+	/// The short_channel_ids that are being queried
+	pub short_channel_ids: Vec<u64>,
+}
+
+/// A reply_short_channel_ids_end message is sent as a reply to a
+/// query_short_channel_ids message. The query recipient makes a best
+/// effort to respond based on their local network view which may not be
+/// a perfect view of the network.
+#[derive(Clone, Debug)]
+pub struct ReplyShortChannelIdsEnd {
+	/// The genesis hash of the blockchain that was queried
+	pub chain_hash: BlockHash,
+	/// Indicates if the query recipient maintains up-to-date channel
+	/// information for the chain_hash
+	pub full_information: bool,
+}
+
+/// A gossip_timestamp_filter message is used by a node to request
+/// gossip relay for messages in the requested time range when the
+/// gossip_queries feature has been negotiated.
+#[derive(Clone, Debug)]
+pub struct GossipTimestampFilter {
+	/// The genesis hash of the blockchain for channel and node information
+	pub chain_hash: BlockHash,
+	/// The starting unix timestamp
+	pub first_timestamp: u32,
+	/// The range of information in seconds
+	pub timestamp_range: u32,
+}
+
+/// Encoding type for data compression of collections in gossip queries.
+/// We do not support encoding_type=1 zlib serialization defined in BOLT #7.
+enum EncodingType {
+	Uncompressed = 0x00,
+}
+
 /// Used to put an error message in a LightningError
 #[derive(Clone)]
 pub enum ErrorAction {
@@ -1516,6 +1600,184 @@ impl_writeable_len_match!(NodeAnnouncement, {
 	contents
 });
 
+impl Readable for QueryShortChannelIds {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		let encoding_len: u16 = Readable::read(r)?;
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Must be encoding_type=0 uncompressed serialization. We do not
+		// support encoding_type=1 zlib serialization.
+		let encoding_type: u8 = Readable::read(r)?;
+		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
+		// less the 1-byte encoding_type
+		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
+		for _ in 0..short_channel_id_count {
+			short_channel_ids.push(Readable::read(r)?);
+		}
+
+		Ok(QueryShortChannelIds {
+			chain_hash,
+			short_channel_ids,
+		})
+	}
+}
+
+impl Writeable for QueryShortChannelIds {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		// Calculated from 1-byte encoding_type plus 8-bytes per short_channel_id
+		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
+
+		w.size_hint(32 + 2 + encoding_len as usize);
+		self.chain_hash.write(w)?;
+		encoding_len.write(w)?;
+
+		// We only support type=0 uncompressed serialization
+		(EncodingType::Uncompressed as u8).write(w)?;
+
+		for scid in self.short_channel_ids.iter() {
+			scid.write(w)?;
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for ReplyShortChannelIdsEnd {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let full_information: bool = Readable::read(r)?;
+		Ok(ReplyShortChannelIdsEnd {
+			chain_hash,
+			full_information,
+		})
+	}
+}
+
+impl Writeable for ReplyShortChannelIdsEnd {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 1);
+		self.chain_hash.write(w)?;
+		self.full_information.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for QueryChannelRange {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_blocknum: u32 = Readable::read(r)?;
+		let number_of_blocks: u32 = Readable::read(r)?;
+		Ok(QueryChannelRange {
+			chain_hash,
+			first_blocknum,
+			number_of_blocks
+		})
+	}
+}
+
+impl Writeable for QueryChannelRange {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 4 + 4);
+		self.chain_hash.write(w)?;
+		self.first_blocknum.write(w)?;
+		self.number_of_blocks.write(w)?;
+		Ok(())
+	}
+}
+
+impl Readable for ReplyChannelRange {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_blocknum: u32 = Readable::read(r)?;
+		let number_of_blocks: u32 = Readable::read(r)?;
+		let full_information: bool = Readable::read(r)?;
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		let encoding_len: u16 = Readable::read(r)?;
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Must be encoding_type=0 uncompressed serialization. We do not
+		// support encoding_type=1 zlib serialization.
+		let encoding_type: u8 = Readable::read(r)?;
+		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
+		// less the 1-byte encoding_type
+		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
+		for _ in 0..short_channel_id_count {
+			short_channel_ids.push(Readable::read(r)?);
+		}
+
+		Ok(ReplyChannelRange {
+			chain_hash,
+			first_blocknum,
+			number_of_blocks,
+			full_information,
+			short_channel_ids
+		})
+	}
+}
+
+impl Writeable for ReplyChannelRange {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
+		w.size_hint(32 + 4 + 4 + 1 + 2 + encoding_len as usize);
+		self.chain_hash.write(w)?;
+		self.first_blocknum.write(w)?;
+		self.number_of_blocks.write(w)?;
+		self.full_information.write(w)?;
+
+		encoding_len.write(w)?;
+		(EncodingType::Uncompressed as u8).write(w)?;
+		for scid in self.short_channel_ids.iter() {
+			scid.write(w)?;
+		}
+
+		Ok(())
+	}
+}
+
+impl Readable for GossipTimestampFilter {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: BlockHash = Readable::read(r)?;
+		let first_timestamp: u32 = Readable::read(r)?;
+		let timestamp_range: u32 = Readable::read(r)?;
+		Ok(GossipTimestampFilter {
+			chain_hash,
+			first_timestamp,
+			timestamp_range,
+		})
+	}
+}
+
+impl Writeable for GossipTimestampFilter {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		w.size_hint(32 + 4 + 4);
+		self.chain_hash.write(w)?;
+		self.first_timestamp.write(w)?;
+		self.timestamp_range.write(w)?;
+		Ok(())
+	}
+}
+
+
 #[cfg(test)]
 mod tests {
 	use hex;
@@ -2250,5 +2512,123 @@ mod tests {
 		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+	}
+
+	#[test]
+	fn encoding_query_channel_range() {
+		let mut query_channel_range = msgs::QueryChannelRange {
+			chain_hash: BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap(),
+			first_blocknum: 100000,
+			number_of_blocks: 1500,
+		};
+		let encoded_value = query_channel_range.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000186a0000005dc").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(query_channel_range.first_blocknum, 100000);
+		assert_eq!(query_channel_range.number_of_blocks, 1500);
+	}
+
+	#[test]
+	fn encoding_reply_channel_range() {
+		do_encoding_reply_channel_range(0);
+		do_encoding_reply_channel_range(1);
+	}
+
+	fn do_encoding_reply_channel_range(encoding_type: u8) {
+		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206000b8a06000005dc01").unwrap();
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut reply_channel_range = msgs::ReplyChannelRange {
+			chain_hash: expected_chain_hash,
+			first_blocknum: 756230,
+			number_of_blocks: 1500,
+			full_information: true,
+			short_channel_ids: vec![0x000000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
+		};
+
+		if encoding_type == 0 {
+			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			let encoded_value = reply_channel_range.encode();
+			assert_eq!(encoded_value, target_value);
+
+			reply_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			assert_eq!(reply_channel_range.chain_hash, expected_chain_hash);
+			assert_eq!(reply_channel_range.first_blocknum, 756230);
+			assert_eq!(reply_channel_range.number_of_blocks, 1500);
+			assert_eq!(reply_channel_range.full_information, true);
+			assert_eq!(reply_channel_range.short_channel_ids[0], 0x000000000000008e);
+			assert_eq!(reply_channel_range.short_channel_ids[1], 0x0000000000003c69);
+			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
+		} else {
+			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
+		}
+	}
+
+	#[test]
+	fn encoding_query_short_channel_ids() {
+		do_encoding_query_short_channel_ids(0);
+		do_encoding_query_short_channel_ids(1);
+	}
+
+	fn do_encoding_query_short_channel_ids(encoding_type: u8) {
+		let mut target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206").unwrap();
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
+			chain_hash: expected_chain_hash,
+			short_channel_ids: vec![0x0000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
+		};
+
+		if encoding_type == 0 {
+			target_value.append(&mut hex::decode("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			let encoded_value = query_short_channel_ids.encode();
+			assert_eq!(encoded_value, target_value);
+
+			query_short_channel_ids = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+			assert_eq!(query_short_channel_ids.chain_hash, expected_chain_hash);
+			assert_eq!(query_short_channel_ids.short_channel_ids[0], 0x000000000000008e);
+			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
+			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
+		} else {
+			target_value.append(&mut hex::decode("001601789c636000833e08659309a65878be010010a9023a").unwrap());
+			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
+		}
+	}
+
+	#[test]
+	fn encoding_reply_short_channel_ids_end() {
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut reply_short_channel_ids_end = msgs::ReplyShortChannelIdsEnd {
+			chain_hash: expected_chain_hash,
+			full_information: true,
+		};
+		let encoded_value = reply_short_channel_ids_end.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e220601").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(reply_short_channel_ids_end.chain_hash, expected_chain_hash);
+		assert_eq!(reply_short_channel_ids_end.full_information, true);
+	}
+
+	#[test]
+	fn encoding_gossip_timestamp_filter(){
+		let expected_chain_hash = BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut gossip_timestamp_filter = msgs::GossipTimestampFilter {
+			chain_hash: expected_chain_hash,
+			first_timestamp: 1590000000,
+			timestamp_range: 0xffff_ffff,
+		};
+		let encoded_value = gossip_timestamp_filter.encode();
+		let target_value = hex::decode("0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e22065ec57980ffffffff").unwrap();
+		assert_eq!(encoded_value, target_value);
+
+		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
+		assert_eq!(gossip_timestamp_filter.chain_hash, expected_chain_hash);
+		assert_eq!(gossip_timestamp_filter.first_timestamp, 1590000000);
+		assert_eq!(gossip_timestamp_filter.timestamp_range, 0xffff_ffff);
 	}
 }

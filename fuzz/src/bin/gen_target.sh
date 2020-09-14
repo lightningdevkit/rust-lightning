@@ -32,6 +32,11 @@ GEN_TEST msg_update_fulfill_htlc msg_targets::
 
 GEN_TEST msg_channel_announcement msg_targets::
 GEN_TEST msg_node_announcement msg_targets::
+GEN_TEST msg_query_short_channel_ids msg_targets::
+GEN_TEST msg_reply_short_channel_ids_end msg_targets::
+GEN_TEST msg_query_channel_range msg_targets::
+GEN_TEST msg_reply_channel_range msg_targets::
+GEN_TEST msg_gossip_timestamp_filter msg_targets::
 
 GEN_TEST msg_update_add_htlc msg_targets::
 GEN_TEST msg_error_message msg_targets::
