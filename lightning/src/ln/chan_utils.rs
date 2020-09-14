@@ -349,9 +349,9 @@ pub struct ChannelPublicKeys {
 	/// counterparty to create a secret which the counterparty can reveal to revoke previous
 	/// states.
 	pub revocation_basepoint: PublicKey,
-	/// The public key which receives an immediately spendable primary channel balance in
-	/// a broadcaster's commitment transactions. This key is static across every commitment
-	/// transaction.
+	/// The public key on which the non-broadcaster (ie the countersignatory) receives an immediately
+	/// spendable primary channel balance on the broadcaster's commitment transaction. This key is
+	/// static across every commitment transaction.
 	pub payment_point: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
 	/// public key which receives non-HTLC-encumbered funds which are only available for spending
