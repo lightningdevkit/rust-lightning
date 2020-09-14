@@ -21,6 +21,7 @@ use ln::msgs::{ChannelMessageHandler, HTLCFailChannelUpdate, OptionalField};
 use util::test_utils;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
+use util::config::UserConfig;
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::hash_types::BlockHash;
@@ -257,9 +258,19 @@ fn test_onion_failure() {
 	const NODE: u16 = 0x2000;
 	const UPDATE: u16 = 0x1000;
 
+	// When we check for amount_below_minimum below, we want to test that we're using the *right*
+	// amount, thus we need different htlc_minimum_msat values. We set node[2]'s htlc_minimum_msat
+	// to 2000, which is above the default value of 1000 set in create_node_chanmgrs.
+	// This exposed a previous bug because we were using the wrong value all the way down in
+	// Channel::get_counterparty_htlc_minimum_msat().
+	let mut node_2_cfg: UserConfig = Default::default();
+	node_2_cfg.own_channel_config.our_htlc_minimum_msat = 2000;
+	node_2_cfg.channel_options.announced_channel = true;
+	node_2_cfg.peer_channel_config_limits.force_announced_channel_preference = false;
+
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(node_2_cfg)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	for node in nodes.iter() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
@@ -410,6 +421,11 @@ fn test_onion_failure() {
 	let route_len = bogus_route.paths[0].len();
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward;
 	run_onion_failure_test("amount_below_minimum", 0, &nodes, &bogus_route, &payment_hash, |_| {}, ||{}, true, Some(UPDATE|11), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
+
+	// Test a positive test-case with one extra msat, meeting the minimum.
+	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward + 1;
+	let (preimage, _) = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage, amt_to_forward+1);
 
 	//TODO: with new config API, we will be able to generate both valid and
 	//invalid channel_update cases.

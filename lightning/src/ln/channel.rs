@@ -3125,6 +3125,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	/// Allowed in any state (including after shutdown)
+	#[cfg(test)]
 	pub fn get_holder_htlc_minimum_msat(&self) -> u64 {
 		self.holder_htlc_minimum_msat
 	}
@@ -3143,7 +3144,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Allowed in any state (including after shutdown)
 	pub fn get_counterparty_htlc_minimum_msat(&self) -> u64 {
-		self.holder_htlc_minimum_msat
+		self.counterparty_htlc_minimum_msat
 	}
 
 	pub fn get_value_satoshis(&self) -> u64 {
