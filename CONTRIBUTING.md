@@ -99,6 +99,17 @@ Fuzzing is heavily encouraged: you will find all related material under `fuzz/`
 
 Mutation testing is work-in-progress; any contribution there would be warmly welcomed.
 
+C/C++ Bindings
+--------------
+
+You can learn more about the C/C++ bindings that are made available by reading the
+[C/C++ Bindings README](lightning-c-bindings/README.md). If you are not using the C/C++ bindings,
+you likely don't need to worry about them, and during their early experimental phase we are not
+requiring that pull requests keep the bindings up to date (and, thus, pass the bindings_check CI
+run). If you wish to ensure your PR passes the bindings generation phase, you should run the
+`genbindings.sh` script in the top of the directory tree to generate, build, and test C bindings on
+your local system.
+
 Going further
 -------------
 

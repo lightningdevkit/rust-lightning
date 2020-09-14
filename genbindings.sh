@@ -48,13 +48,13 @@ fi
 # Finally, sanity-check the generated C and C++ bindings with demo apps:
 
 # Naively run the C demo app:
-gcc -Wall -g -pthread demo.c ../target/debug/liblightning.a -ldl
+gcc -Wall -g -pthread demo.c target/debug/libldk.a -ldl
 ./a.out
 
 # And run the C++ demo app in valgrind to test memory model correctness and lack of leaks.
-g++ -std=c++11 -Wall -g -pthread demo.cpp -L../target/debug/ -llightning -ldl
+g++ -std=c++11 -Wall -g -pthread demo.cpp -Ltarget/debug/ -lldk -ldl
 if [ -x "`which valgrind`" ]; then
-	LD_LIBRARY_PATH=../target/debug/ valgrind --error-exitcode=4 --memcheck:leak-check=full --show-leak-kinds=all ./a.out
+	LD_LIBRARY_PATH=target/debug/ valgrind --error-exitcode=4 --memcheck:leak-check=full --show-leak-kinds=all ./a.out
 	echo
 else
 	echo "WARNING: Please install valgrind for more testing"
@@ -62,7 +62,7 @@ fi
 
 # Test a statically-linked C++ version, tracking the resulting binary size and runtime
 # across debug, LTO, and cross-language LTO builds (using the same compiler each time).
-clang++ -std=c++11 -Wall -pthread demo.cpp ../target/debug/liblightning.a -ldl
+clang++ -std=c++11 -Wall -pthread demo.cpp target/debug/libldk.a -ldl
 ./a.out >/dev/null
 echo " C++ Bin size and runtime w/o optimization:"
 ls -lha a.out
@@ -75,7 +75,7 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" ]; then
 		if [ -x "$(which clang-$LLVM_V)" ]; then
 			cargo +nightly clean
 			cargo +nightly rustc -Zbuild-std --target x86_64-unknown-linux-gnu -v -- -Zsanitizer=memory -Zsanitizer-memory-track-origins -Cforce-frame-pointers=yes
-			mv ../target/x86_64-unknown-linux-gnu/debug/liblightning.* ../target/debug/
+			mv target/x86_64-unknown-linux-gnu/debug/libldk.* target/debug/
 
 			# Sadly, std doesn't seem to compile into something that is memsan-safe as of Aug 2020,
 			# so we'll always fail, not to mention we may be linking against git rustc LLVM which
@@ -83,11 +83,11 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" ]; then
 			set +e
 
 			# First the C demo app...
-			clang-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.c ../target/debug/liblightning.a -ldl
+			clang-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.c target/debug/libldk.a -ldl
 			./a.out
 
 			# ...then the C++ demo app
-			clang++-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.cpp ../target/debug/liblightning.a -ldl
+			clang++-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.cpp target/debug/libldk.a -ldl
 			./a.out >/dev/null
 
 			# restore exit-on-failure
@@ -153,11 +153,11 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" -o "$HOST_PLATFORM" = "
 		mv Cargo.toml.bk Cargo.toml
 
 		# First the C demo app...
-		$CLANG -fsanitize=address -Wall -g -pthread demo.c ../target/debug/liblightning.a -ldl
+		$CLANG -fsanitize=address -Wall -g -pthread demo.c target/debug/libldk.a -ldl
 		ASAN_OPTIONS='detect_leaks=1 detect_invalid_pointer_pairs=1 detect_stack_use_after_return=1' ./a.out
 
 		# ...then the C++ demo app
-		$CLANGPP -std=c++11 -fsanitize=address -Wall -g -pthread demo.cpp ../target/debug/liblightning.a -ldl
+		$CLANGPP -std=c++11 -fsanitize=address -Wall -g -pthread demo.cpp target/debug/libldk.a -ldl
 		ASAN_OPTIONS='detect_leaks=1 detect_invalid_pointer_pairs=1 detect_stack_use_after_return=1' ./a.out >/dev/null
 	else
 		echo "WARNING: Please install clang-$RUSTC_LLVM_V and clang++-$RUSTC_LLVM_V to build with address sanitizer"
@@ -168,7 +168,7 @@ fi
 
 # Now build with LTO on on both C++ and rust, but without cross-language LTO:
 cargo rustc -v --release -- -C lto
-clang++ -std=c++11 -Wall -flto -O2 -pthread demo.cpp ../target/release/liblightning.a -ldl
+clang++ -std=c++11 -Wall -flto -O2 -pthread demo.cpp target/release/libldk.a -ldl
 echo "C++ Bin size and runtime with only RL (LTO) optimized:"
 ls -lha a.out
 time ./a.out > /dev/null
@@ -180,7 +180,7 @@ if [ "$HOST_PLATFORM" != "host: x86_64-apple-darwin" -a "$CLANGPP" != "" ]; then
 	# packaging than simply shipping the rustup binaries (eg Debian should Just Work
 	# here).
 	cargo rustc -v --release -- -C linker-plugin-lto -C lto -C link-arg=-fuse-ld=lld
-	$CLANGPP -Wall -std=c++11 -flto -fuse-ld=lld -O2 -pthread demo.cpp ../target/release/liblightning.a -ldl
+	$CLANGPP -Wall -std=c++11 -flto -fuse-ld=lld -O2 -pthread demo.cpp target/release/libldk.a -ldl
 	echo "C++ Bin size and runtime with cross-language LTO:"
 	ls -lha a.out
 	time ./a.out > /dev/null

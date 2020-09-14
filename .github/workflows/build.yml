@@ -17,16 +17,12 @@ jobs:
         include:
           - toolchain: stable
             build-net-tokio: true
-            build-bindings: true
           - toolchain: beta
             build-net-tokio: true
-            build-bindings: true
           - toolchain: 1.39.0
             build-net-tokio: true
-            build-bindings: true
             coverage: true
           - toolchain: 1.34.2
-            build-bindings: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -43,9 +39,6 @@ jobs:
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning
-      - name: Build bindings on Rust ${{ matrix.toolchain }}
-        if: matrix.build-bindings
-        run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning-c-bindings
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: matrix.build-net-tokio
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
@@ -127,6 +120,9 @@ jobs:
           apt-get -y install cargo valgrind lld git g++ clang
       - name: Checkout source code
         uses: actions/checkout@v2
+      - name: Sanity test bindings
+        working-directory: lightning-c-bindings
+        run: cargo check
       - name: Install cbindgen
         run: cargo install --force cbindgen
       - name: Rebuild bindings, and check the sample app builds + links

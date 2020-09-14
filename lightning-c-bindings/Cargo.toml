@@ -9,7 +9,7 @@ Utilities to fetch the chain from Bitcoin Core REST/RPC Interfaces and feed them
 """
 
 [lib]
-name = "lightning"
+name = "ldk"
 crate-type = ["staticlib"
 # Note that the following line is matched exactly by genbindings to turn off dylib creation
 ,"cdylib"]
@@ -17,3 +17,8 @@ crate-type = ["staticlib"
 [dependencies]
 bitcoin = "0.24"
 lightning = { version = "0.0.11", path = "../lightning" }
+
+# We eventually want to join the root workspace, but for now, the bindings generation is
+# a bit brittle and we don't want to hold up other developers from making changes just
+# because they break the bindings
+[workspace]
