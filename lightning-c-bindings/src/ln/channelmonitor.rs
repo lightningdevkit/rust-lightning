@@ -542,8 +542,8 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut Cha
 /// In any-case, choice is up to the user.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_get_latest_local_commitment_txn(this_arg: &mut ChannelMonitor, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CVec_TransactionZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_latest_local_commitment_txn(logger);
+pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut ChannelMonitor, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CVec_TransactionZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_latest_holder_commitment_txn(logger);
 	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { let mut local_ret_0 = ::bitcoin::consensus::encode::serialize(&item); local_ret_0.into() }); };
 	local_ret.into()
 }
