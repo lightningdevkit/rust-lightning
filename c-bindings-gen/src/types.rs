@@ -813,6 +813,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				let new_path = format!("{}", p.ident);
 				self.process_use_intern(w, &p.tree, &new_path);
 			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}", n.ident);
+				self.imports.insert(n.ident.clone(), full_path);
+			},
 			_ => unimplemented!(),
 		}
 		if u.leading_colon.is_some() { unimplemented!() }
