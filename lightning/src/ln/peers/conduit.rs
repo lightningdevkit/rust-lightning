@@ -232,7 +232,7 @@ mod tests {
 		assert_eq!(encrypted_message.len(), 2 + 16 + 16);
 
 		let decrypted_message = remote_peer.decrypt_single_message(Some(&encrypted_message)).unwrap();
-		assert_eq!(decrypted_message, vec![]);
+		assert_eq!(decrypted_message, Vec::<u8>::new());
 	}
 
 	#[test]
