@@ -8,3 +8,4 @@
 // licenses.
 
 pub mod test_logger;
+pub mod test_persister;

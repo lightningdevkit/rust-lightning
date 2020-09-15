@@ -94,6 +94,7 @@ pub struct TestChanMonCfg {
 	pub tx_broadcaster: test_utils::TestBroadcaster,
 	pub fee_estimator: test_utils::TestFeeEstimator,
 	pub chain_source: test_utils::TestChainSource,
+	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 }
 
@@ -197,8 +198,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}).unwrap();
 			}
 
+			let persister = test_utils::TestPersister{};
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), self.tx_broadcaster.clone(), &self.logger, &feeest);
+			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), self.tx_broadcaster.clone(), &self.logger, &feeest, &persister);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
@@ -1115,7 +1117,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger });
+		let persister = test_utils::TestPersister{};
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister });
 	}
 
 	chan_mon_cfgs
@@ -1127,7 +1130,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	for i in 0..node_count {
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
+		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister);
 		nodes.push(NodeCfg { chain_source: &chanmon_cfgs[i].chain_source, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chain_monitor, keys_manager, node_seed: seed });
 	}
 
