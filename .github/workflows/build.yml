@@ -78,6 +78,29 @@ jobs:
           token: f421b687-4dc2-4387-ac3d-dc3b2528af57
           fail_ci_if_error: true
 
+  check_commits:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          override: true
+          profile: minimal
+      - name: Fetch full tree and rebase on upstream
+        run: |
+          git remote add upstream https://github.com/rust-bitcoin/rust-lightning
+          git fetch upstream
+          git rebase upstream/main
+      - name: For each commit, run cargo check (including in fuzz)
+        run: ci/check-each-commit.sh upstream/main
+
   fuzz:
     runs-on: ubuntu-latest
     env:
