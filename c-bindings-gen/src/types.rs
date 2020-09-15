@@ -144,7 +144,7 @@ impl<'a> GenericTypes<'a> {
 							}
 
 							assert_simple_bound(&trait_bound);
-							if let Some(mut path) = types.maybe_resolve_path(&trait_bound.path) {
+							if let Some(mut path) = types.maybe_resolve_path(&trait_bound.path, None) {
 								if types.skip_path(&path) { continue; }
 								if non_lifetimes_processed { return false; }
 								non_lifetimes_processed = true;
@@ -868,7 +868,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		} else { None }
 	}
 
-	pub fn maybe_resolve_path(&self, p: &syn::Path) -> Option<String> {
+	pub fn maybe_resolve_path(&self, p_arg: &syn::Path, generics: Option<&GenericTypes>) -> Option<String> {
+		let p = if let Some(gen_types) = generics {
+			if let Some((_, synpath)) = gen_types.maybe_resolve_path(p_arg) {
+				synpath
+			} else { p_arg }
+		} else { p_arg };
+
 		if p.leading_colon.is_some() {
 			// At some point we may need this, but for now, its unused, so just fail.
 			return None;
@@ -898,7 +904,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 	pub fn resolve_path(&self, p: &syn::Path) -> String {
-		self.maybe_resolve_path(p).unwrap()
+		self.maybe_resolve_path(p, None).unwrap()
 	}
 
 	// ***********************************
@@ -906,7 +912,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// ***********************************
 
 	fn write_rust_path<W: std::io::Write>(&self, w: &mut W, path: &syn::Path) {
-		if let Some(resolved) = self.maybe_resolve_path(&path) {
+		if let Some(resolved) = self.maybe_resolve_path(&path, None) {
 			if self.is_primitive(&resolved) {
 				write!(w, "{}", path.get_ident().unwrap()).unwrap();
 			} else {
@@ -1119,12 +1125,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match t {
 			syn::Type::Path(p) => {
 				if p.qself.is_some() { unimplemented!(); }
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						return self.skip_path(resolved.0);
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					self.skip_path(&full_path)
 				} else { false }
 			},
@@ -1138,13 +1139,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match t {
 			syn::Type::Path(p) => {
 				if p.qself.is_some() { unimplemented!(); }
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						write!(w, "{}", self.no_arg_path_to_rust(resolved.0)).unwrap();
-						return;
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					write!(w, "{}", self.no_arg_path_to_rust(&full_path)).unwrap();
 				}
 			},
@@ -1185,7 +1180,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 								// crate_types lookup has to have succeeded:
 								panic!("Failed to print inline conversion for {}", synident);
 							} else if let Some(decl_type) = self.declared.get(synident) {
-								decl_lookup(w, decl_type, &self.maybe_resolve_path(synpath).unwrap(), is_ref, is_mut);
+								decl_lookup(w, decl_type, &self.maybe_resolve_path(synpath, None).unwrap(), is_ref, is_mut);
 								return;
 							} else { unimplemented!(); }
 						}
@@ -1616,7 +1611,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// *** C Container Type Equivalent and alias Printing ***
 	// ******************************************************
 
-	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, is_ref: bool) {
+	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) {
 		if container_type == "Result" {
 			assert_eq!(args.len(), 2);
 			macro_rules! write_fn {
@@ -1631,13 +1626,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if let syn::Type::Path(syn::TypePath { path, .. }) = $item {
 						let resolved = self.resolve_path(path);
 						if self.is_known_container(&resolved, is_ref) || self.is_transparent_container(&resolved, is_ref) {
-							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path),
+							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path), generics,
 								&format!("{}", single_ident_generic_path_to_ident(path).unwrap()), is_ref, false, false, false);
 						} else {
 							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), is_ref, true);
 						}
 					} else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = $item {
-						self.write_c_mangled_container_path_intern(w, elems.iter().collect(),
+						self.write_c_mangled_container_path_intern(w, elems.iter().collect(), generics,
 							&format!("{}Tuple", elems.len()), is_ref, false, false, false);
 					} else { unimplemented!(); }
 					write!(w, ") -> {} =\n\t{}::CResultTempl::<", mangled_container, Self::container_templ_path()).unwrap();
@@ -1657,7 +1652,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
 			for (idx, gen) in args.iter().enumerate() {
 				write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
-				self.write_c_type_intern(None, w, gen, false, false, false);
+				self.write_c_type_intern(w, gen, None, false, false, false);
 			}
 			writeln!(w, ") -> {} {{", mangled_container).unwrap();
 			writeln!(w, "\t{} {{", mangled_container).unwrap();
@@ -1745,7 +1740,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			}
 		}
 	}
-	fn check_create_container(&mut self, mangled_container: String, container_type: &str, args: Vec<&syn::Type>, is_ref: bool) {
+	fn check_create_container(&mut self, mangled_container: String, container_type: &str, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) {
 		if !self.crate_types.templates_defined.get(&mangled_container).is_some() {
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 			let mut created_container: Vec<u8> = Vec::new();
@@ -1760,7 +1755,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
-			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, is_ref);
+			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref);
 
 			self.crate_types.template_file.write(&created_container).unwrap();
 		}
@@ -1771,7 +1766,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		} else { unimplemented!(); }
 	}
 	fn write_c_mangled_container_path_intern<W: std::io::Write>
-			(&mut self, w: &mut W, args: Vec<&syn::Type>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool, in_type: bool) -> bool {
+			(&mut self, w: &mut W, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool, in_type: bool) -> bool {
 		let mut mangled_type: Vec<u8> = Vec::new();
 		if !self.is_transparent_container(ident, is_ref) {
 			write!(w, "C{}_", ident).unwrap();
@@ -1788,9 +1783,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						if self.is_known_container(&subtype, is_ref) { return false; }
 						if !in_type {
 							if self.c_type_has_inner_from_path(&subtype) {
-								if !self.write_c_path_intern(w, &$p_arg.path, is_ref, is_mut, ptr_for_ref) { return false; }
+								if !self.write_c_path_intern(w, &$p_arg.path, generics, is_ref, is_mut, ptr_for_ref) { return false; }
 							} else {
-								if !self.write_c_path_intern(w, &$p_arg.path, true, is_mut, true) { return false; }
+								if !self.write_c_path_intern(w, &$p_arg.path, generics, true, is_mut, true) { return false; }
 							}
 						} else {
 							if $p_arg.path.segments.len() == 1 {
@@ -1800,15 +1795,15 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							}
 						}
 					} else if self.is_known_container(&subtype, is_ref) || self.is_transparent_container(&subtype, is_ref) {
-						if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path),
+						if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path), generics,
 								&subtype, is_ref, is_mut, ptr_for_ref, true) {
 							return false;
 						}
 						self.write_c_mangled_container_path_intern(&mut mangled_type, Self::path_to_generic_args(&$p_arg.path),
-							&subtype, is_ref, is_mut, ptr_for_ref, true);
+							generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 						if let Some(w2) = $extra_write as Option<&mut Vec<u8>> {
 							self.write_c_mangled_container_path_intern(w2, Self::path_to_generic_args(&$p_arg.path),
-								&subtype, is_ref, is_mut, ptr_for_ref, true);
+								generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 						}
 					} else if let Some(id) = single_ident_generic_path_to_ident(&$p_arg.path) {
 						write!(w, "{}", id).unwrap();
@@ -1842,7 +1837,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(mangled_type, "Z").unwrap();
 					write!(mangled_tuple_type, "Z").unwrap();
 					self.check_create_container(String::from_utf8(mangled_tuple_type).unwrap(),
-						&format!("{}Tuple", tuple.elems.len()), tuple.elems.iter().collect(), is_ref);
+						&format!("{}Tuple", tuple.elems.len()), tuple.elems.iter().collect(), generics, is_ref);
 				}
 			} else if let syn::Type::Path(p_arg) = arg {
 				write_path!(p_arg, None);
@@ -1876,23 +1871,22 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		write!(mangled_type, "Z").unwrap();
 
 		// Make sure the type is actually defined:
-		self.check_create_container(String::from_utf8(mangled_type).unwrap(), ident, args, is_ref);
+		self.check_create_container(String::from_utf8(mangled_type).unwrap(), ident, args, generics, is_ref);
 		true
 	}
-	fn write_c_mangled_container_path<W: std::io::Write>(&mut self, w: &mut W, args: Vec<&syn::Type>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+	fn write_c_mangled_container_path<W: std::io::Write>(&mut self, w: &mut W, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
 		if !self.is_transparent_container(ident, is_ref) {
 			write!(w, "{}::", Self::generated_container_path()).unwrap();
 		}
-		self.write_c_mangled_container_path_intern(w, args, ident, is_ref, is_mut, ptr_for_ref, false)
+		self.write_c_mangled_container_path_intern(w, args, generics, ident, is_ref, is_mut, ptr_for_ref, false)
 	}
 
 	// **********************************
 	// *** C Type Equivalent Printing ***
 	// **********************************
 
-	fn write_c_path_intern<W: std::io::Write>(&self, w: &mut W, path: &syn::Path, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
-//eprintln!("pcpi ({} {} {}): {:?}", is_ref, is_mut, ptr_for_ref, path);
-		let full_path = match self.maybe_resolve_path(&path) {
+	fn write_c_path_intern<W: std::io::Write>(&self, w: &mut W, path: &syn::Path, generics: Option<&GenericTypes>, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+		let full_path = match self.maybe_resolve_path(&path, generics) {
 			Some(path) => path, None => return false };
 		if let Some(c_type) = self.c_type_from_path(&full_path, is_ref, ptr_for_ref) {
 			write!(w, "{}", c_type).unwrap();
@@ -1923,43 +1917,36 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			false
 		}
 	}
-	fn write_c_type_intern<W: std::io::Write>(&mut self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+	fn write_c_type_intern<W: std::io::Write>(&mut self, w: &mut W, t: &syn::Type, generics: Option<&GenericTypes>, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
 		match t {
 			syn::Type::Path(p) => {
 				if p.qself.is_some() || p.path.leading_colon.is_some() {
 					return false;
 				}
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						if self.is_known_container(&resolved.0, is_ref) { return false; }
-						if self.is_transparent_container(&resolved.0, is_ref) { return false; }
-						return self.write_c_path_intern(w, &resolved.1, is_ref, is_mut, ptr_for_ref);
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					if self.is_known_container(&full_path, is_ref) || self.is_transparent_container(&full_path, is_ref) {
-						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), &full_path, is_ref, is_mut, ptr_for_ref);
+						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), generics, &full_path, is_ref, is_mut, ptr_for_ref);
 					}
 				}
 				if p.path.leading_colon.is_some() { return false; }
-				self.write_c_path_intern(w, &p.path, is_ref, is_mut, ptr_for_ref)
+				self.write_c_path_intern(w, &p.path, generics, is_ref, is_mut, ptr_for_ref)
 			},
 			syn::Type::Reference(r) => {
 				if let Some(lft) = &r.lifetime {
 					if format!("{}", lft.ident) != "static" { return false; }
 				}
-				self.write_c_type_intern(generics, w, &*r.elem, true, r.mutability.is_some(), ptr_for_ref)
+				self.write_c_type_intern(w, &*r.elem, generics, true, r.mutability.is_some(), ptr_for_ref)
 			},
 			syn::Type::Array(a) => {
 				if is_ref && is_mut {
 					write!(w, "*mut [").unwrap();
-					if !self.write_c_type_intern(generics, w, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(w, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 				} else if is_ref {
 					write!(w, "*const [").unwrap();
-					if !self.write_c_type_intern(generics, w, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(w, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 				} else {
 					let mut typecheck = Vec::new();
-					if !self.write_c_type_intern(generics, &mut typecheck, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(&mut typecheck, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 					if typecheck[..] != ['u' as u8, '8' as u8] { return false; }
 				}
 				if let syn::Expr::Lit(l) = &a.len {
@@ -1996,7 +1983,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							format!("CVec_{}Z", id)
 						} else { return false; };
 						write!(w, "{}::{}", Self::generated_container_path(), mangled_container).unwrap();
-						self.check_create_container(mangled_container, "Vec", vec![&*r.elem], false);
+						self.check_create_container(mangled_container, "Vec", vec![&*r.elem], generics, false);
 						true
 					} else { false }
 				} else { false }
@@ -2005,7 +1992,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if t.elems.len() == 0 {
 					true
 				} else {
-					self.write_c_mangled_container_path(w, t.elems.iter().collect(),
+					self.write_c_mangled_container_path(w, t.elems.iter().collect(), generics,
 						&format!("{}Tuple", t.elems.len()), is_ref, is_mut, ptr_for_ref)
 				}
 			},
@@ -2013,13 +2000,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 	pub fn write_c_type<W: std::io::Write>(&mut self, w: &mut W, t: &syn::Type, generics: Option<&GenericTypes>, ptr_for_ref: bool) {
-		assert!(self.write_c_type_intern(generics, w, t, false, false, ptr_for_ref));
+		assert!(self.write_c_type_intern(w, t, generics, false, false, ptr_for_ref));
 	}
 	pub fn understood_c_path(&mut self, p: &syn::Path) -> bool {
 		if p.leading_colon.is_some() { return false; }
-		self.write_c_path_intern(&mut std::io::sink(), p, false, false, false)
+		self.write_c_path_intern(&mut std::io::sink(), p, None, false, false, false)
 	}
 	pub fn understood_c_type(&mut self, t: &syn::Type, generics: Option<&GenericTypes>) -> bool {
-		self.write_c_type_intern(generics, &mut std::io::sink(), t, false, false, false)
+		self.write_c_type_intern(&mut std::io::sink(), t, generics, false, false, false)
 	}
 }

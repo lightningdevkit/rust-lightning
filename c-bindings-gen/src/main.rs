@@ -56,7 +56,7 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 
 /// Convert "impl trait_path for for_obj { .. }" for manually-mapped types (ie (de)serialization)
 fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_obj: &syn::Ident, types: &TypeResolver) {
-	if let Some(t) = types.maybe_resolve_path(&trait_path) {
+	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
 		let s = types.maybe_resolve_ident(for_obj).unwrap();
 		if !types.crate_types.opaques.get(&s).is_some() { return; }
 		match &t as &str {
