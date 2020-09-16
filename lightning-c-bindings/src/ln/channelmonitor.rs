@@ -111,7 +111,7 @@ pub enum ChannelMonitorUpdateErr {
 	/// our state failed, but is expected to succeed at some point in the future).
 	///
 	/// Such a failure will \"freeze\" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the remote party. Once the update(s) which failed
+	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
 	/// have been successfully applied, ChannelManager::channel_monitor_updated can be used to
 	/// restore the channel to an operational state.
 	///
@@ -144,11 +144,19 @@ pub enum ChannelMonitorUpdateErr {
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
-	/// of this channel). This will force-close the channel in question (which will generate one
-	/// final ChannelMonitorUpdate which must be delivered to at least one ChannelMonitor copy).
+	/// of this channel).
 	///
-	/// Should also be used to indicate a failure to update the local persisted copy of the channel
-	/// monitor.
+	/// At reception of this error, ChannelManager will force-close the channel and return at
+	/// least a final ChannelMonitorUpdate::ChannelForceClosed which must be delivered to at
+	/// least one ChannelMonitor copy. Revocation secret MUST NOT be released and offchain channel
+	/// update must be rejected.
+	///
+	/// This failure may also signal a failure to update the local persisted copy of one of
+	/// the channel monitor instance.
+	///
+	/// Note that even when you fail a holder commitment transaction update, you must store the
+	/// update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
+	/// broadcasts it (e.g distributed channel-monitor deployment)
 	PermanentFailure,
 }
 use lightning::ln::channelmonitor::ChannelMonitorUpdateErr as nativeChannelMonitorUpdateErr;
@@ -424,6 +432,11 @@ pub struct ManyChannelMonitor {
 	///
 	/// Any spends of outputs which should have been registered which aren't passed to
 	/// ChannelMonitors via block_connected may result in FUNDS LOSS.
+	///
+	/// In case of distributed watchtowers deployment, even if an Err is return, the new version
+	/// must be written to disk, as state may have been stored but rejected due to a block forcing
+	/// a commitment broadcast. This storage is used to claim outputs of rejected state confirmed
+	/// onchain by another watchtower, lagging behind on block processing.
 	#[must_use]
 	pub update_monitor: extern "C" fn (this_arg: *const c_void, funding_txo: crate::chain::transaction::OutPoint, monitor: crate::ln::channelmonitor::ChannelMonitorUpdate) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ,
 	/// Used by ChannelManager to get list of HTLC resolved onchain and which needed to be updated
@@ -531,12 +544,12 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut Cha
 	local_ret.into()
 }
 
-/// Used by ChannelManager deserialization to broadcast the latest local state if its copy of
-/// the Channel was out-of-date. You may use it to get a broadcastable local toxic tx in case of
-/// fallen-behind, i.e when receiving a channel_reestablish with a proof that our remote side knows
-/// a higher revocation secret than the local commitment number we are aware of. Broadcasting these
-/// transactions are UNSAFE, as they allow remote side to punish you. Nevertheless you may want to
-/// broadcast them if remote don't close channel with his higher commitment transaction after a
+/// Used by ChannelManager deserialization to broadcast the latest holder state if its copy of
+/// the Channel was out-of-date. You may use it to get a broadcastable holder toxic tx in case of
+/// fallen-behind, i.e when receiving a channel_reestablish with a proof that our counterparty side knows
+/// a higher revocation secret than the holder commitment number we are aware of. Broadcasting these
+/// transactions are UNSAFE, as they allow counterparty side to punish you. Nevertheless you may want to
+/// broadcast them if counterparty don't close channel with his higher commitment transaction after a
 /// substantial amount of time (a month or even a year) to get back funds. Best may be to contact
 /// out-of-band the other node operator to coordinate with him if option is available to you.
 /// In any-case, choice is up to the user.

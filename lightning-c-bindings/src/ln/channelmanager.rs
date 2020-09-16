@@ -624,62 +624,62 @@ pub extern "C" fn ChannelManager_as_ChannelMessageHandler(this_arg: *const Chann
 	}
 }
 use lightning::ln::msgs::ChannelMessageHandler as ChannelMessageHandlerTraitImport;
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_open_channel(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::OpenChannel) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_open_channel(&their_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_ptr()) }, unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_open_channel(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::OpenChannel) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_open_channel(&counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_ptr()) }, unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_accept_channel(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::AcceptChannel) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_accept_channel(&their_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_ptr()) }, unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_accept_channel(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::AcceptChannel) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_accept_channel(&counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_ptr()) }, unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_created(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingCreated) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_created(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_created(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingCreated) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_created(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_signed(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingSigned) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_signed(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_signed(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingSigned) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_signed(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_locked(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingLocked) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_locked(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_locked(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingLocked) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_funding_locked(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_shutdown(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::Shutdown) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_shutdown(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_shutdown(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::Shutdown) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_shutdown(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_closing_signed(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ClosingSigned) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_closing_signed(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_closing_signed(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ClosingSigned) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_closing_signed(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_add_htlc(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateAddHTLC) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_add_htlc(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_add_htlc(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateAddHTLC) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_add_htlc(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fulfill_htlc(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFulfillHTLC) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fulfill_htlc(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fulfill_htlc(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFulfillHTLC) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fulfill_htlc(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_htlc(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailHTLC) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fail_htlc(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_htlc(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailHTLC) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fail_htlc(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_malformed_htlc(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailMalformedHTLC) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fail_malformed_htlc(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_malformed_htlc(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailMalformedHTLC) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fail_malformed_htlc(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_commitment_signed(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::CommitmentSigned) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_commitment_signed(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_commitment_signed(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::CommitmentSigned) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_commitment_signed(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_revoke_and_ack(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::RevokeAndACK) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_revoke_and_ack(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_revoke_and_ack(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::RevokeAndACK) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_revoke_and_ack(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fee(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFee) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fee(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fee(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFee) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_update_fee(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_announcement_signatures(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::AnnouncementSignatures) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_announcement_signatures(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_announcement_signatures(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::AnnouncementSignatures) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_announcement_signatures(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_channel_reestablish(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ChannelReestablish) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_channel_reestablish(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_channel_reestablish(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ChannelReestablish) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_channel_reestablish(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_peer_disconnected(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, mut no_connection_possible: bool) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.peer_disconnected(&their_node_id.into_rust(), no_connection_possible)
+extern "C" fn ChannelManager_ChannelMessageHandler_peer_disconnected(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, mut no_connection_possible: bool) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.peer_disconnected(&counterparty_node_id.into_rust(), no_connection_possible)
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_peer_connected(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, init_msg: &crate::ln::msgs::Init) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.peer_connected(&their_node_id.into_rust(), unsafe { &*init_msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_peer_connected(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, init_msg: &crate::ln::msgs::Init) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.peer_connected(&counterparty_node_id.into_rust(), unsafe { &*init_msg.inner })
 }
-extern "C" fn ChannelManager_ChannelMessageHandler_handle_error(this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ErrorMessage) {
-	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_error(&their_node_id.into_rust(), unsafe { &*msg.inner })
+extern "C" fn ChannelManager_ChannelMessageHandler_handle_error(this_arg: *const c_void, counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ErrorMessage) {
+	unsafe { &mut *(this_arg as *mut nativeChannelManager) }.handle_error(&counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 use lightning::util::events::MessageSendEventsProvider as nativeMessageSendEventsProviderTrait;
 #[must_use]

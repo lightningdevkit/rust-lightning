@@ -50,5 +50,8 @@ mod functional_tests;
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 mod reorg_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod onion_route_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;

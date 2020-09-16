@@ -2920,6 +2920,488 @@ pub extern "C" fn ChannelUpdate_new(mut signature_arg: crate::c_types::Signature
 		contents: *unsafe { Box::from_raw(contents_arg.take_ptr()) },
 	})), is_owned: true }
 }
+
+use lightning::ln::msgs::QueryChannelRange as nativeQueryChannelRangeImport;
+type nativeQueryChannelRange = nativeQueryChannelRangeImport;
+
+/// A query_channel_range message is used to query a peer for channel
+/// UTXOs in a range of blocks. The recipient of a query makes a best
+/// effort to reply to the query using one or more reply_channel_range
+/// messages.
+#[must_use]
+#[repr(C)]
+pub struct QueryChannelRange {
+	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeQueryChannelRange,
+	pub is_owned: bool,
+}
+
+impl Drop for QueryChannelRange {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_free(this_ptr: QueryChannelRange) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn QueryChannelRange_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeQueryChannelRange); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl QueryChannelRange {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeQueryChannelRange {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for QueryChannelRange {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn QueryChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryChannelRange)).clone() })) as *mut c_void
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_get_chain_hash(this_ptr: &QueryChannelRange) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.chain_hash;
+	(*inner_val).as_inner()
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_set_chain_hash(this_ptr: &mut QueryChannelRange, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.chain_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// The height of the first block for the channel UTXOs being queried
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_get_first_blocknum(this_ptr: &QueryChannelRange) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.first_blocknum;
+	(*inner_val)
+}
+/// The height of the first block for the channel UTXOs being queried
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_set_first_blocknum(this_ptr: &mut QueryChannelRange, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.first_blocknum = val;
+}
+/// The number of blocks to include in the query results
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_get_number_of_blocks(this_ptr: &QueryChannelRange) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.number_of_blocks;
+	(*inner_val)
+}
+/// The number of blocks to include in the query results
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_set_number_of_blocks(this_ptr: &mut QueryChannelRange, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.number_of_blocks = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut first_blocknum_arg: u32, mut number_of_blocks_arg: u32) -> QueryChannelRange {
+	QueryChannelRange { inner: Box::into_raw(Box::new(nativeQueryChannelRange {
+		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
+		first_blocknum: first_blocknum_arg,
+		number_of_blocks: number_of_blocks_arg,
+	})), is_owned: true }
+}
+
+use lightning::ln::msgs::ReplyChannelRange as nativeReplyChannelRangeImport;
+type nativeReplyChannelRange = nativeReplyChannelRangeImport;
+
+/// A reply_channel_range message is a reply to a query_channel_range
+/// message. Multiple reply_channel_range messages can be sent in reply
+/// to a single query_channel_range message. The query recipient makes a
+/// best effort to respond based on their local network view which may
+/// not be a perfect view of the network. The short_channel_ids in the
+/// reply are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[must_use]
+#[repr(C)]
+pub struct ReplyChannelRange {
+	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeReplyChannelRange,
+	pub is_owned: bool,
+}
+
+impl Drop for ReplyChannelRange {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_free(this_ptr: ReplyChannelRange) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn ReplyChannelRange_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeReplyChannelRange); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl ReplyChannelRange {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeReplyChannelRange {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for ReplyChannelRange {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ReplyChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyChannelRange)).clone() })) as *mut c_void
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_get_chain_hash(this_ptr: &ReplyChannelRange) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.chain_hash;
+	(*inner_val).as_inner()
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_set_chain_hash(this_ptr: &mut ReplyChannelRange, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.chain_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// The height of the first block in the range of the reply
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_get_first_blocknum(this_ptr: &ReplyChannelRange) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.first_blocknum;
+	(*inner_val)
+}
+/// The height of the first block in the range of the reply
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_set_first_blocknum(this_ptr: &mut ReplyChannelRange, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.first_blocknum = val;
+}
+/// The number of blocks included in the range of the reply
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_get_number_of_blocks(this_ptr: &ReplyChannelRange) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.number_of_blocks;
+	(*inner_val)
+}
+/// The number of blocks included in the range of the reply
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_set_number_of_blocks(this_ptr: &mut ReplyChannelRange, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.number_of_blocks = val;
+}
+/// Indicates if the query recipient maintains up-to-date channel
+/// information for the chain_hash
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_get_full_information(this_ptr: &ReplyChannelRange) -> bool {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.full_information;
+	(*inner_val)
+}
+/// Indicates if the query recipient maintains up-to-date channel
+/// information for the chain_hash
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_set_full_information(this_ptr: &mut ReplyChannelRange, mut val: bool) {
+	unsafe { &mut *this_ptr.inner }.full_information = val;
+}
+/// The short_channel_ids in the channel range
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_set_short_channel_ids(this_ptr: &mut ReplyChannelRange, mut val: crate::c_types::derived::CVec_u64Z) {
+	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { item }); };
+	unsafe { &mut *this_ptr.inner }.short_channel_ids = local_val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut first_blocknum_arg: u32, mut number_of_blocks_arg: u32, mut full_information_arg: bool, mut short_channel_ids_arg: crate::c_types::derived::CVec_u64Z) -> ReplyChannelRange {
+	let mut local_short_channel_ids_arg = Vec::new(); for mut item in short_channel_ids_arg.into_rust().drain(..) { local_short_channel_ids_arg.push( { item }); };
+	ReplyChannelRange { inner: Box::into_raw(Box::new(nativeReplyChannelRange {
+		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
+		first_blocknum: first_blocknum_arg,
+		number_of_blocks: number_of_blocks_arg,
+		full_information: full_information_arg,
+		short_channel_ids: local_short_channel_ids_arg,
+	})), is_owned: true }
+}
+
+use lightning::ln::msgs::QueryShortChannelIds as nativeQueryShortChannelIdsImport;
+type nativeQueryShortChannelIds = nativeQueryShortChannelIdsImport;
+
+/// A query_short_channel_ids message is used to query a peer for
+/// routing gossip messages related to one or more short_channel_ids.
+/// The query recipient will reply with the latest, if available,
+/// channel_announcement, channel_update and node_announcement messages
+/// it maintains for the requested short_channel_ids followed by a
+/// reply_short_channel_ids_end message. The short_channel_ids sent in
+/// this query are encoded. We only support encoding_type=0 uncompressed
+/// serialization and do not support encoding_type=1 zlib serialization.
+#[must_use]
+#[repr(C)]
+pub struct QueryShortChannelIds {
+	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeQueryShortChannelIds,
+	pub is_owned: bool,
+}
+
+impl Drop for QueryShortChannelIds {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_free(this_ptr: QueryShortChannelIds) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn QueryShortChannelIds_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeQueryShortChannelIds); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl QueryShortChannelIds {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeQueryShortChannelIds {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for QueryShortChannelIds {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn QueryShortChannelIds_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryShortChannelIds)).clone() })) as *mut c_void
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_get_chain_hash(this_ptr: &QueryShortChannelIds) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.chain_hash;
+	(*inner_val).as_inner()
+}
+/// The genesis hash of the blockchain being queried
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_set_chain_hash(this_ptr: &mut QueryShortChannelIds, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.chain_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// The short_channel_ids that are being queried
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_set_short_channel_ids(this_ptr: &mut QueryShortChannelIds, mut val: crate::c_types::derived::CVec_u64Z) {
+	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { item }); };
+	unsafe { &mut *this_ptr.inner }.short_channel_ids = local_val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut short_channel_ids_arg: crate::c_types::derived::CVec_u64Z) -> QueryShortChannelIds {
+	let mut local_short_channel_ids_arg = Vec::new(); for mut item in short_channel_ids_arg.into_rust().drain(..) { local_short_channel_ids_arg.push( { item }); };
+	QueryShortChannelIds { inner: Box::into_raw(Box::new(nativeQueryShortChannelIds {
+		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
+		short_channel_ids: local_short_channel_ids_arg,
+	})), is_owned: true }
+}
+
+use lightning::ln::msgs::ReplyShortChannelIdsEnd as nativeReplyShortChannelIdsEndImport;
+type nativeReplyShortChannelIdsEnd = nativeReplyShortChannelIdsEndImport;
+
+/// A reply_short_channel_ids_end message is sent as a reply to a
+/// query_short_channel_ids message. The query recipient makes a best
+/// effort to respond based on their local network view which may not be
+/// a perfect view of the network.
+#[must_use]
+#[repr(C)]
+pub struct ReplyShortChannelIdsEnd {
+	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeReplyShortChannelIdsEnd,
+	pub is_owned: bool,
+}
+
+impl Drop for ReplyShortChannelIdsEnd {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_free(this_ptr: ReplyShortChannelIdsEnd) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn ReplyShortChannelIdsEnd_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeReplyShortChannelIdsEnd); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl ReplyShortChannelIdsEnd {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeReplyShortChannelIdsEnd {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for ReplyShortChannelIdsEnd {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ReplyShortChannelIdsEnd_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyShortChannelIdsEnd)).clone() })) as *mut c_void
+}
+/// The genesis hash of the blockchain that was queried
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_get_chain_hash(this_ptr: &ReplyShortChannelIdsEnd) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.chain_hash;
+	(*inner_val).as_inner()
+}
+/// The genesis hash of the blockchain that was queried
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_set_chain_hash(this_ptr: &mut ReplyShortChannelIdsEnd, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.chain_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// Indicates if the query recipient maintains up-to-date channel
+/// information for the chain_hash
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_get_full_information(this_ptr: &ReplyShortChannelIdsEnd) -> bool {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.full_information;
+	(*inner_val)
+}
+/// Indicates if the query recipient maintains up-to-date channel
+/// information for the chain_hash
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_set_full_information(this_ptr: &mut ReplyShortChannelIdsEnd, mut val: bool) {
+	unsafe { &mut *this_ptr.inner }.full_information = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut full_information_arg: bool) -> ReplyShortChannelIdsEnd {
+	ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(nativeReplyShortChannelIdsEnd {
+		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
+		full_information: full_information_arg,
+	})), is_owned: true }
+}
+
+use lightning::ln::msgs::GossipTimestampFilter as nativeGossipTimestampFilterImport;
+type nativeGossipTimestampFilter = nativeGossipTimestampFilterImport;
+
+/// A gossip_timestamp_filter message is used by a node to request
+/// gossip relay for messages in the requested time range when the
+/// gossip_queries feature has been negotiated.
+#[must_use]
+#[repr(C)]
+pub struct GossipTimestampFilter {
+	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeGossipTimestampFilter,
+	pub is_owned: bool,
+}
+
+impl Drop for GossipTimestampFilter {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_free(this_ptr: GossipTimestampFilter) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn GossipTimestampFilter_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeGossipTimestampFilter); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl GossipTimestampFilter {
+	pub(crate) fn take_ptr(mut self) -> *mut nativeGossipTimestampFilter {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for GossipTimestampFilter {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn GossipTimestampFilter_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeGossipTimestampFilter)).clone() })) as *mut c_void
+}
+/// The genesis hash of the blockchain for channel and node information
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_get_chain_hash(this_ptr: &GossipTimestampFilter) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.chain_hash;
+	(*inner_val).as_inner()
+}
+/// The genesis hash of the blockchain for channel and node information
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_set_chain_hash(this_ptr: &mut GossipTimestampFilter, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.chain_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// The starting unix timestamp
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_get_first_timestamp(this_ptr: &GossipTimestampFilter) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.first_timestamp;
+	(*inner_val)
+}
+/// The starting unix timestamp
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_set_first_timestamp(this_ptr: &mut GossipTimestampFilter, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.first_timestamp = val;
+}
+/// The range of information in seconds
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_get_timestamp_range(this_ptr: &GossipTimestampFilter) -> u32 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.timestamp_range;
+	(*inner_val)
+}
+/// The range of information in seconds
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_set_timestamp_range(this_ptr: &mut GossipTimestampFilter, mut val: u32) {
+	unsafe { &mut *this_ptr.inner }.timestamp_range = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut first_timestamp_arg: u32, mut timestamp_range_arg: u32) -> GossipTimestampFilter {
+	GossipTimestampFilter { inner: Box::into_raw(Box::new(nativeGossipTimestampFilter {
+		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
+		first_timestamp: first_timestamp_arg,
+		timestamp_range: timestamp_range_arg,
+	})), is_owned: true }
+}
 /// Used to put an error message in a LightningError
 #[must_use]
 #[derive(Clone)]
@@ -3864,4 +4346,64 @@ pub extern "C" fn NodeAnnouncement_read(ser: crate::c_types::u8slice) -> NodeAnn
 	} else {
 		NodeAnnouncement { inner: std::ptr::null_mut(), is_owned: true }
 	}
+}
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_read(ser: crate::c_types::u8slice) -> QueryShortChannelIds {
+	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
+		QueryShortChannelIds { inner: Box::into_raw(Box::new(res)), is_owned: true }
+	} else {
+		QueryShortChannelIds { inner: std::ptr::null_mut(), is_owned: true }
+	}
+}
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_write(obj: *const QueryShortChannelIds) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_read(ser: crate::c_types::u8slice) -> ReplyShortChannelIdsEnd {
+	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
+		ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(res)), is_owned: true }
+	} else {
+		ReplyShortChannelIdsEnd { inner: std::ptr::null_mut(), is_owned: true }
+	}
+}
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_write(obj: *const ReplyShortChannelIdsEnd) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_read(ser: crate::c_types::u8slice) -> QueryChannelRange {
+	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
+		QueryChannelRange { inner: Box::into_raw(Box::new(res)), is_owned: true }
+	} else {
+		QueryChannelRange { inner: std::ptr::null_mut(), is_owned: true }
+	}
+}
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_write(obj: *const QueryChannelRange) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_read(ser: crate::c_types::u8slice) -> ReplyChannelRange {
+	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
+		ReplyChannelRange { inner: Box::into_raw(Box::new(res)), is_owned: true }
+	} else {
+		ReplyChannelRange { inner: std::ptr::null_mut(), is_owned: true }
+	}
+}
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_write(obj: *const ReplyChannelRange) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_read(ser: crate::c_types::u8slice) -> GossipTimestampFilter {
+	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
+		GossipTimestampFilter { inner: Box::into_raw(Box::new(res)), is_owned: true }
+	} else {
+		GossipTimestampFilter { inner: std::ptr::null_mut(), is_owned: true }
+	}
+}
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_write(obj: *const GossipTimestampFilter) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }

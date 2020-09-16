@@ -1228,7 +1228,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			timestamp: chan.get_update_time_counter(),
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
-			htlc_minimum_msat: chan.get_holder_htlc_minimum_msat(),
+			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
 			fee_base_msat: chan.get_holder_fee_base_msat(&self.fee_estimator),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
