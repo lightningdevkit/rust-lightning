@@ -43,8 +43,8 @@ use ln::peers::transport::Transport;
 
 const MSG_BUFF_SIZE: usize = 10;
 
-/// Interface PeerHandler uses to interact with the Transport object
-pub(super) trait ITransport {
+/// Interface PeerManager uses to interact with the Transport object
+pub(super) trait ITransport: MessageQueuer {
 	/// Instantiate the new outbound Transport
 	fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self;
 
@@ -65,7 +65,11 @@ pub(super) trait ITransport {
 
 	/// Returns all Messages that have been received and can be parsed by the Transport
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger;
+}
 
+/// Interface PeerManager uses to queue message to send. Used primarily to restrict the interface in
+/// specific contexts. e.g. Only queueing during read_event(). No flushing allowed.
+pub(super) trait MessageQueuer {
 	/// Encodes, encrypts, and enqueues a message to the outbound queue. Panics if the connection is
 	/// not established yet.
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger;
@@ -520,10 +524,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 	fn do_attempt_write_data<Q: PayloadQueuer + SocketDescriptorFlusher>(
 		&self,
-	    descriptor: &mut Descriptor,
-	    sync_status: &mut InitSyncTracker,
-	    transport: &mut impl ITransport,
-	    pending_outbound_buffer: &mut Q) {
+		descriptor: &mut Descriptor,
+		sync_status: &mut InitSyncTracker,
+		message_queuer: &mut impl MessageQueuer,
+		pending_outbound_buffer: &mut Q) {
 		while !pending_outbound_buffer.is_blocked() {
 			let queue_space = pending_outbound_buffer.queue_space();
 			if queue_space > 0 {
@@ -533,12 +537,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						let steps = ((queue_space + 2) / 3) as u8;
 						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
 						for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
-							transport.enqueue_message(announce, pending_outbound_buffer, &*self.logger);
+							message_queuer.enqueue_message(announce, pending_outbound_buffer, &*self.logger);
 							if let &Some(ref update_a) = update_a_option {
-								transport.enqueue_message(update_a, pending_outbound_buffer, &*self.logger);
+								message_queuer.enqueue_message(update_a, pending_outbound_buffer, &*self.logger);
 							}
 							if let &Some(ref update_b) = update_b_option {
-								transport.enqueue_message(update_b, pending_outbound_buffer, &*self.logger);
+								message_queuer.enqueue_message(update_b, pending_outbound_buffer, &*self.logger);
 							}
 							*sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
 						}
@@ -550,7 +554,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						let steps = queue_space as u8;
 						let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
 						for msg in all_messages.iter() {
-							transport.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
+							message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
 							*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -562,7 +566,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 						let steps = queue_space as u8;
 						let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
 						for msg in all_messages.iter() {
-							transport.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
+							message_queuer.enqueue_message(msg, pending_outbound_buffer, &*self.logger);
 							*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						}
 						if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -613,8 +617,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
-	fn enqueue_message<M: Encode + Writeable>(&self, peers_needing_send: &mut HashSet<Descriptor>, transport: &mut impl ITransport, output_buffer: &mut impl PayloadQueuer, descriptor: &Descriptor, message: &M) {
-		transport.enqueue_message(message, output_buffer, &*self.logger);
+	fn enqueue_message<M: Encode + Writeable>(&self, peers_needing_send: &mut HashSet<Descriptor>, message_queuer: &mut impl MessageQueuer, output_buffer: &mut impl PayloadQueuer, descriptor: &Descriptor, message: &M) {
+		message_queuer.enqueue_message(message, output_buffer, &*self.logger);
 		peers_needing_send.insert(descriptor.clone());
 	}
 
@@ -705,7 +709,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					}
 				}
 
-				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, outbound, sync_status, awaiting_pong, their_features, transport, pending_outbound_buffer) {
+				if let Err(handling_error) = self.handle_message(peers_needing_send, peer_descriptor, message, outbound, sync_status, awaiting_pong, their_features, transport.get_their_node_id(), transport, pending_outbound_buffer) {
 					match handling_error {
 						MessageHandlingError::PeerHandleError(e) => { return Err(e) },
 						MessageHandlingError::LightningError(e) => {
@@ -730,15 +734,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					  sync_status: &mut InitSyncTracker,
 					  awaiting_pong: &mut bool,
 					  their_features: &mut Option<InitFeatures>,
-					  transport: &mut impl ITransport,
+					  their_node_id: PublicKey,
+					  message_queuer: &mut impl MessageQueuer,
 					  pending_outbound_buffer: &mut impl PayloadQueuer
 					  ) -> Result<(), MessageHandlingError> {
-		log_trace!(self.logger, "Received message of type {} from {}", message.type_id(), log_pubkey!(transport.get_their_node_id()));
+		log_trace!(self.logger, "Received message of type {} from {}", message.type_id(), log_pubkey!(&their_node_id));
 
 		// Need an Init as first message
 		if let wire::Message::Init(_) = message {
 		} else if their_features.is_none() {
-			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(transport.get_their_node_id()));
+			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(&their_node_id));
 			return Err(PeerHandleError{ no_connection_possible: false }.into());
 		}
 
@@ -771,21 +776,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					peers_needing_send.insert(peer_descriptor.clone());
 				}
 				if !msg.features.supports_static_remote_key() {
-					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(transport.get_their_node_id()));
+					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(&their_node_id));
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
 
 				if !outbound {
 					let mut features = InitFeatures::known();
-					if !self.message_handler.route_handler.should_request_full_sync(&transport.get_their_node_id()) {
+					if !self.message_handler.route_handler.should_request_full_sync(&their_node_id) {
 						features.clear_initial_routing_sync();
 					}
 
 					let resp = msgs::Init { features };
-					self.enqueue_message(peers_needing_send, transport, pending_outbound_buffer, &peer_descriptor, &resp);
+					self.enqueue_message(peers_needing_send, message_queuer, pending_outbound_buffer, &peer_descriptor, &resp);
 				}
 
-				self.message_handler.chan_handler.peer_connected(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
 				*their_features = Some(msg.features);
 			},
 			wire::Message::Error(msg) => {
@@ -798,11 +803,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				}
 
 				if data_is_printable {
-					log_debug!(self.logger, "Got Err message from {}: {}", log_pubkey!(transport.get_their_node_id()), msg.data);
+					log_debug!(self.logger, "Got Err message from {}: {}", log_pubkey!(&their_node_id), msg.data);
 				} else {
-					log_debug!(self.logger, "Got Err message from {} with non-ASCII error message", log_pubkey!(transport.get_their_node_id()));
+					log_debug!(self.logger, "Got Err message from {} with non-ASCII error message", log_pubkey!(&their_node_id));
 				}
-				self.message_handler.chan_handler.handle_error(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_error(&their_node_id, &msg);
 				if msg.channel_id == [0; 32] {
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
@@ -811,7 +816,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			wire::Message::Ping(msg) => {
 				if msg.ponglen < 65532 {
 					let resp = msgs::Pong { byteslen: msg.ponglen };
-					self.enqueue_message(peers_needing_send, transport, pending_outbound_buffer, &peer_descriptor, &resp);
+					self.enqueue_message(peers_needing_send, message_queuer, pending_outbound_buffer, &peer_descriptor, &resp);
 				}
 			},
 			wire::Message::Pong(_msg) => {
@@ -820,59 +825,59 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 			// Channel messages:
 			wire::Message::OpenChannel(msg) => {
-				self.message_handler.chan_handler.handle_open_channel(&transport.get_their_node_id(), their_features.clone().unwrap(), &msg);
+				self.message_handler.chan_handler.handle_open_channel(&their_node_id, their_features.clone().unwrap(), &msg);
 			},
 			wire::Message::AcceptChannel(msg) => {
-				self.message_handler.chan_handler.handle_accept_channel(&transport.get_their_node_id(), their_features.clone().unwrap(), &msg);
+				self.message_handler.chan_handler.handle_accept_channel(&their_node_id, their_features.clone().unwrap(), &msg);
 			},
 
 			wire::Message::FundingCreated(msg) => {
-				self.message_handler.chan_handler.handle_funding_created(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_funding_created(&their_node_id, &msg);
 			},
 			wire::Message::FundingSigned(msg) => {
-				self.message_handler.chan_handler.handle_funding_signed(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_funding_signed(&their_node_id, &msg);
 			},
 			wire::Message::FundingLocked(msg) => {
-				self.message_handler.chan_handler.handle_funding_locked(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_funding_locked(&their_node_id, &msg);
 			},
 
 			wire::Message::Shutdown(msg) => {
-				self.message_handler.chan_handler.handle_shutdown(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_shutdown(&their_node_id, &msg);
 			},
 			wire::Message::ClosingSigned(msg) => {
-				self.message_handler.chan_handler.handle_closing_signed(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_closing_signed(&their_node_id, &msg);
 			},
 
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_add_htlc(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_update_add_htlc(&their_node_id, &msg);
 			},
 			wire::Message::UpdateFulfillHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_fulfill_htlc(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_update_fulfill_htlc(&their_node_id, &msg);
 			},
 			wire::Message::UpdateFailHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_fail_htlc(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_update_fail_htlc(&their_node_id, &msg);
 			},
 			wire::Message::UpdateFailMalformedHTLC(msg) => {
-				self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_update_fail_malformed_htlc(&their_node_id, &msg);
 			},
 
 			wire::Message::CommitmentSigned(msg) => {
-				self.message_handler.chan_handler.handle_commitment_signed(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_commitment_signed(&their_node_id, &msg);
 			},
 			wire::Message::RevokeAndACK(msg) => {
-				self.message_handler.chan_handler.handle_revoke_and_ack(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_revoke_and_ack(&their_node_id, &msg);
 			},
 			wire::Message::UpdateFee(msg) => {
-				self.message_handler.chan_handler.handle_update_fee(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_update_fee(&their_node_id, &msg);
 			},
 			wire::Message::ChannelReestablish(msg) => {
-				self.message_handler.chan_handler.handle_channel_reestablish(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_channel_reestablish(&their_node_id, &msg);
 			},
 
 			// Routing messages:
 			wire::Message::AnnouncementSignatures(msg) => {
-				self.message_handler.chan_handler.handle_announcement_signatures(&transport.get_their_node_id(), &msg);
+				self.message_handler.chan_handler.handle_announcement_signatures(&their_node_id, &msg);
 			},
 			wire::Message::ChannelAnnouncement(msg) => {
 				let should_forward = match self.message_handler.route_handler.handle_channel_announcement(&msg) {
