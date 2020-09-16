@@ -97,7 +97,7 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 							$( $pat => $e, )*
 						}
 					} else {
-						let path = $types.resolve_path(&supertrait.path);
+						let path = $types.resolve_path(&supertrait.path, None);
 						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
 							$( $pat => $e, )*
 						}
@@ -357,7 +357,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				let mut bounds_iter = t.bounds.iter();
 				match bounds_iter.next().unwrap() {
 					syn::TypeParamBound::Trait(tr) => {
-						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path)).unwrap();
+						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path, None)).unwrap();
 					},
 					_ => unimplemented!(),
 				}
@@ -579,7 +579,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 				if let Some(trait_path) = i.trait_.as_ref() {
 					if trait_path.0.is_some() { unimplemented!(); }
 					if types.understood_c_path(&trait_path.1) {
-						let full_trait_path = types.resolve_path(&trait_path.1);
+						let full_trait_path = types.resolve_path(&trait_path.1, None);
 						let trait_obj = *types.crate_types.traits.get(&full_trait_path).unwrap();
 						// We learn the associated types maping from the original trait object.
 						// That's great, except that they are unresolved idents, so if we learn
@@ -1125,7 +1125,7 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 				// Re-export any primitive-type constants.
 				if let syn::Visibility::Public(_) = c.vis {
 					if let syn::Type::Path(p) = &*c.ty {
-						let resolved_path = type_resolver.resolve_path(&p.path);
+						let resolved_path = type_resolver.resolve_path(&p.path, None);
 						if type_resolver.is_primitive(&resolved_path) {
 							writeln!(out, "\n#[no_mangle]").unwrap();
 							writeln!(out, "pub static {}: {} = {}::{}::{};", c.ident, resolved_path, orig_crate, module, c.ident).unwrap();
