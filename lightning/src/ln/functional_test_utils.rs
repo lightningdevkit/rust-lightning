@@ -249,6 +249,8 @@ macro_rules! get_revoke_commit_msgs {
 	}
 }
 
+/// Get an specific event message from the pending events queue.
+#[macro_export]
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {
 		{
@@ -310,6 +312,8 @@ macro_rules! get_local_commitment_txn {
 	}
 }
 
+/// Check the error from attempting a payment.
+#[macro_export]
 macro_rules! unwrap_send_err {
 	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
 		match &$res {
@@ -760,6 +764,8 @@ macro_rules! commitment_signed_dance {
 	}
 }
 
+/// Get a payment preimage and hash.
+#[macro_export]
 macro_rules! get_payment_preimage_hash {
 	($node: expr) => {
 		{
