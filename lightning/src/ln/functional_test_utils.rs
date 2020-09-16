@@ -263,6 +263,7 @@ macro_rules! get_event_msg {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		{
@@ -279,6 +280,7 @@ macro_rules! get_htlc_update_msgs {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_feerate {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -289,6 +291,7 @@ macro_rules! get_feerate {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -327,6 +330,8 @@ macro_rules! unwrap_send_err {
 	}
 }
 
+/// Check whether N channel monitor(s) have been added.
+#[macro_export]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
 		{
@@ -553,6 +558,9 @@ macro_rules! get_closing_signed_broadcast {
 	}
 }
 
+/// Check that a channel's closing channel update has been broadcasted, and optionally
+/// check whether an error message event has occurred.
+#[macro_export]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
@@ -779,6 +787,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
+#[cfg(test)]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -807,6 +816,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
+#[cfg(test)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -1284,6 +1294,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_channel_value_stat {
 	($node: expr, $channel_id: expr) => {{
 		let chan_lock = $node.node.channel_state.lock().unwrap();

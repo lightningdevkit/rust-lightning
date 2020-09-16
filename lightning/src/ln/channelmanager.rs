@@ -405,9 +405,9 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 	last_block_hash: Mutex<BlockHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) channel_state: Mutex<ChannelHolder<ChanSigner>>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_state: Mutex<ChannelHolder<ChanSigner>>,
 	our_network_key: SecretKey,
 

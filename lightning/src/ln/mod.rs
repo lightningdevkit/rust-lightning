@@ -38,9 +38,9 @@ mod wire;
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 #[macro_use]
-pub(crate) mod functional_test_utils;
+pub mod functional_test_utils;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
