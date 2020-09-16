@@ -10,7 +10,8 @@
 /// Abstracts the buffer used to write data through a SocketDescriptor handling partial writes and
 /// flow control.
 
-use ln::peers::handler::{PayloadQueuer, SocketDescriptor, SocketDescriptorFlusher};
+use ln::peers::handler::{SocketDescriptor, SocketDescriptorFlusher};
+use ln::peers::transport::PayloadQueuer;
 use std::collections::LinkedList;
 use std::cmp;
 

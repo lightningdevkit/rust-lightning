@@ -13,8 +13,8 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer, PayloadQueuer};
-use ln::peers::transport::IPeerHandshake;
+use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer};
+use ln::peers::transport::{IPeerHandshake, PayloadQueuer};
 
 use std::rc::Rc;
 use std::cell::{RefCell};

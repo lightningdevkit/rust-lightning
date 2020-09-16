@@ -39,7 +39,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 use ln::peers::outbound_queue::OutboundQueue;
-use ln::peers::transport::Transport;
+use ln::peers::transport::{PayloadQueuer, Transport};
 
 const MSG_BUFF_SIZE: usize = 10;
 
@@ -73,35 +73,6 @@ pub(super) trait MessageQueuer {
 	/// Encodes, encrypts, and enqueues a message to the outbound queue. Panics if the connection is
 	/// not established yet.
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger;
-}
-
-
-/// Trait representing a container that allows enqueuing of Vec<[u8]>
-pub(super) trait PayloadQueuer {
-	/// Enqueue item to the queue
-	fn push_back(&mut self, item: Vec<u8>);
-
-	/// Returns true if the queue is empty
-	fn is_empty(&self) -> bool;
-
-	/// Returns the amount of available space in queue
-	fn queue_space(&self) -> usize;
-}
-
-/// Implement &mut PayloadQueuer passthroughs
-impl<'a, T> PayloadQueuer for &'a mut T where
-	T: PayloadQueuer {
-	fn push_back(&mut self, item: Vec<u8>) {
-		T::push_back(self, item)
-	}
-
-	fn is_empty(&self) -> bool {
-		T::is_empty(self)
-	}
-
-	fn queue_space(&self) -> usize {
-		T::queue_space(self)
-	}
 }
 
 /// Trait representing a container that can try to flush data through a SocketDescriptor
