@@ -877,18 +877,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		}
 	}
 
-	pub(super) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) -> Result<(), ()> {
-		// To prevent any unsafe state discrepancy between offchain and onchain, once holder
-		// commitment transaction has been signed due to an event (either block height for
-		// HTLC-timeout or channel force-closure), don't allow any further update of holder
-		// commitment transaction view to avoid delivery of revocation secret to counterparty
-		// for the aformentionned signed transaction.
-		if self.holder_htlc_sigs.is_some() || self.prev_holder_htlc_sigs.is_some() {
-			return Err(());
-		}
+	pub(super) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) {
 		self.prev_holder_commitment = self.holder_commitment.take();
 		self.holder_commitment = Some(tx);
-		Ok(())
 	}
 
 	fn sign_latest_holder_htlcs(&mut self) {

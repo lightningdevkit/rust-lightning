@@ -8735,3 +8735,115 @@ fn test_update_err_monitor_lockdown() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 }
+
+#[test]
+fn test_concurrent_monitor_claim() {
+	// Watchtower A receives block, broadcasts state N, then channel receives new state N+1,
+	// sending it to both watchtowers, Bob accepts N+1, then receives block and broadcasts
+	// the latest state N+1, Alice rejects state N+1, but Bob has already broadcast it,
+	// state N+1 confirms. Alice claims output from state N+1.
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create some initial channel
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let outpoint = OutPoint { txid: chan_1.3.txid(), index: 0 };
+
+	// Rebalance the network to generate htlc in the two directions
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000, 10_000_000);
+
+	// Route a HTLC from node 0 to node 1 (but don't settle)
+	route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
+
+	// Copy SimpleManyChannelMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
+	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
+	let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
+	let watchtower_alice = {
+		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitor = monitors.get(&outpoint).unwrap();
+		let mut w = test_utils::TestVecWriter(Vec::new());
+		monitor.write_for_disk(&mut w).unwrap();
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+		assert!(new_monitor == *monitor);
+		let watchtower = test_utils::TestChannelMonitor::new(&chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		watchtower
+	};
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	watchtower_alice.simple_monitor.block_connected(&header, 135, &vec![], &vec![]);
+
+	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
+	{
+		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 2);
+		txn.clear();
+	}
+
+	// Copy SimpleManyChannelMonitor to simulate watchtower Bob and make it receive a commitment update first.
+	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
+	let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
+	let watchtower_bob = {
+		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitor = monitors.get(&outpoint).unwrap();
+		let mut w = test_utils::TestVecWriter(Vec::new());
+		monitor.write_for_disk(&mut w).unwrap();
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+		assert!(new_monitor == *monitor);
+		let watchtower = test_utils::TestChannelMonitor::new(&chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		watchtower
+	};
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	watchtower_bob.simple_monitor.block_connected(&header, 134, &vec![], &vec![]);
+
+	// Route another payment to generate another update with still previous HTLC pending
+	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	{
+		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
+		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, &Vec::new(), 3000000 , TEST_FINAL_CLTV, &logger).unwrap();
+		nodes[1].node.send_payment(&route, payment_hash, &None).unwrap();
+	}
+	check_added_monitors!(nodes[1], 1);
+
+	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(updates.update_add_htlcs.len(), 1);
+	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
+		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
+			// Watchtower Alice should already have seen the block and reject the update
+			if let Err(_) =  watchtower_alice.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = watchtower_bob.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = nodes[0].chan_monitor.update_monitor(outpoint, update) {} else { assert!(false); }
+		} else { assert!(false); }
+	} else { assert!(false); };
+	// Our local monitor is in-sync and hasn't processed yet timeout
+	check_added_monitors!(nodes[0], 1);
+
+	//// Provide one more block to watchtower Bob, expect broadcast of commitment and HTLC-Timeout
+	watchtower_bob.simple_monitor.block_connected(&header, 135, &vec![], &vec![]);
+
+	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
+	let bob_state_y;
+	{
+		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 2);
+		bob_state_y = txn[0].clone();
+		txn.clear();
+	};
+
+	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
+	watchtower_alice.simple_monitor.block_connected(&header, 136, &vec![&bob_state_y][..], &vec![]);
+	{
+		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		// We broadcast twice the transaction, once due to the HTLC-timeout, once due
+		// the onchain detection of the HTLC output
+		assert_eq!(htlc_txn.len(), 2);
+		check_spends!(htlc_txn[0], bob_state_y);
+		check_spends!(htlc_txn[1], bob_state_y);
+	}
+}
