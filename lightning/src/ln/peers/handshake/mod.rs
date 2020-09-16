@@ -14,10 +14,19 @@
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handshake::states::{HandshakeState, IHandshakeState};
+use ln::peers::handshake::acts::Act;
+use ln::peers::handshake::states::HandshakeState;
 
 mod acts;
 mod states;
+
+/// Interface used by PeerHandshake to interact with NOISE state machine.
+/// State may transition to the same state in the event there are not yet enough bytes to move
+/// forward with the handshake.
+trait IHandshakeState {
+	/// Returns the next HandshakeState after processing the input bytes
+	fn next(self, input: &[u8]) -> Result<(Option<Act>, HandshakeState), String>;
+}
 
 /// Object for managing handshakes.
 /// Currently requires explicit ephemeral private key specification.
