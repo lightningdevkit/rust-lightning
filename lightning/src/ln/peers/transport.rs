@@ -37,7 +37,8 @@ pub trait IPeerHandshake {
 	fn process_act(&mut self, input: &[u8]) -> Result<(Option<Vec<u8>>, Option<(Conduit, PublicKey)>), String>;
 }
 
-/// Trait representing a container that allows enqueuing of Vec<[u8]>
+/// Trait representing a container that allows enqueuing of Vec<[u8]>. Used by Transport to enqueue
+/// NOISE handshake messages and post-NOISE encrypted Lightning Messages to be sent to a peer.
 pub(super) trait PayloadQueuer {
 	/// Enqueue item to the queue
 	fn push_back(&mut self, item: Vec<u8>);
@@ -49,6 +50,8 @@ pub(super) trait PayloadQueuer {
 	fn queue_space(&self) -> usize;
 }
 
+/// Used by the PeerManager to work with a BOLT8 authenticated transport layer. Abstracts the NOISE
+/// handshake as well as post-NOISE encrypted Lightning Message encryption/decryption.
 pub(super) struct Transport<PeerHandshakeImpl: IPeerHandshake=PeerHandshake> {
 	pub(super) conduit: Option<Conduit>,
 	handshake: PeerHandshakeImpl,
@@ -76,6 +79,7 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 		}
 	}
 
+	// Returns Ok(true) on the first call that results in a connected state, Ok(false) otherwise.
 	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
 		match self.conduit {
 			// Continue handshake
@@ -91,14 +95,14 @@ impl<PeerHandshakeImpl: IPeerHandshake> ITransport for Transport<PeerHandshakeIm
 				if let Some((conduit, remote_pubkey)) = conduit_and_remote_pubkey_option {
 					self.conduit = Some(conduit);
 					self.their_node_id = Some(remote_pubkey);
-					Ok(true) // newly connected
+					Ok(true)
 				} else {
-					Ok(false) // newly connected
+					Ok(false)
 				}
 			}
 			Some(ref mut conduit) => {
 				conduit.read(input);
-				Ok(false) // newly connected
+				Ok(false)
 			}
 		}
 	}

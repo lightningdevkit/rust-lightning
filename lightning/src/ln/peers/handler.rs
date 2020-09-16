@@ -43,7 +43,8 @@ use ln::peers::transport::{PayloadQueuer, Transport};
 use std::collections::hash_map::IterMut;
 use std::iter::Filter;
 
-const MSG_BUFF_SIZE: usize = 10;
+// Number of items that can exist in the OutboundQueue before Sync message flow control is triggered
+const OUTBOUND_QUEUE_SIZE: usize = 10;
 
 /// Interface PeerManager uses to interact with the Transport object
 pub(super) trait ITransport: MessageQueuer {
@@ -56,7 +57,8 @@ pub(super) trait ITransport: MessageQueuer {
 	/// Instantiate a new inbound Transport
 	fn new_inbound(responder_static_private_key: &SecretKey, responder_ephemeral_private_key: &SecretKey) -> Self;
 
-	/// Process input data similar to reading it off a descriptor directly.
+	/// Process input data similar to reading it off a descriptor directly. Returns true on the first call
+	/// that results in the transport being newly connected.
 	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String>;
 
 	/// Returns true if the connection is established and encrypted messages can be sent.
@@ -65,19 +67,20 @@ pub(super) trait ITransport: MessageQueuer {
 	/// Returns the node_id of the remote node. Panics if not connected.
 	fn get_their_node_id(&self) -> PublicKey;
 
-	/// Returns all Messages that have been received and can be parsed by the Transport
+	/// Returns all Messages that have been received and can be successfully parsed by the Transport
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger;
 }
 
-/// Interface PeerManager uses to queue message to send. Used primarily to restrict the interface in
-/// specific contexts. e.g. Only queueing during read_event(). No flushing allowed.
+/// Interface PeerManager uses to queue message to send. Implemented by Transport to handle
+/// encryption/decryption post-NOISE.
 pub(super) trait MessageQueuer {
 	/// Encodes, encrypts, and enqueues a message to the outbound queue. Panics if the connection is
 	/// not established yet.
 	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger;
 }
 
-/// Trait representing a container that can try to flush data through a SocketDescriptor
+/// Trait representing a container that can try to flush data through a SocketDescriptor. Used by the
+/// PeerManager to handle flushing the outbound queue and flow control.
 pub(super) trait SocketDescriptorFlusher {
 	/// Write previously enqueued data to the SocketDescriptor. A return of false indicates the
 	/// underlying SocketDescriptor could not fulfill the send_data() call and the blocked state
@@ -198,14 +201,14 @@ impl<TransportImpl: ITransport> Peer<TransportImpl> {
 	fn new(outbound: bool, transport: TransportImpl) -> Self {
 		Self {
 			outbound,
-			outbound_queue: OutboundQueue::new(MSG_BUFF_SIZE),
+			outbound_queue: OutboundQueue::new(OUTBOUND_QUEUE_SIZE),
 			post_init_state: None,
 			transport
 		}
 	}
 
 	/// Returns true if an INIT message has been received from this peer. Implies that this node
-	/// can send and receive encrypted messages.
+	/// can send and receive encrypted messages (self.transport.is_connected() == true).
 	fn is_initialized(&self) -> bool {
 		self.post_init_state.is_some()
 	}
@@ -251,6 +254,9 @@ struct PeerHolder<Descriptor: SocketDescriptor, TransportImpl: ITransport> {
 }
 
 impl<Descriptor: SocketDescriptor, TransportImpl: ITransport> PeerHolder<Descriptor, TransportImpl> {
+
+	// Returns an Option<(Descriptor, Peer)> for a node by node_id. A node is initialized after it
+	// has completed the NOISE handshake AND received an INIT message.
 	fn initialized_peer_by_node_id_mut(&mut self, node_id: &PublicKey) -> Option<(Descriptor, &mut Peer<TransportImpl>)> {
 		match self.node_id_to_descriptor.get_mut(node_id) {
 			None => None,
@@ -730,7 +736,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		peer.transport.enqueue_message(&resp, &mut peer.outbound_queue, &*self.logger);
 	}
 
-	// Process an incoming Init message and set Peer and PeerManager state accordingly
+	// Process an incoming Init message and set Peer and PeerManager state.
+	//
+	// For an inbound connection, this will respond with an INIT message.
+	//
+	// In the event an INIT has already been seen from this node_id, the current peer connection
+	// will be disconnected, but the first connection will remain available.
+	//
+	// In the event this message is not an INIT the peer will be disconnected.
+	//
+	// On successful processing of the INIT message, the peer_connected() callback on the
+	// ChannelMessageHandler will be called with the remote's node_id and INIT message contents.
 	fn process_init_message(&self, message: Message, descriptor: &Descriptor, peer: &mut Peer<TransportImpl>, node_id_to_descriptor: &mut HashMap<PublicKey, Descriptor>) -> Result<(), PeerHandleError> {
 		let their_node_id = peer.transport.get_their_node_id();
 
