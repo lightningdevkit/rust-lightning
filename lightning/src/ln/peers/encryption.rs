@@ -18,7 +18,8 @@ pub(super) type SymmetricKey = [u8; 32];
 /// Maximum Lightning message data length according to
 /// [BOLT-8](https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification)
 /// and [BOLT-1](https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md#lightning-message-format):
-const LN_MAX_MSG_LEN: usize = ::std::u16::MAX as usize; // Must be equal to 65535
+const LN_MAX_MSG_LEN: usize = 65535;
+const LN_MAX_PACKET_LENGTH: usize = MESSAGE_LENGTH_HEADER_SIZE + chacha::TAG_SIZE + LN_MAX_MSG_LEN + chacha::TAG_SIZE;
 
 const MESSAGE_LENGTH_HEADER_SIZE: usize = 2;
 const TAGGED_MESSAGE_LENGTH_HEADER_SIZE: usize = MESSAGE_LENGTH_HEADER_SIZE + chacha::TAG_SIZE;
@@ -85,7 +86,7 @@ impl Iterator for Decryptor {
 impl Encryptor {
 	pub fn encrypt(&mut self, buffer: &[u8]) -> Vec<u8> {
 		if buffer.len() > LN_MAX_MSG_LEN {
-			panic!("Attempted to encrypt message longer than 65535 bytes!");
+			panic!("Attempted to encrypt message longer than {} bytes!", LN_MAX_MSG_LEN);
 		}
 
 		let length = buffer.len() as u16;
@@ -140,16 +141,19 @@ impl Decryptor {
 			}
 		}
 
+		// If we ever get to the end of the decryption phase and have more data in the read buffer
+		// than is possible for a valid message something has gone wrong. An error with a mismatched
+		// length and payload should result an error from the decryption code before we get here.
+		if self.read_buffer.as_ref().unwrap().len() > LN_MAX_PACKET_LENGTH {
+			panic!("Encrypted message data longer than {}", LN_MAX_PACKET_LENGTH);
+		}
+
 		Ok(())
 	}
 
 	// Decrypt the next payload from the slice returning the number of bytes consumed during the
 	// operation. This will always be (None, 0) if no payload could be decrypted.
 	fn decrypt_next(&mut self, buffer: &[u8]) -> Result<(Option<Vec<u8>>, usize), String> {
-		if buffer.len() > LN_MAX_MSG_LEN + 16 {
-			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
-		}
-
 		let message_length = if let Some(length) = self.pending_message_length {
 			// we have already decrypted the header
 			length
@@ -369,9 +373,10 @@ mod tests {
 	}
 
 	#[test]
+	// https://github.com/lightningnetwork/lightning-rfc/blob/v1.0/08-transport.md#lightning-message-specification
 	fn max_msg_len_limit_value() {
 		assert_eq!(LN_MAX_MSG_LEN, 65535);
-		assert_eq!(LN_MAX_MSG_LEN, ::std::u16::MAX as usize);
+		assert_eq!(LN_MAX_PACKET_LENGTH, 65569);
 	}
 
 	#[test]
@@ -382,13 +387,28 @@ mod tests {
 		let _should_panic = connected_encryptor.encrypt(&msg);
 	}
 
+	// Test that the decryptor can handle multiple partial reads() that result in a total size
+	// larger than LN_MAX_PACKET_LENGTH and still decrypt the messages.
 	#[test]
-	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
-	fn max_message_len_decryption() {
-		let (_, (_, mut remote_decryptor)) = setup_peers();
+	fn read_buffer_can_grow_over_max_payload_len() {
+		let ((mut connected_encryptor, _), ( _, mut remote_decryptor)) = setup_peers();
+		let msg1 = [1u8; LN_MAX_MSG_LEN];
+		let msg2 = [2u8; LN_MAX_MSG_LEN];
 
-		// MSG should not exceed LN_MAX_MSG_LEN + 16
-		let msg = [4u8; LN_MAX_MSG_LEN + 17];
-		remote_decryptor.read(&msg).unwrap();
+		let encrypted1 = connected_encryptor.encrypt(&msg1);
+		let encrypted2 = connected_encryptor.encrypt(&msg2);
+
+		let read1 = &encrypted1[..1];
+		let mut read2 = vec![];
+		read2.extend_from_slice(&encrypted1[1..]);
+		read2.extend_from_slice(&encrypted2);
+
+		remote_decryptor.read(read1).unwrap();
+		assert_eq!(remote_decryptor.next(), None);
+
+		remote_decryptor.read(&read2[..]).unwrap();
+
+		assert_eq!(remote_decryptor.next(), Some(msg1.to_vec()));
+		assert_eq!(remote_decryptor.next(), Some(msg2.to_vec()));
 	}
 }
