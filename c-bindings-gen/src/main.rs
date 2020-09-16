@@ -628,7 +628,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								if let syn::ReturnType::Type(_, rtype) = &$m.sig.output {
 									if let syn::Type::Reference(r) = &**rtype {
 										write!(w, "\n\t\t{}{}: ", $indent, $m.sig.ident).unwrap();
-										types.write_empty_rust_val(w, &*r.elem);
+										types.write_empty_rust_val(Some(&gen_types), w, &*r.elem);
 										writeln!(w, ",\n{}\t\tset_{}: Some({}_{}_set_{}),", $indent, $m.sig.ident, ident, trait_obj.ident, $m.sig.ident).unwrap();
 										printed = true;
 									}
@@ -722,7 +722,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 										writeln!(w, "\t// This is a bit race-y in the general case, but for our specific use-cases today, we're safe").unwrap();
 										writeln!(w, "\t// Specifically, we must ensure that the first time we're called it can never be in parallel").unwrap();
 										write!(w, "\tif ").unwrap();
-										types.write_empty_rust_val_check(w, &*r.elem, &format!("trait_self_arg.{}", $m.sig.ident));
+										types.write_empty_rust_val_check(Some(&gen_types), w, &*r.elem, &format!("trait_self_arg.{}", $m.sig.ident));
 										writeln!(w, " {{").unwrap();
 										writeln!(w, "\t\tunsafe {{ &mut *(trait_self_arg as *const {}  as *mut {}) }}.{} = {}_{}_{}(trait_self_arg.this_arg);", trait_obj.ident, trait_obj.ident, $m.sig.ident, ident, trait_obj.ident, $m.sig.ident).unwrap();
 										writeln!(w, "\t}}").unwrap();

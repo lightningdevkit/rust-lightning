@@ -681,7 +681,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	fn is_known_container(&self, full_path: &str, is_ref: bool) -> bool {
 		(full_path == "Result" && !is_ref) || (full_path == "Vec" && !is_ref) || full_path.ends_with("Tuple")
 	}
-	fn to_c_conversion_container_new_var<'b>(&self, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
+	fn to_c_conversion_container_new_var<'b>(&self, generics: Option<&GenericTypes>, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
 			// Returns prefix + Vec<(prefix, var-name-to-inline-convert)> + suffix
 			// expecting one element in the vec per generic type, each of which is inline-converted
 			-> Option<(&'b str, Vec<(String, String)>, &'b str)> {
@@ -700,7 +700,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			"Option" => {
 				if let Some(syn::Type::Path(p)) = single_contained {
-					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, None)) {
+					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)) {
 						if is_ref {
 							return Some(("if ", vec![
 								(".is_none() { std::ptr::null() } else { ".to_owned(), format!("({}.as_ref().unwrap())", var_access))
@@ -714,7 +714,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					self.write_empty_rust_val(&mut v, t);
+					self.write_empty_rust_val(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
 					return Some(("if ", vec![
 						(format!(".is_none() {{ {} }} else {{ ", s), format!("({}.unwrap())", var_access))
@@ -727,7 +727,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 	/// only_contained_has_inner implies that there is only one contained element in the container
 	/// and it has an inner field (ie is an "opaque" type we've defined).
-	fn from_c_conversion_container_new_var<'b>(&self, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
+	fn from_c_conversion_container_new_var<'b>(&self, generics: Option<&GenericTypes>, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
 			// Returns prefix + Vec<(prefix, var-name-to-inline-convert)> + suffix
 			// expecting one element in the vec per generic type, each of which is inline-converted
 			-> Option<(&'b str, Vec<(String, String)>, &'b str)> {
@@ -746,7 +746,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			"Option" => {
 				if let Some(syn::Type::Path(p)) = single_contained {
-					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, None)) {
+					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)) {
 						if is_ref {
 							return Some(("if ", vec![(".inner.is_null() { None } else { Some((*".to_string(), format!("{}", var_name))], ").clone()) }"))
 						} else {
@@ -757,7 +757,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					let needs_deref = self.write_empty_rust_val_check_suffix(&mut v, t);
+					let needs_deref = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
 					if needs_deref {
 						return Some(("if ", vec![
@@ -1023,10 +1023,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 	/// Prints a constructor for something which is "uninitialized" (but obviously not actually
 	/// unint'd memory).
-	pub fn write_empty_rust_val<W: std::io::Write>(&self, w: &mut W, t: &syn::Type) {
+	pub fn write_empty_rust_val<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) {
 		match t {
 			syn::Type::Path(p) => {
-				let resolved = self.resolve_path(&p.path, None);
+				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, "crate::{} {{ inner: std::ptr::null_mut(), is_owned: true }}", resolved).unwrap();
 				} else {
@@ -1056,10 +1056,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val),
 	/// returning whether we need to dereference the inner value before using it (ie it is a
 	/// pointer).
-	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, w: &mut W, t: &syn::Type) -> bool {
+	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> bool {
 		match t {
 			syn::Type::Path(p) => {
-				let resolved = self.resolve_path(&p.path, None);
+				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, ".inner.is_null()").unwrap();
 					false
@@ -1092,11 +1092,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	}
 
 	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val).
-	pub fn write_empty_rust_val_check<W: std::io::Write>(&self, w: &mut W, t: &syn::Type, var_access: &str) {
+	pub fn write_empty_rust_val_check<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type, var_access: &str) {
 		match t {
 			syn::Type::Path(_) => {
 				write!(w, "{}", var_access).unwrap();
-				self.write_empty_rust_val_check_suffix(w, t);
+				self.write_empty_rust_val_check_suffix(generics, w, t);
 			},
 			syn::Type::Array(a) => {
 				if let syn::Expr::Lit(l) = &a.len {
@@ -1108,7 +1108,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							self.from_c_conversion_prefix_from_path(&arrty, false).unwrap(),
 							var_access,
 							self.from_c_conversion_suffix_from_path(&arrty, false).unwrap()).unwrap();
-						self.write_empty_rust_val_check_suffix(w, t);
+						self.write_empty_rust_val_check_suffix(generics, w, t);
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			}
@@ -1561,7 +1561,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn write_to_c_conversion_new_var_inner<W: std::io::Write>(&self, w: &mut W, ident: &syn::Ident, var_access: &str, t: &syn::Type, generics: Option<&GenericTypes>, ptr_for_ref: bool) -> bool {
 		self.write_conversion_new_var_intern(w, ident, var_access, t, generics, false, ptr_for_ref, true,
 			&|a, b| self.to_c_conversion_new_var_from_path(a, b),
-			&|a, b, c, d, e| self.to_c_conversion_container_new_var(a, b, c, d, e),
+			&|a, b, c, d, e| self.to_c_conversion_container_new_var(generics, a, b, c, d, e),
 			// We force ptr_for_ref here since we can't generate a ref on one line and use it later
 			&|a, b, c, d, e, f| self.write_to_c_conversion_inline_prefix_inner(a, b, c, d, e, f),
 			&|a, b, c, d, e, f| self.write_to_c_conversion_inline_suffix_inner(a, b, c, d, e, f))
@@ -1572,7 +1572,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn write_from_c_conversion_new_var<W: std::io::Write>(&self, w: &mut W, ident: &syn::Ident, t: &syn::Type, generics: Option<&GenericTypes>) -> bool {
 		self.write_conversion_new_var_intern(w, ident, &format!("{}", ident), t, generics, false, false, false,
 			&|a, b| self.from_c_conversion_new_var_from_path(a, b),
-			&|a, b, c, d, e| self.from_c_conversion_container_new_var(a, b, c, d, e),
+			&|a, b, c, d, e| self.from_c_conversion_container_new_var(generics, a, b, c, d, e),
 			// We force ptr_for_ref here since we can't generate a ref on one line and use it later
 			&|a, b, c, d, e, _f| self.write_from_c_conversion_prefix_inner(a, b, c, d, e),
 			&|a, b, c, d, e, _f| self.write_from_c_conversion_suffix_inner(a, b, c, d, e))
