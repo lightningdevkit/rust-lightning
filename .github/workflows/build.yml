@@ -34,17 +34,23 @@ jobs:
           override: true
           profile: minimal
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
-        if: matrix.build-net-tokio
+        if: "matrix.build-net-tokio && !matrix.coverage"
+        run: cargo build --verbose --color always
+      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+        if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: RUSTFLAGS="-C link-dead-code" cargo build --verbose  --color always -p lightning
+        run: cargo build --verbose  --color always -p lightning
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
-        if: matrix.build-net-tokio
+        if: "matrix.build-net-tokio && !matrix.coverage"
+        run: cargo test --verbose --color always
+      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+        if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always  -p lightning
+        run: cargo test --verbose --color always  -p lightning
       - name: Install deps for kcov
         if: matrix.coverage
         run: |
