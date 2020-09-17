@@ -740,9 +740,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	//
 	// For an inbound connection, this will respond with an INIT message.
 	//
-	// In the event an INIT has already been seen from this node_id, the current peer connection
-	// will be disconnected, but the first connection will remain available.
-	//
 	// In the event this message is not an INIT the peer will be disconnected.
 	//
 	// On successful processing of the INIT message, the peer_connected() callback on the
@@ -753,10 +750,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		match message {
 			Message::Init(ref init_message) => {
 				log_trace!(self.logger, "Received Init message from {}", log_pubkey!(&their_node_id));
-				if node_id_to_descriptor.contains_key(&their_node_id) {
-					log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(&their_node_id));
-					return Err(PeerHandleError { no_connection_possible: false });
-				}
+
 
 				let new_post_init_state = self.post_init_state_from_init_message(init_message, &their_node_id)?;
 
@@ -788,7 +782,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			},
 			Ok(newly_connected) => {
 				if newly_connected {
-					log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&peer.transport.get_their_node_id()));
+					let their_node_id = peer.transport.get_their_node_id();
+					log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(&their_node_id));
+
+					// Check for a duplicate connection at the completion of the NOISE handshake
+					if node_id_to_descriptor.contains_key(&their_node_id) {
+						log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(&their_node_id));
+						return Err(PeerHandleError { no_connection_possible: false });
+					}
 				}
 
 				if newly_connected && peer.outbound {
