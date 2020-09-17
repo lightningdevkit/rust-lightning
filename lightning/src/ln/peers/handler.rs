@@ -694,16 +694,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 	// Returns a valid PostInitState given a Init message
 	fn post_init_state_from_init_message(&self, init_message: &msgs::Init, their_node_id: &PublicKey) -> Result<PostInitState, PeerHandleError> {
 		if init_message.features.requires_unknown_bits() {
-			log_info!(self.logger, "Peer global features required unknown version bits");
-			return Err(PeerHandleError { no_connection_possible: true }.into());
-		}
-		if init_message.features.requires_unknown_bits() {
-			log_info!(self.logger, "Peer local features required unknown version bits");
+			log_info!(self.logger, "Peer features required unknown version bits");
 			return Err(PeerHandleError { no_connection_possible: true }.into());
 		}
 
 		log_info!(
-			self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags (local and global): {}",
+			self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags: {}",
 			if init_message.features.supports_data_loss_protect() { "supported" } else { "not supported"},
 			if init_message.features.initial_routing_sync() { "requested" } else { "not requested" },
 			if init_message.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
