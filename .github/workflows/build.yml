@@ -6,6 +6,7 @@ jobs:
   build:
     strategy:
       matrix:
+        platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
                      # 1.30.0 is MSRV for Rust-Lightning
@@ -17,12 +18,18 @@ jobs:
         include:
           - toolchain: stable
             build-net-tokio: true
+          - toolchain: stable
+            platform: macos-latest
+            build-net-tokio: true
+          - toolchain: stable
+            platform: windows-latest
+            build-net-tokio: true
           - toolchain: beta
             build-net-tokio: true
           - toolchain: 1.39.0
             build-net-tokio: true
             coverage: true
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2
