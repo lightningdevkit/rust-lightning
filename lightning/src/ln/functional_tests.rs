@@ -5038,23 +5038,32 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 4); // ChannelMonitor: justice tx on revoked commitment, justice tx on revoked HTLC-timeout, adjusted justice tx, ChannelManager: local commitment tx
+	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
+	// including the one already spent by revoked_htlc_txn[0]. That's OK, we'll spend with valid
+	// transactions next...
 	assert_eq!(node_txn[0].input.len(), 2);
 	check_spends!(node_txn[0], revoked_local_txn[0]);
+
 	check_spends!(node_txn[1], chan_1.3);
+
 	assert_eq!(node_txn[2].input.len(), 1);
 	check_spends!(node_txn[2], revoked_htlc_txn[0]);
 	assert_eq!(node_txn[3].input.len(), 1);
 	check_spends!(node_txn[3], revoked_local_txn[0]);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[2].clone(), node_txn[3].clone()] }, 1);
 	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
-	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
+	// Note that nodes[1]'s tx_broadcaster is still locked, so if we get here the channelmonitor
+	// didn't try to generate any new transactions.
+
+	// Check B's ChannelMonitor was able to generate the right spendable output descriptor which
+	// allows the user to spend the newly-confirmed outputs.
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 2);
-	check_spends!(spend_txn[0], node_txn[0]);
-	check_spends!(spend_txn[1], node_txn[2]);
+	check_spends!(spend_txn[0], node_txn[2]);
+	check_spends!(spend_txn[1], node_txn[3]);
 }
 
 #[test]
