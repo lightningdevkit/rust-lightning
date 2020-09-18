@@ -5037,33 +5037,34 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_added_monitors!(nodes[1], 1);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 4); // ChannelMonitor: justice tx on revoked commitment, justice tx on revoked HTLC-timeout, adjusted justice tx, ChannelManager: local commitment tx
+	assert_eq!(node_txn.len(), 3); // ChannelMonitor: bogus justice tx, justice tx on revoked outputs, ChannelManager: local commitment tx
 	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
 	// including the one already spent by revoked_htlc_txn[0]. That's OK, we'll spend with valid
 	// transactions next...
-	assert_eq!(node_txn[0].input.len(), 2);
-	check_spends!(node_txn[0], revoked_local_txn[0]);
+	assert_eq!(node_txn[0].input.len(), 3);
+	check_spends!(node_txn[0], revoked_local_txn[0], revoked_htlc_txn[0]);
 
-	check_spends!(node_txn[1], chan_1.3);
+	assert_eq!(node_txn[1].input.len(), 2);
+	check_spends!(node_txn[1], revoked_local_txn[0], revoked_htlc_txn[0]);
+	if node_txn[1].input[1].previous_output.txid == revoked_htlc_txn[0].txid() {
+		assert_ne!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	} else {
+		assert_eq!(node_txn[1].input[0].previous_output.txid, revoked_htlc_txn[0].txid());
+		assert_ne!(node_txn[1].input[1].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	}
 
 	assert_eq!(node_txn[2].input.len(), 1);
-	check_spends!(node_txn[2], revoked_htlc_txn[0]);
-	assert_eq!(node_txn[3].input.len(), 1);
-	check_spends!(node_txn[3], revoked_local_txn[0]);
+	check_spends!(node_txn[2], chan_1.3);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[2].clone(), node_txn[3].clone()] }, 1);
+	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
 	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
-	// Note that nodes[1]'s tx_broadcaster is still locked, so if we get here the channelmonitor
-	// didn't try to generate any new transactions.
-
-	// Check B's ChannelMonitor was able to generate the right spendable output descriptor which
-	// allows the user to spend the newly-confirmed outputs.
+	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
-	check_spends!(spend_txn[0], node_txn[2]);
-	check_spends!(spend_txn[1], node_txn[3]);
+	assert_eq!(spend_txn.len(), 1);
+	assert_eq!(spend_txn[0].input.len(), 1);
+	check_spends!(spend_txn[0], node_txn[1]);
 }
 
 #[test]
@@ -5110,19 +5111,25 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 3); // ChannelMonitor: justice tx on revoked commitment, justice tx on revoked HTLC-success, ChannelManager: local commitment tx
 
-	// The first transaction generated is just in case of a reorg - it double-spends
-	// revoked_htlc_txn[0], spending the HTLC output on revoked_local_txn[0] directly.
-	assert_eq!(node_txn[0].input.len(), 1);
-	check_spends!(node_txn[0], revoked_local_txn[0]);
-	assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
+	// including the one already spent by revoked_htlc_txn[0]. That's OK, we'll spend with valid
+	// transactions next...
+	assert_eq!(node_txn[0].input.len(), 2);
+	check_spends!(node_txn[0], revoked_local_txn[0], revoked_htlc_txn[0]);
+	if node_txn[0].input[1].previous_output.txid == revoked_htlc_txn[0].txid() {
+		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	} else {
+		assert_eq!(node_txn[0].input[0].previous_output.txid, revoked_htlc_txn[0].txid());
+		assert_eq!(node_txn[0].input[1].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	}
 
-	assert_eq!(node_txn[2].input.len(), 1);
-	check_spends!(node_txn[2], revoked_htlc_txn[0]);
+	assert_eq!(node_txn[1].input.len(), 1);
+	check_spends!(node_txn[1], revoked_htlc_txn[0]);
 
-	check_spends!(node_txn[1], chan_1.3);
+	check_spends!(node_txn[2], chan_1.3);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[2].clone()] }, 1);
+	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
 	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	// Note that nodes[0]'s tx_broadcaster is still locked, so if we get here the channelmonitor
@@ -5130,13 +5137,12 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 4); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
+	assert_eq!(spend_txn.len(), 3); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
 	assert_eq!(spend_txn[0], spend_txn[1]);
-	assert_eq!(spend_txn[0], spend_txn[2]);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
 	assert_ne!(spend_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
-	check_spends!(spend_txn[3], node_txn[2]); // spending justice tx output on the htlc success tx
+	check_spends!(spend_txn[2], node_txn[1]); // spending justice tx output on the htlc success tx
 }
 
 #[test]
@@ -7798,11 +7804,11 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	}
 
 	// Broadcast set of revoked txn on A
-	let header_128 = connect_blocks(&nodes[0].block_notifier, 128, 0, true, header.block_hash());
+	let header_128 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_128, txdata: vec![revoked_local_txn[0].clone()] }, 128);
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
-
-	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
+	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
 	let first;
 	let feerate_1;
 	let penalty_txn;
@@ -7842,6 +7848,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_eq!(node_txn[4].input.len(), 2);
 		assert_eq!(node_txn[4].output.len(), 1);
 		check_spends!(node_txn[4], revoked_htlc_txn[0], revoked_htlc_txn[1]);
+
 		first = node_txn[4].txid();
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[4].output[0].value;
@@ -7853,6 +7860,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// Connect one more block to see if bumped penalty are issued for HTLC txn
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_130, txdata: penalty_txn }, 130);
+	let header_131 = BlockHeader { version: 0x20000000, prev_blockhash: header_130.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header: header_131, txdata: Vec::new() }, 131);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 2); // 2 bumped penalty txn on revoked commitment tx
@@ -7871,7 +7880,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 
 	// Few more blocks to confirm penalty txn
-	let header_135 = connect_blocks(&nodes[0].block_notifier, 5, 130, true, header_130.block_hash());
+	let header_135 = connect_blocks(&nodes[0].block_notifier, 4, 131, true, header_131.block_hash());
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	let header_144 = connect_blocks(&nodes[0].block_notifier, 9, 135, true, header_135);
 	let node_txn = {

@@ -377,10 +377,22 @@ impl ChainWatchInterface for ChainWatchInterfaceUtil {
 
 	fn filter_block(&self, block: &Block) -> Vec<usize> {
 		let mut matched_index = Vec::new();
+		let mut matched_txids = HashSet::new();
 		{
 			let watched = self.watched.lock().unwrap();
 			for (index, transaction) in block.txdata.iter().enumerate() {
-				if self.does_match_tx_unguarded(transaction, &watched) {
+				// A tx matches the filter if it either matches the filter directly (via
+				// does_match_tx_unguarded) or if it is a descendant of another matched
+				// transaction within the same block, which we check for in the loop.
+				let mut matched = self.does_match_tx_unguarded(transaction, &watched);
+				for input in transaction.input.iter() {
+					if matched || matched_txids.contains(&input.previous_output.txid) {
+						matched = true;
+						break;
+					}
+				}
+				if matched {
+					matched_txids.insert(transaction.txid());
 					matched_index.push(index);
 				}
 			}
