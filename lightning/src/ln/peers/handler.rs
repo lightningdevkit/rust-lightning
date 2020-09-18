@@ -616,7 +616,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 			match sync_status {
 				&mut InitSyncTracker::NoSyncRequested => {},
 				&mut InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
-					let steps = ((queue_space + 2) / 3) as u8;
+					let steps = (queue_space / 3) as u8;
 					let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
 					for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
 						transport.enqueue_message(announce, outbound_queue, &*self.logger);
