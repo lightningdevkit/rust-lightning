@@ -7786,12 +7786,14 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
 		assert_eq!(revoked_htlc_txn[1].input.len(), 1);
 		assert_eq!(revoked_htlc_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(revoked_htlc_txn[1].output.len(), 1);
 		check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
 	} else if revoked_htlc_txn[1].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
 		assert_eq!(revoked_htlc_txn[1].input.len(), 1);
 		check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
 		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
 		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(revoked_htlc_txn[0].output.len(), 1);
 		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
 	}
 
@@ -7808,6 +7810,35 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 5); // 3 penalty txn on revoked commitment tx + A commitment tx + 1 penalty tnx on revoked HTLC txn
 		// Verify claim tx are spending revoked HTLC txn
+
+		// node_txn 0-2 each spend a separate revoked output from revoked_local_txn[0]
+		// Note that node_txn[0] and node_txn[1] are bogus - they double spend the revoked_htlc_txn
+		// which are included in the same block (they are broadcasted because we scan the
+		// transactions linearly and generate claims as we go, they likely should be removed in the
+		// future).
+		assert_eq!(node_txn[0].input.len(), 1);
+		check_spends!(node_txn[0], revoked_local_txn[0]);
+		assert_eq!(node_txn[1].input.len(), 1);
+		check_spends!(node_txn[1], revoked_local_txn[0]);
+		assert_eq!(node_txn[2].input.len(), 1);
+		check_spends!(node_txn[2], revoked_local_txn[0]);
+
+		// Each of the three justice transactions claim a separate (single) output of the three
+		// available, which we check here:
+		assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+		assert_ne!(node_txn[0].input[0].previous_output, node_txn[2].input[0].previous_output);
+		assert_ne!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
+
+		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+
+		// node_txn[3] is the local commitment tx broadcast just because (and somewhat in case of
+		// reorgs, though its not clear its ever worth broadcasting conflicting txn like this when
+		// a remote commitment tx has already been confirmed).
+		check_spends!(node_txn[3], chan.3);
+
+		// node_txn[4] spends the revoked outputs from the revoked_htlc_txn (which only have one
+		// output, checked above).
 		assert_eq!(node_txn[4].input.len(), 2);
 		assert_eq!(node_txn[4].output.len(), 1);
 		check_spends!(node_txn[4], revoked_htlc_txn[0], revoked_htlc_txn[1]);
@@ -7815,11 +7846,11 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[4].output[0].value;
 		feerate_1 = fee_1 * 1000 / node_txn[4].get_weight() as u64;
-		penalty_txn = vec![node_txn[0].clone(), node_txn[1].clone(), node_txn[2].clone()];
+		penalty_txn = vec![node_txn[2].clone()];
 		node_txn.clear();
 	}
 
-	// Connect three more block to see if bumped penalty are issued for HTLC txn
+	// Connect one more block to see if bumped penalty are issued for HTLC txn
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	nodes[0].block_notifier.block_connected(&Block { header: header_130, txdata: penalty_txn }, 130);
 	{
@@ -7828,6 +7859,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 		check_spends!(node_txn[0], revoked_local_txn[0]);
 		check_spends!(node_txn[1], revoked_local_txn[0]);
+		// Note that these are both bogus - they spend outputs already claimed in block 129:
+		if node_txn[0].input[0].previous_output == revoked_htlc_txn[0].input[0].previous_output  {
+			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+		} else {
+			assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+		}
 
 		node_txn.clear();
 	};
