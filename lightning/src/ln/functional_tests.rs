@@ -4708,6 +4708,7 @@ macro_rules! check_spendable_outputs {
 										input: vec![input],
 										output: vec![outp],
 									};
+									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 35 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
 									let secp_ctx = Secp256k1::new();
 									let keys = $keysinterface.derive_channel_keys($chan_value, key_derivation_params.0, key_derivation_params.1);
 									let remotepubkey = keys.pubkeys().payment_point;
@@ -4742,6 +4743,7 @@ macro_rules! check_spendable_outputs {
 
 										let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
 										let witness_script = chan_utils::get_revokeable_redeemscript(revocation_pubkey, *to_self_delay, &delayed_payment_pubkey);
+										spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 1 + witness_script.len() + 1 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
 										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 										let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
 										spend_tx.input[0].witness.push(local_delayedsig.serialize_der().to_vec());
@@ -4769,6 +4771,7 @@ macro_rules! check_spendable_outputs {
 										input: vec![input],
 										output: vec![outp.clone()],
 									};
+									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 35 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
 									let secret = {
 										match ExtendedPrivKey::new_master(Network::Testnet, &$node.node_seed) {
 											Ok(master_key) => {
