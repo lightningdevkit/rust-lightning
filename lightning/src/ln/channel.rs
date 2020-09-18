@@ -3007,7 +3007,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
 			return Err(ChannelError::Close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
 		}
-		if msg.fee_satoshis > 21000000 * 10000000 { //this is required to stop potential overflow in build_closing_transaction
+		if msg.fee_satoshis > 21_000_000 * 1_0000_0000 { //this is required to stop potential overflow in build_closing_transaction
 			return Err(ChannelError::Close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
 		}
 
