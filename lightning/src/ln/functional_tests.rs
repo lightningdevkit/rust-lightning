@@ -5081,6 +5081,9 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
 
+	// The to-be-revoked commitment tx should have one HTLC and one to_remote output
+	assert_eq!(revoked_local_txn[0].output.len(), 2);
+
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -5095,6 +5098,10 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
 
+	// Check that the unspent (of two) outputs on revoked_local_txn[0] is a P2WPKH:
+	let unspent_local_txn_output = revoked_htlc_txn[0].input[0].previous_output.vout as usize ^ 1;
+	assert_eq!(revoked_local_txn[0].output[unspent_local_txn_output].script_pubkey.len(), 2 + 20); // P2WPKH
+
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[0], false);
@@ -5102,21 +5109,34 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 3); // ChannelMonitor: justice tx on revoked commitment, justice tx on revoked HTLC-success, ChannelManager: local commitment tx
+
+	// The first transaction generated is just in case of a reorg - it double-spends
+	// revoked_htlc_txn[0], spending the HTLC output on revoked_local_txn[0] directly.
+	assert_eq!(node_txn[0].input.len(), 1);
+	check_spends!(node_txn[0], revoked_local_txn[0]);
+	assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+
 	assert_eq!(node_txn[2].input.len(), 1);
 	check_spends!(node_txn[2], revoked_htlc_txn[0]);
 
+	check_spends!(node_txn[1], chan_1.3);
+
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone(), node_txn[2].clone()] }, 1);
+	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[2].clone()] }, 1);
 	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+
+	// Note that nodes[0]'s tx_broadcaster is still locked, so if we get here the channelmonitor
+	// didn't try to generate any new transactions.
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 5); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
+	assert_eq!(spend_txn.len(), 4); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
 	assert_eq!(spend_txn[0], spend_txn[1]);
 	assert_eq!(spend_txn[0], spend_txn[2]);
+	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
-	check_spends!(spend_txn[3], node_txn[0]); // spending justice tx output from revoked local tx htlc received output
-	check_spends!(spend_txn[4], node_txn[2]); // spending justice tx output on htlc success tx
+	assert_ne!(spend_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	check_spends!(spend_txn[3], node_txn[2]); // spending justice tx output on the htlc success tx
 }
 
 #[test]
