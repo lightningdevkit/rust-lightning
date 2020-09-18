@@ -104,10 +104,10 @@ pub(super) trait IOutboundQueue {
 	// |  _| | | |_| \__ \ | | | | |  | |  __/ |_| | | | (_) | (_| \__ \
 	// |_|   |_|\__,_|___/_| |_| |_|  |_|\___|\__|_| |_|\___/ \__,_|___/
 
-	/// Write previously enqueued data to the SocketDescriptor. A return of false indicates the
-	/// underlying SocketDescriptor could not fulfill the send_data() call and the blocked state
-	/// has been set. Use unblock() when the SocketDescriptor may have more room.
-	fn try_flush_one(&mut self, descriptor: &mut impl SocketDescriptor) -> bool;
+	/// Attempts to write all previously enqueued data to the SocketDescriptor. A return of false
+	/// indicates the underlying SocketDescriptor could not fulfill the send_data() calls and the
+	/// blocked state has been set. Use unblock() when the SocketDescriptor may have more room.
+	fn try_flush(&mut self, descriptor: &mut impl SocketDescriptor) -> bool;
 
 	/// Clear the blocked state caused when a previous write failed
 	fn unblock(&mut self);
@@ -678,7 +678,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 				break;
 			}
 
-			outbound_queue.try_flush_one(descriptor);
+			outbound_queue.try_flush(descriptor);
 		}
 	}
 

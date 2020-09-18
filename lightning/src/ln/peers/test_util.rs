@@ -245,7 +245,7 @@ impl IOutboundQueue for Vec<Vec<u8>> {
 		unimplemented!()
 	}
 
-	fn try_flush_one(&mut self, _descriptor: &mut impl SocketDescriptor) -> bool {
+	fn try_flush(&mut self, _descriptor: &mut impl SocketDescriptor) -> bool {
 		unimplemented!()
 	}
 

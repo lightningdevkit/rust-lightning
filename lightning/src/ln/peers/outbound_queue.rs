@@ -46,32 +46,37 @@ impl IOutboundQueue for OutboundQueue {
 		self.soft_limit - cmp::min(self.soft_limit, self.buffer.len())
 	}
 
-	fn try_flush_one(&mut self, descriptor: &mut impl SocketDescriptor) -> bool {
+	fn try_flush(&mut self, descriptor: &mut impl SocketDescriptor) -> bool {
 		// Exit early if  a previous full write failed and haven't heard that there may be more
 		// room available
 		if self.blocked {
 			return false;
 		}
 
-		let full_write_succeeded = match self.buffer.front() {
-			None => true,
-			Some(next_buff) => {
-				let should_be_reading = self.buffer.len() < self.soft_limit;
-				let pending = &next_buff[self.buffer_first_msg_offset..];
-				let data_sent = descriptor.send_data(pending, should_be_reading);
-				self.buffer_first_msg_offset += data_sent;
-				self.buffer_first_msg_offset == next_buff.len()
+		loop {
+			if self.buffer.is_empty() {
+				return true;
 			}
-		};
 
-		if full_write_succeeded {
-			self.buffer_first_msg_offset = 0;
-			self.buffer.pop_front();
-		} else {
-			self.blocked = true;
+			let full_write_succeeded = match self.buffer.front() {
+				None => true,
+				Some(next_buff) => {
+					let should_be_reading = self.buffer.len() < self.soft_limit;
+					let pending = &next_buff[self.buffer_first_msg_offset..];
+					let data_sent = descriptor.send_data(pending, should_be_reading);
+					self.buffer_first_msg_offset += data_sent;
+					self.buffer_first_msg_offset == next_buff.len()
+				}
+			};
+
+			if full_write_succeeded {
+				self.buffer_first_msg_offset = 0;
+				self.buffer.pop_front();
+			} else {
+				self.blocked = true;
+				return false;
+			}
 		}
-
-		full_write_succeeded
 	}
 
 	fn unblock(&mut self) {
@@ -88,30 +93,30 @@ mod tests {
 	use super::*;
 	use ln::peers::test_util::*;
 
-	// Test that a try_flush_one() call with no queued data doesn't write anything
+	// Test that a try_flush() call with no queued data doesn't write anything
 	#[test]
 	fn empty_does_not_write() {
 		let mut descriptor = SocketDescriptorMock::new();
 		let mut empty = OutboundQueue::new(10);
 
-		assert!(empty.try_flush_one(&mut descriptor));
+		assert!(empty.try_flush(&mut descriptor));
 		descriptor.assert_called_with(vec![]);
 
 	}
 
-	// Test that try_flush_one() sends the push_back
+	// Test that try_flush() sends the push_back
 	#[test]
 	fn push_back_drain() {
 		let mut descriptor = SocketDescriptorMock::new();
 		let mut queue = OutboundQueue::new(10);
 
 		queue.push_back(vec![1]);
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 
 		descriptor.assert_called_with(vec![(vec![1], true)]);
 	}
 
-	// Test that try_flush_one() sends just first push_back
+	// Test that try_flush() sends all
 	#[test]
 	fn push_back_push_back_drain_drain() {
 		let mut descriptor = SocketDescriptorMock::new();
@@ -119,9 +124,9 @@ mod tests {
 
 		queue.push_back(vec![1]);
 		queue.push_back(vec![2]);
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 
-		descriptor.assert_called_with(vec![(vec![1], true)]);
+		descriptor.assert_called_with(vec![(vec![1], true), (vec![2], true)]);
 	}
 
 	// Test that descriptor that can't write all bytes returns valid response
@@ -131,27 +136,40 @@ mod tests {
 		let mut queue = OutboundQueue::new(10);
 
 		queue.push_back(vec![1, 2, 3]);
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 
 		descriptor.assert_called_with(vec![(vec![1, 2, 3], true)]);
 	}
 
+	// Test that descriptor that can't write all bytes (in second pushed item) returns valid response
+	#[test]
+	fn push_back_drain_partial_multiple_push() {
+		let mut descriptor = SocketDescriptorMock::with_fixed_size(2);
+		let mut queue = OutboundQueue::new(10);
+
+		queue.push_back(vec![1]);
+		queue.push_back(vec![2, 3]);
+		assert!(!queue.try_flush(&mut descriptor));
+
+		descriptor.assert_called_with(vec![(vec![1], true), (vec![2, 3], true)]);
+	}
+
 	// Test the bookkeeping for multiple partial writes
 	#[test]
-	fn push_back_drain_partial_drain_partial_try_flush_one() {
+	fn push_back_drain_partial_drain_partial_try_flush() {
 		let mut descriptor = SocketDescriptorMock::with_fixed_size(1);
 		let mut queue = OutboundQueue::new(10);
 
 		queue.push_back(vec![1, 2, 3]);
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 
 		descriptor.make_room(1);
 		queue.unblock();
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 
 		descriptor.make_room(1);
 		queue.unblock();
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 
 		descriptor.assert_called_with(vec![(vec![1, 2, 3], true), (vec![2, 3], true), (vec![3], true)]);
 	}
@@ -163,12 +181,12 @@ mod tests {
 
 		// Fail write and move to blocked state
 		queue.push_back(vec![1, 2]);
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 		descriptor.assert_called_with(vec![(vec![1, 2], true)]);
 
 		// Make room but don't signal
 		descriptor.make_room(1);
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 		assert!(queue.is_blocked());
 		descriptor.assert_called_with(vec![(vec![1, 2], true)]);
 
@@ -176,14 +194,14 @@ mod tests {
 		queue.unblock();
 
 		// Partial write will succeed, but still move to blocked
-		assert!(!queue.try_flush_one(&mut descriptor));
+		assert!(!queue.try_flush(&mut descriptor));
 		assert!(queue.is_blocked());
 		descriptor.assert_called_with(vec![(vec![1, 2], true), (vec![1, 2], true)]);
 
 		// Make room and signal which will succeed in writing the final piece
 		descriptor.make_room(1);
 		queue.unblock();
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 		assert!(!queue.is_blocked());
 		descriptor.assert_called_with(vec![(vec![1, 2], true), (vec![1, 2], true), (vec![2], true)]);
 	}
@@ -195,7 +213,7 @@ mod tests {
 		let mut queue = OutboundQueue::new(1);
 
 		queue.push_back(vec![1]);
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 		descriptor.assert_called_with(vec![(vec![1], false)]);
 	}
 
@@ -208,9 +226,7 @@ mod tests {
 		queue.push_back(vec![1]);
 		queue.push_back(vec![2]);
 		queue.push_back(vec![3]);
-		assert!(queue.try_flush_one(&mut descriptor));
-		assert!(queue.try_flush_one(&mut descriptor));
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 		descriptor.assert_called_with(vec![(vec![1], false), (vec![2], false), (vec![3], true)]);
 	}
 
@@ -224,7 +240,7 @@ mod tests {
 		queue.push_back(vec![1]);
 		assert!(!queue.is_empty());
 
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 		assert!(queue.is_empty());
 	}
 
@@ -245,12 +261,8 @@ mod tests {
 		queue.push_back(vec![2]);
 		assert_eq!(queue.queue_space(), 0);
 
-		// at soft limit
-		assert!(queue.try_flush_one(&mut descriptor));
-		assert_eq!(queue.queue_space(), 0);
-
 		// below soft limt
-		assert!(queue.try_flush_one(&mut descriptor));
+		assert!(queue.try_flush(&mut descriptor));
 		assert_eq!(queue.queue_space(), 1);
 	}
 }
