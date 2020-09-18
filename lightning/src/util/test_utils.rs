@@ -613,11 +613,11 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
 	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcements(&self, _starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		let mut chan_anns = Vec::new();
-		const TOTAL_UPDS: u64 = 100;
-		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS - self.chan_anns_sent.load(Ordering::Acquire) as u64);
-		for i in starting_point..end {
+		const TOTAL_UPDS: u64 = 50;
+		let items_to_send = cmp::min(batch_amount as u64, TOTAL_UPDS - self.chan_anns_sent.load(Ordering::Acquire) as u64);
+		for i in 0..items_to_send {
 			let chan_upd_1 = get_dummy_channel_update(i);
 			let chan_upd_2 = get_dummy_channel_update(i);
 			let chan_ann = get_dummy_channel_announcement(i);
