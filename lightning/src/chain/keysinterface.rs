@@ -309,6 +309,17 @@ pub trait BaseSign {
 	/// chosen to forgo their output as dust.
 	fn sign_closing_transaction(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
+	/// Create a signature for a Child-Pay-For-Parent transaction.
+	///
+	/// Such a transaction is used to unilaterally bump a commitment transaction feerate when this
+	/// is one isn't confirming quickly.
+	///
+	/// Input index is the position of the spending input committed by this BIP 143 signature.
+	///
+	/// Spent amount is the value of the output spent by this input committed by this BIP 143
+	/// signature.
+	fn sign_cpfp(&self, cpfp: &Transaction, input_index: usize, spent_amount: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
 	///
@@ -665,6 +676,13 @@ impl BaseSign for InMemorySigner {
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
+	}
+
+	fn sign_cpfp(&self, cpfp_tx: &Transaction, input_index: usize, spent_amount: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		let anchor_redeemscript = chan_utils::get_anchor_redeemscript(&self.pubkeys().funding_pubkey);
+		let mut sighash_parts = bip143::SigHashCache::new(cpfp_tx);
+		let sighash = hash_to_message!(&sighash_parts.signature_hash(input_index, &anchor_redeemscript, spent_amount, SigHashType::All)[..]);
+		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 
 	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
