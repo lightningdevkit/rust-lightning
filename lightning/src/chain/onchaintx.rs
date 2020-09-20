@@ -24,7 +24,7 @@ use bitcoin::secp256k1;
 use ln::msgs::DecodeError;
 use ln::PaymentPreimage;
 use ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransaction};
-use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
+use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use chain::keysinterface::{Sign, KeysInterface};
 use chain::utxointerface::UtxoPool;
@@ -144,7 +144,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 /// do RBF bumping if possible.
 pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	destination_script: Script,
-	holder_commitment: HolderCommitmentTransaction,
+	pub(super) holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
 	// transaction outputs (hence the Option<>s inside the Vec). The first usize is the index in
 	// the set of HTLCs in the HolderCommitmentTransaction.
@@ -345,7 +345,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref, U: Deref>(&mut self, height: u32, cached_request: &mut PackageTemplate, fee_estimator: &F, logger: &L, utxo_pool: &U) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref, U: Deref>(&mut self, height: u32, cached_request: &mut PackageTemplate, fee_estimator: &F, logger: &L, utxo_pool: &U) -> Option<(Option<u32>, u64, Vec<Transaction>)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 		      U::Target: UtxoPool,
@@ -353,29 +353,31 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		if cached_request.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		if !cached_request.is_malleable() {
-			cached_request.set_bumping_utxo(utxo_pool);
+			if cached_request.feerate_previous() < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 {
+				// Bumping UTXO is allocated the first time we detect the pre-signed feerate
+				// is under our fee estimator confirmation target
+				cached_request.set_bumping_utxo(utxo_pool);
+			}
 		}
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Some(cached_request.get_height_timer(height));
-		if cached_request.is_malleable() {
-			let predicted_weight = cached_request.package_weight(&self.destination_script, self.holder_commitment.get_num_outputs());
-			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, fee_estimator, logger) {
-				assert!(new_feerate != 0);
+		let mut new_timer = Some(cached_request.get_height_timer(height));
+		let predicted_weight = cached_request.package_weight(&self.destination_script, self.holder_commitment.get_num_outputs());
+		if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, fee_estimator, logger) {
+			if output_value != 0 { assert!(new_feerate != 0); }
 
-				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
-				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
-				assert!(predicted_weight >= transaction.get_weight());
-				return Some((new_timer, new_feerate, transaction))
+			let txn = cached_request.finalize_package(self, output_value, self.destination_script.clone(), &*logger, &*utxo_pool).unwrap();
+			log_trace!(logger, "...with timer {} weight {} feerate {} CPFP: {}", new_timer.unwrap(), predicted_weight, new_feerate, txn.len() > 1);
+			assert!(predicted_weight >= txn[0].get_weight() + if txn.len() == 2 { txn[1].get_weight() } else { 0 });
+
+			//TODO: for now disable timer for untractable package
+			// Enabling them is pending on fixing tests first
+			if !cached_request.is_malleable() {
+				new_timer = None;
 			}
-		} else {
-			// Note: Currently, amounts of holder outputs spending witnesses aren't used
-			// as we can't malleate spending package to increase their feerate. This
-			// should change with the remaining anchor output patchset.
-			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger) {
-				return Some((None, 0, transaction));
-			}
+
+			return Some((new_timer, new_feerate, txn))
 		}
 		None
 	}
@@ -444,17 +446,19 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &mut req, &*fee_estimator, &*logger, &*utxo_pool) {
+			if let Some((new_timer, new_feerate, txn)) = self.generate_claim_tx(height, &mut req, &*fee_estimator, &*logger, &*utxo_pool) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
-				let txid = tx.txid();
+				let txid = txn[0].txid();
 				for k in req.outpoints() {
 					log_trace!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				self.pending_claim_requests.insert(txid, req);
-				log_trace!(logger, "Broadcasting onchain {}", log_tx!(tx));
-				broadcaster.broadcast_transaction(&tx);
+				for tx in txn {
+					log_trace!(logger, "Broadcasting onchain {}", log_tx!(tx));
+					broadcaster.broadcast_transaction(&tx);
+				}
 			}
 		}
 
@@ -569,9 +573,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, ref mut request) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, request, &*fee_estimator, &*logger, &*utxo_pool) {
-				log_trace!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-				broadcaster.broadcast_transaction(&bump_tx);
+			if let Some((new_timer, new_feerate, bump_txn)) = self.generate_claim_tx(height, request, &*fee_estimator, &*logger, &*utxo_pool) {
+				for bump_tx in bump_txn {
+					log_trace!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
+					broadcaster.broadcast_transaction(&bump_tx);
+				}
 				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
 					request.set_timer(new_timer);
 					request.set_feerate(new_feerate);
@@ -637,11 +643,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for (_, ref mut request) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, request, &&*fee_estimator, &&*logger, &&*utxo_pool) {
+			if let Some((new_timer, new_feerate, bump_txn)) = self.generate_claim_tx(height, request, &&*fee_estimator, &&*logger, &&*utxo_pool) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
-				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-				broadcaster.broadcast_transaction(&bump_tx);
+				for bump_tx in bump_txn {
+					log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
+					broadcaster.broadcast_transaction(&bump_tx);
+				}
 			}
 		}
 		for (ancestor_claim_txid, request) in bump_candidates.drain() {

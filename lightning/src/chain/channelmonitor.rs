@@ -1538,7 +1538,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
 					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_tx_cache.on_counterparty_tx_csv);
-					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height, 0);
 					claimable_outpoints.push(justice_package);
 				}
 			}
@@ -1552,7 +1552,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
 						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone());
-						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height);
+						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height, 0);
 						claimable_outpoints.push(justice_package);
 					}
 				}
@@ -1704,7 +1704,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							if preimage.is_some() || !htlc.offered {
 								let counterparty_htlc_outp = if htlc.offered { PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, preimage.unwrap(), htlc.clone())) } else { PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, htlc.clone())) };
 								let aggregation = if !htlc.offered { false } else { true };
-								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
+								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0, 0);
 								claimable_outpoints.push(counterparty_package);
 							}
 						}
@@ -1737,7 +1737,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		log_trace!(logger, "Counterparty HTLC broadcast {}:{}", htlc_txid, 0);
 		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_tx_cache.on_counterparty_tx_csv);
-		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height, 0);
 		let claimable_outpoints = vec!(justice_package);
 		let outputs = vec![(0, tx.output[0].clone())];
 		(claimable_outpoints, Some((htlc_txid, outputs)))
@@ -1765,7 +1765,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						};
 						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
 					};
-				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
+				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height, 0);
 				claim_requests.push(htlc_package);
 			}
 		}
@@ -2054,7 +2054,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let should_broadcast = self.would_broadcast_at_height(height, &logger);
 		if should_broadcast {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
-			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), height, false, height);
+			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), height, false, height, self.current_holder_commitment_tx.feerate_per_kw as u64);
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);

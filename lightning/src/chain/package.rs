@@ -298,7 +298,7 @@ impl PackageSolvingData {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderHTLCOutput(..) => { return 0; },
 		};
 		amt
 	}
@@ -413,10 +413,75 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
+	fn get_finalized_tx<Signer: Sign, U: Deref>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, utxo_pool: &U) -> Option<Vec<Transaction>>
+		where U::Target: UtxoPool
+	{
 		match self {
-			PackageSolvingData::HolderHTLCOutput(ref outp) => { return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage); }
-			PackageSolvingData::HolderFundingOutput(ref outp) => { return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript)); }
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				if let Some(signed_htlc_tx) = onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage) {
+					return Some(vec![signed_htlc_tx]);
+				}
+				return None;
+			},
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				// We sign our commitment transaction
+				let mut package_txn = vec![];
+				let signed_tx = onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript);
+
+				if let Some(ref bumping_outpoint) = outp.utxo_input {
+					let mut cpfp_tx = Transaction {
+						version: 2,
+						lock_time: 0,
+						input: Vec::with_capacity(2),
+						output: vec![TxOut {
+							script_pubkey: destination_script,
+							value,
+						}],
+					};
+
+					// We find & select our anchor output
+					let our_anchor_output_script = chan_utils::get_anchor_redeemscript(&onchain_handler.channel_transaction_parameters.holder_pubkeys.funding_pubkey);
+					let mut vout = ::std::u32::MAX;
+					for (idx, outp) in signed_tx.output.iter().enumerate() {
+						if outp.script_pubkey == our_anchor_output_script.to_v0_p2wsh() {
+							vout = idx as u32;
+						}
+					}
+					if vout == ::std::u32::MAX { return None; }
+					let anchor_outpoint = BitcoinOutPoint {
+						txid: signed_tx.txid(),
+						vout,
+					};
+					// We take our bumping outpoint
+					let bumping_outpoint = outp.utxo_input.as_ref().unwrap().0;
+					// We build our CPFP transaction
+					cpfp_tx.input.push(TxIn {
+						previous_output: anchor_outpoint,
+						script_sig: Script::new(),
+						sequence: 0xff_ff_ff_fd,
+						witness: Vec::new(),
+					});
+					cpfp_tx.input.push(TxIn {
+						previous_output: bumping_outpoint,
+						script_sig: Script::new(),
+						sequence: 0xff_ff_ff_fd,
+						witness: Vec::new(),
+					});
+					// We sign and witness finalize anchor input
+					if let Ok(anchor_sig) = onchain_handler.signer.sign_cpfp(&cpfp_tx, 0, 330, &onchain_handler.secp_ctx) {
+						cpfp_tx.input[0].witness.push(anchor_sig.serialize_der().to_vec());
+						cpfp_tx.input[0].witness[0].push(SigHashType::All as u8);
+						cpfp_tx.input[0].witness.push(our_anchor_output_script.into_bytes());
+					}
+					//// We sign and witness finalize bumping input
+					if let Ok(witness) = utxo_pool.provide_utxo_witness(&cpfp_tx, 1) {
+						cpfp_tx.input[1].witness = witness;
+					}
+					package_txn.push(cpfp_tx);
+				}
+				package_txn.insert(0, signed_tx);
+				return Some(package_txn);
+			}
 			_ => { panic!("API Error!"); }
 		}
 	}
@@ -512,6 +577,9 @@ impl PackageTemplate {
 	}
 	pub(crate) fn set_feerate(&mut self, new_feerate: u64) {
 		self.feerate_previous = new_feerate;
+	}
+	pub(crate) fn feerate_previous(&self) -> u64 {
+		self.feerate_previous
 	}
 	pub(crate) fn timer(&self) -> Option<u32> {
 		if let Some(ref timer) = self.height_timer {
@@ -618,21 +686,31 @@ impl PackageTemplate {
 			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script, num_commitment_outputs: usize) -> usize {
-		let mut inputs_weight = 0;
-		let mut witnesses_weight = 2; // count segwit flags
-		for (_, outp) in self.inputs.iter() {
-			// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
-			inputs_weight += 41 * WITNESS_SCALE_FACTOR;
-			witnesses_weight += outp.weight(destination_script, num_commitment_outputs);
+		//TODO: maybe rework malleable/untracable distinction?
+		if self.is_malleable() {
+			let mut inputs_weight = 0;
+			let mut witnesses_weight = 2; // count segwit flags
+			for (_, outp) in self.inputs.iter() {
+				// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
+				inputs_weight += 41 * WITNESS_SCALE_FACTOR;
+				witnesses_weight += outp.weight(destination_script, num_commitment_outputs);
+			}
+			// version: 4 bytes ; count_tx_in: 1 byte ; count_tx_out: 1 byte ; lock_time: 4 bytes
+			let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
+			// value: 8 bytes ; var_int: 1 byte ; pk_script: `destination_script.len()`
+			let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
+			inputs_weight + witnesses_weight + transaction_weight + output_weight
+		} else {
+			let mut weight = 0;
+			for (_, outp) in self.inputs.iter() {
+				weight = outp.weight(destination_script, num_commitment_outputs);
+			}
+			weight
 		}
-		// version: 4 bytes ; count_tx_in: 1 byte ; count_tx_out: 1 byte ; lock_time: 4 bytes
-		let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
-		// value: 8 bytes ; var_int: 1 byte ; pk_script: `destination_script.len()`
-		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
-		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
-	pub(crate) fn finalize_package<L: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L) -> Option<Transaction>
+	pub(crate) fn finalize_package<L: Deref, U: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L, utxo_pool: &U) -> Option<Vec<Transaction>>
 		where L::Target: Logger,
+		      U::Target: UtxoPool,
 	{
 		match self.malleability {
 			PackageMalleability::Malleable => {
@@ -658,15 +736,14 @@ impl PackageTemplate {
 					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
 				}
 				log_trace!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-				return Some(bumped_tx);
+				return Some(vec![bumped_tx]);
 			},
 			PackageMalleability::Untractable => {
-				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
 				if let Some((outpoint, outp)) = self.inputs.first() {
-					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+					if let Some(final_txn) = outp.get_finalized_tx(outpoint, onchain_handler, value, destination_script, utxo_pool) {
 						log_trace!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-						log_trace!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
-						return Some(final_tx);
+						log_trace!(logger, "Finalized transaction {} ready to broadcast", final_txn[0].txid());
+						return Some(final_txn);
 					}
 					return None;
 				} else { panic!("API Error: Package must not be inputs empty"); }
@@ -691,8 +768,14 @@ impl PackageTemplate {
 		where F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
-		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
+
+		// If transaction is still relying on its pre-committed feerate to get confirmed return
+		// a 0-value output-value as it won't be consumed further.
+		if input_amounts == 0 {
+			return Some((0, self.feerate_previous));
+		}
+
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {
@@ -710,7 +793,7 @@ impl PackageTemplate {
 		}
 		None
 	}
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
+	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32, feerate_previous: u64) -> Self {
 		let malleability = match input_solving_data {
 			PackageSolvingData::RevokedOutput(..) => { PackageMalleability::Malleable },
 			PackageSolvingData::RevokedHTLCOutput(..) => { PackageMalleability::Malleable },
@@ -726,7 +809,7 @@ impl PackageTemplate {
 			malleability,
 			soonest_conf_deadline,
 			aggregable,
-			feerate_previous: 0,
+			feerate_previous,
 			height_timer: None,
 			height_original,
 		}
@@ -956,8 +1039,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
-		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 200);
+		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100, 0);
+		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 200, 0);
 		package_one_hundred.merge_package(package_two_hundred);
 	}
 
@@ -969,8 +1052,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx);
 		let htlc_outp = dumb_htlc_output!();
 
-		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
-		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000, true, 100);
+		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100, 0);
+		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000, true, 100, 0);
 		untractable_package.merge_package(malleable_package);
 	}
 
@@ -982,8 +1065,8 @@ mod tests {
 		let htlc_outp = dumb_htlc_output!();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, true, 100);
-		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, true, 100, 0);
+		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100, 0);
 		malleable_package.merge_package(untractable_package);
 	}
 
@@ -994,8 +1077,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, false, 100);
-		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, false, 100, 0);
+		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100, 0);
 		noaggregation_package.merge_package(aggregation_package);
 	}
 
@@ -1006,8 +1089,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
-		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, false, 100);
+		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100, 0);
+		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, false, 100, 0);
 		aggregation_package.merge_package(noaggregation_package);
 	}
 
@@ -1018,9 +1101,9 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
+		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100, 0);
 		empty_package.inputs = vec![];
-		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100, 0);
 		empty_package.merge_package(package);
 	}
 
@@ -1032,8 +1115,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0);
 
-		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
-		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, true, 100);
+		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100, 0);
+		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, true, 100, 0);
 		revoked_package.merge_package(counterparty_package);
 	}
 
@@ -1045,9 +1128,9 @@ mod tests {
 		let revk_outp_two = dumb_revk_output!(secp_ctx);
 		let revk_outp_three = dumb_revk_output!(secp_ctx);
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, true, 100);
-		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, true, 100);
-		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000, true, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, true, 100, 0);
+		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, true, 100, 0);
+		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000, true, 100, 0);
 
 		package_one.merge_package(package_two);
 		package_one.merge_package(package_three);
@@ -1070,7 +1153,7 @@ mod tests {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let htlc_outp_one = dumb_htlc_output!();
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, true, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, true, 100, 0);
 		let ret_split = package_one.split_package(&BitcoinOutPoint { txid, vout: 0});
 		assert!(ret_split.is_none());
 	}
@@ -1081,7 +1164,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
+		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100, 0);
 		let timer_none = package.timer();
 		assert!(timer_none.is_none());
 		package.set_timer(Some(100));
@@ -1096,7 +1179,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
 
-		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100, 0);
 		assert_eq!(package.package_amount(), 1000);
 	}
 
@@ -1106,7 +1189,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
+		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100, 0);
 		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR
 		// + witness marker (2) + WEIGHT_REVOKED_OUTPUT
 		assert_eq!(package.package_weight(&Script::new(), 0), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
