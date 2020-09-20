@@ -582,6 +582,9 @@ impl PackageTemplate {
 
 				// We sign our commitment transaction
 				let signed_tx = onchain_handler.get_fully_signed_holder_tx(&input.1.funding_redeemscript).unwrap();
+				let mut package_txn = Vec::with_capacity(2);
+				log_trace!(logger, "Going to broadcast Holder Transaction {} claiming funding output {} from {}...", signed_tx.txid(), input.0.vout, input.0.txid);
+				package_txn.push(signed_tx);
 				let mut cpfp_tx = Transaction {
 					version: 2,
 					lock_time: 0,
@@ -591,49 +594,53 @@ impl PackageTemplate {
 						value,
 					}],
 				};
-				// TODO: make CPFP generation conditional on utxo input
-				if let Some(ref holder_tx) = onchain_handler.holder_commitment.as_ref() {
-					// We find & select our anchor output
-					let our_anchor_output_script = chan_utils::get_anchor_redeemscript(&onchain_handler.key_storage.pubkeys().funding_pubkey);
-					let mut vout = ::std::u32::MAX;
-					for (idx, outp) in holder_tx.unsigned_tx.output.iter().enumerate() {
-						if outp.script_pubkey == our_anchor_output_script.to_v0_p2wsh() {
-							vout = idx as u32;
+				// If commitment tx is still relying on its pre-signed fees to
+				// confirm, don't attach a CPFP
+				if utxo_input.is_some() {
+					if let Some(ref holder_tx) = onchain_handler.holder_commitment.as_ref() {
+						// We find & select our anchor output
+						let our_anchor_output_script = chan_utils::get_anchor_redeemscript(&onchain_handler.key_storage.pubkeys().funding_pubkey);
+						let mut vout = ::std::u32::MAX;
+						for (idx, outp) in holder_tx.unsigned_tx.output.iter().enumerate() {
+							if outp.script_pubkey == our_anchor_output_script.to_v0_p2wsh() {
+								vout = idx as u32;
+							}
 						}
-					}
-					if vout == ::std::u32::MAX { return None; }
-					let anchor_outpoint = BitcoinOutPoint {
-						txid: holder_tx.unsigned_tx.txid(),
-						vout,
-					};
-					// We take our bumping outpoint
-					let bumping_outpoint = utxo_input.as_ref().unwrap().0;
-					// We build our CPFP transaction
-					cpfp_tx.input.push(TxIn {
-						previous_output: anchor_outpoint,
-						script_sig: Script::new(),
-						sequence: 0xfffffffd,
-						witness: Vec::new(),
-					});
-					cpfp_tx.input.push(TxIn {
-						previous_output: bumping_outpoint,
-						script_sig: Script::new(),
-						sequence: 0xfffffffd,
-						witness: Vec::new(),
-					});
-					// We sign and witness finalize anchor input
-					if let Ok(anchor_sig) = onchain_handler.key_storage.sign_cpfp(&cpfp_tx, 0, ANCHOR_OUTPUT_VALUE, &onchain_handler.secp_ctx) {
-						cpfp_tx.input[0].witness.push(anchor_sig.serialize_der().to_vec());
-						cpfp_tx.input[0].witness[0].push(SigHashType::All as u8);
-						cpfp_tx.input[0].witness.push(our_anchor_output_script.into_bytes());
-					}
-					//// We sign and witness finalize bumping input
-					if let Ok(witness) = utxo_pool.provide_utxo_witness(&cpfp_tx, 1) {
-						cpfp_tx.input[1].witness = witness;
+						if vout == ::std::u32::MAX { return None; }
+						let anchor_outpoint = BitcoinOutPoint {
+							txid: holder_tx.unsigned_tx.txid(),
+							vout,
+						};
+						// We take our bumping outpoint
+						let bumping_outpoint = utxo_input.as_ref().unwrap().0;
+						// We build our CPFP transaction
+						cpfp_tx.input.push(TxIn {
+							previous_output: anchor_outpoint,
+							script_sig: Script::new(),
+							sequence: 0xfffffffd,
+							witness: Vec::new(),
+						});
+						cpfp_tx.input.push(TxIn {
+							previous_output: bumping_outpoint,
+							script_sig: Script::new(),
+							sequence: 0xfffffffd,
+							witness: Vec::new(),
+						});
+						// We sign and witness finalize anchor input
+						if let Ok(anchor_sig) = onchain_handler.key_storage.sign_cpfp(&cpfp_tx, 0, ANCHOR_OUTPUT_VALUE, &onchain_handler.secp_ctx) {
+							cpfp_tx.input[0].witness.push(anchor_sig.serialize_der().to_vec());
+							cpfp_tx.input[0].witness[0].push(SigHashType::All as u8);
+							cpfp_tx.input[0].witness.push(our_anchor_output_script.into_bytes());
+						}
+						//// We sign and witness finalize bumping input
+						if let Ok(witness) = utxo_pool.provide_utxo_witness(&cpfp_tx, 1) {
+							cpfp_tx.input[1].witness = witness;
+						}
+						log_trace!(logger, "Going to broadcast CPFP Transaction {} claiming anchor output from {}...", cpfp_tx.txid(), holder_tx.unsigned_tx.txid());
+						package_txn.push(cpfp_tx);
 					}
 				}
-				log_trace!(logger, "Going to broadcast Holder Transaction {} claiming funding output {} from {}...", signed_tx.txid(), input.0.vout, input.0.txid);
-				return Some(vec![signed_tx, cpfp_tx]);
+				return Some(package_txn);
 			}
 		}
 	}
@@ -1016,7 +1023,7 @@ pub(crate) fn compute_output_value<F: Deref, L: Deref>(predicted_weight: usize, 
 	// If transaction is still relying ont its pre-committed feerate to get confirmed return
 	// a 0-value output-value as it won't be consumed further
 	if input_amounts == 0 {
-	        return Some((0, previous_feerate));
+		return Some((0, previous_feerate));
 	}
 
 	// If old feerate is 0, first iteration of this claim, use normal fee calculation

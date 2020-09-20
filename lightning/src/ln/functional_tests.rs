@@ -2744,11 +2744,12 @@ fn claim_htlc_outputs_single_tx() {
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 9);
+		assert_eq!(node_txn.len(), 13);
 		// ChannelMonitor: justice tx revoked offered htlc, justice tx revoked received htlc, justice tx revoked to_local (3)
 		// ChannelManager: local commmitment + local HTLC-timeout (2)
 		// ChannelMonitor: bumped justice tx, after one increase, bumps on HTLC aren't generated not being substantial anymore, bump on revoked to_local isn't generated due to more room for expiration (2)
 		// ChannelMonitor: local commitment + local HTLC-timeout (2)
+		// ChannelMonitor: bumped local commitment with _no_ CPFPs as feerate didn't fluctuate (3)
 
 		// Check the pair local commitment and HTLC-timeout broadcast due to HTLC expiration
 		assert_eq!(node_txn[2].input.len(), 1);
@@ -2757,6 +2758,11 @@ fn claim_htlc_outputs_single_tx() {
 		let witness_script = node_txn[3].input[0].witness.last().unwrap();
 		assert_eq!(witness_script.len(), OFFERED_HTLC_SCRIPT_WEIGHT); //Spending an offered htlc output
 		check_spends!(node_txn[3], node_txn[2]);
+
+		// Bumped commitments TODO check more
+		check_spends!(node_txn[10], chan_1.3);
+		check_spends!(node_txn[11], chan_1.3);
+		check_spends!(node_txn[12], chan_1.3);
 
 		// Justice transactions are indices 1-2-4
 		assert_eq!(node_txn[0].input.len(), 1);
@@ -8431,11 +8437,12 @@ fn test_concurrent_monitor_claim() {
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
 	watchtower_alice.simple_monitor.block_connected(&header, 136, &vec![&bob_state_y][..], &vec![]);
 	{
-		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We broadcast twice the transaction, once due to the HTLC-timeout, once due
 		// the onchain detection of the HTLC output
-		assert_eq!(htlc_txn.len(), 2);
-		check_spends!(htlc_txn[0], bob_state_y);
-		check_spends!(htlc_txn[1], bob_state_y);
+		assert_eq!(txn.len(), 3);
+		check_spends!(txn[0], bob_state_y);
+		check_spends!(txn[1], bob_state_y);
+		check_spends!(txn[2], chan_1.3);
 	}
 }

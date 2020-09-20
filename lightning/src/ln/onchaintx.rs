@@ -27,7 +27,7 @@ use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils::HolderCommitmentTransaction;
 use ln::onchain_utils::{OnchainRequest, PackageTemplate, BumpStrategy};
 use ln::onchain_utils;
-use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
+use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget};
 use chain::keysinterface::ChannelKeys;
 use chain::utxointerface::UtxoPool;
 use util::logger::Logger;
@@ -311,7 +311,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		if cached_request.content.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		if cached_request.bump_strategy == BumpStrategy::CPFP {
-			cached_request.content.package_cpfp(&utxo_pool);
+			if cached_request.feerate_previous < fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 {
+				// Bumping UTXO is allocated the first time we detect the pre-signed feerate
+				// is our fee estimator confirmation target
+				cached_request.content.package_cpfp(&utxo_pool);
+			}
 		}
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
@@ -332,7 +336,6 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			if predicted_weight == 706 || predicted_weight == 666 {
 				new_timer = None;
 			}
-
 			return Some((new_timer, new_feerate, txn))
 		}
 		None

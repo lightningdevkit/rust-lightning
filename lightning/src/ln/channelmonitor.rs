@@ -1809,7 +1809,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let should_broadcast = self.would_broadcast_at_height(height, &logger);
 		if should_broadcast {
 			let holder_commitment_tx = PackageTemplate::build_holder_commitment_tx(self.funding_redeemscript.clone(), self.funding_info.0.txid.clone(), self.funding_info.0.index as u32);
-			claimable_outpoints.push(OnchainRequest { aggregation: false, bump_strategy: BumpStrategy::CPFP, feerate_previous: 0, height_timer: None, absolute_timelock: height, height_original: height, content: holder_commitment_tx });
+			claimable_outpoints.push(OnchainRequest { aggregation: false, bump_strategy: BumpStrategy::CPFP, feerate_previous: self.current_holder_commitment_tx.feerate_per_kw as u64, height_timer: None, absolute_timelock: height, height_original: height, content: holder_commitment_tx });
 		}
 		if should_broadcast {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
