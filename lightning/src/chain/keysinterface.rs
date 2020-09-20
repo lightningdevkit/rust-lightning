@@ -311,6 +311,17 @@ pub trait ChannelKeys : Send+Clone {
 	/// chosen to forgo their output as dust.
 	fn sign_closing_transaction<T: secp256k1::Signing>(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
+	/// Create a signature for a Child-Pay-For-Parent transaction.
+	///
+	/// Such a transaction is used to unilaterally bump a commitment transaction feerate when this
+	/// is one isn't confirming quickly.
+	///
+	/// Input index is the position of the spending input committed by this BIP 143 signature.
+	///
+	/// Spent amount is the value of the output spent by this input committed by this BIP 143
+	/// signature.
+	fn sign_cpfp<T: secp256k1::Signing>(&self, cpfp: &Transaction, input_index: usize, spent_amount: u64, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
+
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
 	///
@@ -580,6 +591,13 @@ impl ChannelKeys for InMemoryChannelKeys {
 
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(closing_tx)
 			.signature_hash(0, &channel_funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
+		Ok(secp_ctx.sign(&sighash, &self.funding_key))
+	}
+
+	fn sign_cpfp<T: secp256k1::Signing>(&self, cpfp_tx: &Transaction, input_index: usize, spent_amount: u64, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		let anchor_redeemscript = chan_utils::get_anchor_redeemscript(&self.pubkeys().funding_pubkey);
+		let mut sighash_parts = bip143::SigHashCache::new(cpfp_tx);
+		let sighash = hash_to_message!(&sighash_parts.signature_hash(input_index, &anchor_redeemscript, spent_amount, SigHashType::All)[..]);
 		Ok(secp_ctx.sign(&sighash, &self.funding_key))
 	}
 

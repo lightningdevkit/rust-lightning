@@ -128,6 +128,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
+	fn sign_cpfp<T: secp256k1::Signing>(&self, cpfp_tx: &Transaction, input_index: usize, spent_amount: u64, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.sign_cpfp(cpfp_tx, input_index, spent_amount, secp_ctx).unwrap())
+	}
+
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
