@@ -14,6 +14,7 @@ use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::channel::ANCHOR_OUTPUT_VALUE;
 use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
 use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
@@ -1463,6 +1464,16 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 	let mut res = Vec::new();
 	mem::swap(&mut *node_txn, &mut res);
 	res
+}
+
+pub fn check_anchor_output(tx: &Transaction, anchors: u32) {
+	let mut counting = 0;
+	for outp in &tx.output {
+		if outp.value == ANCHOR_OUTPUT_VALUE {
+			counting += 1;
+		}
+	}
+	assert_eq!(counting, anchors);
 }
 
 pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize, needs_err_handle: bool, expected_error: &str)  {

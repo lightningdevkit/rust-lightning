@@ -375,10 +375,14 @@ mod tests {
 		};
 
 		// Set expectations on nodes[1]'s chain source to return dependent transactions.
-		let htlc_output = TxOutReference(commitment_tx.clone(), 0);
-		let to_local_output = TxOutReference(commitment_tx.clone(), 1);
+		let anchor_a_output = TxOutReference(commitment_tx.clone(), 0);
+		let anchor_b_output = TxOutReference(commitment_tx.clone(), 1);
+		let htlc_output = TxOutReference(commitment_tx.clone(), 2);
+		let to_local_output = TxOutReference(commitment_tx.clone(), 3);
 		let htlc_timeout_output = TxOutReference(htlc_tx.clone(), 0);
 		nodes[1].chain_source
+			.expect(OnRegisterOutput { with: anchor_a_output, returns: None })
+			.expect(OnRegisterOutput { with: anchor_b_output, returns: None })
 			.expect(OnRegisterOutput { with: htlc_output, returns: Some((1, htlc_tx)) })
 			.expect(OnRegisterOutput { with: to_local_output, returns: None })
 			.expect(OnRegisterOutput { with: htlc_timeout_output, returns: None });

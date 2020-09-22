@@ -35,7 +35,7 @@ use prelude::*;
 use core::cmp;
 use ln::chan_utils;
 use util::transaction_utils::sort_outputs;
-use ln::channel::INITIAL_COMMITMENT_NUMBER;
+use ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE};
 use core::ops::Deref;
 use chain;
 
@@ -773,7 +773,7 @@ impl HolderCommitmentTransaction {
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 })
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, None, false, None, keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
@@ -860,6 +860,8 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: u64,
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
+	anchor_a: Option<(bool, PublicKey)>,
+	anchor_b: Option<(bool, PublicKey)>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
 	keys: TxCreationKeys,
 	// For access to the pre-built transaction, see doc for trust()
@@ -873,6 +875,8 @@ impl PartialEq for CommitmentTransaction {
 			self.to_countersignatory_value_sat == o.to_countersignatory_value_sat &&
 			self.feerate_per_kw == o.feerate_per_kw &&
 			self.htlcs == o.htlcs &&
+			self.anchor_a == o.anchor_a &&
+			self.anchor_b == o.anchor_b &&
 			self.keys == o.keys;
 		if eq {
 			debug_assert_eq!(self.built.transaction, o.built.transaction);
@@ -889,8 +893,11 @@ impl_writeable_tlv_based!(CommitmentTransaction, {
 	(6, feerate_per_kw),
 	(8, keys),
 	(10, built),
-}, {}, {
-	(12, htlcs),
+}, {
+	(12, anchor_a),
+	(14, anchor_b),
+}, {
+	(16, htlcs),
 });
 
 impl CommitmentTransaction {
@@ -904,9 +911,9 @@ impl CommitmentTransaction {
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
 	/// (C-not exported) due to the generic though we likely should expose a version without
-	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, anchor_for_a: bool, funding_a: Option<&PublicKey>, anchor_for_b: bool, funding_b: Option<&PublicKey>, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
-		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters).unwrap();
+		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, anchor_for_a, funding_a, anchor_for_b, funding_b).unwrap();
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -917,6 +924,8 @@ impl CommitmentTransaction {
 			to_countersignatory_value_sat,
 			feerate_per_kw,
 			htlcs,
+			anchor_a: if anchor_for_a { Some((anchor_for_a, funding_a.unwrap().clone())) } else { None },
+			anchor_b: if anchor_for_b { Some((anchor_for_b, funding_b.unwrap().clone())) } else { None },
 			keys,
 			built: BuiltCommitmentTransaction {
 				transaction,
@@ -929,7 +938,17 @@ impl CommitmentTransaction {
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
 
 		let mut htlcs_with_aux = self.htlcs.iter().map(|h| (h.clone(), ())).collect();
-		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters)?;
+		let (anchor_for_a, funding_a) = if let Some(ref anchor_a) = self.anchor_a {
+			(anchor_a.0, Some(&anchor_a.1))
+		} else {
+			(false, None)
+		};
+		let (anchor_for_b, funding_b) = if let Some(ref anchor_b) = self.anchor_b {
+			(anchor_b.0, Some(&anchor_b.1))
+		} else {
+			(false, None)
+		};
+		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters, anchor_for_a, funding_a, anchor_for_b, funding_b)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
 		let txid = transaction.txid();
@@ -953,7 +972,7 @@ impl CommitmentTransaction {
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
 	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, anchor_for_a: bool, funding_a: Option<&PublicKey>, anchor_for_b: bool, funding_b: Option<&PublicKey>) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let contest_delay = channel_parameters.contest_delay();
 
@@ -980,6 +999,28 @@ impl CommitmentTransaction {
 				TxOut {
 					script_pubkey: redeem_script.to_v0_p2wsh(),
 					value: to_broadcaster_value_sat,
+				},
+				None,
+			));
+		}
+
+		if anchor_for_a {
+			let anchor_script = get_anchor_redeemscript(funding_a.unwrap());
+			txouts.push((
+				TxOut {
+					script_pubkey: anchor_script.to_v0_p2wsh(),
+					value: ANCHOR_OUTPUT_VALUE,
+				},
+				None,
+			));
+		}
+
+		if anchor_for_b {
+			let anchor_script = get_anchor_redeemscript(funding_b.unwrap());
+			txouts.push((
+				TxOut {
+					script_pubkey: anchor_script.to_v0_p2wsh(),
+					value: ANCHOR_OUTPUT_VALUE,
 				},
 				None,
 			));

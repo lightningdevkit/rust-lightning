@@ -954,8 +954,6 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		// If we initiate the commitment update, inbound HTLC flowing from our counterparty
-		// to us
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				InboundHTLCState::RemoteAnnounced(_) => (!building_for_counterparty, "RemoteAnnounced"),
@@ -1035,14 +1033,26 @@ impl<Signer: Sign> Channel<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, counterparty_value_msat as u64);
 		}
 
-		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (included_non_dust_htlcs.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		// If `option_anchor_output` applies to the commitment transaction,
+		// * we account anchor output weight in commitment *expected weight*
+		// * we substract two times the fixed anchor sizze of 330 sats from funder balance
+		//
+		// Note, we already enforced that funder can afford two anchors at `update_add_htlc`
+		// acceptance.
+
+		let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (included_non_dust_htlcs.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC + 2 * COMMITMENT_TX_WEIGHT_PER_ANCHOR) / 1000;
 		let (holder_value, counterparty_value) = if self.is_outbound() {
-			(holder_value_msat / 1000 - total_fee as i64, counterparty_value_msat / 1000)
+			(holder_value_msat / 1000 - total_fee as i64 - 2 * ANCHOR_OUTPUT_VALUE as i64, counterparty_value_msat / 1000)
 		} else {
-			(holder_value_msat / 1000, counterparty_value_msat / 1000 - total_fee as i64)
+			(holder_value_msat / 1000, counterparty_value_msat / 1000 - total_fee as i64 - 2 * ANCHOR_OUTPUT_VALUE as i64)
 		};
 
 		let (mut value_to_a, mut value_to_b) = if !building_for_counterparty { (holder_value, counterparty_value) } else { (counterparty_value, holder_value) };
+		let (funding_pubkey_a, funding_pubkey_b) = if !building_for_counterparty {
+			(self.get_holder_pubkeys().funding_pubkey, self.get_counterparty_pubkeys().funding_pubkey)
+		} else {
+			(self.get_counterparty_pubkeys().funding_pubkey, self.get_holder_pubkeys().funding_pubkey)
+		};
 
 		if value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
 			log_trace!(logger, "   ...including {} output with value {}", if !building_for_counterparty { "to_local" } else { "to_remote" }, value_to_a);
@@ -1056,6 +1066,23 @@ impl<Signer: Sign> Channel<Signer> {
 			value_to_b = 0;
 		}
 
+		// If `option_anchor_output` applies to the commitment transaction, we materialize
+		// anchors :
+		//  * we add anchors for both parties, if we have untrimmed HTLCs outputs
+		//  * we add anchor for a party, if its balance is present
+		let has_htlcs = counterparty_htlc_total_msat + holder_htlc_total_msat > 0;
+		let mut anchor_for_a = false;
+		let mut anchor_for_b = false;
+		if has_htlcs || value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
+			log_trace!(logger, "   ...including {} anchor output with value {}", if !building_for_counterparty { "to_local" } else { "to_remote" }, ANCHOR_OUTPUT_VALUE);
+			anchor_for_a = true;
+		}
+
+		if has_htlcs || value_to_b >= (broadcaster_dust_limit_satoshis as i64) {
+			log_trace!(logger, "   ...including {} anchor output with value {}", if !building_for_counterparty { "to_remote" } else { "to_local" }, ANCHOR_OUTPUT_VALUE);
+			anchor_for_b = true;
+		}
+
 		let num_nondust_htlcs = included_non_dust_htlcs.len();
 
 		let channel_parameters =
@@ -1064,6 +1091,10 @@ impl<Signer: Sign> Channel<Signer> {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
+									     anchor_for_a,
+									     Some(&funding_pubkey_a),
+									     anchor_for_b,
+									     Some(&funding_pubkey_b),
 		                                                             keys.clone(),
 		                                                             feerate_per_kw,
 		                                                             &mut included_non_dust_htlcs,
