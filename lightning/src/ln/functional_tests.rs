@@ -19,7 +19,7 @@ use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PER
 use chain::transaction::OutPoint;
 use chain::keysinterface::{KeysInterface, BaseSign};
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, COMMITMENT_TX_WEIGHT_PER_ANCHOR, ANCHOR_OUTPUT_VALUE};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
@@ -41,6 +41,7 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
+use bitcoin::consensus::encode;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -573,7 +574,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1888;
+	let channel_value = 1977 + 2 * ANCHOR_OUTPUT_VALUE;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
@@ -587,20 +588,20 @@ fn test_update_fee_that_funder_cannot_afford() {
 	commitment_signed_dance!(nodes[1], nodes[0], update_msg.commitment_signed, false);
 
 	//Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate of 260 set above.
-	//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve)
+	//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve + 2 * anchor output value)
 	{
 		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
-		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
-		let num_htlcs = commitment_tx.output.len() - 2;
-		let total_fee: u64 = feerate as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs and -2 for anchor outputs
+		let num_htlcs = commitment_tx.output.len() - 2; //TODO: add +2 in next commit
+		let mut total_fee: u64 = feerate as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000; //TODO: add anchor weight in next commit
 		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value);
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
 	}
 
 	//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
-	//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
+	//fee_rate*(1124/1000) so the increment of 1*1.724 is rounded back down)
 	nodes[0].node.update_fee(channel_id, feerate+2).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -1547,16 +1548,17 @@ fn test_basic_channel_reserve() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 95_000_000, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
 	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
 
 	// The 2* and +1 are for the fee spike reserve.
+	// The 2 * ANCHOR_OUTPUT_VALUE account for anchor output value.
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
-	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], chan.2), 1 + 1);
-	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
+	let commit_tx_fee = 2 * commit_tx_fee_msat_and_anchors(get_feerate!(nodes[0], chan.2), 1 + 1);
+	let max_can_send = 5_000_000 - channel_reserve - commit_tx_fee - (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), max_can_send + 1, TEST_FINAL_CLTV, &logger).unwrap();
 	let err = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).err().unwrap();
@@ -1582,7 +1584,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 94253000, InitFeatures::known(), InitFeatures::known());
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 3460001);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
@@ -1639,7 +1641,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let local_chan_balance = 1313;
+	let local_chan_balance = 2060;
 
 	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
 		offered: false,
@@ -1657,7 +1659,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
-			95000,
+			94253,
 			local_chan_balance,
 			commit_tx_keys.clone(),
 			feerate_per_kw,
@@ -1774,7 +1776,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
 	// channel reserve violation (so their balance is channel reserve (1000 sats) + commitment
 	// transaction fee with 0 HTLCs (183 sats)).
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98817000, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100660, 98_157_000, InitFeatures::known(), InitFeatures::known());
 
 	let dust_amt = 329000; // Dust amount
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
@@ -1791,7 +1793,7 @@ fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98000000, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100660, 97_340_000, InitFeatures::known(), InitFeatures::known());
 
 	let payment_amt = 46000; // Dust amount
 	// In the previous code, these first four payments would succeed.
@@ -1828,7 +1830,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let feerate = get_feerate!(nodes[0], chan.2);
 
 	// Add a 2* and +1 for the fee spike reserve.
-	let commit_tx_fee_2_htlc = 2*commit_tx_fee_msat(feerate, 2 + 1);
+	let commit_tx_fee_2_htlc = 2*commit_tx_fee_msat_and_anchors(feerate, 2 + 1);
 	let recv_value_1 = (chan_stat.value_to_self_msat - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlc)/2;
 	let amt_msat_1 = recv_value_1 + total_routing_fee_msat;
 
@@ -1845,7 +1847,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event_1.msgs[0]);
 
 	// Attempt to trigger a channel reserve violation --> payment failure.
-	let commit_tx_fee_2_htlcs = commit_tx_fee_msat(feerate, 2);
+	let commit_tx_fee_2_htlcs = commit_tx_fee_msat_and_anchors(feerate, 2);
 	let recv_value_2 = chan_stat.value_to_self_msat - amt_msat_1 - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlcs + 1;
 	let amt_msat_2 = recv_value_2 + total_routing_fee_msat;
 	let (route_2, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_2);
@@ -1894,8 +1896,8 @@ fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000);
 }
 
-fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64) -> u64 {
-	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate as u64 / 1000 * 1000
+fn commit_tx_fee_msat_and_anchors(feerate: u32, num_htlcs: u64) -> u64 {
+	(COMMITMENT_TX_BASE_WEIGHT + num_htlcs * COMMITMENT_TX_WEIGHT_PER_HTLC + 2 * COMMITMENT_TX_WEIGHT_PER_ANCHOR) * feerate as u64 / 1000 * 1000
 }
 
 #[test]
@@ -1947,7 +1949,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		// 3 for the 3 HTLCs that will be sent, 2* and +1 for the fee spike reserve.
 		// Also, ensure that each payment has enough to be over the dust limit to
 		// ensure it'll be included in each commit tx fee calculation.
-		let commit_tx_fee_all_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1);
+		let commit_tx_fee_all_htlcs = 2*commit_tx_fee_msat_and_anchors(feerate, 3 + 1) + (2 * ANCHOR_OUTPUT_VALUE * 1000);
 		let ensure_htlc_amounts_above_dust_buffer = 3 * (stat01.counterparty_dust_limit_msat + 1000);
 		if stat01.value_to_self_msat < stat01.channel_reserve_msat + commit_tx_fee_all_htlcs + ensure_htlc_amounts_above_dust_buffer + amt_msat {
 			break;
@@ -1979,7 +1981,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// the amount of the first of these aforementioned 3 payments. The reason we split into 3 payments
 	// is to test the behavior of the holding cell with respect to channel reserve and commit tx fee
 	// policy.
-	let commit_tx_fee_2_htlcs = 2*commit_tx_fee_msat(feerate, 2 + 1);
+	let commit_tx_fee_2_htlcs = 2*commit_tx_fee_msat_and_anchors(feerate, 2 + 1) + (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs)/2;
 	let amt_msat_1 = recv_value_1 + total_fee_msat;
 
@@ -2004,7 +2006,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	}
 
 	// split the rest to test holding cell
-	let commit_tx_fee_3_htlcs = 2*commit_tx_fee_msat(feerate, 3 + 1);
+	let commit_tx_fee_3_htlcs = 2*commit_tx_fee_msat_and_anchors(feerate, 3 + 1) + (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let additional_htlc_cost_msat = commit_tx_fee_3_htlcs - commit_tx_fee_2_htlcs;
 	let recv_value_21 = recv_value_2/2 - additional_htlc_cost_msat/2;
 	let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat - additional_htlc_cost_msat;
@@ -2105,11 +2107,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_21);
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), our_payment_preimage_22);
 
-	let commit_tx_fee_0_htlcs = 2*commit_tx_fee_msat(feerate, 1);
+	let commit_tx_fee_0_htlcs = 2*commit_tx_fee_msat_and_anchors(feerate, 1) + 2 * ANCHOR_OUTPUT_VALUE * 1000;
 	let recv_value_3 = commit_tx_fee_2_htlcs - commit_tx_fee_0_htlcs - total_fee_msat;
 	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3);
 
-	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat(feerate, 1 + 1);
+	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat_and_anchors(feerate, 1 + 1) + 2 * ANCHOR_OUTPUT_VALUE * 1000;
 	let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat) - (recv_value_3 + total_fee_msat);
 	let stat0 = get_channel_value_stat!(nodes[0], chan_1.2);
 	assert_eq!(stat0.value_to_self_msat, expected_value_to_self);
@@ -6221,7 +6223,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 
 	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1);
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat_and_anchors(feerate, 1 + 1) - (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
 
@@ -6296,7 +6298,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	let amt_1 = 20000;
 	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
-	let amt_2 = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 2 + 1) - amt_1;
+	let amt_2 = 5000000 - channel_reserve - 2*commit_tx_fee_msat_and_anchors(feerate, 2 + 1) - amt_1 - (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], amt_1, TEST_FINAL_CLTV, &logger).unwrap();
 	let route_2 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], amt_2, TEST_FINAL_CLTV, &logger).unwrap();
@@ -6419,7 +6421,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let feemsat = 239;
 	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1) - total_routing_fee_msat;
+	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat_and_anchors(feerate, 1 + 1) - total_routing_fee_msat - (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let payment_event = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
@@ -6733,9 +6735,9 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let channel_reserve = chan_stat.channel_reserve_msat;
 	let feerate = get_feerate!(nodes[0], chan.2);
 	// The 2* and +1 are for the fee spike reserve.
-	let commit_tx_fee_outbound = 2 * commit_tx_fee_msat(feerate, 1 + 1);
+	let commit_tx_fee_outbound = 2 * commit_tx_fee_msat_and_anchors(feerate, 1 + 1);
 
-	let max_can_send = 5000000 - channel_reserve - commit_tx_fee_outbound;
+	let max_can_send = 5000000 - channel_reserve - commit_tx_fee_outbound - (2 * ANCHOR_OUTPUT_VALUE * 1000);
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
