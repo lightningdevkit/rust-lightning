@@ -12,6 +12,7 @@
 
 use chain::chaininterface;
 use chain::transaction::OutPoint;
+use ln::channel::ANCHOR_OUTPUT_VALUE;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::channelmonitor::{ChannelMonitor, ManyChannelMonitor};
 use routing::router::{Route, get_route};
@@ -1227,6 +1228,16 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 	let mut res = Vec::new();
 	mem::swap(&mut *node_txn, &mut res);
 	res
+}
+
+pub fn check_anchor_output(tx: &Transaction, anchors: u32) {
+	let mut counting = 0;
+	for outp in &tx.output {
+		if outp.value == ANCHOR_OUTPUT_VALUE {
+			counting += 1;
+		}
+	}
+	assert_eq!(counting, anchors);
 }
 
 pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {

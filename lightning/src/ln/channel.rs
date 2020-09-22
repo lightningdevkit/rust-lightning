@@ -906,8 +906,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		// If we initiate the commitment update, inbound HTLC flowing from our counterparty
-		// to us
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				InboundHTLCState::RemoteAnnounced(_) => (!building_for_counterparty, "RemoteAnnounced"),
@@ -987,14 +985,27 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, counterparty_value_msat as u64);
 		}
 
-		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		// If `option_anchor_output` applies to the commitment transaction,
+		// * we account anchor output weight in commitment *expected weight*
+		// * we substract two times the fixed anchor sizze of 330 sats from funder balance
+		//
+		// Note, we already enforced that funder can afford two anchors at `update_add_htlc`
+		// acceptance.
+
+		let total_fee: u64 = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (txouts.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC + 2 * COMMITMENT_TX_WEIGHT_PER_ANCHOR) / (1000 as u64);
+
 		let (holder_value, counterparty_value) = if self.channel_outbound {
-			(holder_value_msat / 1000 - total_fee as i64, counterparty_value_msat / 1000)
+			(holder_value_msat / 1000 - total_fee as i64 - 2 * ANCHOR_OUTPUT_VALUE as i64, counterparty_value_msat / 1000)
 		} else {
-			(holder_value_msat / 1000, counterparty_value_msat / 1000 - total_fee as i64)
+			(holder_value_msat / 1000, counterparty_value_msat / 1000 - total_fee as i64 - 2 * ANCHOR_OUTPUT_VALUE as i64)
 		};
 
 		let (value_to_a, value_to_b) = if !building_for_counterparty { (holder_value, counterparty_value) } else { (counterparty_value, holder_value) };
+		let (funding_pubkey_a, funding_pubkey_b) = if !building_for_counterparty {
+			(self.holder_keys.pubkeys().funding_pubkey, self.counterparty_pubkeys.as_ref().unwrap().funding_pubkey)
+		} else {
+			(self.counterparty_pubkeys.as_ref().unwrap().funding_pubkey, self.holder_keys.pubkeys().funding_pubkey)
+		};
 
 		if value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
 			log_trace!(logger, "   ...including {} output with value {}", if !building_for_counterparty { "to_local" } else { "to_remote" }, value_to_a);
@@ -1018,6 +1029,27 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				                             .push_slice(&WPubkeyHash::hash(&static_payment_pk)[..])
 				                             .into_script(),
 				value: value_to_b as u64
+			}, None));
+		}
+
+		// If `option_anchor_output` applies to the commitment transaction, we materialize
+		// anchors :
+		//  * we add anchors for both parties, if we have untrimmed HTLCs outputs
+		//  * we add anchor for a party, if its balance is present
+		let has_htlcs = counterparty_htlc_total_msat + holder_htlc_total_msat > 0;
+		if has_htlcs || value_to_a >= (broadcaster_dust_limit_satoshis as i64) {
+			log_trace!(logger, "   ...including {} anchor output with value {}", if !building_for_counterparty { "to_local" } else { "to_remote" }, ANCHOR_OUTPUT_VALUE);
+			txouts.push((TxOut {
+				script_pubkey: chan_utils::get_anchor_redeemscript(&funding_pubkey_a).to_v0_p2wsh(),
+				value: ANCHOR_OUTPUT_VALUE,
+			}, None));
+		}
+
+		if has_htlcs || value_to_b >= (broadcaster_dust_limit_satoshis as i64) {
+			log_trace!(logger, "   ...including {} anchor output with value {}", if !building_for_counterparty { "to_remote" } else { "to_local" }, ANCHOR_OUTPUT_VALUE);
+			txouts.push((TxOut {
+				script_pubkey: chan_utils::get_anchor_redeemscript(&funding_pubkey_b).to_v0_p2wsh(),
+				value: ANCHOR_OUTPUT_VALUE,
 			}, None));
 		}
 

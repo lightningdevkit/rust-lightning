@@ -57,7 +57,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
 		let node_1_commitment_txn = get_local_commitment_txn!(nodes[1], chan_2.2);
 		assert_eq!(node_1_commitment_txn.len(), 2); // 1 local commitment tx, 1 Outbound HTLC-Timeout
-		assert_eq!(node_1_commitment_txn[0].output.len(), 2); // to-self and Offered HTLC (to-remote/to-node-3 is dust)
+		assert_eq!(node_1_commitment_txn[0].output.len(), 4); // to-self + Offered HTLC (to-remote/to-node-3 is dust) + anchor output
+		check_anchor_output(&node_1_commitment_txn[0], 2);
 		check_spends!(node_1_commitment_txn[0], chan_2.3);
 		check_spends!(node_1_commitment_txn[1], node_1_commitment_txn[0]);
 
@@ -67,7 +68,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_closed_broadcast!(nodes[2], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_2_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Claim, ChannelManger: 1 local commitment tx, 1 Received HTLC-Claim
-		assert_eq!(node_2_commitment_txn[1].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
+		assert_eq!(node_2_commitment_txn[1].output.len(), 4); // to-remote + Received HTLC (to-self is dust) + anchor output
+		check_anchor_output(&node_2_commitment_txn[1], 2);
 		check_spends!(node_2_commitment_txn[1], chan_2.3);
 		check_spends!(node_2_commitment_txn[2], node_2_commitment_txn[1]);
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
@@ -81,7 +83,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Broadcast node 2 commitment txn
 		let node_2_commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 		assert_eq!(node_2_commitment_txn.len(), 2); // 1 local commitment tx, 1 Received HTLC-Claim
-		assert_eq!(node_2_commitment_txn[0].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
+		assert_eq!(node_2_commitment_txn[0].output.len(), 4); // to-remote + Received HTLC (to-self is dust) + anchor output
+		check_anchor_output(&node_2_commitment_txn[0], 2);
 		check_spends!(node_2_commitment_txn[0], chan_2.3);
 		check_spends!(node_2_commitment_txn[1], node_2_commitment_txn[0]);
 
@@ -89,7 +92,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_2_commitment_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_1_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Timeout, ChannelManger: 1 local commitment tx, 1 Offered HTLC-Timeout
-		assert_eq!(node_1_commitment_txn[1].output.len(), 2); // to-local and Offered HTLC (to-remote is dust)
+		assert_eq!(node_1_commitment_txn[1].output.len(), 4); // to-local and Offered HTLC (to-remote is dust) + anchor output
+		check_anchor_output(&node_1_commitment_txn[1], 2);
 		check_spends!(node_1_commitment_txn[1], chan_2.3);
 		check_spends!(node_1_commitment_txn[2], node_1_commitment_txn[1]);
 		check_spends!(node_1_commitment_txn[0], node_2_commitment_txn[0]);
