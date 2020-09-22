@@ -410,6 +410,13 @@ const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 #[cfg(test)]
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
+#[cfg(not(test))]
+const COMMITMENT_TX_WEIGHT_PER_ANCHOR: u64 = 172;
+#[cfg(test)]
+pub const COMMITMENT_TX_WEIGHT_PER_ANCHOR: u64 = 172;
+
+pub const ANCHOR_OUTPUT_VALUE: u64 = 330;
+
 /// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
@@ -1700,7 +1707,10 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	fn commit_tx_fee_msat(&self, num_htlcs: usize) -> u64 {
 		// Note that we need to divide before multiplying to round properly,
 		// since the lowest denomination of bitcoin on-chain is the satoshi.
-		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * self.feerate_per_kw as u64 / 1000 * 1000
+		// Note that if `option_anchor_output` applies there always a dual-pair
+		// of anchor output weight to account for, even if one of them doesn't
+		// materialize in practice.
+		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC + 2 * COMMITMENT_TX_WEIGHT_PER_ANCHOR) * self.feerate_per_kw as u64 / 1000 * 1000
 	}
 
 	// Get the commitment tx fee for the local (i.e our) next commitment transaction
@@ -1828,7 +1838,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// feerate_per_kw, while maintaining their channel reserve (as required by the spec).
 		let remote_commit_tx_fee_msat = if self.channel_outbound { 0 } else {
 			// +1 for this HTLC.
-			self.next_remote_commit_tx_fee_msat(1)
+			// If `option_anchor_output` funder must be able to afford 2 anchor output value
+			self.next_remote_commit_tx_fee_msat(1) + (2 * ANCHOR_OUTPUT_VALUE * 1000)
 		};
 		if pending_remote_value_msat - msg.amount_msat < remote_commit_tx_fee_msat {
 			return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
@@ -1848,7 +1859,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// we will drop the `2 *`, since we no longer be as sensitive to fee spikes. But, keep the extra +1
 			// as we should still be able to afford adding this HTLC plus one more future HTLC, regardless of
 			// being sensitive to fee spikes.
-			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(1 + 1);
+			// If `option_anchor_output` funder must be able to afford 2 anchor output value
+			let remote_fee_cost_incl_stuck_buffer_msat = 2 * self.next_remote_commit_tx_fee_msat(1 + 1) + (2 * ANCHOR_OUTPUT_VALUE * 1000);
 			if pending_remote_value_msat - msg.amount_msat - chan_reserve_msat < remote_fee_cost_incl_stuck_buffer_msat {
 				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
 				// the HTLC, i.e. its status is already set to failing.
@@ -1860,7 +1872,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			// +1 for this HTLC.
 			let local_commit_tx_fee_msat = self.next_local_commit_tx_fee_msat(1);
-			if self.value_to_self_msat < self.counterparty_selected_channel_reserve_satoshis * 1000 + local_commit_tx_fee_msat {
+			// If `option_anchor_output` funder must be able to afford 2 anchor output value
+			if self.value_to_self_msat < self.counterparty_selected_channel_reserve_satoshis * 1000 + local_commit_tx_fee_msat + (2 * ANCHOR_OUTPUT_VALUE * 1000) {
 				return Err(ChannelError::Close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
@@ -1993,10 +2006,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
 			let num_htlcs = commitment_tx.1;
-			let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+			let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC + 2 * COMMITMENT_TX_WEIGHT_PER_ANCHOR) / 1000;
 
 			let counterparty_reserve_we_require = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
-			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + counterparty_reserve_we_require {
+			log_trace!(logger, "channel value satoshis {} holder balance {} total fee {} counterparty reserve {} anchor value {}", self.channel_value_satoshis, self.value_to_self_msat / 1000, total_fee, counterparty_reserve_we_require, 2 * ANCHOR_OUTPUT_VALUE);
+			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + counterparty_reserve_we_require + 2 * ANCHOR_OUTPUT_VALUE {
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee".to_owned())));
 			}
 		}
@@ -3711,7 +3725,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let holder_selected_chan_reserve_msat = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
 			// 1 additional HTLC corresponding to this HTLC.
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(1);
-			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat {
+			// If `option_anchor_output` funder must be able to afford 2 anchor output value
+			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat + (2 * ANCHOR_OUTPUT_VALUE * 1000) {
 				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
 			}
 		}
@@ -3724,7 +3739,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		// The `+1` is for the HTLC currently being added to the commitment tx and
 		// the `2 *` and `+1` are for the fee spike buffer.
 		let commit_tx_fee_msat = if self.channel_outbound {
-			2 * self.next_local_commit_tx_fee_msat(1 + 1)
+			// If `option_anchor_output` funder must be able to afford 2 anchor output value
+			2 * self.next_local_commit_tx_fee_msat(1 + 1) + (2 * ANCHOR_OUTPUT_VALUE * 1000)
 		} else { 0 };
 		if pending_value_to_self_msat - amount_msat < commit_tx_fee_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", pending_value_to_self_msat, commit_tx_fee_msat)));
