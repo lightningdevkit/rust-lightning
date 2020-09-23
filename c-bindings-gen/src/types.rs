@@ -653,6 +653,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	fn empty_val_check_suffix_from_path(&self, full_path: &str) -> Option<&str> {
 		match full_path {
 			"ln::channelmanager::PaymentSecret" => Some(".data == [0; 32]"),
+			"bitcoin::secp256k1::key::PublicKey" => Some(".is_null()"),
+			"bitcoin::secp256k1::Signature" => Some(".is_null()"),
 			_ => None
 		}
 	}
@@ -1068,7 +1070,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						write!(w, "{}", suffix).unwrap();
 						false // We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
 					} else {
-						write!(w, ".is_null()").unwrap();
+						write!(w, " == std::ptr::null_mut()").unwrap();
 						false
 					}
 				}
@@ -1084,7 +1086,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			syn::Type::Slice(_) => {
 				// Option<[]> always implies that we want to treat len() == 0 differently from
 				// None, so we always map an Option<[]> into a pointer.
-				write!(w, ".is_null()").unwrap();
+				write!(w, " == std::ptr::null_mut()").unwrap();
 				true
 			},
 			_ => unimplemented!(),
