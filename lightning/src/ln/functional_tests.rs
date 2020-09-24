@@ -45,6 +45,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 use bitcoin::consensus::encode;
+use bitcoin::consensus::serialize;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -1761,8 +1762,8 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	// Set the fee rate for the channel very high, to the point where the fundee
 	// sending any amount would result in a channel reserve violation. In this test
 	// we check that we would be prevented from sending an HTLC in this situation.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1793,8 +1794,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// to channel reserve violation. This close could also happen if the fee went
 	// up a more realistic amount, but many HTLCs were outstanding at the time of
 	// the update_add_htlc.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -4324,7 +4325,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	utxo_pool = test_utils::TestPool::new();
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &utxo_pool);
 	nodes[0].chan_monitor = &new_chan_monitor;
@@ -4433,7 +4434,7 @@ fn test_manager_serialize_deserialize_events() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	logger = test_utils::TestLogger::new();
 	utxo_pool = test_utils::TestPool::new();
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &utxo_pool);
@@ -4527,7 +4528,7 @@ fn test_simple_manager_serialize_deserialize() {
 	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	utxo_pool = test_utils::TestPool::new();
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &utxo_pool);
 	nodes[0].chan_monitor = &new_chan_monitor;
@@ -4607,7 +4608,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	utxo_pool = test_utils::TestPool::new();
 	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &utxo_pool);
 	nodes[0].chan_monitor = &new_chan_monitor;
@@ -7386,7 +7387,7 @@ fn test_user_configurable_csv_delay() {
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
 	let keys_manager: Arc<KeysInterface<ChanKeySigner = EnforcingChannelKeys>> = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet));
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7397,7 +7398,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7423,7 +7424,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7468,7 +7469,7 @@ fn test_data_loss_protect() {
 	let mut chan_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0)).unwrap().1;
 	chain_monitor = ChainWatchInterfaceUtil::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
 	utxo_pool = test_utils::TestPool::new();
 	monitor = test_utils::TestChannelMonitor::new(&chain_monitor, &tx_broadcaster, &logger, &fee_estimator, &utxo_pool);
@@ -8444,5 +8445,77 @@ fn test_concurrent_monitor_claim() {
 		check_spends!(txn[0], bob_state_y);
 		check_spends!(txn[1], bob_state_y);
 		check_spends!(txn[2], chan_1.3);
+	}
+}
+
+#[test]
+fn test_basic_commitment_cpfp() {
+	// Node A sends a HTLC to Node B, who holds it. We propagate blocks until HTLC
+	// reach its deadine and Node A must close the channnel. We observe a broadcast
+	// of a commitment transaction and its anchor-output CPFP. After few blocks we
+	// observe a feerate-bump of the CPFP.
+
+	// Create Alice and Bob
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create a channel between Alice and Bob
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Route a HTLC from Alice to Bob without settlement
+	route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
+
+	// Connect block on Alice's chain view until offered HTLC must be settled onchain
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![] }, 135);
+	check_closed_broadcast!(nodes[0], false);
+	check_added_monitors!(nodes[0], 1);
+
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+
+		// Verify 1st transaction spend channel funding
+		check_spends!(node_txn[0], chan_1.3);
+
+		// Verify 2nd transaction is a HTLC-timeout
+		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[1], node_txn[0]);
+		node_txn.clear();
+	}
+
+	nodes[0].chan_monitor.simple_monitor.fee_estimator.set_sat_per_kw(5000);
+
+	// Verify that CPFP logic is triggered after a feerate increase
+	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![] }, 136);
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 2);
+
+		// Verify 1st transaction spend channel funding
+		check_spends!(node_txn[0], chan_1.3);
+
+		// Verify 2nd transaction is a Child-Pay-For-Parent
+		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ANCHOR_SCRIPT_WEIGHT);
+		assert_eq!(node_txn[1].output.len(), 1);
+		let mut check_anchor = false;
+		for (idx, outp) in node_txn[0].output.iter().enumerate() {
+			if outp.value == ANCHOR_OUTPUT_VALUE {
+				let tx = serialize(&node_txn[1]);
+				if let Ok(_) = node_txn[0].output[idx].script_pubkey.verify(0, ANCHOR_OUTPUT_VALUE, tx.as_slice()) { check_anchor = true }
+			}
+		}
+		if !check_anchor { panic!("Invalid anchor output spent"); }
+
+		// Verify that CPFP fee is correct. The effective fee must be superior or equal to
+		// the required feerare multiply by the effective weight.
+		// Effective weight is expected to differ from predicted weight as some fields
+		// are inflated to prevent worst-case scenarios (73-bytes ECDSA sigs, count_tx_out, ..)
+		let effective_package_weight = node_txn[0].get_weight() + node_txn[1].get_weight();
+		let required_fee = 5000 * (effective_package_weight as u64) / 1000;
+		let effective_fee = (test_utils::TEST_BUMP_VALUE + ANCHOR_OUTPUT_VALUE) - node_txn[1].output[0].value;
+		assert!(effective_fee >= required_fee);
 	}
 }

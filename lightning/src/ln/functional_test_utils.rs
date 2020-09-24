@@ -140,7 +140,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
-			let feeest = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 			let mut deserialized_monitors = Vec::new();
 			{
 				let old_monitors = self.chan_monitor.simple_monitor.monitors.lock().unwrap();
@@ -166,7 +166,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
-					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
+					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
 					monitor: self.chan_monitor,
 					tx_broadcaster: self.tx_broadcaster.clone(),
 					logger: &test_utils::TestLogger::new(),
@@ -1069,7 +1069,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let utxo_pool = test_utils::TestPool::new();
@@ -1129,6 +1129,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 138; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
 pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
+pub const ANCHOR_SCRIPT_WEIGHT: usize = 40;
 
 #[derive(PartialEq)]
 pub enum HTLCType { NONE, TIMEOUT, SUCCESS }

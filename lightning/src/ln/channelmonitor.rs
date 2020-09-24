@@ -202,6 +202,9 @@ pub struct SimpleManyChannelMonitor<Key, ChanSigner: ChannelKeys, T: Deref, F: D
 	chain_monitor: C,
 	broadcaster: T,
 	logger: L,
+	#[cfg(test)]
+	pub fee_estimator: F,
+	#[cfg(not(test))]
 	fee_estimator: F,
 	utxo_pool: U,
 }

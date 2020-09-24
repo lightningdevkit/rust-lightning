@@ -24,7 +24,7 @@ use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, OutPoint as BitcoinOutPoint};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, OutPoint as BitcoinOutPoint};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
@@ -54,11 +54,17 @@ impl Writer for TestVecWriter {
 }
 
 pub struct TestFeeEstimator {
-	pub sat_per_kw: u32,
+	pub sat_per_kw: Mutex<u32>,
 }
 impl chaininterface::FeeEstimator for TestFeeEstimator {
 	fn get_est_sat_per_1000_weight(&self, _confirmation_target: ConfirmationTarget) -> u32 {
-		self.sat_per_kw
+		*self.sat_per_kw.lock().unwrap()
+	}
+}
+
+impl TestFeeEstimator {
+	pub fn set_sat_per_kw(&self, new_feerate: u32) {
+		*(self.sat_per_kw.lock().unwrap()) = new_feerate;
 	}
 }
 
