@@ -17,6 +17,7 @@ use bitcoin::consensus::encode;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hashes::hex::FromHex;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
@@ -1055,7 +1056,34 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	#[inline]
 	fn get_closing_transaction_weight(a_scriptpubkey: &Script, b_scriptpubkey: &Script) -> u64 {
-		(4 + 1 + 36 + 4 + 1 + 1 + 2*(8+1) + 4 + a_scriptpubkey.len() as u64 + b_scriptpubkey.len() as u64)*4 + 2 + 1 + 1 + 2*(1 + 72)
+		// Construct a dummy cooperative closing transaction and return its weight.
+		let secp_ctx = Secp256k1::new();
+		let dummy_txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let dummy_pk1 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_pk2 = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+		let mut tx = Transaction {
+			version: 2,
+			lock_time: 0,
+			input: vec![TxIn {
+				previous_output: OutPoint { txid: dummy_txid, index: 0 }.into_bitcoin_outpoint(),
+				script_sig: Script::new(),
+				sequence: 0xffffffff,
+				witness: vec![make_funding_redeemscript(&dummy_pk1, &dummy_pk2).into_bytes(), vec![0; 73], vec![0; 73]],
+			}],
+			output: vec![
+				TxOut {
+					script_pubkey: Script::from(vec![0; a_scriptpubkey.len()]),
+					value: 0 // dummy value
+				},
+				TxOut {
+					script_pubkey: Script::from(vec![0; b_scriptpubkey.len()]),
+					value: 0 // dummy value
+				},
+			]
+		};
+		tx.input[0].witness[1].push(SigHashType::All as u8);
+		tx.input[0].witness[2].push(SigHashType::All as u8);
+		tx.get_weight() as u64
 	}
 
 	#[inline]

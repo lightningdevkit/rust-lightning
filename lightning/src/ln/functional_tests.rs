@@ -4678,7 +4678,7 @@ macro_rules! check_spendable_outputs {
 									};
 									let outp = TxOut {
 										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
+										value: output.value - 88, // 88 is the min fee for this tx
 									};
 									let mut spend_tx = Transaction {
 										version: 2,
@@ -4706,7 +4706,7 @@ macro_rules! check_spendable_outputs {
 									};
 									let outp = TxOut {
 										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
+										value: output.value - 99, // 99 is the min fee for this tx
 									};
 									let mut spend_tx = Transaction {
 										version: 2,
@@ -4739,7 +4739,7 @@ macro_rules! check_spendable_outputs {
 									};
 									let outp = TxOut {
 										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
+										value: output.value - 88, // 88 is the min fee for this transaction
 									};
 									let mut spend_tx = Transaction {
 										version: 2,
