@@ -86,25 +86,48 @@ impl Secp256k1Error {
 }
 
 #[repr(C)]
-/// A reference to a serialized transaction, in (pointer, length) form.
-/// This type does *not* own its own memory, so access to it after, eg, the call in which it was
-/// provided to you are invalid.
+/// A serialized transaction, in (pointer, length) form.
+///
+/// This type optionally owns its own memory, and thus the semantics around access change based on
+/// the `data_is_owned` flag. If `data_is_owned` is set, you must call `Transaction_free` to free
+/// the underlying buffer before the object goes out of scope. If `data_is_owned` is not set, any
+/// access to the buffer after the scope in which the object was provided to you is invalid. eg,
+/// access after you return from the call in which a `!data_is_owned` `Transaction` is provided to
+/// you would be invalid.
+///
+/// Note that, while it may change in the future, because transactions on the Rust side are stored
+/// in a deserialized form, all `Transaction`s generated on the Rust side will have `data_is_owned`
+/// set. Similarly, while it may change in the future, all `Transaction`s you pass to Rust may have
+/// `data_is_owned` either set or unset at your discretion.
 pub struct Transaction {
 	pub data: *const u8,
 	pub datalen: usize,
+	pub data_is_owned: bool,
 }
 impl Transaction {
 	pub(crate) fn into_bitcoin(&self) -> BitcoinTransaction {
 		if self.datalen == 0 { panic!("0-length buffer can never represent a valid Transaction"); }
 		::bitcoin::consensus::encode::deserialize(unsafe { std::slice::from_raw_parts(self.data, self.datalen) }).unwrap()
 	}
-	pub(crate) fn from_slice(s: &[u8]) -> Self {
+	pub(crate) fn from_vec(v: Vec<u8>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
 		Self {
-			data: s.as_ptr(),
-			datalen: s.len(),
+			data: unsafe { (*data).as_mut_ptr() },
+			datalen,
+			data_is_owned: true,
 		}
 	}
 }
+impl Drop for Transaction {
+	fn drop(&mut self) {
+		if self.data_is_owned && self.datalen != 0 {
+			let _ = CVecTempl { data: self.data as *mut u8, datalen: self.datalen };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn Transaction_free(_res: Transaction) { }
 
 #[repr(C)]
 #[derive(Clone)]

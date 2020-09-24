@@ -115,6 +115,7 @@ static int num_txs_broadcasted = 0; // Technically a race, but ints are atomic o
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
 	num_txs_broadcasted += 1;
 	//TODO
+	Transaction_free(tx);
 }
 
 struct NodeMonitors {

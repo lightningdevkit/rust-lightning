@@ -19,6 +19,7 @@ uint32_t get_fee(const void *this_arg, LDKConfirmationTarget target) {
 
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
 	//TODO
+	Transaction_free(tx);
 }
 
 LDKCResult_NoneChannelMonitorUpdateErrZ add_channel_monitor(const void *this_arg, LDKOutPoint funding_txo, LDKChannelMonitor monitor) {
