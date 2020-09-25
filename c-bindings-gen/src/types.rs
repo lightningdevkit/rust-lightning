@@ -759,11 +759,15 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					let needs_deref = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
+					let (needs_deref, ret_ref) = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
-					if needs_deref {
+					if needs_deref && ret_ref {
 						return Some(("if ", vec![
 							(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ &mut *{} }}", var_access))
+						], ") }"));
+					} else if needs_deref {
+						return Some(("if ", vec![
+							(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ *Box::from_raw({}) }}", var_access))
 						], ") }"));
 					} else {
 						return Some(("if ", vec![
@@ -1058,20 +1062,20 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val),
 	/// returning whether we need to dereference the inner value before using it (ie it is a
 	/// pointer).
-	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> bool {
+	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> (bool, bool) {
 		match t {
 			syn::Type::Path(p) => {
 				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, ".inner.is_null()").unwrap();
-					false
+					(false, false)
 				} else {
 					if let Some(suffix) = self.empty_val_check_suffix_from_path(&resolved) {
 						write!(w, "{}", suffix).unwrap();
-						false // We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
+						(false, false) // We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
 					} else {
 						write!(w, " == std::ptr::null_mut()").unwrap();
-						false
+						(true, false)
 					}
 				}
 			},
@@ -1079,7 +1083,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if let syn::Expr::Lit(l) = &a.len {
 					if let syn::Lit::Int(i) = &l.lit {
 						write!(w, " == [0; {}]", i.base10_digits()).unwrap();
-						false
+						(false, false)
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			},
@@ -1087,7 +1091,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				// Option<[]> always implies that we want to treat len() == 0 differently from
 				// None, so we always map an Option<[]> into a pointer.
 				write!(w, " == std::ptr::null_mut()").unwrap();
-				true
+				(true, true)
 			},
 			_ => unimplemented!(),
 		}
@@ -1698,7 +1702,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if single_ident_generic_path_to_ident(&p_arg.path).is_some() {
 						if self.crate_types.opaques.get(&resolved).is_some() {
 							write!(w, "crate::{}", resolved).unwrap();
-						} else { unimplemented!(); }
+						} else {
+							let cty = self.c_type_from_path(&resolved, true, true).expect("Template generics should be opaque or have a predefined mapping");
+							w.write(cty.as_bytes()).unwrap();
+						}
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			} else if let syn::Type::Array(a_arg) = t {
@@ -1758,7 +1765,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							if self.c_type_has_inner_from_path(&subtype) {
 								if !self.write_c_path_intern(w, &$p_arg.path, generics, is_ref, is_mut, ptr_for_ref) { return false; }
 							} else {
-								if !self.write_c_path_intern(w, &$p_arg.path, generics, true, is_mut, true) { return false; }
+								// Option<T> needs to be converted to a *mut T, ie mut ptr-for-ref
+								if !self.write_c_path_intern(w, &$p_arg.path, generics, true, true, true) { return false; }
 							}
 						} else {
 							if $p_arg.path.segments.len() == 1 {
