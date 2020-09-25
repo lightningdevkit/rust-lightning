@@ -1205,6 +1205,33 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if let syn::Type::Path(p) = &*r.elem {
 						write!(w, "{}", sliceconv(self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)))).unwrap();
 					} else { unimplemented!(); }
+				} else if let syn::Type::Tuple(t) = &*s.elem {
+					assert!(!t.elems.is_empty());
+					if prefix {
+						write!(w, "&local_").unwrap();
+					} else {
+						let mut needs_map = false;
+						for e in t.elems.iter() {
+							if let syn::Type::Reference(_) = e {
+								needs_map = true;
+							}
+						}
+						if needs_map {
+							write!(w, ".iter().map(|(").unwrap();
+							for i in 0..t.elems.len() {
+								write!(w, "{}{}", if i != 0 { ", " } else { "" }, ('a' as u8 + i as u8) as char).unwrap();
+							}
+							write!(w, ")| (").unwrap();
+							for (idx, e) in t.elems.iter().enumerate() {
+								if let syn::Type::Reference(_) = e {
+									write!(w, "{}{}", if idx != 0 { ", " } else { "" }, (idx as u8 + 'a' as u8) as char).unwrap();
+								} else if let syn::Type::Path(_) = e {
+									write!(w, "{}*{}", if idx != 0 { ", " } else { "" }, (idx as u8 + 'a' as u8) as char).unwrap();
+								} else { unimplemented!(); }
+							}
+							write!(w, ")).collect::<Vec<_>>()[..]").unwrap();
+						}
+					}
 				} else { unimplemented!(); }
 			},
 			syn::Type::Tuple(t) => {
@@ -1490,6 +1517,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					let tyref = [&*ty.elem];
 					is_ref = true;
 					convert_container!("Slice", 1, || tyref.iter());
+					unimplemented!("convert_container should return true as container_lookup should succeed for slices");
+				} else if let syn::Type::Tuple(t) = &*s.elem {
+					// When mapping into a temporary new var, we need to own all the underlying objects.
+					// Thus, we drop any references inside the tuple and convert with non-reference types.
+					let mut elems = syn::punctuated::Punctuated::new();
+					for elem in t.elems.iter() {
+						if let syn::Type::Reference(r) = elem {
+							elems.push((*r.elem).clone());
+						} else {
+							elems.push(elem.clone());
+						}
+					}
+					let ty = [syn::Type::Tuple(syn::TypeTuple {
+						paren_token: t.paren_token, elems
+					})];
+					is_ref = false;
+					ptr_for_ref = true;
+					convert_container!("Slice", 1, || ty.iter());
 					unimplemented!("convert_container should return true as container_lookup should succeed for slices");
 				} else { unimplemented!() }
 			},
@@ -1808,6 +1853,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					for elem in tuple.elems.iter() {
 						if let syn::Type::Path(p) = elem {
 							write_path!(p, Some(&mut mangled_tuple_type));
+						} else if let syn::Type::Reference(refelem) = elem {
+							if let syn::Type::Path(p) = &*refelem.elem {
+								write_path!(p, Some(&mut mangled_tuple_type));
+							} else { return false; }
 						} else { return false; }
 					}
 					write!(w, "Z").unwrap();
@@ -1963,6 +2012,17 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						self.check_create_container(mangled_container, "Vec", vec![&*r.elem], generics, false);
 						true
 					} else { false }
+				} else if let syn::Type::Tuple(_) = &*s.elem {
+					let mut args = syn::punctuated::Punctuated::new();
+					args.push(syn::GenericArgument::Type((*s.elem).clone()));
+					let mut segments = syn::punctuated::Punctuated::new();
+					segments.push(syn::PathSegment {
+						ident: syn::Ident::new("Vec", Span::call_site()),
+						arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+							colon2_token: None, lt_token: syn::Token![<](Span::call_site()), args, gt_token: syn::Token![>](Span::call_site()),
+						})
+					});
+					self.write_c_type_intern(w, &syn::Type::Path(syn::TypePath { qself: None, path: syn::Path { leading_colon: None, segments } }), generics, false, is_mut, ptr_for_ref)
 				} else { false }
 			},
 			syn::Type::Tuple(t) => {
