@@ -170,8 +170,8 @@ jobs:
             # cbindgen's bindings output order can be FS-dependant, so check that the lines are all the same:
             mv lightning-c-bindings/include/lightning.h lightning-c-bindings/include/lightning.h.new
             git checkout lightning-c-bindings/include/lightning.h
-            cat lightning-c-bindings/include/lightning.h | sort > lightning-c-bindings/include/lightning.h.sorted
-            cat lightning-c-bindings/include/lightning.h.new | sort > lightning-c-bindings/include/lightning.h.new.sorted
+            cat lightning-c-bindings/include/lightning.h | grep -v "Generated with cbindgen:[0-9\.]*" | sort > lightning-c-bindings/include/lightning.h.sorted
+            cat lightning-c-bindings/include/lightning.h.new | grep -v "Generated with cbindgen:[0-9\.]*" | sort > lightning-c-bindings/include/lightning.h.new.sorted
             diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted
             #
             mv lightning-c-bindings/include/lightningpp.hpp lightning-c-bindings/include/lightningpp.hpp.new
