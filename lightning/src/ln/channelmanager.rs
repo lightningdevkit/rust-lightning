@@ -3730,7 +3730,7 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
 /// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
-///    ChannelMonitor::get_monitored_outpoints and ChannelMonitor::get_funding_txo().
+///    ChannelMonitor::get_outputs_to_watch() and ChannelMonitor::get_funding_txo().
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Move the ChannelMonitors into your local chain::Watch.
 /// 6) Disconnect/connect blocks on the ChannelManager.

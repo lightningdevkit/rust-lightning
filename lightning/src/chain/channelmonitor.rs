@@ -1214,23 +1214,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	///
 	/// (C-not exported) because we have no HashMap bindings
 	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<Script>> {
-		&self.outputs_to_watch
-	}
-
-	/// Gets the sets of all outpoints which this ChannelMonitor expects to hear about spends of.
-	/// Generally useful when deserializing as during normal operation the return values of
-	/// block_connected are sufficient to ensure all relevant outpoints are being monitored (note
-	/// that the get_funding_txo outpoint and transaction must also be monitored for!).
-	///
-	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
-	pub fn get_monitored_outpoints(&self) -> Vec<(Txid, u32, &Script)> {
-		let mut res = Vec::with_capacity(self.counterparty_commitment_txn_on_chain.len() * 2);
-		for (ref txid, &(_, ref outputs)) in self.counterparty_commitment_txn_on_chain.iter() {
-			for (idx, output) in outputs.iter().enumerate() {
-				res.push(((*txid).clone(), idx as u32, output));
+		// If we've detected a counterparty commitment tx on chain, we must include it in the set
+		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
+		// its trivial to do, double-check that here.
+		for (txid, &(_, ref outputs)) in self.counterparty_commitment_txn_on_chain.iter() {
+			let watched_outputs = self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
+			assert_eq!(watched_outputs.len(), outputs.len());
+			for (watched, output) in watched_outputs.iter().zip(outputs.iter()) {
+				assert_eq!(watched, output);
 			}
 		}
-		res
+		&self.outputs_to_watch
 	}
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
