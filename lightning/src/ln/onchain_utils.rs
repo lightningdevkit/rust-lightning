@@ -15,6 +15,7 @@ use ln::msgs::DecodeError;
 use ln::onchaintx::OnchainTxHandler;
 use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::ChannelKeys;
+use chain::utxointerface::UtxoPool;
 use util::byte_utils;
 use util::logger::Logger;
 use util::ser::{Readable, Writer, Writeable};
@@ -308,6 +309,7 @@ pub(crate) enum PackageTemplate {
 	},
 	HolderCommitmentTx {
 		input: (BitcoinOutPoint, HolderFundingOutput),
+		utxo_input: Option<(BitcoinOutPoint, BumpingOutput)>
 	}
 }
 
@@ -325,7 +327,7 @@ impl PackageTemplate {
 				outpoints.push(&input.0);
 				return outpoints;
 			},
-			PackageTemplate::HolderCommitmentTx { ref input } => {
+			PackageTemplate::HolderCommitmentTx { ref input, ..  } => {
 				let mut outpoints = Vec::with_capacity(1);
 				outpoints.push(&input.0);
 				return outpoints;
@@ -541,12 +543,26 @@ impl PackageTemplate {
 				}
 				return None;
 			},
-			PackageTemplate::HolderCommitmentTx { ref input } => {
+			PackageTemplate::HolderCommitmentTx { ref input, .. } => {
 				let signed_tx = onchain_handler.get_fully_signed_holder_tx(&input.1.funding_redeemscript).unwrap();
 				// Timer set to $NEVER given we can't bump tx without anchor outputs
 				log_trace!(logger, "Going to broadcast Holder Transaction {} claiming funding output {} from {}...", signed_tx.txid(), input.0.vout, input.0.txid);
 				return Some(signed_tx);
 			}
+		}
+	}
+	pub(crate) fn package_cpfp<U: Deref>(&mut self, utxo_pool: &U)
+		where U::Target: UtxoPool,
+	{
+		match self {
+			PackageTemplate::HolderCommitmentTx { ref mut utxo_input, .. } => {
+				if utxo_input.is_some() { return; }
+				*utxo_input = utxo_pool.allocate_utxo(0);
+			},
+			PackageTemplate::HolderHTLCTx { .. } => {
+				return; //TODO: Should we anchor output HTLC-txn?
+			},
+			_  => panic!("Package template should be bumped through RBF")
 		}
 	}
 	pub(crate) fn build_malleable_justice_tx(per_commitment_point: PublicKey, per_commitment_key: SecretKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, input_descriptor: InputDescriptors, txid: Txid, vout: u32, amount: u64, htlc: Option<HTLCOutputInCommitment>, on_counterparty_tx_csv: u16) -> Self {
@@ -594,7 +610,8 @@ impl PackageTemplate {
 			funding_redeemscript,
 		};
 		PackageTemplate::HolderCommitmentTx {
-			input: (BitcoinOutPoint { txid, vout }, funding_outp)
+			input: (BitcoinOutPoint { txid, vout }, funding_outp),
+			utxo_input: None,
 		}
 	}
 }
@@ -631,10 +648,11 @@ impl Writeable for PackageTemplate {
 				input.0.write(writer)?;
 				input.1.write(writer)?;
 			},
-			&PackageTemplate::HolderCommitmentTx { ref input } => {
+			&PackageTemplate::HolderCommitmentTx { ref input, ref utxo_input } => {
 				writer.write_all(&[3; 1])?;
 				input.0.write(writer)?;
 				input.1.write(writer)?;
+				utxo_input.write(writer)?;
 			}
 		}
 		Ok(())
@@ -678,8 +696,10 @@ impl Readable for PackageTemplate {
 			3 => {
 				let outpoint = Readable::read(reader)?;
 				let funding_outp = Readable::read(reader)?;
+				let utxo_input = Readable::read(reader)?;
 				PackageTemplate::HolderCommitmentTx {
-					input: (outpoint, funding_outp)
+					input: (outpoint, funding_outp),
+					utxo_input,
 				}
 			},
 			_ => return Err(DecodeError::InvalidValue),
