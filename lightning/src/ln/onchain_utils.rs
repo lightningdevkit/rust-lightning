@@ -90,19 +90,19 @@ pub(crate) fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
 		tx_weight +=  match inp {
 			// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 			&InputDescriptors::RevokedOfferedHTLC => {
-				1 + 1 + 73 + 1 + 33 + 1 + 133
+				1 + 1 + 73 + 1 + 33 + 1 + 136
 			},
 			// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 			&InputDescriptors::RevokedReceivedHTLC => {
-				1 + 1 + 73 + 1 + 33 + 1 + 139
+				1 + 1 + 73 + 1 + 33 + 1 + 142
 			},
 			// number_of_witness_elements + sig_length + counterpartyhtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
 			&InputDescriptors::OfferedHTLC => {
-				1 + 1 + 73 + 1 + 32 + 1 + 133
+				1 + 1 + 73 + 1 + 32 + 1 + 136
 			},
 			// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
 			&InputDescriptors::ReceivedHTLC => {
-				1 + 1 + 73 + 1 + 1 + 1 + 139
+				1 + 1 + 73 + 1 + 1 + 1 + 142
 			},
 			// number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 			&InputDescriptors::RevokedOutput => {
@@ -543,7 +543,7 @@ impl PackageTemplate {
 					bumped_tx.input.push(TxIn {
 						previous_output: *outp,
 						script_sig: Script::new(),
-						sequence: 0xfffffffd,
+						sequence: 0x1,
 						witness: Vec::new(),
 					});
 				}
