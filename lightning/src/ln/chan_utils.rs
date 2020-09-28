@@ -774,7 +774,7 @@ impl HolderCommitmentTransaction {
 
 		htlc_tx.input[0].witness.push(this_htlc.1.unwrap().serialize_der().to_vec());
 		htlc_tx.input[0].witness.push(signature.serialize_der().to_vec());
-		htlc_tx.input[0].witness[1].push(SigHashType::All as u8);
+		htlc_tx.input[0].witness[1].push(SigHashType::SinglePlusAnyoneCanPay as u8);
 		htlc_tx.input[0].witness[2].push(SigHashType::All as u8);
 
 		if this_htlc.0.offered {

@@ -108,7 +108,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &holder_commitment_tx.keys);
 
-				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
+				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::SinglePlusAnyoneCanPay)[..]);
 				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &holder_commitment_tx.keys.countersignatory_htlc_key).unwrap();
 			}
 		}

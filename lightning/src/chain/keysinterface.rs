@@ -498,7 +498,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw, accepted_data.holder_selected_contest_delay, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
-				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
+				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::SinglePlusAnyoneCanPay)[..]);
 				let our_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
 					Ok(s) => s,
 					Err(_) => return Err(()),
