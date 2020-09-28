@@ -26,6 +26,7 @@ use ln::chan_utils;
 use ln::msgs::DecodeError;
 use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::Sign;
+use chain::utxointerface::UtxoPool;
 use chain::onchaintx::OnchainTxHandler;
 use util::byte_utils;
 use util::logger::Logger;
@@ -248,19 +249,23 @@ impl_writeable_tlv_based!(HolderHTLCOutput, {
 #[derive(Clone, PartialEq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
+	utxo_input: Option<(BitcoinOutPoint, BumpingOutput)>
 }
 
 impl HolderFundingOutput {
 	pub(crate) fn build(funding_redeemscript: Script) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
+			utxo_input: None
 		}
 	}
 }
 
 impl_writeable_tlv_based!(HolderFundingOutput, {
 	(0, funding_redeemscript),
-}, {}, {});
+}, {
+	(2, utxo_input),
+}, {});
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
 ///
@@ -491,6 +496,24 @@ impl PackageTemplate {
 	}
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		self.inputs.iter().map(|(o, _)| o).collect()
+	}
+	pub(crate) fn set_bumping_utxo<U: Deref>(&mut self, utxo_pool: &U)
+		where U::Target: UtxoPool,
+	{
+		// CPFP'ed package can't spent more than one input (for now).
+		assert_eq!(self.inputs.len(), 1);
+		for (_, input_solving_data) in self.inputs.iter_mut() {
+			match input_solving_data {
+				PackageSolvingData::HolderFundingOutput(data) => {
+					if data.utxo_input.is_some() { return; }
+					data.utxo_input = utxo_pool.allocate_utxo(0);
+				},
+				PackageSolvingData::HolderHTLCOutput(..) => {
+					return; //TODO: Should we anchor output HTLC-txn?
+				},
+				_  => panic!("Malleable package should be bumped through RBF")
+			}
+		}
 	}
 	pub(crate) fn split_package(&mut self, split_outp: &BitcoinOutPoint) -> Option<PackageTemplate> {
 		match self.malleability {
