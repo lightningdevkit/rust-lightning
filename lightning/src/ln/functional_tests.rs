@@ -577,7 +577,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1977 + 2 * ANCHOR_OUTPUT_VALUE;
+	let channel_value = 1979 + 2 * ANCHOR_OUTPUT_VALUE;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
@@ -1642,7 +1642,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let local_chan_balance = 2060;
+	let local_chan_balance = 2058;
 	let static_payment_pk = local_payment_point.serialize();
 	let remote_commit_tx_output = TxOut {
 				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
