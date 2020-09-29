@@ -33,12 +33,13 @@ use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, PreCalculatedTxCreationKeys};
+use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, PreCalculatedTxCreationKeys, derive_public_key, derive_public_revocation_key, TxCreationKeys};
 use ln::msgs::UnsignedChannelAnnouncement;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
 use ln::msgs::DecodeError;
+use ln::transaction::{CommitmentInfo, build_commitment_tx, get_commitment_transaction_number_obscure_factor};
 
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
@@ -79,7 +80,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to ChannelKeys::on_accept) and the provided per_commitment point
+	/// call to ChannelKeys::ready_channel) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
 	/// The witness script which is hashed and included in the output script_pubkey may be
@@ -244,6 +245,17 @@ pub trait ChannelKeys : Send+Clone {
 	// TODO: Add more input vars to enable better checking (preferably removing commitment_tx and
 	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
+	/// Create a signature for a holder's commitment transaction and attached HTLC transactions.
+	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(
+		&self,
+		commitment_number: u64,
+		feerate_per_kw: u32,
+		to_holder_value_sat: u64,
+		to_counterparty_value_sat: u64,
+		htlcs: &Vec<HTLCOutputInCommitment>,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<(Signature, Vec<Signature>), ()>;
+
 	/// Same as sign_holder_commitment, but exists only for tests to get access to holder commitment
 	/// transactions which will be broadcasted later, after the channel has moved on to a newer
 	/// state. Thus, needs its own method as sign_holder_commitment may enforce that we only ever
@@ -319,13 +331,15 @@ pub trait ChannelKeys : Send+Clone {
 	/// protocol.
 	fn sign_channel_announcement<T: secp256k1::Signing>(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()>;
 
-	/// Set the counterparty channel basepoints and counterparty_selected/holder_selected_contest_delay.
-	/// This is done immediately on incoming channels and as soon as the channel is accepted on outgoing channels.
+	/// Set the counterparty static channel data, including basepoints,
+	/// counterparty_selected/holder_selected_contest_delay and funding outpoint.
+	/// This is done as soon as the funding outpoint is known.  Since these are static channel data,
+	/// they MUST NOT be allowed to change to different values once set.
 	///
 	/// We bind holder_selected_contest_delay late here for API convenience.
 	///
 	/// Will be called before any signatures are applied.
-	fn on_accept(&mut self, channel_points: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16);
+	fn ready_channel(&mut self, channel_points: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16, is_outbound: bool, funding_outpoint: &OutPoint);
 }
 
 /// A trait to describe an object which can get user secrets and key material.
@@ -349,11 +363,11 @@ pub trait KeysInterface: Send + Sync {
 }
 
 #[derive(Clone)]
-/// Holds late-bound channel data.
-/// This data is available after the channel is known to be accepted, either
-/// when receiving an open_channel for an inbound channel or when
-/// receiving accept_channel for an outbound channel.
-struct AcceptedChannelData {
+/// Holds late-bound static channel data.
+/// This data is available after the channel is readied, either
+/// when receiving an funding_created for an inbound channel or when
+/// creating a funding transaction for an outbound channel.
+struct StaticChannelData {
 	/// Counterparty public keys and base points
 	counterparty_channel_pubkeys: ChannelPublicKeys,
 	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
@@ -365,6 +379,8 @@ struct AcceptedChannelData {
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
 	holder_selected_contest_delay: u16,
+	/// Whether the holder is the initiator of this channel
+	is_outbound: bool,
 }
 
 #[derive(Clone)]
@@ -385,7 +401,9 @@ pub struct InMemoryChannelKeys {
 	/// Holder public keys and basepoints
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
 	/// Counterparty public keys and counterparty/holder selected_contest_delay, populated on channel acceptance
-	accepted_channel_data: Option<AcceptedChannelData>,
+	accepted_channel_data: Option<StaticChannelData>,
+	/// Funding outpoint, populated on channel funding creation
+	funding_outpoint: Option<OutPoint>,
 	/// The total value of this channel
 	channel_value_satoshis: u64,
 	/// Key derivation parameters
@@ -418,6 +436,7 @@ impl InMemoryChannelKeys {
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			accepted_channel_data: None,
+			funding_outpoint: None,
 			key_derivation_params,
 		}
 	}
@@ -439,21 +458,84 @@ impl InMemoryChannelKeys {
 	}
 
 	/// Counterparty pubkeys.
-	/// Will panic if on_accept wasn't called.
+	/// Will panic if ready_channel wasn't called.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.accepted_channel_data.as_ref().unwrap().counterparty_channel_pubkeys }
 
 	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction. You'll likely want to pass this to the
 	/// ln::chan_utils::build*_transaction functions when signing holder's transactions.
-	/// Will panic if on_accept wasn't called.
+	/// Will panic if ready_channel wasn't called.
 	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().counterparty_selected_contest_delay }
 
 	/// The contest_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
-	/// Will panic if on_accept wasn't called.
+	/// Will panic if ready_channel wasn't called.
 	pub fn holder_selected_contest_delay(&self) -> u16 { self.accepted_channel_data.as_ref().unwrap().holder_selected_contest_delay }
+
+	/// Whether the holder is the initiator
+	pub fn is_outbound(&self) -> bool { self.accepted_channel_data.as_ref().unwrap().is_outbound }
+
+	/// Funding outpoint
+	/// Will panic if ready_channel wasn't called.
+	pub fn funding_outpoint(&self) -> &OutPoint { self.funding_outpoint.as_ref().unwrap() }
+
+	/// Prepare build information for a commitment tx that the holder can broadcast
+	pub fn build_holder_commitment_tx<T: secp256k1::Signing + secp256k1::Verification>(
+		&self,
+		commitment_number: u64,
+		per_commitment_point: &PublicKey,
+		to_holder_value_sat: u64,
+		to_counterparty_value_sat: u64,
+		htlcs: &Vec<HTLCOutputInCommitment>,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<(bitcoin::Transaction, Vec<HTLCOutputInCommitment>, TxCreationKeys, Vec<Script>), ()> {
+		let counterparty_points = self.counterparty_pubkeys();
+
+		let to_holder_delayed_pubkey = derive_public_key(
+			&secp_ctx,
+			&per_commitment_point,
+			&self.pubkeys().delayed_payment_basepoint,
+		).map_err(|_| ())?;
+
+		let revocation_pubkey = derive_public_revocation_key(
+			&secp_ctx,
+			&per_commitment_point,
+			&counterparty_points.revocation_basepoint,
+		).map_err(|_| ())?;
+
+		let keys = TxCreationKeys::make_tx_keys(per_commitment_point, self.pubkeys(), self.counterparty_pubkeys(), secp_ctx).unwrap();
+
+		let info = CommitmentInfo {
+			is_counterparty_broadcaster: false,
+			to_countersigner_pubkey: counterparty_points.payment_point,
+			to_countersigner_value_sat: to_counterparty_value_sat,
+			revocation_pubkey,
+			to_broadcaster_delayed_pubkey: to_holder_delayed_pubkey,
+			to_broadcaster_value_sat: to_holder_value_sat,
+			to_self_delay: self.counterparty_selected_contest_delay(),
+			htlcs: htlcs.clone(),
+		};
+
+		let obscured_commitment_transaction_number =
+			self.get_commitment_transaction_number_obscure_factor() ^ commitment_number;
+		let (tx, htlcs, scripts) = build_commitment_tx(
+			&keys,
+			&info,
+			obscured_commitment_transaction_number,
+			self.funding_outpoint().into_bitcoin_outpoint(),
+		);
+		Ok((tx, htlcs, keys, scripts))
+	}
+
+	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
+		get_commitment_transaction_number_obscure_factor(
+			&self.pubkeys().payment_point,
+			&self.counterparty_pubkeys().payment_point,
+			self.is_outbound(),
+		)
+	}
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -505,6 +587,46 @@ impl ChannelKeys for InMemoryChannelKeys {
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_channel_data.counterparty_channel_pubkeys.funding_pubkey);
 
 		Ok(holder_commitment_tx.get_holder_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
+	}
+
+	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		let per_commitment_point = self.get_per_commitment_point(commitment_number, secp_ctx);
+		let (tx, htlcs, keys, _) = self.build_holder_commitment_tx(
+			commitment_number,
+			&per_commitment_point,
+			to_holder_value_sat,
+			to_counterparty_value_sat,
+			htlcs,
+			secp_ctx,
+		)?;
+
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
+		let sighash = hash_to_message!(&bip143::SigHashCache::new(&tx)
+			.signature_hash(0, &funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
+		let sig = secp_ctx.sign(&sighash, &self.funding_key);
+
+		// We provide a dummy signature for the remote, since we don't require that sig
+		// to be passed in to this call.  It would have been better if HolderCommitmentTransaction
+		// didn't require the remote sig.
+		let dummy_sig = Secp256k1::new().sign(
+			&secp256k1::Message::from_slice(&[42; 32]).unwrap(),
+			&SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let htlcs_with_sig = htlcs.iter().map(|h| (h.clone(), Some(dummy_sig.clone()))).collect();
+		let commitment_tx = HolderCommitmentTransaction::new_missing_holder_sig(
+			tx,
+			dummy_sig,
+			&self.pubkeys().funding_pubkey,
+			&self.counterparty_pubkeys().funding_pubkey,
+			keys,
+			feerate_per_kw,
+			htlcs_with_sig,
+		);
+		let htlc_sigs_o = self.sign_holder_commitment_htlc_transactions(&commitment_tx, secp_ctx)?;
+		let htlc_sigs = htlc_sigs_o.iter().map(|o| o.unwrap()).collect();
+
+		Ok((sig, htlc_sigs))
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
@@ -588,18 +710,21 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(secp_ctx.sign(&msghash, &self.funding_key))
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16) {
-		assert!(self.accepted_channel_data.is_none(), "Already accepted");
-		self.accepted_channel_data = Some(AcceptedChannelData {
+	fn ready_channel(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_contest_delay: u16, holder_selected_contest_delay: u16, is_outbound: bool, funding_outpoint: &OutPoint) {
+		assert!(self.accepted_channel_data.is_none(), "Acceptance already noted");
+		self.accepted_channel_data = Some(StaticChannelData {
 			counterparty_channel_pubkeys: channel_pubkeys.clone(),
 			counterparty_selected_contest_delay,
 			holder_selected_contest_delay,
+			is_outbound,
 		});
+		assert!(self.funding_outpoint.is_none(), "Funding creation already noted");
+		self.funding_outpoint = Some(funding_outpoint.clone());
 	}
 }
 
-impl_writeable!(AcceptedChannelData, 0,
- { counterparty_channel_pubkeys, counterparty_selected_contest_delay, holder_selected_contest_delay });
+impl_writeable!(StaticChannelData, 0,
+ { counterparty_channel_pubkeys, counterparty_selected_contest_delay, holder_selected_contest_delay, is_outbound });
 
 impl Writeable for InMemoryChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
@@ -610,6 +735,7 @@ impl Writeable for InMemoryChannelKeys {
 		self.htlc_base_key.write(writer)?;
 		self.commitment_seed.write(writer)?;
 		self.accepted_channel_data.write(writer)?;
+		self.funding_outpoint.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 		self.key_derivation_params.0.write(writer)?;
 		self.key_derivation_params.1.write(writer)?;
@@ -627,6 +753,7 @@ impl Readable for InMemoryChannelKeys {
 		let htlc_base_key = Readable::read(reader)?;
 		let commitment_seed = Readable::read(reader)?;
 		let counterparty_channel_data = Readable::read(reader)?;
+		let funding_outpoint = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 		let secp_ctx = Secp256k1::signing_only();
 		let holder_channel_pubkeys =
@@ -646,6 +773,7 @@ impl Readable for InMemoryChannelKeys {
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			accepted_channel_data: counterparty_channel_data,
+			funding_outpoint,
 			key_derivation_params: (params_1, params_2),
 		})
 	}

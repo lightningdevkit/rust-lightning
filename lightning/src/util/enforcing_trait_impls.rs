@@ -23,6 +23,7 @@ use bitcoin::secp256k1::{Secp256k1, Signature};
 use util::ser::{Writeable, Writer, Readable};
 use std::io::Error;
 use ln::msgs::DecodeError;
+use chain::transaction::OutPoint;
 
 /// Enforces some rules on ChannelKeys calls. Eventually we will probably want to expose a variant
 /// of this which would essentially be what you'd want to run on a hardware wallet.
@@ -93,6 +94,10 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
 	}
 
+	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		Ok(self.inner.sign_holder_commitment_phase2(commitment_number, feerate_per_kw, to_holder_value_sat, to_counterparty_value_sat, htlcs, secp_ctx).unwrap())
+	}
+
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
 		Ok(self.inner.unsafe_sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
@@ -132,8 +137,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_delay: u16, holder_selected_delay: u16) {
-		self.inner.on_accept(channel_pubkeys, counterparty_selected_delay, holder_selected_delay)
+	fn ready_channel(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_delay: u16, holder_selected_delay: u16, is_outbound: bool, funding_outpoint: &OutPoint) {
+		self.inner.ready_channel(channel_pubkeys, counterparty_selected_delay, holder_selected_delay, is_outbound, funding_outpoint)
 	}
 }
 

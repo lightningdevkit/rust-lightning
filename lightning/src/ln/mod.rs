@@ -25,6 +25,7 @@ pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
 pub(crate) mod onchaintx;
+pub mod transaction;
 
 #[cfg(feature = "fuzztarget")]
 pub mod peer_channel_encryptor;

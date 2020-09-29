@@ -582,7 +582,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
           F::Target: FeeEstimator
 	{
-		let mut chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
+		let chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
@@ -590,7 +590,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
-		chan_keys.on_accept(&counterparty_pubkeys, msg.to_self_delay, config.own_channel_config.our_to_self_delay);
 		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -1463,7 +1462,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			htlc_basepoint: msg.htlc_basepoint
 		};
 
-		self.holder_keys.on_accept(&counterparty_pubkeys, msg.to_self_delay, self.holder_selected_contest_delay);
 		self.counterparty_pubkeys = Some(counterparty_pubkeys);
 
 		self.counterparty_cur_commitment_point = Some(msg.first_per_commitment_point);
@@ -1518,6 +1516,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		}
 
 		let funding_txo = OutPoint{ txid: msg.funding_txid, index: msg.funding_output_index };
+		self.holder_keys.ready_channel(self.counterparty_pubkeys.as_ref().unwrap(), self.counterparty_selected_contest_delay, self.holder_selected_contest_delay, self.channel_outbound, &funding_txo);
 		self.funding_txo = Some(funding_txo.clone());
 
 		let (counterparty_initial_commitment_tx, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
@@ -3545,6 +3544,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 
+		self.holder_keys.ready_channel(self.counterparty_pubkeys.as_ref().unwrap(), self.counterparty_selected_contest_delay, self.holder_selected_contest_delay, self.channel_outbound, &funding_txo);
 		self.funding_txo = Some(funding_txo.clone());
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -4647,7 +4647,7 @@ mod tests {
 		chan.holder_dust_limit_satoshis = 546;
 
 		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
-		chan.funding_txo = Some(funding_info);
+		chan.funding_txo = Some(funding_info.clone());
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
@@ -4656,7 +4656,7 @@ mod tests {
 			delayed_payment_basepoint: public_from_secret_hex(&secp_ctx, "1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"),
 			htlc_basepoint: public_from_secret_hex(&secp_ctx, "4444444444444444444444444444444444444444444444444444444444444444")
 		};
-		chan_keys.on_accept(&counterparty_pubkeys, chan.counterparty_selected_contest_delay, chan.holder_selected_contest_delay);
+		chan_keys.ready_channel(&counterparty_pubkeys, chan.counterparty_selected_contest_delay, chan.holder_selected_contest_delay, false, &funding_info);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);

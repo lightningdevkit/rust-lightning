@@ -372,7 +372,8 @@ impl_writeable!(ChannelPublicKeys, 33*5, {
 
 
 impl TxCreationKeys {
-	/// Create a new TxCreationKeys from channel base points and the per-commitment point
+	/// Create per-state keys from channel base points and the per-commitment point
+	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
 	pub fn derive_new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, broadcaster_delayed_payment_base: &PublicKey, broadcaster_htlc_base: &PublicKey, countersignatory_revocation_base: &PublicKey, countersignatory_htlc_base: &PublicKey) -> Result<TxCreationKeys, SecpError> {
 		Ok(TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
@@ -381,6 +382,19 @@ impl TxCreationKeys {
 			countersignatory_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &countersignatory_htlc_base)?,
 			broadcaster_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &broadcaster_delayed_payment_base)?,
 		})
+	}
+
+	/// Generate per-state keys from channel static keys.
+	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
+	pub fn make_tx_keys<T: secp256k1::Signing + secp256k1::Verification>(per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> Result<TxCreationKeys, SecpError> {
+		TxCreationKeys::derive_new(
+			&secp_ctx,
+			&per_commitment_point,
+			&broadcaster_keys.delayed_payment_basepoint,
+			&broadcaster_keys.htlc_basepoint,
+			&countersignatory_keys.revocation_basepoint,
+			&countersignatory_keys.htlc_basepoint,
+		)
 	}
 }
 
