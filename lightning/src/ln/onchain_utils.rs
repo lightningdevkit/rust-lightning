@@ -8,6 +8,7 @@ use bitcoin::hash_types::Txid;
 
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
+use ln::channel::ANCHOR_OUTPUT_VALUE;
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use ln::chan_utils;
@@ -409,11 +410,18 @@ impl PackageTemplate {
 				}
 				amounts
 			},
-			_ => 0,
+			PackageTemplate::HolderCommitmentTx { ref utxo_input, .. } => {
+				if let Some(utxo_input) = utxo_input {
+					return utxo_input.1.amount + ANCHOR_OUTPUT_VALUE;
+				} else { return 0 }
+			},
+			PackageTemplate::HolderHTLCTx { ref input } => {
+				input.1.amount
+			},
 		};
 		amounts
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &Script, local_commitment: &Transaction) -> usize {
 		let mut input = Vec::new();
 		let witnesses_weight = match self {
 			PackageTemplate::MalleableJusticeTx { ref inputs } => {
@@ -443,7 +451,33 @@ impl PackageTemplate {
 				}
 				weight
 			},
-			_ => { return 0 }
+			PackageTemplate::HolderCommitmentTx { ref utxo_input, .. } => {
+				// Post-Anchor Commitment Package weight accoutning:
+				let commitment_weight =
+					900					// base commitment tx (900 WU)
+					+ local_commitment.output.len()	* 172	// num-htlc-outputs  * htlc-output (172 WU)
+					+ 224;					// funding spending witness (224 WU)
+				// If a feerate-bump is required:
+				let cpfp_weight: usize = if let Some(utxo_input) = utxo_input {
+					40 					// CPFP transaction basic fields (40 WU)
+					+ 2					// witness marker (2 WU)
+					+ 164					// anchor input (164 WU)
+					+ 115 					// anchor witness (115 WU)
+					+ 164					// bumping input (164 WU)
+					+ utxo_input.1.witness_weight as usize  // bumping witness (`utxo_input.1.witness_weight`)
+					+ 32					// output amount (32 WU)
+					+ 4 					// output scriptpubkey-length (4 WU)
+					+ destination_script.len() * 4		// output scriptpubkey (`destination_script.len() * 4`)
+				} else { 0 };
+				return commitment_weight + cpfp_weight;
+			},
+			PackageTemplate::HolderHTLCTx { ref input } => {
+				if input.1.preimage.is_some() {
+					return 706; // HTLC-Success with option_anchor_outputs
+				} else {
+					return 666; // HTLC-Timeout with option_anchor_outputs
+				}
+			},
 		};
 		let bumped_tx = Transaction {
 			version: 2,
@@ -927,6 +961,12 @@ pub(crate) fn compute_output_value<F: Deref, L: Deref>(predicted_weight: usize, 
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
+	// If transaction is still relying ont its pre-committed feerate to get confirmed return
+	// a 0-value output-value as it won't be consumed further
+	if input_amounts == 0 {
+	        return Some((0, previous_feerate));
+	}
+
 	// If old feerate is 0, first iteration of this claim, use normal fee calculation
 	if previous_feerate != 0 {
 		if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, previous_feerate, fee_estimator, logger) {
