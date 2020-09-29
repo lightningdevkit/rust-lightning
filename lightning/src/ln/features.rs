@@ -108,7 +108,7 @@ mod sealed {
 			// Byte 1
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
-			BasicMPP,
+			BasicMPP | AnchorOutputs,
 		],
 	});
 	define_context!(NodeContext {
@@ -126,7 +126,7 @@ mod sealed {
 			// Byte 1
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
-			BasicMPP,
+			BasicMPP | AnchorOutputs,
 		],
 	});
 	define_context!(ChannelContext {
@@ -251,6 +251,8 @@ mod sealed {
 		"Feature flags for `payment_secret`.");
 	define_feature!(17, BasicMPP, [InitContext, NodeContext],
 		"Feature flags for `basic_mpp`.");
+	define_feature!(21, AnchorOutputs, [InitContext, NodeContext],
+		"Featture flags for `option_anchor_outputs`.");
 
 	#[cfg(test)]
 	define_context!(TestingContext {
@@ -528,6 +530,16 @@ impl<T: sealed::BasicMPP> Features<T> {
 	}
 }
 
+impl<T: sealed::AnchorOutputs> Features<T> {
+	pub(crate) fn supports_anchor_outputs(&self) -> bool {
+		<T as sealed::AnchorOutputs>::supports_feature(&self.flags)
+	}
+	#[cfg(test)]
+	pub(crate) fn requires_anchor_outputs(&self) -> bool {
+		<T as sealed::AnchorOutputs>::requires_feature(&self.flags)
+	}
+}
+
 impl<T: sealed::Context> Writeable for Features<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.flags.len() + 2);
@@ -593,6 +605,11 @@ mod tests {
 		assert!(!InitFeatures::known().requires_basic_mpp());
 		assert!(!NodeFeatures::known().requires_basic_mpp());
 
+		assert!(InitFeatures::known().supports_anchor_outputs());
+		assert!(NodeFeatures::known().supports_anchor_outputs());
+		assert!(!InitFeatures::known().requires_anchor_outputs());
+		assert!(!NodeFeatures::known().requires_anchor_outputs());
+
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
@@ -629,11 +646,11 @@ mod tests {
 			// Check that the flags are as expected:
 			// - option_data_loss_protect
 			// - var_onion_optin | static_remote_key (req) | payment_secret
-			// - basic_mpp
+			// - basic_mpp | anchor_outputs
 			assert_eq!(node_features.flags.len(), 3);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b10010010);
-			assert_eq!(node_features.flags[2], 0b00000010);
+			assert_eq!(node_features.flags[2], 0b00100010);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
