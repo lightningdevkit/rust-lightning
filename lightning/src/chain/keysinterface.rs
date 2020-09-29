@@ -104,10 +104,10 @@ pub enum SpendableOutputDescriptor {
 		/// The revocation_pubkey used to derive witnessScript
 		revocation_pubkey: PublicKey
 	},
-	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
+	/// An output to a P2WSH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
 	/// The witness in the spending input, is, thus, simply:
-	/// <BIP 143 signature> <payment key>
+	/// <BIP 143 payment signature>
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.

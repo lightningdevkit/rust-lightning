@@ -402,9 +402,9 @@ const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 
 #[cfg(not(test))]
-const COMMITMENT_TX_BASE_WEIGHT: u64 = 724 + 8;
+const COMMITMENT_TX_BASE_WEIGHT: u64 = 724 + 8 + /* `to_remote` p2wsh */ 48;
 #[cfg(test)]
-pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724 + 8;
+pub const COMMITMENT_TX_BASE_WEIGHT: u64 = 724 + 8 + /* `to_remote` p2wsh */ 48;
 #[cfg(not(test))]
 const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 #[cfg(test)]
@@ -1023,11 +1023,9 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				self.counterparty_pubkeys.as_ref().unwrap().payment_point
 			} else {
 				self.holder_keys.pubkeys().payment_point
-			}.serialize();
+			};
 			txouts.push((TxOut {
-				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&WPubkeyHash::hash(&static_payment_pk)[..])
-				                             .into_script(),
+				script_pubkey: chan_utils::get_remote_redeemscript(&static_payment_pk).to_v0_p2wsh(),
 				value: value_to_b as u64
 			}, None));
 		}

@@ -1031,8 +1031,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
 		let shutdown_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_close_key_hash[..]).into_script();
-		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
-		let counterparty_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
+		let counterparty_payment_script = chan_utils::get_remote_redeemscript(&keys.pubkeys().payment_point).to_v0_p2wsh();
 
 		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key: *counterparty_delayed_payment_base_key, counterparty_htlc_base_key: *counterparty_htlc_base_key, on_counterparty_tx_csv, per_htlc: HashMap::new() };
 
@@ -1526,12 +1525,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					self.counterparty_payment_script = {
-						// Note that the Network here is ignored as we immediately drop the address for the
-						// script_pubkey version
-						let payment_hash160 = WPubkeyHash::hash(&self.keys.pubkeys().payment_point.serialize());
-						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script()
-					};
+					self.counterparty_payment_script = chan_utils::get_remote_redeemscript(&self.keys.pubkeys().payment_point).to_v0_p2wsh();
 
 					// Then, try to find htlc outputs
 					for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {

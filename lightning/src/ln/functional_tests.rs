@@ -578,7 +578,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1979 + 2 * ANCHOR_OUTPUT_VALUE;
+	let channel_value = 1992 + 2 * ANCHOR_OUTPUT_VALUE;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 
@@ -1644,12 +1644,9 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let local_chan_balance = 1311;
-	let static_payment_pk = local_payment_point.serialize();
+	let local_chan_balance = 1299;
 	let remote_commit_tx_output = TxOut {
-				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&WPubkeyHash::hash(&static_payment_pk)[..])
-				                             .into_script(),
+				script_pubkey: chan_utils::get_remote_redeemscript(&local_payment_point).to_v0_p2wsh(),
 		value: local_chan_balance as u64
 	};
 
@@ -4708,7 +4705,7 @@ macro_rules! check_spendable_outputs {
 									let input = TxIn {
 										previous_output: outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
-										sequence: 0,
+										sequence: 1,
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
@@ -4724,12 +4721,12 @@ macro_rules! check_spendable_outputs {
 									let secp_ctx = Secp256k1::new();
 									let keys = $keysinterface.derive_channel_keys($chan_value, key_derivation_params.0, key_derivation_params.1);
 									let remotepubkey = keys.pubkeys().payment_point;
-									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
+									let witness_script = chan_utils::get_remote_redeemscript(&remotepubkey);
 									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
 									let remotesig = secp_ctx.sign(&sighash, &keys.inner.payment_key);
 									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
+									spend_tx.input[0].witness.push(witness_script.into_bytes());
 									txn.push(spend_tx);
 								},
 								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey } => {
@@ -7684,9 +7681,17 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	assert_eq!(revoked_txn[0].input[0].previous_output.txid, chan.3.txid());
 	let revoked_txid = revoked_txn[0].txid();
 
+	let payment_point = {
+		let local_chan_lock = nodes[1].node.channel_state.lock().unwrap();
+		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
+		let local_chan_keys = local_chan.get_keys();
+		local_chan_keys.pubkeys().payment_point
+	};
+
+	let remote_pubkey = chan_utils::get_remote_redeemscript(&payment_point).to_v0_p2wsh();
 	let mut penalty_sum = 0;
 	for outp in revoked_txn[0].output.iter() {
-		if outp.script_pubkey.is_v0_p2wsh() {
+		if outp.script_pubkey.is_v0_p2wsh() && outp.script_pubkey != remote_pubkey && outp.value != ANCHOR_OUTPUT_VALUE {
 			penalty_sum += outp.value;
 		}
 	}

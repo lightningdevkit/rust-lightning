@@ -567,6 +567,19 @@ pub(crate) fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
 		      .into_script()
 }
 
+/// Gets the redeemscript for `to_remote` output on a commitment transaction from
+/// the countersignatory pubkey.
+/// The output is spent by an input with `nSequence` field set to 1 and witness:
+///  <BIP 143 remote sig>
+#[inline]
+pub(crate) fn get_remote_redeemscript(countersignatory_pubkey: &PublicKey) -> Script {
+	Builder::new().push_slice(&countersignatory_pubkey.serialize()[..])
+	              .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
+		      .push_int(1)
+		      .push_opcode(opcodes::all::OP_CSV)
+		      .into_script()
+}
+
 #[derive(Clone)]
 /// We use this to track holder commitment transactions and put off signing them until we are ready
 /// to broadcast. This class can be used inside a signer implementation to generate a signature
