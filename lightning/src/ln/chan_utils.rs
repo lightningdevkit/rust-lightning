@@ -811,6 +811,13 @@ impl HolderCommitmentTransaction {
 		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
 		tx
 	}
+
+	/// Get the number of outputs attached on this transaction.
+	///
+	/// This can be used to compute the transaction weight.
+	pub fn get_num_outputs(&self) -> usize {
+		self.inner.get_num_outputs()
+	}
 }
 
 /// A pre-built Bitcoin commitment transaction and its txid.
@@ -844,6 +851,13 @@ impl BuiltCommitmentTransaction {
 	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		secp_ctx.sign(&sighash, funding_key)
+	}
+
+	/// Get the number of outputs attached on this transaction.
+	///
+	/// This can be used to compute the transaction weight.
+	pub fn get_num_outputs(&self) -> usize {
+		self.transaction.output.len()
 	}
 }
 
@@ -1147,6 +1161,13 @@ impl CommitmentTransaction {
 			return Err(());
 		}
 		Ok(TrustedCommitmentTransaction { inner: self })
+	}
+
+	/// Get the number of outputs attached on this transaction.
+	///
+	/// This can be used to compute the transaction weight.
+	pub fn get_num_outputs(&self) -> usize {
+		self.built.get_num_outputs()
 	}
 }
 

@@ -288,25 +288,53 @@ impl PackageSolvingData {
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.amount },
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				if let Some(ref utxo_input) = outp.utxo_input {
+					return utxo_input.1.amount + 330; //TODO: move ANCHOR_OUTPUT_VALUE in chan_utils
+				} else {
+					return 0;
+				}
+			},
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
 			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
-			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
 		};
 		amt
 	}
-	fn weight(&self) -> usize {
+	fn weight(&self, destination_script: &Script, num_commitment_outputs: usize) -> usize {
 		let weight = match self {
 			PackageSolvingData::RevokedOutput(ref outp) => { outp.weight as usize },
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.weight as usize },
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { WEIGHT_OFFERED_HTLC as usize },
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { WEIGHT_RECEIVED_HTLC as usize },
-			// Note: Currently, weights of holder outputs spending witnesses aren't used
-			// as we can't malleate spending package to increase their feerate. This
-			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
-			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				// Post-Anchor Commitment Package weight accoutning:
+				let commitment_weight =
+					900					// base commitment tx (900 WU)
+					+ num_commitment_outputs * 172		// num-outputs  * P2WSH-output (172 WU)
+					+ 224;					// funding spending witness (224 WU)
+				// If a feerate-bump is required:
+				let cpfp_weight: usize = if let Some(ref utxo_input) = outp.utxo_input {
+					40 					// CPFP transaction basic fields (40 WU)
+					+ 2					// witness marker (2 WU)
+					+ 164					// anchor input (164 WU)
+					+ 115 					// anchor witness (115 WU)
+					+ 164					// bumping input (164 WU)
+					+ utxo_input.1.witness_weight as usize  // bumping witness (`utxo_input.1.witness_weight`)
+					+ 32					// output amount (32 WU)
+					+ 4 					// output scriptpubkey-length (4 WU)
+					+ destination_script.len() * 4		// output scriptpubkey (`destination_script.len() * 4`)
+				} else { 0 };
+				return commitment_weight + cpfp_weight;
+			},
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				if outp.preimage.is_some() {
+					return 706; // HTLC-Success with option_anchor_outputs
+				} else {
+					return 666; // HTLC-Timeout with option_anchor_outputs
+				}
+			},
 		};
 		weight
 	}
@@ -589,13 +617,13 @@ impl PackageTemplate {
 		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
 			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &Script, num_commitment_outputs: usize) -> usize {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
 			// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
 			inputs_weight += 41 * WITNESS_SCALE_FACTOR;
-			witnesses_weight += outp.weight();
+			witnesses_weight += outp.weight(destination_script, num_commitment_outputs);
 		}
 		// version: 4 bytes ; count_tx_in: 1 byte ; count_tx_out: 1 byte ; lock_time: 4 bytes
 		let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
@@ -1081,6 +1109,6 @@ mod tests {
 		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
 		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR
 		// + witness marker (2) + WEIGHT_REVOKED_OUTPUT
-		assert_eq!(package.package_weight(&Script::new()), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
+		assert_eq!(package.package_weight(&Script::new(), 0), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
 	}
 }
