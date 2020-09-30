@@ -47,6 +47,7 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// use lightning::chain::chaininterface::FeeEstimator;
 /// use lightning::chain::keysinterface;
 /// use lightning::chain::keysinterface::KeysInterface;
+/// use lightning::chain::utxointerface::UtxoPool;
 /// use lightning::ln::channelmanager::ChannelManager;
 /// use lightning::ln::channelmanager::ChannelManagerReadArgs;
 /// use lightning::util::config::UserConfig;
@@ -64,11 +65,12 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// 	T: BroadcasterInterface,
 /// 	F: FeeEstimator,
 /// 	L: Logger,
+/// 	U: UtxoPool,
 /// 	C: chain::Filter,
 /// 	P: channelmonitor::Persist<S>,
 /// >(
 /// 	block_source: &mut B,
-/// 	chain_monitor: &ChainMonitor<S, &C, &T, &F, &L, &P>,
+/// 	chain_monitor: &ChainMonitor<S, &C, &T, &F, &L, &P, &U>,
 /// 	config: UserConfig,
 /// 	keys_manager: &K,
 /// 	tx_broadcaster: &T,

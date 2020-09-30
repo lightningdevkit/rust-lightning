@@ -27,6 +27,7 @@ use ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use chain::keysinterface::{Sign, KeysInterface};
+use chain::utxointerface::UtxoPool;
 use chain::package::PackageTemplate;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
@@ -344,9 +345,10 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref, U: Deref>(&mut self, height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L, utxo_pool: &U) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
+		      U::Target: UtxoPool,
 	{
 		if cached_request.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
@@ -378,10 +380,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
 	/// if we receive a preimage after force-close.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, height: u32, broadcaster: &B, fee_estimator: &F, logger: &L, utxo_pool: &U)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
+		      U::Target: UtxoPool,
 	{
 		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
@@ -437,7 +440,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &req, &*fee_estimator, &*logger) {
+			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &req, &*fee_estimator, &*logger, &*utxo_pool) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
 				let txid = tx.txid();
@@ -562,7 +565,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, request) in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger, &*utxo_pool) {
 				log_trace!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
@@ -573,16 +576,18 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	pub(crate) fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+	pub(crate) fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		let mut height = None;
 		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
@@ -593,14 +598,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 
 		if let Some(height) = height {
-			self.block_disconnected(height, broadcaster, fee_estimator, logger);
+			self.block_disconnected(height, broadcaster, fee_estimator, logger, utxo_pool);
 		}
 	}
 
-	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L, utxo_pool: U)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
+		      U::Target: UtxoPool,
 	{
 		let mut bump_candidates = HashMap::new();
 		let onchain_events_awaiting_threshold_conf =
@@ -627,7 +633,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for (_, request) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger, &&*utxo_pool) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
 				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));

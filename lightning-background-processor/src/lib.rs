@@ -13,6 +13,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::ChainMonitor;
 use lightning::chain::channelmonitor;
 use lightning::chain::keysinterface::{Sign, KeysInterface};
+use lightning::chain::utxointerface::UtxoPool;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{PeerManager, SocketDescriptor};
@@ -111,12 +112,13 @@ impl BackgroundProcessor {
 		F: 'static + Deref + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
+		U: 'static + Deref + Send + Sync,
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
 		CMH: 'static + Deref + Send + Sync,
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send + Sync,
 		CMP: 'static + Send + ChannelManagerPersister<Signer, CW, T, K, F, L>,
-		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P, U>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L>> + Send + Sync,
 	>
@@ -128,6 +130,7 @@ impl BackgroundProcessor {
 		K::Target: 'static + KeysInterface<Signer = Signer>,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
+		U::Target: 'static + UtxoPool,
 		P::Target: 'static + channelmonitor::Persist<Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
@@ -207,7 +210,7 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
-	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
+	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>, Arc<test_utils::TestPool>>;
 
 	struct Node {
 		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
@@ -241,13 +244,14 @@ mod tests {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
 			let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+			let utxo_pool = Arc::new(test_utils::TestPool::new());
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));
 			let seed = [i as u8; 32];
 			let network = Network::Testnet;
 			let now = Duration::from_secs(genesis_block(network).header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
-			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
+			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone(), utxo_pool.clone()));
 			let best_block = BestBlock::from_genesis(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));

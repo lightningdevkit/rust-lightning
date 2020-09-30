@@ -193,6 +193,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let persister: test_utils::TestPersister;
+	let utxo_pool: test_utils::TestPool;
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -237,7 +238,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 		persister = test_utils::TestPersister::new();
 		let keys_manager = &chanmon_cfgs[0].keys_manager;
-		new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+		new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager, &chanmon_cfgs[0].utxo_pool);
 		nodes[0].chain_monitor = &new_chain_monitor;
 		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 		let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(

@@ -110,6 +110,7 @@ fn test_monitor_and_persister_update_fail() {
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
+	let utxo_pool = test_utils::TestPool::new();
 	let tx_broadcaster = TestBroadcaster {
 		txn_broadcasted: Mutex::new(Vec::new()),
 		// Because we will connect a block at height 200 below, we need the TestBroadcaster to know
@@ -125,7 +126,7 @@ fn test_monitor_and_persister_update_fail() {
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager, &utxo_pool);
 		assert!(chain_mon.watch_channel(outpoint, new_monitor).is_ok());
 		chain_mon
 	};
@@ -2061,7 +2062,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 
 			persister = test_utils::TestPersister::new();
 			let keys_manager = &chanmon_cfgs[0].keys_manager;
-			new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+			new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager, &chanmon_cfgs[0].utxo_pool);
 			nodes[0].chain_monitor = &new_chain_monitor;
 			let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 			let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(

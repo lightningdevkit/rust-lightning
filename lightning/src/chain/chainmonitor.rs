@@ -33,6 +33,7 @@ use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist, TransactionOutputs};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::Sign;
+use chain::utxointerface::UtxoPool;
 use util::logger::Logger;
 use util::events;
 use util::events::EventHandler;
@@ -51,12 +52,13 @@ use core::ops::Deref;
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [module-level documentation]: crate::chain::chainmonitor
-pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, U: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
         P::Target: channelmonitor::Persist<ChannelSigner>,
+	U::Target: UtxoPool,
 {
 	/// The monitors
 	pub monitors: RwLock<HashMap<OutPoint, ChannelMonitor<ChannelSigner>>>,
@@ -65,14 +67,16 @@ pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: De
 	logger: L,
 	fee_estimator: F,
 	persister: P,
+	utxo_pool: U,
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, U: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P, U>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
 	    P::Target: channelmonitor::Persist<ChannelSigner>,
+	    U::Target: UtxoPool
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the given chain data. See
@@ -130,7 +134,7 @@ where C::Target: chain::Filter,
 	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
+	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P, utxo_pool: U) -> Self {
 		Self {
 			monitors: RwLock::new(HashMap::new()),
 			chain_source,
@@ -138,6 +142,7 @@ where C::Target: chain::Filter,
 			logger,
 			fee_estimator: feeest,
 			persister,
+			utxo_pool
 		}
 	}
 
@@ -151,21 +156,22 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
-chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, U: Deref>
+chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P, U>
 where
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 	P::Target: channelmonitor::Persist<ChannelSigner>,
+	U::Target: UtxoPool
 {
 	fn block_connected(&self, block: &Block, height: u32) {
 		let header = &block.header;
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		self.process_chain_data(header, &txdata, |monitor, txdata| {
 			monitor.block_connected(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool)
 		});
 	}
 
@@ -173,31 +179,32 @@ where
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
 			monitor.block_disconnected(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool);
 		}
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
-chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, U: Deref>
+chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P, U>
 where
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 	P::Target: channelmonitor::Persist<ChannelSigner>,
+	U::Target: UtxoPool,
 {
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		self.process_chain_data(header, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool)
 		});
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
-			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool);
 		}
 	}
 
@@ -207,7 +214,7 @@ where
 			// it's still possible if a chain::Filter implementation returns a transaction.
 			debug_assert!(txdata.is_empty());
 			monitor.best_block_updated(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger, &*self.utxo_pool)
 		});
 	}
 
@@ -224,13 +231,14 @@ where
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref >
-chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref, U: Deref>
+chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P, U>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
 	    P::Target: channelmonitor::Persist<ChannelSigner>,
+	    U::Target: UtxoPool,
 {
 	/// Adds the monitor that watches the channel referred to by the given outpoint.
 	///
@@ -281,7 +289,7 @@ where C::Target: chain::Filter,
 			},
 			Some(monitor) => {
 				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(monitor));
-				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
+				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger, &self.utxo_pool);
 				if let Err(e) = &update_res {
 					log_error!(self.logger, "Failed to update channel monitor: {:?}", e);
 				}
@@ -309,12 +317,13 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref, U: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P, U>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 	      P::Target: channelmonitor::Persist<ChannelSigner>,
+	      U::Target: UtxoPool
 {
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///

@@ -45,6 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
 use chain::onchaintx::OnchainTxHandler;
 use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
+use chain::utxointerface::UtxoPool;
 use chain::Filter;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48, OptionDeserWrapper};
@@ -932,20 +933,22 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
+	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		payment_hash: &PaymentHash,
 		payment_preimage: &PaymentPreimage,
 		broadcaster: &B,
 		fee_estimator: &F,
 		logger: &L,
+		utxo_pool: &U,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().provide_payment_preimage(
-			payment_hash, payment_preimage, broadcaster, fee_estimator, logger)
+			payment_hash, payment_preimage, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
@@ -963,19 +966,21 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		updates: &ChannelMonitorUpdate,
 		broadcaster: &B,
 		fee_estimator: &F,
 		logger: &L,
+		utxo_pool: &U,
 	) -> Result<(), MonitorUpdateError>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool
 	{
-		self.inner.lock().unwrap().update_monitor(updates, broadcaster, fee_estimator, logger)
+		self.inner.lock().unwrap().update_monitor(updates, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -1076,7 +1081,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// [`get_outputs_to_watch`].
 	///
 	/// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(
+	pub fn block_connected<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		header: &BlockHeader,
 		txdata: &TransactionData,
@@ -1084,32 +1089,36 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().block_connected(
-			header, txdata, height, broadcaster, fee_estimator, logger)
+			header, txdata, height, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	/// Determines if the disconnected block contained any transactions of interest and updates
 	/// appropriately.
-	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(
+	pub fn block_disconnected<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		header: &BlockHeader,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().block_disconnected(
-			header, height, broadcaster, fee_estimator, logger)
+			header, height, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	/// Processes transactions confirmed in a block with the given header and height, returning new
@@ -1119,7 +1128,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_connected`]: Self::block_connected
-	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
+	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		header: &BlockHeader,
 		txdata: &TransactionData,
@@ -1127,14 +1136,16 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().transactions_confirmed(
-			header, txdata, height, broadcaster, fee_estimator, logger)
+			header, txdata, height, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	/// Processes a transaction that was reorganized out of the chain.
@@ -1143,19 +1154,21 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// than blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_disconnected`]: Self::block_disconnected
-	pub fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+	pub fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().transaction_unconfirmed(
-			txid, broadcaster, fee_estimator, logger);
+			txid, broadcaster, fee_estimator, logger, utxo_pool);
 	}
 
 	/// Updates the monitor with the current best chain tip, returning new outputs to watch. See
@@ -1165,21 +1178,23 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_connected`]: Self::block_connected
-	pub fn best_block_updated<B: Deref, F: Deref, L: Deref>(
+	pub fn best_block_updated<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&self,
 		header: &BlockHeader,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U,
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		self.inner.lock().unwrap().best_block_updated(
-			header, height, broadcaster, fee_estimator, logger)
+			header, height, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
@@ -1324,10 +1339,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L)
+	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L, utxo_pool: &U)
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
+		    U::Target: UtxoPool,
 	{
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 
@@ -1336,7 +1352,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger, utxo_pool);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -1359,10 +1375,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
 			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger, utxo_pool);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger, utxo_pool);
 			}
 		}
 	}
@@ -1378,10 +1394,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 	}
 
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L, utxo_pool: &U) -> Result<(), MonitorUpdateError>
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
+		    U::Target: UtxoPool,
 	{
 		// ChannelMonitor updates may be applied after force close if we receive a
 		// preimage for a broadcasted commitment transaction HTLC output that we'd
@@ -1409,7 +1426,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger)
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger, utxo_pool)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -1901,46 +1918,49 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		holder_transactions
 	}
 
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L, utxo_pool: U) -> Vec<TransactionOutputs>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
+		      U::Target: UtxoPool
 	{
 		let block_hash = header.block_hash();
 		log_trace!(logger, "New best block {} at height {}", block_hash, height);
 		self.best_block = BestBlock::new(block_hash, height);
 
-		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
+		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
-	fn best_block_updated<B: Deref, F: Deref, L: Deref>(
+	fn best_block_updated<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&mut self,
 		header: &BlockHeader,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool
 	{
 		let block_hash = header.block_hash();
 		log_trace!(logger, "New best block {} at height {}", block_hash, height);
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
-			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger)
+			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger, utxo_pool)
 		} else {
 			self.best_block = BestBlock::new(block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
-			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
+			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger, utxo_pool);
 			Vec::new()
 		}
 	}
 
-	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
+	fn transactions_confirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&mut self,
 		header: &BlockHeader,
 		txdata: &TransactionData,
@@ -1948,11 +1968,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool,
 	{
 		let txn_matched = self.filter_block(txdata);
 		for tx in &txn_matched {
@@ -2009,10 +2031,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.is_paying_spendable_output(&tx, height, &logger);
 		}
 
-		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, broadcaster, fee_estimator, logger)
+		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, broadcaster, fee_estimator, logger, utxo_pool)
 	}
 
-	fn block_confirmed<B: Deref, F: Deref, L: Deref>(
+	fn block_confirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&mut self,
 		height: u32,
 		txn_matched: Vec<&Transaction>,
@@ -2021,11 +2043,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool
 	{
 		let should_broadcast = self.would_broadcast_at_height(height, &logger);
 		if should_broadcast {
@@ -2102,8 +2126,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				}
 			}
 		}
-
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, height, &&*broadcaster, &&*fee_estimator, &&*logger);
+		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, height, &&*broadcaster, &&*fee_estimator, &&*logger, &&*utxo_pool);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -2128,10 +2151,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		watch_outputs
 	}
 
-	pub fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub fn block_disconnected<B: Deref, F: Deref, L: Deref, U: Deref>(&mut self, header: &BlockHeader, height: u32, broadcaster: B, fee_estimator: F, logger: L, utxo_pool: U)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
+		      U::Target: UtxoPool
 	{
 		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
 
@@ -2140,24 +2164,26 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
-		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger, utxo_pool);
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
 
-	fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+	fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref, U: Deref>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
+		utxo_pool: U
 	) where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
+		U::Target: UtxoPool
 	{
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.txid != *txid);
-		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, fee_estimator, logger, utxo_pool);
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
@@ -2517,38 +2543,40 @@ pub trait Persist<ChannelSigner: Sign> {
 	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
-impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: Sign, T: Deref, F: Deref, L: Deref, U: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L, U)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
+	U::Target: UtxoPool,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		self.0.block_connected(&block.header, &txdata, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_connected(&block.header, &txdata, height, &*self.1, &*self.2, &*self.3, &*self.4);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3, &*self.4);
 	}
 }
 
-impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: Sign, T: Deref, F: Deref, L: Deref, U: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L, U)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
+	U::Target: UtxoPool,
 {
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &*self.3);
+		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &*self.3, &*self.4);
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &*self.3);
+		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &*self.3, &*self.4);
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
-		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
+		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3, &*self.4);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
@@ -2819,7 +2847,7 @@ mod tests {
 	use ln::channelmanager::BestBlock;
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
+	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator, TestPool};
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
 	use std::sync::{Arc, Mutex};
@@ -2832,6 +2860,7 @@ mod tests {
 		let logger = Arc::new(TestLogger::new());
 		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
 		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: 253 });
+		let utxo_pool = Arc::new(TestPool::new());
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
@@ -2927,7 +2956,7 @@ mod tests {
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
-			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
+			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger, &utxo_pool);
 		}
 
 		// Now provide a secret, pruning preimages 10-15

@@ -189,6 +189,7 @@ pub struct TestChanMonCfg {
 	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 	pub keys_manager: test_utils::TestKeysInterface,
+	pub utxo_pool: test_utils::TestPool,
 }
 
 pub struct NodeCfg<'a> {
@@ -310,7 +311,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
 			};
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
+			let utxo_pool = test_utils::TestPool::new();
+			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager, &utxo_pool);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
@@ -1296,8 +1298,9 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let utxo_pool = test_utils::TestPool::new();
 
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager });
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, utxo_pool });
 	}
 
 	chan_mon_cfgs
@@ -1307,7 +1310,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	let mut nodes = Vec::new();
 
 	for i in 0..node_count {
-		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister, &chanmon_cfgs[i].keys_manager);
+		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister, &chanmon_cfgs[i].keys_manager, &chanmon_cfgs[i].utxo_pool);
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg { chain_source: &chanmon_cfgs[i].chain_source, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chain_monitor, keys_manager: &chanmon_cfgs[i].keys_manager, node_seed: seed });
 	}

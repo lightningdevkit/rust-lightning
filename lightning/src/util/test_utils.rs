@@ -14,8 +14,10 @@ use chain::chaininterface::ConfirmationTarget;
 use chain::chainmonitor;
 use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
+use chain::package::BumpingOutput;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
+use chain::utxointerface::UtxoPool;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
@@ -25,11 +27,12 @@ use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, OutPoint as BitcoinOutPoint};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::network::constants::Network;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
@@ -65,6 +68,42 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
+pub struct TestPool {
+	//TODO: lock
+	utxo_available: Mutex<Vec<(BitcoinOutPoint, BumpingOutput)>>,
+}
+
+impl UtxoPool for TestPool {
+	fn allocate_utxo(&self, required_fee: u64) -> Option<(BitcoinOutPoint, BumpingOutput)> {
+		let utxo_available = self.utxo_available.lock().unwrap();
+		// We copy our bumping utxo to synchronize between duplicate monitors (e.g watchtower
+		// test)
+		Some(utxo_available.first().unwrap().clone())
+	}
+	fn free_utxo(&self, free_utxo: BitcoinOutPoint) {}
+	fn provide_utxo_witness(&self, cpfp_transaction: &Transaction, utxo_index: u32) -> Result<Vec<Vec<u8>>, ()> {
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		Ok(vec![script.into_bytes()])
+	}
+}
+
+impl TestPool {
+	pub fn new() -> Self {
+		let outp = BitcoinOutPoint {
+			txid: Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f64a").unwrap(),
+			vout: 0,
+		};
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		let bumping = BumpingOutput::new(TEST_BUMP_VALUE, 3 as u64);
+		let utxo_available = Mutex::new(vec![(outp, bumping)]);
+		TestPool {
+			utxo_available,
+		}
+	}
+}
+
+pub const TEST_BUMP_VALUE: u64 = 100_000; // 1 mBTC
+
 pub struct OnlyReadsKeysInterface {}
 impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
@@ -84,7 +123,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>, &'a UtxoPool>,
 	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 	/// If this is set to Some(), after the next return, we'll always return this until update_ret
@@ -95,12 +134,13 @@ pub struct TestChainMonitor<'a> {
 	/// boolean.
 	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
 }
+
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface, utxo_pool: &'a UtxoPool) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister, utxo_pool),
 			keys_manager,
 			update_ret: Mutex::new(None),
 			next_update_ret: Mutex::new(None),
