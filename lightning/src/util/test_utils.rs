@@ -11,22 +11,25 @@ use chain::chaininterface;
 use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
 use chain::transaction::OutPoint;
 use chain::keysinterface;
+use chain::utxointerface::UtxoPool;
 use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
 use ln::channelmonitor::MonitorEvent;
+use ln::onchain_utils::BumpingOutput;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, OutPoint as BitcoinOutPoint};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
@@ -59,21 +62,57 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
+pub struct TestPool {
+	//TODO: lock
+	utxo_available: Mutex<Vec<(BitcoinOutPoint, BumpingOutput)>>,
+}
+
+impl UtxoPool for TestPool {
+	fn allocate_utxo(&self, required_fee: u64) -> Option<(BitcoinOutPoint, BumpingOutput)> {
+		let utxo_available = self.utxo_available.lock().unwrap();
+		// We copy our bumping utxo to synchronize between duplicate monitors (e.g watchtower
+		// test)
+		Some(utxo_available.first().unwrap().clone())
+	}
+	fn free_utxo(&self, free_utxo: BitcoinOutPoint) {}
+	fn provide_utxo_witness(&self, cpfp_transaction: &Transaction, utxo_index: u32) -> Result<Vec<Vec<u8>>, ()> {
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		Ok(vec![script.into_bytes()])
+	}
+}
+
+impl TestPool {
+	pub fn new() -> Self {
+		let outp = BitcoinOutPoint {
+			txid: Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f64a").unwrap(),
+			vout: 0,
+		};
+		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		let bumping = BumpingOutput::new(TEST_BUMP_VALUE, 3 as u64);
+		let utxo_available = Mutex::new(vec![(outp, bumping)]);
+		TestPool {
+			utxo_available,
+		}
+	}
+}
+
+pub const TEST_BUMP_VALUE: u64 = 100_000; // 1 mBTC
+
 pub struct TestChannelMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a ChainWatchInterface>,
+	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a ChainWatchInterface, &'a UtxoPool>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChannelMonitor<'a> {
-	pub fn new(chain_monitor: &'a chaininterface::ChainWatchInterface, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator) -> Self {
+	pub fn new(chain_monitor: &'a chaininterface::ChainWatchInterface, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, utxo_pool: &'a UtxoPool) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
+			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator, utxo_pool),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}

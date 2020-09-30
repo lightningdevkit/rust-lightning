@@ -69,6 +69,7 @@ pub struct TestChanMonCfg {
 	pub fee_estimator: test_utils::TestFeeEstimator,
 	pub chain_monitor: chaininterface::ChainWatchInterfaceUtil,
 	pub logger: test_utils::TestLogger,
+	pub utxo_pool: test_utils::TestPool,
 }
 
 pub struct NodeCfg<'a> {
@@ -173,7 +174,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			}
 
 			let chain_watch = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
-			let channel_monitor = test_utils::TestChannelMonitor::new(&chain_watch, self.tx_broadcaster.clone(), &self.logger, &feeest);
+			let utxo_pool = test_utils::TestPool::new();
+			let channel_monitor = test_utils::TestChannelMonitor::new(&chain_watch, self.tx_broadcaster.clone(), &self.logger, &feeest, &utxo_pool);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = channel_monitor.add_monitor(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
@@ -1069,7 +1071,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_monitor, logger });
+		let utxo_pool = test_utils::TestPool::new();
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_monitor, logger, utxo_pool });
 	}
 
 	chan_mon_cfgs
@@ -1081,7 +1084,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	for i in 0..node_count {
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-		let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[i].chain_monitor, &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
+		let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[i].chain_monitor, &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].utxo_pool);
 		nodes.push(NodeCfg { chain_monitor: &chanmon_cfgs[i].chain_monitor, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chan_monitor, keys_manager, node_seed: seed });
 	}
 
