@@ -5228,7 +5228,7 @@ fn test_onchain_to_onchain_claim() {
 		assert_eq!(b_txn[2].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		assert!(b_txn[2].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
 		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
-		check_spends!(b_txn[0], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor, * 2 due to block rescan
+		check_spends!(b_txn[0], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
 		assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
