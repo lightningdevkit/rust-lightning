@@ -18,6 +18,7 @@ use chain::keysinterface::ChannelKeys;
 use chain::transaction::OutPoint;
 
 pub mod chaininterface;
+pub mod chainmonitor;
 pub mod channelmonitor;
 pub mod transaction;
 pub mod keysinterface;

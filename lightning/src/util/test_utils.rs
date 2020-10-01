@@ -10,6 +10,7 @@
 use chain;
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
+use chain::chainmonitor;
 use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
@@ -62,7 +63,7 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: channelmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
@@ -73,7 +74,7 @@ impl<'a> TestChainMonitor<'a> {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			chain_monitor: channelmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
+			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}

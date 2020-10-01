@@ -42,18 +42,15 @@ use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction, HTLCType};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
-use chain;
-use chain::Filter;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
 use util::logger::Logger;
 use util::ser::{Readable, MaybeReadable, Writer, Writeable, U48};
-use util::{byte_utils, events};
+use util::byte_utils;
 use util::events::Event;
 
 use std::collections::{HashMap, HashSet, hash_map};
-use std::sync::Mutex;
 use std::{cmp, mem};
 use std::ops::Deref;
 use std::io::Error;
@@ -188,185 +185,6 @@ pub struct HTLCUpdate {
 	pub(crate) source: HTLCSource
 }
 impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
-
-/// An implementation of [`chain::Watch`] for monitoring channels.
-///
-/// Connected and disconnected blocks must be provided to `ChainMonitor` as documented by
-/// [`chain::Watch`]. May be used in conjunction with [`ChannelManager`] to monitor channels locally
-/// or used independently to monitor channels remotely.
-///
-/// [`chain::Watch`]: ../trait.Watch.html
-/// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
-pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref>
-	where C::Target: chain::Filter,
-        T::Target: BroadcasterInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
-{
-	/// The monitors
-	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
-	chain_source: Option<C>,
-	broadcaster: T,
-	logger: L,
-	fee_estimator: F
-}
-
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly based on transactions in the connected block. See
-	/// [`ChannelMonitor::block_connected`] for details. Any HTLCs that were resolved on chain will
-	/// be returned by [`chain::Watch::release_pending_monitor_events`].
-	///
-	/// Calls back to [`chain::Filter`] if any monitor indicated new outputs to watch, returning
-	/// `true` if so. Subsequent calls must not exclude any transactions matching the new outputs
-	/// nor any in-block descendants of such transactions. It is not necessary to re-fetch the block
-	/// to obtain updated `txdata`.
-	///
-	/// [`ChannelMonitor::block_connected`]: struct.ChannelMonitor.html#method.block_connected
-	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
-	/// [`chain::Filter`]: ../trait.Filter.html
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> bool {
-		let mut has_new_outputs_to_watch = false;
-		{
-			let mut monitors = self.monitors.lock().unwrap();
-			for monitor in monitors.values_mut() {
-				let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-				has_new_outputs_to_watch |= !txn_outputs.is_empty();
-
-				if let Some(ref chain_source) = self.chain_source {
-					for (txid, outputs) in txn_outputs.drain(..) {
-						for (idx, output) in outputs.iter().enumerate() {
-							chain_source.register_output(&OutPoint { txid, index: idx as u16 }, &output.script_pubkey);
-						}
-					}
-				}
-			}
-		}
-		has_new_outputs_to_watch
-	}
-
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel based on the disconnected block. See [`ChannelMonitor::block_disconnected`] for
-	/// details.
-	///
-	/// [`ChannelMonitor::block_disconnected`]: struct.ChannelMonitor.html#method.block_disconnected
-	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let mut monitors = self.monitors.lock().unwrap();
-		for monitor in monitors.values_mut() {
-			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-		}
-	}
-
-	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
-	///
-	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
-	/// will call back to it indicating transactions and outputs of interest. This allows clients to
-	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
-	/// always need to fetch full blocks absent another means for determining which blocks contain
-	/// transactions relevant to the watched channels.
-	///
-	/// [`chain::Filter`]: ../trait.Filter.html
-	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F) -> Self {
-		Self {
-			monitors: Mutex::new(HashMap::new()),
-			chain_source,
-			broadcaster,
-			logger,
-			fee_estimator: feeest,
-		}
-	}
-
-	/// Adds the monitor that watches the channel referred to by the given outpoint.
-	///
-	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
-	///
-	/// [`chain::Filter`]: ../trait.Filter.html
-	fn add_monitor(&self, outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), MonitorUpdateError> {
-		let mut monitors = self.monitors.lock().unwrap();
-		let entry = match monitors.entry(outpoint) {
-			hash_map::Entry::Occupied(_) => return Err(MonitorUpdateError("Channel monitor for given outpoint is already present")),
-			hash_map::Entry::Vacant(e) => e,
-		};
-		{
-			let funding_txo = monitor.get_funding_txo();
-			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
-
-			if let Some(ref chain_source) = self.chain_source {
-				chain_source.register_tx(&funding_txo.0.txid, &funding_txo.1);
-				for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-					for (idx, script_pubkey) in outputs.iter().enumerate() {
-						chain_source.register_output(&OutPoint { txid: *txid, index: idx as u16 }, &script_pubkey);
-					}
-				}
-			}
-		}
-		entry.insert(monitor);
-		Ok(())
-	}
-
-	/// Updates the monitor that watches the channel referred to by the given outpoint.
-	fn update_monitor(&self, outpoint: OutPoint, update: ChannelMonitorUpdate) -> Result<(), MonitorUpdateError> {
-		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&outpoint) {
-			Some(orig_monitor) => {
-				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-				orig_monitor.update_monitor(update, &self.broadcaster, &self.logger)
-			},
-			None => Err(MonitorUpdateError("No such monitor registered"))
-		}
-	}
-}
-
-impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
-	type Keys = ChanSigner;
-
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.add_monitor(funding_txo, monitor) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
-		}
-	}
-
-	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
-		match self.update_monitor(funding_txo, update) {
-			Ok(_) => Ok(()),
-			Err(_) => Err(ChannelMonitorUpdateErr::PermanentFailure),
-		}
-	}
-
-	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		let mut pending_monitor_events = Vec::new();
-		for chan in self.monitors.lock().unwrap().values_mut() {
-			pending_monitor_events.append(&mut chan.get_and_clear_pending_monitor_events());
-		}
-		pending_monitor_events
-	}
-}
-
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L>
-	where C::Target: chain::Filter,
-	      T::Target: BroadcasterInterface,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
-	fn get_and_clear_pending_events(&self) -> Vec<Event> {
-		let mut pending_events = Vec::new();
-		for chan in self.monitors.lock().unwrap().values_mut() {
-			pending_events.append(&mut chan.get_and_clear_pending_events());
-		}
-		pending_events
-	}
-}
 
 /// If an HTLC expires within this many blocks, don't try to claim it in a shared transaction,
 /// instead claiming it in its own individual transaction.
