@@ -25,12 +25,12 @@ use bitcoin::secp256k1;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HolderCommitmentTransaction, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, PreCalculatedTxCreationKeys};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-use chain::transaction::OutPoint;
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
+use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::transaction_utils;
 use util::ser::{Readable, Writeable, Writer};
@@ -3315,7 +3315,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, height: u32, txn_matched: &[&Transaction], indexes_of_txn_matched: &[usize]) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
@@ -3335,7 +3335,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
-			for (ref tx, index_in_block) in txn_matched.iter().zip(indexes_of_txn_matched) {
+			for &(index_in_block, tx) in txdata.iter() {
 				if tx.txid() == self.funding_txo.unwrap().txid {
 					let txo_idx = self.funding_txo.unwrap().index as usize;
 					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
@@ -3366,14 +3366,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 								}
 							}
 						}
-						if height > 0xff_ff_ff || (*index_in_block) > 0xff_ff_ff {
+						if height > 0xff_ff_ff || (index_in_block) > 0xff_ff_ff {
 							panic!("Block was bogus - either height 16 million or had > 16 million transactions");
 						}
 						assert!(txo_idx <= 0xffff); // txo_idx is a (u16 as usize), so this is just listed here for completeness
 						self.funding_tx_confirmations = 1;
-						self.short_channel_id = Some(((height as u64)          << (5*8)) |
-						                             ((*index_in_block as u64) << (2*8)) |
-						                             ((txo_idx as u64)         << (0*8)));
+						self.short_channel_id = Some(((height as u64)         << (5*8)) |
+						                             ((index_in_block as u64) << (2*8)) |
+						                             ((txo_idx as u64)        << (0*8)));
 					}
 				}
 			}

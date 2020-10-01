@@ -7,27 +7,28 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use chain;
 use chain::chaininterface;
-use chain::chaininterface::{ConfirmationTarget, ChainError, ChainWatchInterface};
+use chain::chaininterface::ConfirmationTarget;
+use chain::chainmonitor;
+use chain::channelmonitor;
+use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
-use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use ln::channelmonitor::MonitorEvent;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
-use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
 
@@ -37,7 +38,7 @@ use std::time::Duration;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -59,30 +60,30 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
-pub struct TestChannelMonitor<'a> {
+pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub simple_monitor: channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a ChainWatchInterface>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
-impl<'a> TestChannelMonitor<'a> {
-	pub fn new(chain_monitor: &'a chaininterface::ChainWatchInterface, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator) -> Self {
+impl<'a> TestChainMonitor<'a> {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			simple_monitor: channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger, fee_estimator),
+			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}
 	}
 }
-impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
+impl<'a> chain::Watch for TestChainMonitor<'a> {
 	type Keys = EnforcingChannelKeys;
 
-	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -92,7 +93,7 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
-		assert!(self.simple_monitor.add_monitor(funding_txo, new_monitor).is_ok());
+		assert!(self.chain_monitor.watch_channel(funding_txo, new_monitor).is_ok());
 
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
@@ -101,7 +102,7 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 		ret
 	}
 
-	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
@@ -109,10 +110,10 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
 
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
-		assert!(self.simple_monitor.update_monitor(funding_txo, update).is_ok());
+		assert!(self.chain_monitor.update_channel(funding_txo, update).is_ok());
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		let monitors = self.simple_monitor.monitors.lock().unwrap();
+		let monitors = self.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
@@ -128,8 +129,8 @@ impl<'a> channelmonitor::ManyChannelMonitor for TestChannelMonitor<'a> {
 		ret
 	}
 
-	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		return self.simple_monitor.get_and_clear_pending_monitor_events();
+	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
 
@@ -393,27 +394,41 @@ impl TestKeysInterface {
 	}
 }
 
-pub struct TestChainWatcher {
-	pub utxo_ret: Mutex<Result<(Script, u64), ChainError>>,
+pub struct TestChainSource {
+	pub genesis_hash: BlockHash,
+	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
+	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
+	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
 }
 
-impl TestChainWatcher {
-	pub fn new() -> Self {
-		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
-		Self { utxo_ret: Mutex::new(Ok((script, u64::max_value()))) }
+impl TestChainSource {
+	pub fn new(network: Network) -> Self {
+		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		Self {
+			genesis_hash: genesis_block(network).block_hash(),
+			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
+			watched_txn: Mutex::new(HashSet::new()),
+			watched_outputs: Mutex::new(HashSet::new()),
+		}
 	}
 }
 
-impl ChainWatchInterface for TestChainWatcher {
-	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
-	fn watch_all_txn(&self) { }
-	fn filter_block<'a>(&self, _block: &'a Block) -> Vec<usize> {
-		Vec::new()
-	}
-	fn reentered(&self) -> usize { 0 }
+impl chain::Access for TestChainSource {
+	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
+		if self.genesis_hash != *genesis_hash {
+			return Err(chain::AccessError::UnknownChain);
+		}
 
-	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
 		self.utxo_ret.lock().unwrap().clone()
+	}
+}
+
+impl chain::Filter for TestChainSource {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
+		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
+	}
+
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) {
+		self.watched_outputs.lock().unwrap().insert((*outpoint, script_pubkey.clone()));
 	}
 }

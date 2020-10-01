@@ -11,14 +11,13 @@
 //! payments/messages between them, and often checking the resulting ChannelMonitors are able to
 //! claim outputs on-chain.
 
+use chain::Watch;
+use chain::channelmonitor;
+use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
 use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
-use chain::chaininterface;
-use chain::chaininterface::{ChainListener, ChainWatchInterfaceUtil, BlockNotifier};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
-use ln::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ManyChannelMonitor, ANTI_REORG_DELAY};
-use ln::channelmonitor;
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use routing::router::{Route, RouteHop, get_route};
@@ -417,14 +416,14 @@ fn test_1_conf_open() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
-	assert!(nodes[0].chain_monitor.does_match_tx(&tx));
-	assert!(nodes[1].chain_monitor.does_match_tx(&tx));
-
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version as usize; 1]);
+	let block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![tx],
+	};
+	connect_block(&nodes[1], &block, 1);
 	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
 
-	nodes[0].block_notifier.block_connected_checked(&header, 1, &[&tx; 1], &[tx.version as usize; 1]);
+	connect_block(&nodes[0], &block, 1);
 	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
 
@@ -447,9 +446,12 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	if steps & 0b1000_0000 != 0{
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].block_notifier.block_connected_checked(&header, 1, &Vec::new(), &[0; 0]);
-		nodes[1].block_notifier.block_connected_checked(&header, 1, &Vec::new(), &[0; 0]);
+		let block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		connect_block(&nodes[0], &block, 1);
+		connect_block(&nodes[1], &block, 1);
 	}
 
 	if steps & 0x0f == 0 { return; }
@@ -473,7 +475,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 4 { return; }
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	{
-		let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
@@ -483,7 +485,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 5 { return; }
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
 	{
-		let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
@@ -503,7 +505,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx);
 
 	if steps & 0x0f == 7 { return; }
-	confirm_transaction(&nodes[0].block_notifier, &nodes[0].chain_monitor, &tx, tx.version);
+	confirm_transaction(&nodes[0], &tx);
 	create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
 }
 
@@ -657,7 +659,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
 	nodes[1].node.send_payment(&route, our_payment_hash, &None).unwrap();
 	{
-		let mut added_monitors = nodes[0].chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 0);
 		added_monitors.clear();
 	}
@@ -830,8 +832,8 @@ fn pre_funding_lock_shutdown_test() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 8000000, 0, InitFeatures::known(), InitFeatures::known());
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![tx.clone()]}, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![tx.clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![tx.clone()]}, 1);
 
 	nodes[0].node.close_channel(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -1498,7 +1500,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(has_both_htlcs, 2);
 
 	let header = BlockHeader { version: 0x2000_0000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[0], 1);
 
 	// Check we only broadcast 1 timeout tx
@@ -2340,7 +2342,7 @@ fn channel_monitor_network_test() {
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
 		check_added_monitors!(nodes[0], 1);
 		test_txn_broadcast(&nodes[0], &chan_1, None, HTLCType::NONE);
 	}
@@ -2357,7 +2359,7 @@ fn channel_monitor_network_test() {
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
+		connect_block(&nodes[2], &Block { header, txdata: vec![node_txn.drain(..).next().unwrap()] }, 1);
 		check_added_monitors!(nodes[2], 1);
 		test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::NONE);
 	}
@@ -2398,7 +2400,7 @@ fn channel_monitor_network_test() {
 		claim_funds!(nodes[3], nodes[2], payment_preimage_1, 3_000_000);
 
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[3].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, 1);
+		connect_block(&nodes[3], &Block { header, txdata: vec![node_txn[0].clone()] }, 1);
 		check_added_monitors!(nodes[3], 1);
 
 		check_preimage_claim(&nodes[3], &node_txn);
@@ -2409,7 +2411,7 @@ fn channel_monitor_network_test() {
 
 	{ // Cheat and reset nodes[4]'s height to 1
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[4].block_notifier.block_connected(&Block { header, txdata: vec![] }, 1);
+		connect_block(&nodes[4], &Block { header, txdata: vec![] }, 1);
 	}
 
 	assert_eq!(nodes[3].node.latest_block_height.load(Ordering::Acquire), 1);
@@ -2420,11 +2422,17 @@ fn channel_monitor_network_test() {
 	// buffer space).
 
 	let (close_chan_update_1, close_chan_update_2) = {
-		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[3].block_notifier.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+		let mut block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		connect_block(&nodes[3], &block, 2);
 		for i in 3..TEST_FINAL_CLTV + 2 + LATENCY_GRACE_PERIOD_BLOCKS + 1 {
-			header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[3].block_notifier.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
+			block = Block {
+				header: BlockHeader { version: 0x20000000, prev_blockhash: block.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+				txdata: vec![],
+			};
+			connect_block(&nodes[3], &block, i);
 		}
 		let events = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2451,12 +2459,18 @@ fn channel_monitor_network_test() {
 		// Claim the payment on nodes[4], giving it knowledge of the preimage
 		claim_funds!(nodes[4], nodes[3], payment_preimage_2, 3_000_000);
 
-		header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
 
-		nodes[4].block_notifier.block_connected_checked(&header, 2, &Vec::new()[..], &[0; 0]);
+		connect_block(&nodes[4], &block, 2);
 		for i in 3..TEST_FINAL_CLTV + 2 - CLTV_CLAIM_BUFFER + 1 {
-			header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			nodes[4].block_notifier.block_connected_checked(&header, i, &Vec::new()[..], &[0; 0]);
+			block = Block {
+				header: BlockHeader { version: 0x20000000, prev_blockhash: block.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+				txdata: vec![],
+			};
+			connect_block(&nodes[4], &block, i);
 		}
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2469,8 +2483,11 @@ fn channel_monitor_network_test() {
 		check_added_monitors!(nodes[4], 1);
 		test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
 
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[4].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, TEST_FINAL_CLTV - 5);
+		block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![node_txn[0].clone()],
+		};
+		connect_block(&nodes[4], &block, TEST_FINAL_CLTV - 5);
 
 		check_preimage_claim(&nodes[4], &node_txn);
 		(close_chan_update_1, close_chan_update_2)
@@ -2516,7 +2533,7 @@ fn test_justice_tx() {
 
 	{
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		{
 			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 2); // ChannelMonitor: penalty tx, ChannelManager: local commitment tx
@@ -2529,13 +2546,13 @@ fn test_justice_tx() {
 		check_added_monitors!(nodes[1], 1);
 		test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
 
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		// Verify broadcast of revoked HTLC-timeout
 		let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		check_added_monitors!(nodes[0], 1);
 		// Broadcast revoked HTLC-timeout on node 1
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone()] }, 1);
 		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
@@ -2563,7 +2580,7 @@ fn test_justice_tx() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_4, 3_000_000);
 	{
 		let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		{
 			let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 2); //ChannelMonitor: penalty tx, ChannelManager: local commitment tx
@@ -2575,11 +2592,11 @@ fn test_justice_tx() {
 		check_added_monitors!(nodes[0], 1);
 		test_txn_broadcast(&nodes[0], &chan_6, None, HTLCType::NONE);
 
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		let node_txn = test_txn_broadcast(&nodes[1], &chan_6, Some(revoked_local_txn[0].clone()), HTLCType::SUCCESS);
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		check_added_monitors!(nodes[1], 1);
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[1].clone()] }, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()] }, 1);
 		test_revoked_htlc_claim_txn_broadcast(&nodes[0], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
@@ -2606,7 +2623,7 @@ fn revoked_output_claim() {
 
 	// Inform nodes[1] that nodes[0] broadcast a stale tx
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 1);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 2); // ChannelMonitor: justice tx against revoked to_local output, ChannelManager: local commitment tx
@@ -2615,7 +2632,7 @@ fn revoked_output_claim() {
 	check_spends!(node_txn[1], chan_1.3);
 
 	// Inform nodes[0] that a watchtower cheated on its behalf, so it will force-close the chan
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	check_added_monitors!(nodes[0], 1)
 }
@@ -2652,11 +2669,11 @@ fn claim_htlc_outputs_shared_tx() {
 
 	{
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		check_added_monitors!(nodes[0], 1);
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 		check_added_monitors!(nodes[1], 1);
-		connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -2715,13 +2732,13 @@ fn claim_htlc_outputs_single_tx() {
 
 	{
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
 		check_added_monitors!(nodes[0], 1);
-		nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
+		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 200);
 		check_added_monitors!(nodes[1], 1);
 		expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 
-		connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 200, true, header.block_hash());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 200, true, header.block_hash());
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -2764,8 +2781,8 @@ fn claim_htlc_outputs_single_tx() {
 
 #[test]
 fn test_htlc_on_chain_success() {
-	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
-	// ChainWatchInterface and pass the preimage backward accordingly. So here we test that ChannelManager is
+	// Test that in case of a unilateral close onchain, we detect the state of output and pass
+	// the preimage backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// We test with two HTLCs simultaneously as that was not handled correctly in the past.
 	// A --------------------> B ----------------------> C (preimage)
@@ -2809,7 +2826,7 @@ fn test_htlc_on_chain_success() {
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 
-	nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	connect_block(&nodes[2], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 3 (commitment tx, 2*htlc-success tx), ChannelMonitor : 2 (2 * HTLC-Success tx)
@@ -2827,16 +2844,16 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(node_txn[1].lock_time, 0);
 
 	// Verify that B's ChannelManager is able to extract preimage from HTLC Success tx and pass it backward
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: node_txn}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: node_txn}, 1);
 	{
-		let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		assert_eq!(added_monitors[0].0.txid, chan_2.3.txid());
 		added_monitors.clear();
 	}
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	{
-		let mut added_monitors = nodes[1].chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 2);
 		assert_eq!(added_monitors[0].0.txid, chan_1.3.txid());
 		assert_eq!(added_monitors[1].0.txid, chan_1.3.txid());
@@ -2900,7 +2917,7 @@ fn test_htlc_on_chain_success() {
 	// Broadcast preimage tx by B on offered output from A commitment tx  on A's chain
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 3 (commitment tx + HTLC-Sucess * 2), ChannelMonitor : 1 (HTLC-Success)
@@ -2919,7 +2936,7 @@ fn test_htlc_on_chain_success() {
 	// we already checked the same situation with A.
 
 	// Verify that A's ChannelManager is able to extract preimage from preimage tx and generate PaymentSent
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone(), node_txn[0].clone()] }, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![commitment_tx[0].clone(), node_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -2943,8 +2960,8 @@ fn test_htlc_on_chain_success() {
 
 #[test]
 fn test_htlc_on_chain_timeout() {
-	// Test that in case of a unilateral close onchain, we detect the state of output thanks to
-	// ChainWatchInterface and timeout the HTLC backward accordingly. So here we test that ChannelManager is
+	// Test that in case of a unilateral close onchain, we detect the state of output and
+	// timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// A ------------------> B ----------------------> C (timeout)
 	//    B's commitment tx 		C's commitment tx
@@ -2987,7 +3004,7 @@ fn test_htlc_on_chain_timeout() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	connect_block(&nodes[2], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 (commitment tx)
@@ -2997,7 +3014,7 @@ fn test_htlc_on_chain_timeout() {
 
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
 	let timeout_tx;
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -3017,8 +3034,8 @@ fn test_htlc_on_chain_timeout() {
 		node_txn.clear();
 	}
 
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![timeout_tx]}, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header, txdata: vec![timeout_tx]}, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], false);
 
@@ -3043,7 +3060,7 @@ fn test_htlc_on_chain_timeout() {
 	let commitment_tx = get_local_commitment_txn!(nodes[1], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
 
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+	connect_block(&nodes[0], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (commitment tx, HTLC-Timeout tx), ChannelMonitor : 1 timeout tx
@@ -3079,8 +3096,8 @@ fn test_simple_commitment_revoked_fail_backward() {
 	let (_, payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], false);
 
@@ -3232,9 +3249,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 1 } else { 2 });
@@ -3427,13 +3444,13 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	assert_eq!(node_txn.len(), 2);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]}, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
-	// Duplicate the block_connected call since this may happen due to other listeners
+	// Duplicate the connect_block call since this may happen due to other listeners
 	// registering new transactions
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]}, 1);
 }
 
 #[test]
@@ -3492,8 +3509,11 @@ fn test_force_close_fail_back() {
 		node_txn.remove(0)
 	};
 
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected_checked(&header, 1, &[&tx], &[1]);
+	let block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![tx.clone()],
+	};
+	connect_block(&nodes[1], &block, 1);
 
 	// Note no UpdateHTLCs event here from nodes[1] to nodes[0]!
 	check_closed_broadcast!(nodes[1], false);
@@ -3501,11 +3521,11 @@ fn test_force_close_fail_back() {
 
 	// Now check that if we add the preimage to ChannelMonitor it broadcasts our HTLC-Success..
 	{
-		let mut monitors = nodes[2].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let mut monitors = nodes[2].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		monitors.get_mut(&OutPoint{ txid: Txid::from_slice(&payment_event.commitment_msg.channel_id[..]).unwrap(), index: 0 }).unwrap()
 			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage);
 	}
-	nodes[2].block_notifier.block_connected_checked(&header, 1, &[&tx], &[1]);
+	connect_block(&nodes[2], &block, 1);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 1);
 	assert_eq!(node_txn[0].input.len(), 1);
@@ -3537,10 +3557,8 @@ fn test_unconf_chan() {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		headers.push(header.clone());
 	}
-	let mut height = 99;
 	while !headers.is_empty() {
-		nodes[0].node.block_disconnected(&headers.pop().unwrap(), height);
-		height -= 1;
+		nodes[0].node.block_disconnected(&headers.pop().unwrap());
 	}
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
@@ -3835,7 +3853,7 @@ fn test_funding_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	confirm_transaction(&nodes[0].block_notifier, &nodes[0].chain_monitor, &tx, tx.version);
+	confirm_transaction(&nodes[0], &tx);
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
 	match events_1[0] {
@@ -3850,7 +3868,7 @@ fn test_funding_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	confirm_transaction(&nodes[1].block_notifier, &nodes[1].chain_monitor, &tx, tx.version);
+	confirm_transaction(&nodes[1], &tx);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 2);
 	let funding_locked = match events_2[0] {
@@ -4083,13 +4101,16 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		route_payment(&nodes[0], &[&nodes[1]], 100000).1
 	};
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected_checked(&header, 101, &[], &[]);
-	nodes[1].block_notifier.block_connected_checked(&header, 101, &[], &[]);
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
+	connect_block(&nodes[0], &block, 101);
+	connect_block(&nodes[1], &block, 101);
 	for i in 102..TEST_FINAL_CLTV + 100 + 1 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
-		header.prev_blockhash = header.block_hash();
-		nodes[0].block_notifier.block_connected_checked(&header, i, &[], &[]);
-		nodes[1].block_notifier.block_connected_checked(&header, i, &[], &[]);
+		block.header.prev_blockhash = block.block_hash();
+		connect_block(&nodes[0], &block, i);
+		connect_block(&nodes[1], &block, i);
 	}
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
@@ -4154,18 +4175,21 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 		check_added_monitors!(nodes[1], 0);
 	}
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected_checked(&header, 101, &[], &[]);
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
+	connect_block(&nodes[1], &block, 101);
 	for i in 102..TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
-		header.prev_blockhash = header.block_hash();
-		nodes[1].block_notifier.block_connected_checked(&header, i, &[], &[]);
+		block.header.prev_blockhash = block.block_hash();
+		connect_block(&nodes[1], &block, i);
 	}
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-	header.prev_blockhash = header.block_hash();
-	nodes[1].block_notifier.block_connected_checked(&header, TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS, &[], &[]);
+	block.header.prev_blockhash = block.block_hash();
+	connect_block(&nodes[1], &block, TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS);
 
 	if forwarded_htlc {
 		expect_pending_htlcs_forwardable!(nodes[1]);
@@ -4283,9 +4307,9 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let logger: test_utils::TestLogger;
 	let fee_estimator: test_utils::TestFeeEstimator;
-	let new_chan_monitor: test_utils::TestChannelMonitor;
+	let new_chain_monitor: test_utils::TestChainMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
@@ -4294,12 +4318,12 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	let nodes_0_serialized = nodes[0].node.encode();
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+	nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
-	nodes[0].chan_monitor = &new_chan_monitor;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
+	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
@@ -4310,11 +4334,11 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager: &keys_manager,
 			fee_estimator: &fee_estimator,
-			monitor: nodes[0].chan_monitor,
+			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
 			channel_monitors,
@@ -4323,9 +4347,8 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chan_monitor.add_monitor(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
 	nodes[0].node = &nodes_0_deserialized;
-	nodes[0].block_notifier.register_listener(nodes[0].node);
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
 
@@ -4358,9 +4381,9 @@ fn test_manager_serialize_deserialize_events() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let logger: test_utils::TestLogger;
-	let new_chan_monitor: test_utils::TestChannelMonitor;
+	let new_chain_monitor: test_utils::TestChainMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Start creating a channel, but stop right before broadcasting the event message FundingBroadcastSafe
@@ -4381,7 +4404,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
 	{
-		let mut added_monitors = node_b.chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = node_b.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
@@ -4389,7 +4412,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	node_a.node.handle_funding_signed(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a.node.get_our_node_id()));
 	{
-		let mut added_monitors = node_a.chan_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = node_a.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
@@ -4402,12 +4425,12 @@ fn test_manager_serialize_deserialize_events() {
 	// Start the de/seriailization process mid-channel creation to check that the channel manager will hold onto events that are serialized
 	let nodes_0_serialized = nodes[0].node.encode();
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+	nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	logger = test_utils::TestLogger::new();
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
-	nodes[0].chan_monitor = &new_chan_monitor;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
+	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
@@ -4418,11 +4441,11 @@ fn test_manager_serialize_deserialize_events() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager: &keys_manager,
 			fee_estimator: &fee_estimator,
-			monitor: nodes[0].chan_monitor,
+			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
 			channel_monitors,
@@ -4433,7 +4456,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	assert!(nodes[0].chan_monitor.add_monitor(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
 	nodes[0].node = &nodes_0_deserialized;
 
 	// After deserializing, make sure the FundingBroadcastSafe event is still held by the channel manager
@@ -4448,7 +4471,6 @@ fn test_manager_serialize_deserialize_events() {
 	};
 
 	// Make sure the channel is functioning as though the de/serialization never happened
-	nodes[0].block_notifier.register_listener(nodes[0].node);
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
 
@@ -4480,9 +4502,9 @@ fn test_simple_manager_serialize_deserialize() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let logger: test_utils::TestLogger;
 	let fee_estimator: test_utils::TestFeeEstimator;
-	let new_chan_monitor: test_utils::TestChannelMonitor;
+	let new_chain_monitor: test_utils::TestChainMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
@@ -4493,12 +4515,12 @@ fn test_simple_manager_serialize_deserialize() {
 
 	let nodes_0_serialized = nodes[0].node.encode();
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
+	nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
-	nodes[0].chan_monitor = &new_chan_monitor;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
+	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut chan_0_monitor_read).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
@@ -4508,11 +4530,11 @@ fn test_simple_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: UserConfig::default(),
 			keys_manager: &keys_manager,
 			fee_estimator: &fee_estimator,
-			monitor: nodes[0].chan_monitor,
+			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 			logger: &logger,
 			channel_monitors,
@@ -4521,7 +4543,7 @@ fn test_simple_manager_serialize_deserialize() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chan_monitor.add_monitor(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
 	nodes[0].node = &nodes_0_deserialized;
 	check_added_monitors!(nodes[0], 1);
 
@@ -4539,16 +4561,16 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let logger: test_utils::TestLogger;
 	let fee_estimator: test_utils::TestFeeEstimator;
-	let new_chan_monitor: test_utils::TestChannelMonitor;
+	let new_chain_monitor: test_utils::TestChainMonitor;
 	let keys_manager: test_utils::TestKeysInterface;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::known(), InitFeatures::known());
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 3, InitFeatures::known(), InitFeatures::known());
 
 	let mut node_0_stale_monitors_serialized = Vec::new();
-	for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
+	for monitor in nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter() {
 		let mut writer = test_utils::TestVecWriter(Vec::new());
 		monitor.1.write_for_disk(&mut writer).unwrap();
 		node_0_stale_monitors_serialized.push(writer.0);
@@ -4567,7 +4589,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// Now the ChannelMonitor (which is now out-of-sync with ChannelManager for channel w/
 	// nodes[3])
 	let mut node_0_monitors_serialized = Vec::new();
-	for monitor in nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter() {
+	for monitor in nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter() {
 		let mut writer = test_utils::TestVecWriter(Vec::new());
 		monitor.1.write_for_disk(&mut writer).unwrap();
 		node_0_monitors_serialized.push(writer.0);
@@ -4575,8 +4597,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	new_chan_monitor = test_utils::TestChannelMonitor::new(nodes[0].chain_monitor.clone(), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
-	nodes[0].chan_monitor = &new_chan_monitor;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator);
+	nodes[0].chain_monitor = &new_chain_monitor;
 
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
@@ -4598,11 +4620,11 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	if let Err(msgs::DecodeError::InvalidValue) =
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager: &keys_manager,
 		fee_estimator: &fee_estimator,
-		monitor: nodes[0].chan_monitor,
+		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 		logger: &logger,
 		channel_monitors: node_0_stale_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
@@ -4612,11 +4634,11 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let (_, nodes_0_deserialized_tmp) =
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager: &keys_manager,
 		fee_estimator: &fee_estimator,
-		monitor: nodes[0].chan_monitor,
+		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
 		logger: &logger,
 		channel_monitors: node_0_monitors.iter_mut().map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect(),
@@ -4632,7 +4654,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	for monitor in node_0_monitors.drain(..) {
-		assert!(nodes[0].chan_monitor.add_monitor(monitor.get_funding_txo().0, monitor).is_ok());
+		assert!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor).is_ok());
 		check_added_monitors!(nodes[0], 1);
 	}
 	nodes[0].node = &nodes_0_deserialized;
@@ -4662,7 +4684,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 macro_rules! check_spendable_outputs {
 	($node: expr, $der_idx: expr, $keysinterface: expr, $chan_value: expr) => {
 		{
-			let events = $node.chan_monitor.simple_monitor.get_and_clear_pending_events();
+			let events = $node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 			let mut txn = Vec::new();
 			for event in events {
 				match event {
@@ -4796,8 +4818,8 @@ fn test_claim_sizeable_push_msat() {
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4824,10 +4846,10 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()] }, 0);
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 2);
@@ -4853,14 +4875,14 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 3);
@@ -4889,7 +4911,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	assert!(nodes[1].node.claim_funds(payment_preimage, &None, 3_000_000));
 	check_added_monitors!(nodes[1], 1);
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
@@ -4910,8 +4932,8 @@ fn test_static_spendable_outputs_preimage_tx() {
 	check_spends!(node_txn[2], node_txn[1]);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4939,7 +4961,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 
 	// Settle A's commitment tx on B' chain
 	let header = BlockHeader { version: 0x2000_0000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()] }, 0);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()] }, 0);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
@@ -4956,8 +4978,8 @@ fn test_static_spendable_outputs_timeout_tx() {
 	check_spends!(node_txn[2], node_txn[1]);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -4983,7 +5005,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 
 	let  header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -4993,8 +5015,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	check_spends!(node_txn[0], revoked_local_txn[0]);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header: header_1, txdata: vec![node_txn[0].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -5020,7 +5042,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// A will generate HTLC-Timeout from revoked commitment tx
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -5032,7 +5054,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(revoked_htlc_txn[1], chan_1.3);
 
 	// B will generate justice tx from A's revoked commitment/HTLC tx
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 0);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 0);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -5057,8 +5079,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(node_txn[2], chan_1.3);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -5089,7 +5111,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// B will generate HTLC-Success from revoked commitment tx
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -5104,7 +5126,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	assert_eq!(revoked_local_txn[0].output[unspent_local_txn_output].script_pubkey.len(), 2 + 20); // P2WPKH
 
 	// A will generate justice tx from B's revoked commitment/HTLC tx
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
+	connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -5129,8 +5151,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	check_spends!(node_txn[2], chan_1.3);
 
 	let header_1 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	connect_block(&nodes[0], &Block { header: header_1, txdata: vec![node_txn[1].clone()] }, 1);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	// Note that nodes[0]'s tx_broadcaster is still locked, so if we get here the channelmonitor
 	// didn't try to generate any new transactions.
@@ -5147,8 +5169,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 #[test]
 fn test_onchain_to_onchain_claim() {
-	// Test that in case of channel closure, we detect the state of output thanks to
-	// ChainWatchInterface and claim HTLC on downstream peer's remote commitment tx.
+	// Test that in case of channel closure, we detect the state of output and claim HTLC
+	// on downstream peer's remote commitment tx.
 	// First, have C claim an HTLC against its own latest commitment transaction.
 	// Then, broadcast these to B, which should update the monitor downstream on the A<->B
 	// channel.
@@ -5180,7 +5202,7 @@ fn test_onchain_to_onchain_claim() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 
-	nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	connect_block(&nodes[2], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
 
@@ -5196,7 +5218,7 @@ fn test_onchain_to_onchain_claim() {
 	assert_eq!(c_txn[0].lock_time, 0); // Success tx
 
 	// So we broadcast C's commitment tx and HTLC-Success on B's chain, we should successfully be able to extract preimage and update downstream monitor
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![c_txn[1].clone(), c_txn[2].clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![c_txn[1].clone(), c_txn[2].clone()]}, 1);
 	{
 		let mut b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// ChannelMonitor: claim tx, ChannelManager: local commitment tx + HTLC-timeout tx
@@ -5231,7 +5253,7 @@ fn test_onchain_to_onchain_claim() {
 	};
 	// Broadcast A's commitment tx on B's chain to see if we are able to claim inbound HTLC with our HTLC-Success tx
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
 	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
 	assert_eq!(b_txn.len(), 3);
@@ -5267,7 +5289,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_spends!(commitment_txn[0], chan_2.3);
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -5290,7 +5312,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	}
 
 	nodes[2].node.claim_funds(our_payment_preimage, &None, 900_000);
-	nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
+	connect_block(&nodes[2], &Block { header, txdata: vec![commitment_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[2], 3);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	match events[0] {
@@ -5316,8 +5338,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_spends!(htlc_success_txn[0], commitment_txn[0]);
 	check_spends!(htlc_success_txn[1], commitment_txn[0]);
 
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![htlc_timeout_tx] }, 200);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 200, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header, txdata: vec![htlc_timeout_tx] }, 200);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 200, true, header.block_hash());
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
@@ -5342,7 +5364,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	expect_payment_failed!(nodes[0], duplicate_payment_hash, false);
 
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![htlc_success_txn[0].clone()] }, 200);
+	connect_block(&nodes[1], &Block { header, txdata: vec![htlc_success_txn[0].clone()] }, 200);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -5382,7 +5404,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	nodes[1].node.claim_funds(payment_preimage, &None, 9_000_000);
 	check_added_monitors!(nodes[1], 1);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![local_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
@@ -5402,8 +5424,8 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	};
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header: header_201, txdata: node_txn.clone() }, 201);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
+	connect_block(&nodes[1], &Block { header: header_201, txdata: node_txn.clone() }, 201);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -5543,11 +5565,11 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	if announce_latest {
-		nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![ds_last_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[2], &Block { header, txdata: vec![ds_last_commitment_tx[0].clone()]}, 1);
 	} else {
-		nodes[2].block_notifier.block_connected(&Block { header, txdata: vec![ds_prev_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[2], &Block { header, txdata: vec![ds_prev_commitment_tx[0].clone()]}, 1);
 	}
-	connect_blocks(&nodes[2].block_notifier, ANTI_REORG_DELAY - 1, 1, true,  header.block_hash());
+	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1, 1, true,  header.block_hash());
 	check_closed_broadcast!(nodes[2], false);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 3);
@@ -5685,7 +5707,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 	// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![local_txn[0].clone()] }, 200);
+	connect_block(&nodes[0], &Block { header, txdata: vec![local_txn[0].clone()] }, 200);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -5698,8 +5720,8 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	};
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
+	connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5721,8 +5743,8 @@ fn test_key_derivation_params() {
 	// We manually create the node configuration to backup the seed.
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-	let chan_monitor = test_utils::TestChannelMonitor::new(&chanmon_cfgs[0].chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator);
-	let node = NodeCfg { chain_monitor: &chanmon_cfgs[0].chain_monitor, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chan_monitor, keys_manager, node_seed: seed };
+	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator);
+	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager, node_seed: seed };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
@@ -5755,7 +5777,7 @@ fn test_key_derivation_params() {
 
 	// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![local_txn_1[0].clone()] }, 200);
+	connect_block(&nodes[0], &Block { header, txdata: vec![local_txn_1[0].clone()] }, 200);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -5768,8 +5790,8 @@ fn test_key_derivation_params() {
 	};
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
+	connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5794,15 +5816,15 @@ fn test_static_output_closing_tx() {
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 0);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
+	connect_block(&nodes[0], &Block { header, txdata: vec![closing_tx.clone()] }, 0);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[0], 2, node_cfgs[0].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![closing_tx.clone()] }, 0);
-	connect_blocks(&nodes[1].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
+	connect_block(&nodes[1], &Block { header, txdata: vec![closing_tx.clone()] }, 0);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 2, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -5840,10 +5862,13 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_updates.0);
 	check_added_monitors!(nodes[1], 1);
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
 	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 1 {
-		nodes[1].block_notifier.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
-		header.prev_blockhash = header.block_hash();
+		connect_block(&nodes[1], &block, i);
+		block.header.prev_blockhash = block.block_hash();
 	}
 	test_txn_broadcast(&nodes[1], &chan, None, if use_dust { HTLCType::NONE } else { HTLCType::SUCCESS });
 	check_closed_broadcast!(nodes[1], false);
@@ -5873,7 +5898,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 
 	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: Vec::new()}, i);
+		connect_block(&nodes[0], &Block { header, txdata: Vec::new()}, i);
 		header.prev_blockhash = header.block_hash();
 	}
 	test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
@@ -5914,10 +5939,13 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 		check_added_monitors!(nodes[0], 1);
 	}
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut block = Block {
+		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		txdata: vec![],
+	};
 	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
-		nodes[0].block_notifier.block_connected_checked(&header, i, &Vec::new(), &Vec::new());
-		header.prev_blockhash = header.block_hash();
+		connect_block(&nodes[0], &block, i);
+		block.header.prev_blockhash = block.block_hash();
 	}
 	if !check_revoke_no_close {
 		test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
@@ -7096,16 +7124,16 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 
 	if announce_latest {
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![as_last_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![as_last_commitment_tx[0].clone()]}, 1);
 	} else {
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![as_prev_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![as_prev_commitment_tx[0].clone()]}, 1);
 	}
 
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 1, true,  header.block_hash());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 1, true,  header.block_hash());
 	let events = nodes[0].node.get_and_clear_pending_events();
 	// Only 2 PaymentFailed events should show up, over-dust HTLC has to be failed by timeout tx
 	assert_eq!(events.len(), 2);
@@ -7173,11 +7201,11 @@ fn test_no_failure_dust_htlc_local_commitment() {
 	};
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].chan_monitor.simple_monitor.block_connected(&header, 1, &[&dummy_tx], &[1;1]);
+	nodes[0].chain_monitor.chain_monitor.block_connected(&header, &[(0, &dummy_tx)], 1);
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
 	// We broadcast a few more block to check everything is all right
-	connect_blocks(&nodes[0].block_notifier, 20, 1, true,  header.block_hash());
+	connect_blocks(&nodes[0], 20, 1, true, header.block_hash());
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
 
@@ -7217,38 +7245,38 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let mut timeout_tx = Vec::new();
 	if local {
 		// We fail dust-HTLC 1 by broadcast of local commitment tx
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![as_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![as_commitment_tx[0].clone()]}, 1);
 		check_closed_broadcast!(nodes[0], false);
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		let parent_hash  = connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 2, true, header.block_hash());
+		let parent_hash  = connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 2, true, header.block_hash());
 		expect_payment_failed!(nodes[0], dust_hash, true);
 		assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		// We fail non-dust-HTLC 2 by broadcast of local HTLC-timeout tx on local commitment tx
 		let header_2 = BlockHeader { version: 0x20000000, prev_blockhash: parent_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-		nodes[0].block_notifier.block_connected(&Block { header: header_2, txdata: vec![timeout_tx[0].clone()]}, 7);
+		connect_block(&nodes[0], &Block { header: header_2, txdata: vec![timeout_tx[0].clone()]}, 7);
 		let header_3 = BlockHeader { version: 0x20000000, prev_blockhash: header_2.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 8, true, header_3.block_hash());
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 8, true, header_3.block_hash());
 		expect_payment_failed!(nodes[0], non_dust_hash, true);
 	} else {
 		// We fail dust-HTLC 1 by broadcast of remote commitment tx. If revoked, fail also non-dust HTLC
-		nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![bs_commitment_tx[0].clone()]}, 1);
+		connect_block(&nodes[0], &Block { header, txdata: vec![bs_commitment_tx[0].clone()]}, 1);
 		check_closed_broadcast!(nodes[0], false);
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		let parent_hash  = connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 2, true, header.block_hash());
+		let parent_hash  = connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 2, true, header.block_hash());
 		let header_2 = BlockHeader { version: 0x20000000, prev_blockhash: parent_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		if !revoked {
 			expect_payment_failed!(nodes[0], dust_hash, true);
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 			// We fail non-dust-HTLC 2 by broadcast of local timeout tx on remote commitment tx
-			nodes[0].block_notifier.block_connected(&Block { header: header_2, txdata: vec![timeout_tx[0].clone()]}, 7);
+			connect_block(&nodes[0], &Block { header: header_2, txdata: vec![timeout_tx[0].clone()]}, 7);
 			assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 			let header_3 = BlockHeader { version: 0x20000000, prev_blockhash: header_2.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 8, true, header_3.block_hash());
+			connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 8, true, header_3.block_hash());
 			expect_payment_failed!(nodes[0], non_dust_hash, true);
 		} else {
 			// If revoked, both dust & non-dust HTLCs should have been failed after ANTI_REORG_DELAY confs of revoked
@@ -7438,7 +7466,7 @@ fn test_data_loss_protect() {
 	let logger;
 	let fee_estimator;
 	let tx_broadcaster;
-	let chain_monitor;
+	let chain_source;
 	let monitor;
 	let node_state_0;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7450,8 +7478,8 @@ fn test_data_loss_protect() {
 
 	// Cache node A state before any channel update
 	let previous_node_state = nodes[0].node.encode();
-	let mut previous_chan_monitor_state = test_utils::TestVecWriter(Vec::new());
-	nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut previous_chan_monitor_state).unwrap();
+	let mut previous_chain_monitor_state = test_utils::TestVecWriter(Vec::new());
+	nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap().iter().next().unwrap().1.write_for_disk(&mut previous_chain_monitor_state).unwrap();
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
@@ -7461,19 +7489,19 @@ fn test_data_loss_protect() {
 
 	// Restore node A from previous state
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
-	let mut chan_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chan_monitor_state.0)).unwrap().1;
-	chain_monitor = ChainWatchInterfaceUtil::new(Network::Testnet);
+	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0)).unwrap().1;
+	chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
-	monitor = test_utils::TestChannelMonitor::new(&chain_monitor, &tx_broadcaster, &logger, &fee_estimator);
+	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator);
 	node_state_0 = {
 		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chan_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChannelMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
+		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chain_monitor);
+		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
 			keys_manager: &keys_manager,
 			fee_estimator: &fee_estimator,
-			monitor: &monitor,
+			chain_monitor: &monitor,
 			logger: &logger,
 			tx_broadcaster: &tx_broadcaster,
 			default_config: UserConfig::default(),
@@ -7481,13 +7509,9 @@ fn test_data_loss_protect() {
 		}).unwrap().1
 	};
 	nodes[0].node = &node_state_0;
-	assert!(monitor.add_monitor(OutPoint { txid: chan.3.txid(), index: 0 }, chan_monitor).is_ok());
-	nodes[0].chan_monitor = &monitor;
-	nodes[0].chain_monitor = &chain_monitor;
-
-	nodes[0].block_notifier = BlockNotifier::new(&nodes[0].chain_monitor);
-	nodes[0].block_notifier.register_listener(&nodes[0].chan_monitor.simple_monitor);
-	nodes[0].block_notifier.register_listener(nodes[0].node);
+	assert!(monitor.watch_channel(OutPoint { txid: chan.3.txid(), index: 0 }, chain_monitor).is_ok());
+	nodes[0].chain_monitor = &monitor;
+	nodes[0].chain_source = &chain_source;
 
 	check_added_monitors!(nodes[0], 1);
 
@@ -7535,8 +7559,8 @@ fn test_data_loss_protect() {
 	check_spends!(node_txn[0], chan.3);
 	assert_eq!(node_txn[0].output.len(), 2);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![node_txn[0].clone()]}, 0);
-	connect_blocks(&nodes[0].block_notifier, ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
+	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[0].clone()]}, 0);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 0, true, header.block_hash());
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
@@ -7684,12 +7708,12 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	}
 
 	// Connect blocks to change height_timer range to see if we use right soonest_timelock
-	let header_114 = connect_blocks(&nodes[1].block_notifier, 114, 0, false, Default::default());
+	let header_114 = connect_blocks(&nodes[1], 114, 0, false, Default::default());
 
 	// Actually revoke tx by claiming a HTLC
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: header_114, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_txn[0].clone()] }, 115);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_txn[0].clone()] }, 115);
 	check_added_monitors!(nodes[1], 1);
 
 	// One or more justice tx should have been broadcast, check it
@@ -7708,7 +7732,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	};
 
 	// After exhaustion of height timer, a new bumped justice tx should have been broadcast, check it
-	let header = connect_blocks(&nodes[1].block_notifier, 3, 115,  true, header.block_hash());
+	let header = connect_blocks(&nodes[1], 3, 115,  true, header.block_hash());
 	let mut penalty_2 = penalty_1;
 	let mut feerate_2 = 0;
 	{
@@ -7731,7 +7755,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	assert_ne!(feerate_2, 0);
 
 	// After exhaustion of height timer for a 2nd time, a new bumped justice tx should have been broadcast, check it
-	connect_blocks(&nodes[1].block_notifier, 3, 118, true, header);
+	connect_blocks(&nodes[1], 3, 118, true, header);
 	let penalty_3;
 	let mut feerate_3 = 0;
 	{
@@ -7781,7 +7805,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// B will generate both revoked HTLC-timeout/HTLC-preimage txn from revoked commitment tx
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -7805,10 +7829,10 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Broadcast set of revoked txn on A
 	let header_128 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_128, txdata: vec![revoked_local_txn[0].clone()] }, 128);
+	connect_block(&nodes[0], &Block { header: header_128, txdata: vec![revoked_local_txn[0].clone()] }, 128);
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
+	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
 	let first;
 	let feerate_1;
 	let penalty_txn;
@@ -7859,9 +7883,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Connect one more block to see if bumped penalty are issued for HTLC txn
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_130, txdata: penalty_txn }, 130);
+	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn }, 130);
 	let header_131 = BlockHeader { version: 0x20000000, prev_blockhash: header_130.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_131, txdata: Vec::new() }, 131);
+	connect_block(&nodes[0], &Block { header: header_131, txdata: Vec::new() }, 131);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 2); // 2 bumped penalty txn on revoked commitment tx
@@ -7880,9 +7904,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 
 	// Few more blocks to confirm penalty txn
-	let header_135 = connect_blocks(&nodes[0].block_notifier, 4, 131, true, header_131.block_hash());
+	let header_135 = connect_blocks(&nodes[0], 4, 131, true, header_131.block_hash());
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-	let header_144 = connect_blocks(&nodes[0].block_notifier, 9, 135, true, header_135);
+	let header_144 = connect_blocks(&nodes[0], 9, 135, true, header_135);
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -7900,8 +7924,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 	// Broadcast claim txn and confirm blocks to avoid further bumps on this outputs
 	let header_145 = BlockHeader { version: 0x20000000, prev_blockhash: header_144, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_145, txdata: node_txn }, 145);
-	connect_blocks(&nodes[0].block_notifier, 20, 145, true, header_145.block_hash());
+	connect_block(&nodes[0], &Block { header: header_145, txdata: node_txn }, 145);
+	connect_blocks(&nodes[0], 20, 145, true, header_145.block_hash());
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We verify than no new transaction has been broadcast because previously
@@ -7944,7 +7968,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	// Claim a HTLC without revocation (provide B monitor with preimage)
 	nodes[1].node.claim_funds(payment_preimage, &None, 3_000_000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[1].block_notifier.block_connected(&Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![remote_txn[0].clone()] }, 1);
 	check_added_monitors!(nodes[1], 2);
 
 	// One or more claim tx should have been broadcast, check it
@@ -7989,7 +8013,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_ne!(feerate_preimage, 0);
 
 	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
-	connect_blocks(&nodes[1].block_notifier, 15, 1,  true, header.block_hash());
+	connect_blocks(&nodes[1], 15, 1,  true, header.block_hash());
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 2);
@@ -8053,7 +8077,7 @@ fn test_set_outpoints_partial_claiming() {
 	check_spends!(remote_txn[2], remote_txn[0]);
 
 	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
-	let prev_header_100 = connect_blocks(&nodes[1].block_notifier, 100, 0, false, Default::default());
+	let prev_header_100 = connect_blocks(&nodes[1], 100, 0, false, Default::default());
 	// Provide node A with both preimage
 	nodes[0].node.claim_funds(payment_preimage_1, &None, 3_000_000);
 	nodes[0].node.claim_funds(payment_preimage_2, &None, 3_000_000);
@@ -8063,7 +8087,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A commitment transaction
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: prev_header_100, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![remote_txn[0].clone()] }, 101);
+	connect_block(&nodes[0], &Block { header, txdata: vec![remote_txn[0].clone()] }, 101);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
@@ -8080,7 +8104,7 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	// Connect blocks on node B
-	connect_blocks(&nodes[1].block_notifier, 135, 0, false, Default::default());
+	connect_blocks(&nodes[1], 135, 0, false, Default::default());
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
@@ -8096,7 +8120,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Broadcast partial claim on node A, should regenerate a claiming tx with HTLC dropped
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header, txdata: vec![partial_claim_tx.clone()] }, 102);
+	connect_block(&nodes[0], &Block { header, txdata: vec![partial_claim_tx.clone()] }, 102);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -8107,7 +8131,7 @@ fn test_set_outpoints_partial_claiming() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Disconnect last block on node A, should regenerate a claiming tx with HTLC dropped
-	nodes[0].block_notifier.block_disconnected(&header, 102);
+	disconnect_block(&nodes[0], &header, 102);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -8117,8 +8141,8 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	//// Disconnect one more block and then reconnect multiple no transaction should be generated
-	nodes[0].block_notifier.block_disconnected(&header, 101);
-	connect_blocks(&nodes[1].block_notifier, 15, 101, false, prev_header_100);
+	disconnect_block(&nodes[0], &header, 101);
+	connect_blocks(&nodes[1], 15, 101, false, prev_header_100);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);
@@ -8178,11 +8202,11 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 9_000_000);
 
 	// Broadcast set of revoked txn on A
-	let header_128 = connect_blocks(&nodes[0].block_notifier, 128, 0,  false, Default::default());
+	let header_128 = connect_blocks(&nodes[0], 128, 0,  false, Default::default());
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_129, txdata: vec![revoked_local_txn[0].clone()] }, 129);
+	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_local_txn[0].clone()] }, 129);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	let penalty_txn = {
@@ -8196,10 +8220,10 @@ fn test_bump_txn_sanitize_tracking_maps() {
 		penalty_txn
 	};
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].block_notifier.block_connected(&Block { header: header_130, txdata: penalty_txn }, 130);
-	connect_blocks(&nodes[0].block_notifier, 5, 130,  false, header_130.block_hash());
+	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn }, 130);
+	connect_blocks(&nodes[0], 5, 130,  false, header_130.block_hash());
 	{
-		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		if let Some(monitor) = monitors.get(&OutPoint { txid: chan.3.txid(), index: 0 }) {
 			assert!(monitor.onchain_tx_handler.pending_claim_requests.is_empty());
 			assert!(monitor.onchain_tx_handler.claimable_outpoints.is_empty());
@@ -8328,23 +8352,23 @@ fn test_update_err_monitor_lockdown() {
 	// Route a HTLC from node 0 to node 1 (but don't settle)
 	let preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
 
-	// Copy SimpleManyChannelMonitor to simulate a watchtower and update block height of node 0 until its ChannelMonitor timeout HTLC onchain
+	// Copy ChainMonitor to simulate a watchtower and update block height of node 0 until its ChannelMonitor timeout HTLC onchain
+	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
-	let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 	let watchtower = {
-		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChannelMonitor::new(&chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
-		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	watchtower.simple_monitor.block_connected(&header, 200, &vec![], &vec![]);
+	watchtower.chain_monitor.block_connected(&header, &[], 200);
 
 	// Try to update ChannelMonitor
 	assert!(nodes[1].node.claim_funds(preimage, &None, 9_000_000));
@@ -8354,8 +8378,8 @@ fn test_update_err_monitor_lockdown() {
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
 		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
-			if let Err(_) =  watchtower.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = nodes[0].chan_monitor.update_monitor(outpoint, update) {} else { assert!(false); }
+			if let Err(_) =  watchtower.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
 	} else { assert!(false); };
 	// Our local monitor is in-sync and hasn't processed yet timeout
@@ -8386,23 +8410,23 @@ fn test_concurrent_monitor_claim() {
 	// Route a HTLC from node 0 to node 1 (but don't settle)
 	route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
 
-	// Copy SimpleManyChannelMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
+	// Copy ChainMonitor to simulate watchtower Alice and update block height her ChannelMonitor timeout HTLC onchain
+	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
-	let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 	let watchtower_alice = {
-		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChannelMonitor::new(&chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
-		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	watchtower_alice.simple_monitor.block_connected(&header, 135, &vec![], &vec![]);
+	watchtower_alice.chain_monitor.block_connected(&header, &vec![], 135);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
 	{
@@ -8411,23 +8435,23 @@ fn test_concurrent_monitor_claim() {
 		txn.clear();
 	}
 
-	// Copy SimpleManyChannelMonitor to simulate watchtower Bob and make it receive a commitment update first.
+	// Copy ChainMonitor to simulate watchtower Bob and make it receive a commitment update first.
+	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
-	let chain_monitor = chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet);
 	let watchtower_bob = {
-		let monitors = nodes[0].chan_monitor.simple_monitor.monitors.lock().unwrap();
+		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChannelMonitor::new(&chain_monitor, &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
-		assert!(watchtower.add_monitor(outpoint, new_monitor).is_ok());
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator);
+		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	watchtower_bob.simple_monitor.block_connected(&header, 134, &vec![], &vec![]);
+	watchtower_bob.chain_monitor.block_connected(&header, &vec![], 134);
 
 	// Route another payment to generate another update with still previous HTLC pending
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -8444,16 +8468,16 @@ fn test_concurrent_monitor_claim() {
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
 		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
-			if let Err(_) =  watchtower_alice.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = watchtower_bob.simple_monitor.update_monitor(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = nodes[0].chan_monitor.update_monitor(outpoint, update) {} else { assert!(false); }
+			if let Err(_) =  watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
+			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
 	} else { assert!(false); };
 	// Our local monitor is in-sync and hasn't processed yet timeout
 	check_added_monitors!(nodes[0], 1);
 
 	//// Provide one more block to watchtower Bob, expect broadcast of commitment and HTLC-Timeout
-	watchtower_bob.simple_monitor.block_connected(&header, 135, &vec![], &vec![]);
+	watchtower_bob.chain_monitor.block_connected(&header, &vec![], 135);
 
 	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
 	let bob_state_y;
@@ -8465,7 +8489,7 @@ fn test_concurrent_monitor_claim() {
 	};
 
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
-	watchtower_alice.simple_monitor.block_connected(&header, 136, &vec![&bob_state_y][..], &vec![]);
+	watchtower_alice.chain_monitor.block_connected(&header, &vec![(0, &bob_state_y)], 136);
 	{
 		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We broadcast twice the transaction, once due to the HTLC-timeout, once due

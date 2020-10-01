@@ -19,7 +19,6 @@
 //! call into your NetGraphMsgHandler.
 
 pub mod channelmanager;
-pub mod channelmonitor;
 pub mod msgs;
 pub mod peer_handler;
 pub mod chan_utils;

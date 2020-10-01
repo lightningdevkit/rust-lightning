@@ -7,11 +7,11 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::script::{Script, Builder};
-use bitcoin::blockdata::block::Block;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::transaction::TxOut;
+use bitcoin::hash_types::BlockHash;
 
-use lightning::chain::chaininterface::{ChainError,ChainWatchInterface};
+use lightning::chain;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
@@ -76,26 +76,16 @@ impl InputData {
 	}
 }
 
-struct DummyChainWatcher {
+struct FuzzChainSource {
 	input: Arc<InputData>,
 }
-
-impl ChainWatchInterface for DummyChainWatcher {
-	fn install_watch_tx(&self, _txid: &Txid, _script_pub_key: &Script) { }
-	fn install_watch_outpoint(&self, _outpoint: (Txid, u32), _out_script: &Script) { }
-	fn watch_all_txn(&self) { }
-	fn filter_block(&self, _block: &Block) -> Vec<usize> {
-		Vec::new()
-	}
-	fn reentered(&self) -> usize { 0 }
-
-	fn get_chain_utxo(&self, _genesis_hash: BlockHash, _unspent_tx_output_identifier: u64) -> Result<(Script, u64), ChainError> {
+impl chain::Access for FuzzChainSource {
+	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
 		match self.input.get_slice(2) {
-			Some(&[0, _]) => Err(ChainError::NotSupported),
-			Some(&[1, _]) => Err(ChainError::NotWatched),
-			Some(&[2, _]) => Err(ChainError::UnknownTx),
-			Some(&[_, x]) => Ok((Builder::new().push_int(x as i64).into_script().to_v0_p2wsh(), 0)),
-			None => Err(ChainError::UnknownTx),
+			Some(&[0, _]) => Err(chain::AccessError::UnknownChain),
+			Some(&[1, _]) => Err(chain::AccessError::UnknownTx),
+			Some(&[_, x]) => Ok(TxOut { value: 0, script_pubkey: Builder::new().push_int(x as i64).into_script().to_v0_p2wsh() }),
+			None => Err(chain::AccessError::UnknownTx),
 			_ => unreachable!(),
 		}
 	}
@@ -160,12 +150,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
-	let chain_monitor = Arc::new(DummyChainWatcher {
-		input: Arc::clone(&input),
-	});
+	let chain_source = if get_slice!(1)[0] % 2 == 0 {
+		None
+	} else {
+		Some(Arc::new(FuzzChainSource {
+			input: Arc::clone(&input),
+		}))
+	};
 
 	let our_pubkey = get_pubkey!();
-	let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
+	let net_graph_msg_handler = NetGraphMsgHandler::new(chain_source, Arc::clone(&logger));
 
 	loop {
 		match get_slice!(1)[0] {

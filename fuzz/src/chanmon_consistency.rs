@@ -28,12 +28,13 @@ use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
-use lightning::chain::chaininterface;
+use lightning::chain;
+use lightning::chain::chainmonitor;
+use lightning::chain::channelmonitor;
+use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::chaininterface::{BroadcasterInterface,ConfirmationTarget,ChainListener,FeeEstimator,ChainWatchInterfaceUtil,ChainWatchInterface};
+use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
-use lightning::ln::channelmonitor;
-use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
@@ -81,9 +82,9 @@ impl Writer for VecWriter {
 	}
 }
 
-struct TestChannelMonitor {
+struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub simple_monitor: Arc<channelmonitor::SimpleManyChannelMonitor<OutPoint, EnforcingChannelKeys, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<dyn ChainWatchInterface>>>,
+	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
@@ -93,10 +94,10 @@ struct TestChannelMonitor {
 	pub latest_monitors: Mutex<HashMap<OutPoint, (u64, Vec<u8>)>>,
 	pub should_update_manager: atomic::AtomicBool,
 }
-impl TestChannelMonitor {
-	pub fn new(chain_monitor: Arc<dyn chaininterface::ChainWatchInterface>, broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
+impl TestChainMonitor {
+	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
 		Self {
-			simple_monitor: Arc::new(channelmonitor::SimpleManyChannelMonitor::new(chain_monitor, broadcaster, logger.clone(), feeest)),
+			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest)),
 			logger,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
@@ -104,21 +105,21 @@ impl TestChannelMonitor {
 		}
 	}
 }
-impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
+impl chain::Watch for TestChainMonitor {
 	type Keys = EnforcingChannelKeys;
 
-	fn add_monitor(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
-			panic!("Already had monitor pre-add_monitor");
+			panic!("Already had monitor pre-watch_channel");
 		}
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
-		assert!(self.simple_monitor.add_monitor(funding_txo, monitor).is_ok());
+		assert!(self.chain_monitor.watch_channel(funding_txo, monitor).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_monitor(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
@@ -134,8 +135,8 @@ impl channelmonitor::ManyChannelMonitor for TestChannelMonitor {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		return self.simple_monitor.get_and_clear_pending_monitor_events();
+	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
 
@@ -191,8 +192,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! make_node {
 		($node_id: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin));
-			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -207,8 +207,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! reload_node {
 		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let watch = Arc::new(ChainWatchInterfaceUtil::new(Network::Bitcoin));
-			let monitor = Arc::new(TestChannelMonitor::new(watch.clone(), broadcast.clone(), logger.clone(), fee_est.clone()));
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone()));
 
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
@@ -220,7 +219,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
 				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&monitor_ser)).expect("Failed to read monitor").1);
-				monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
+				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
 			for (outpoint, monitor) in monitors.iter_mut() {
@@ -230,14 +229,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let read_args = ChannelManagerReadArgs {
 				keys_manager,
 				fee_estimator: fee_est.clone(),
-				monitor: monitor.clone(),
+				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
 				logger,
 				default_config: config,
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChannelMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, monitor)
+			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 
@@ -308,16 +307,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! confirm_txn {
 		($node: expr) => { {
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-			let mut txn = Vec::with_capacity(channel_txn.len());
-			let mut posn = Vec::with_capacity(channel_txn.len());
-			for i in 0..channel_txn.len() {
-				txn.push(&channel_txn[i]);
-				posn.push(i + 1);
-			}
-			$node.block_connected(&header, 1, &txn, &posn);
+			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			$node.block_connected(&header, &txdata, 1);
 			for i in 2..100 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-				$node.block_connected(&header, i, &Vec::new(), &[0; 0]);
+				$node.block_connected(&header, &[], i);
 			}
 		} }
 	}

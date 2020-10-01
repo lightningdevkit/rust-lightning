@@ -16,9 +16,11 @@ use bitcoin::secp256k1;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::blockdata::opcodes;
 
-use chain::chaininterface::{ChainError, ChainWatchInterface};
+use chain;
+use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
@@ -51,22 +53,22 @@ pub struct LockedNetworkGraph<'a>(pub RwLockReadGuard<'a, NetworkGraph>);
 /// This network graph is then used for routing payments.
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
-pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: ChainWatchInterface, L::Target: Logger {
+pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access, L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	/// Representation of the payment channel network
 	pub network_graph: RwLock<NetworkGraph>,
-	chain_monitor: C,
+	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
 	logger: L,
 }
 
-impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
+impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming a fresh network graph.
 	/// Chain monitor is used to make sure announced channels exist on-chain,
 	/// channel data is correct, and that the announcement is signed with
 	/// channel owners' keys.
-	pub fn new(chain_monitor: C, logger: L) -> Self {
+	pub fn new(chain_access: Option<C>, logger: L) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
 			network_graph: RwLock::new(NetworkGraph {
@@ -74,19 +76,19 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: ChainWatchInt
 				nodes: BTreeMap::new(),
 			}),
 			full_syncs_requested: AtomicUsize::new(0),
-			chain_monitor,
+			chain_access,
 			logger,
 		}
 	}
 
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing Network Graph.
-	pub fn from_net_graph(chain_monitor: C, logger: L, network_graph: NetworkGraph) -> Self {
+	pub fn from_net_graph(chain_access: Option<C>, logger: L, network_graph: NetworkGraph) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
 			network_graph: RwLock::new(network_graph),
 			full_syncs_requested: AtomicUsize::new(0),
-			chain_monitor,
+			chain_access,
 			logger,
 		}
 	}
@@ -117,7 +119,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: ChainWatchInterface, L::Target: Logger {
+impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_node_from_announcement(msg, Some(&self.secp_ctx))
 	}
@@ -127,29 +129,33 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
-		let utxo_value = match self.chain_monitor.get_chain_utxo(msg.contents.chain_hash, msg.contents.short_channel_id) {
-			Ok((script_pubkey, value)) => {
-				let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-				                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
-				                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
-				                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
-				                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
-				if script_pubkey != expected_script {
-					return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
-				}
-				//TODO: Check if value is worth storing, use it to inform routing, and compare it
-				//to the new HTLC max field in channel_update
-				Some(value)
-			},
-			Err(ChainError::NotSupported) => {
+		let utxo_value = match &self.chain_access {
+			&None => {
 				// Tentatively accept, potentially exposing us to DoS attacks
 				None
 			},
-			Err(ChainError::NotWatched) => {
-				return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
-			},
-			Err(ChainError::UnknownTx) => {
-				return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
+			&Some(ref chain_access) => {
+				match chain_access.get_utxo(&msg.contents.chain_hash, msg.contents.short_channel_id) {
+					Ok(TxOut { value, script_pubkey }) => {
+						let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
+						                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
+						                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
+						                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
+						                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+						if script_pubkey != expected_script {
+							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
+						}
+						//TODO: Check if value is worth storing, use it to inform routing, and compare it
+						//to the new HTLC max field in channel_update
+						Some(value)
+					},
+					Err(chain::AccessError::UnknownChain) => {
+						return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
+					},
+					Err(chain::AccessError::UnknownTx) => {
+						return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
+					},
+				}
 			},
 		};
 		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, utxo_value, Some(&self.secp_ctx));
@@ -828,7 +834,7 @@ impl NetworkGraph {
 
 #[cfg(test)]
 mod tests {
-	use chain::chaininterface;
+	use chain;
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
@@ -843,6 +849,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
+	use bitcoin::blockdata::transaction::TxOut;
 	use bitcoin::blockdata::opcodes;
 
 	use hex;
@@ -852,11 +859,10 @@ mod tests {
 
 	use std::sync::Arc;
 
-	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<chaininterface::ChainWatchInterfaceUtil>, Arc<test_utils::TestLogger>>) {
+	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(chaininterface::ChainWatchInterfaceUtil::new(Network::Testnet));
-		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor, Arc::clone(&logger));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
 		(secp_ctx, net_graph_msg_handler)
 	}
 
@@ -981,9 +987,6 @@ mod tests {
 	fn handling_channel_announcements() {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(test_utils::TestChainWatcher::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor.clone(), Arc::clone(&logger));
-
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -1020,8 +1023,7 @@ mod tests {
 		};
 
 		// Test if the UTXO lookups were not supported
-		*chain_monitor.utxo_ret.lock().unwrap() = Err(chaininterface::ChainError::NotSupported);
-
+		let mut net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
@@ -1035,7 +1037,6 @@ mod tests {
 			}
 		}
 
-
 		// If we receive announcement for the same channel (with UTXO lookups disabled),
 		// drop new one on the floor, since we can't see any changes.
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
@@ -1043,9 +1044,10 @@ mod tests {
 			Err(e) => assert_eq!(e.err, "Already have knowledge of channel")
 		};
 
-
 		// Test if an associated transaction were not on-chain (or not confirmed).
-		*chain_monitor.utxo_ret.lock().unwrap() = Err(chaininterface::ChainError::UnknownTx);
+		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
+		net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
 		unsigned_announcement.short_channel_id += 1;
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
@@ -1062,10 +1064,9 @@ mod tests {
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
 
-
 		// Now test if the transaction is found in the UTXO set and the script is correct.
 		unsigned_announcement.short_channel_id += 1;
-		*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), 0));
+		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script.clone() });
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -1090,14 +1091,14 @@ mod tests {
 
 		// If we receive announcement for the same channel (but TX is not confirmed),
 		// drop new one on the floor, since we can't see any changes.
-		*chain_monitor.utxo_ret.lock().unwrap() = Err(chaininterface::ChainError::UnknownTx);
+		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
 
 		// But if it is confirmed, replace the channel
-		*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script, 0));
+		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
 		unsigned_announcement.features = ChannelFeatures::empty();
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
@@ -1169,8 +1170,8 @@ mod tests {
 	fn handling_channel_update() {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_monitor = Arc::new(test_utils::TestChainWatcher::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(chain_monitor.clone(), Arc::clone(&logger));
+		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -1191,7 +1192,7 @@ mod tests {
 			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
 			   .push_opcode(opcodes::all::OP_PUSHNUM_2)
 			   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
-			*chain_monitor.utxo_ret.lock().unwrap() = Ok((good_script.clone(), amount_sats));
+			*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() });
 			let unsigned_announcement = UnsignedChannelAnnouncement {
 				features: ChannelFeatures::empty(),
 				chain_hash,

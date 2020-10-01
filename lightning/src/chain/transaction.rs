@@ -7,10 +7,41 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Contains simple structs describing parts of transactions on the chain.
+//! Types describing on-chain transactions.
 
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::blockdata::transaction::Transaction;
+
+/// Transaction data where each item consists of a transaction reference paired with the index of
+/// the transaction within a block.
+///
+/// Useful for passing enumerated transactions from a block, possibly filtered, in order to retain
+/// the transaction index.
+///
+/// ```
+/// extern crate bitcoin;
+/// extern crate lightning;
+///
+/// use bitcoin::blockdata::block::Block;
+/// use bitcoin::blockdata::constants::genesis_block;
+/// use bitcoin::network::constants::Network;
+/// use lightning::chain::transaction::TransactionData;
+///
+/// let block = genesis_block(Network::Bitcoin);
+/// let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+/// check_block(&block, &txdata);
+///
+/// fn check_block(block: &Block, txdata: &TransactionData) {
+/// 	assert_eq!(block.txdata.len(), 1);
+/// 	assert_eq!(txdata.len(), 1);
+///
+/// 	let (index, tx) = txdata[0];
+/// 	assert_eq!(index, 0);
+/// 	assert_eq!(tx, &block.txdata[0]);
+/// }
+/// ```
+pub type TransactionData<'a> = [(usize, &'a Transaction)];
 
 /// A reference to a transaction output.
 ///

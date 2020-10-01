@@ -72,7 +72,7 @@ impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		::util::macro_logger::DebugFundingInfo(&$key_storage.funding_info)
+		::util::macro_logger::DebugFundingInfo($key_storage.get_funding_txo())
 	}
 }
 
