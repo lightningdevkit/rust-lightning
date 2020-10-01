@@ -29,11 +29,11 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
+use lightning::chain::chainmonitor;
+use lightning::chain::chainmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
-use lightning::ln::channelmonitor;
-use lightning::ln::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
@@ -83,8 +83,8 @@ impl Writer for VecWriter {
 
 struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
-	pub chain_monitor: Arc<channelmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
-	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
+	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	pub update_ret: Mutex<Result<(), chainmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
 	// monitor implying we are not able to punish misbehaving counterparties). Because this test
@@ -96,7 +96,7 @@ struct TestChainMonitor {
 impl TestChainMonitor {
 	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>) -> Self {
 		Self {
-			chain_monitor: Arc::new(channelmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest)),
+			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest)),
 			logger,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
@@ -107,7 +107,7 @@ impl TestChainMonitor {
 impl chain::Watch for TestChainMonitor {
 	type Keys = EnforcingChannelKeys;
 
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: chainmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), chainmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write_for_disk(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
@@ -118,13 +118,13 @@ impl chain::Watch for TestChainMonitor {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: chainmonitor::ChannelMonitorUpdate) -> Result<(), chainmonitor::ChannelMonitorUpdateErr> {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
+		let mut deserialized_monitor = <(BlockHash, chainmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
 			read(&mut Cursor::new(&map_entry.get().1)).unwrap().1;
 		deserialized_monitor.update_monitor(update.clone(), &&TestBroadcaster {}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());

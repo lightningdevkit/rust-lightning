@@ -10,13 +10,13 @@
 use chain;
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
+use chain::chainmonitor;
+use chain::chainmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
-use ln::channelmonitor;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use ln::channelmonitor::MonitorEvent;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
@@ -60,20 +60,20 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, chainmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: channelmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
-	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger>,
+	pub update_ret: Mutex<Result<(), chainmonitor::ChannelMonitorUpdateErr>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
-	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
+	pub next_update_ret: Mutex<Option<Result<(), chainmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			chain_monitor: channelmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
+			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator),
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 		}
@@ -82,12 +82,12 @@ impl<'a> TestChainMonitor<'a> {
 impl<'a> chain::Watch for TestChainMonitor<'a> {
 	type Keys = EnforcingChannelKeys;
 
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: chainmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), chainmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, chainmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
@@ -101,11 +101,11 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		ret
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: chainmonitor::ChannelMonitorUpdate) -> Result<(), chainmonitor::ChannelMonitorUpdateErr> {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
-		assert!(channelmonitor::ChannelMonitorUpdate::read(
+		assert!(chainmonitor::ChannelMonitorUpdate::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
 
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
@@ -116,7 +116,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, chainmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
