@@ -33,7 +33,7 @@ pub enum APIError {
 	ChannelUnavailable {
 		err: crate::c_types::derived::CVec_u8Z,
 	},
-	/// An attempt to call add/update_monitor returned an Err (ie you did this!), causing the
+	/// An attempt to call watch/update_channel returned an Err (ie you did this!), causing the
 	/// attempted action to fail.
 	MonitorUpdateFailed,
 }

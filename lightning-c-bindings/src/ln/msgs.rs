@@ -2331,6 +2331,17 @@ impl Clone for UnsignedNodeAnnouncement {
 pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedNodeAnnouncement)).clone() })) as *mut c_void
 }
+/// The advertised features
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_get_features(this_ptr: &UnsignedNodeAnnouncement) -> crate::ln::features::NodeFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::NodeFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The advertised features
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_set_features(this_ptr: &mut UnsignedNodeAnnouncement, mut val: crate::ln::features::NodeFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
+}
 /// A strictly monotonic announcement counter, with gaps allowed
 #[no_mangle]
 pub extern "C" fn UnsignedNodeAnnouncement_get_timestamp(this_ptr: &UnsignedNodeAnnouncement) -> u32 {
@@ -2516,6 +2527,17 @@ impl Clone for UnsignedChannelAnnouncement {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelAnnouncement)).clone() })) as *mut c_void
+}
+/// The advertised channel features
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_get_features(this_ptr: &UnsignedChannelAnnouncement) -> crate::ln::features::ChannelFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::ChannelFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The advertised channel features
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_set_features(this_ptr: &mut UnsignedChannelAnnouncement, mut val: crate::ln::features::ChannelFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]

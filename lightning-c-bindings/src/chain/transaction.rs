@@ -1,4 +1,4 @@
-//! Contains simple structs describing parts of transactions on the chain.
+//! Types describing on-chain transactions.
 
 use std::ffi::c_void;
 use bitcoin::hashes::Hash;
