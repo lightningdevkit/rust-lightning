@@ -5,7 +5,7 @@ Rust-Lightning
 [![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-Rust-lightning is a Bitcoin Lightning library written in Rust. The main crate,
+Rust-Lightning is a Bitcoin Lightning library written in Rust. The main crate,
 `lightning`, does not handle networking, persistence, or any other I/O. Thus,
 it is runtime-agnostic, but users must implement basic networking logic, chain
 interactions, and disk storage.
