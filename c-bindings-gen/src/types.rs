@@ -878,8 +878,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		} else { p_arg };
 
 		if p.leading_colon.is_some() {
-			// At some point we may need this, but for now, its unused, so just fail.
-			return None;
+			Some(p.segments.iter().enumerate().map(|(idx, seg)| {
+				format!("{}{}", if idx == 0 { "" } else { "::" }, seg.ident)
+			}).collect())
 		} else if let Some(id) = p.get_ident() {
 			self.maybe_resolve_ident(id)
 		} else {
@@ -1158,7 +1159,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					ptr_for_ref, tupleconv, prefix, sliceconv, path_lookup, decl_lookup);
 			},
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					unimplemented!();
 				}
 
@@ -1471,7 +1472,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			},
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					unimplemented!();
 				}
 				let resolved_path = self.resolve_path(&p.path, generics);
