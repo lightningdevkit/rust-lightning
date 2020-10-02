@@ -1674,7 +1674,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
 			for (idx, gen) in args.iter().enumerate() {
 				write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
-				self.write_c_type_intern(w, gen, None, false, false, false);
+				assert!(self.write_c_type_intern(w, gen, None, false, false, false));
 			}
 			writeln!(w, ") -> {} {{", mangled_container).unwrap();
 			writeln!(w, "\t{} {{", mangled_container).unwrap();
@@ -1963,9 +1963,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				self.write_c_path_intern(w, &p.path, generics, is_ref, is_mut, ptr_for_ref)
 			},
 			syn::Type::Reference(r) => {
-				if let Some(lft) = &r.lifetime {
-					if format!("{}", lft.ident) != "static" { return false; }
-				}
 				self.write_c_type_intern(w, &*r.elem, generics, true, r.mutability.is_some(), ptr_for_ref)
 			},
 			syn::Type::Array(a) => {
