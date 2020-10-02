@@ -890,15 +890,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			let mut seg_iter = p.segments.iter();
 			let first_seg = seg_iter.next().unwrap();
 			let remaining: String = seg_iter.map(|seg| {
-				if let syn::PathArguments::None = seg.arguments {
-					format!("{}", seg.ident)
-				} else {
-					format!("{}", seg.ident)
-				}
+				format!("::{}", seg.ident)
 			}).collect();
 			if let Some(imp) = self.imports.get(&first_seg.ident) {
 				if remaining != "" {
-					Some(imp.clone() + "::" + &remaining)
+					Some(imp.clone() + &remaining)
 				} else {
 					Some(imp.clone())
 				}
@@ -1740,14 +1736,12 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			} else if let syn::Type::Reference(r_arg) = t {
 				if let syn::Type::Path(p_arg) = &*r_arg.elem {
 					let resolved = self.resolve_path(&p_arg.path, None);
-					if single_ident_generic_path_to_ident(&p_arg.path).is_some() {
-						if self.crate_types.opaques.get(&resolved).is_some() {
-							write!(w, "crate::{}", resolved).unwrap();
-						} else {
-							let cty = self.c_type_from_path(&resolved, true, true).expect("Template generics should be opaque or have a predefined mapping");
-							w.write(cty.as_bytes()).unwrap();
-						}
-					} else { unimplemented!(); }
+					if self.crate_types.opaques.get(&resolved).is_some() {
+						write!(w, "crate::{}", resolved).unwrap();
+					} else {
+						let cty = self.c_type_from_path(&resolved, true, true).expect("Template generics should be opaque or have a predefined mapping");
+						w.write(cty.as_bytes()).unwrap();
+					}
 				} else { unimplemented!(); }
 			} else if let syn::Type::Array(a_arg) = t {
 				if let syn::Type::Path(p_arg) = &*a_arg.elem {
@@ -1827,13 +1821,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							self.write_c_mangled_container_path_intern(w2, Self::path_to_generic_args(&$p_arg.path),
 								generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 						}
-					} else if let Some(id) = single_ident_generic_path_to_ident(&$p_arg.path) {
+					} else {
+						let id = &&$p_arg.path.segments.iter().rev().next().unwrap().ident;
 						write!(w, "{}", id).unwrap();
 						write!(mangled_type, "{}", id).unwrap();
 						if let Some(w2) = $extra_write as Option<&mut Vec<u8>> {
 							write!(w2, "{}", id).unwrap();
 						}
-					} else { return false; }
+					}
 				}
 			}
 			if let syn::Type::Tuple(tuple) = arg {
@@ -1946,7 +1941,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	fn write_c_type_intern<W: std::io::Write>(&mut self, w: &mut W, t: &syn::Type, generics: Option<&GenericTypes>, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
 		match t {
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					return false;
 				}
 				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
@@ -1954,7 +1949,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), generics, &full_path, is_ref, is_mut, ptr_for_ref);
 					}
 				}
-				if p.path.leading_colon.is_some() { return false; }
 				self.write_c_path_intern(w, &p.path, generics, is_ref, is_mut, ptr_for_ref)
 			},
 			syn::Type::Reference(r) => {
