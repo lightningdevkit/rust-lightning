@@ -10,7 +10,7 @@ Rust-lightning is a Bitcoin Lightning library written in Rust. The main crate,
 it is runtime-agnostic, but users must implement basic networking logic, chain
 interactions, and disk storage.
 
-The `lightning-net-tokio` crate is a full Lightning using the
+The `lightning-net-tokio` crate implements Lightning networking using the
 [Tokio](https://github.com/tokio-rs/tokio) async runtime.
 
 Status
