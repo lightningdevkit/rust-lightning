@@ -1,9 +1,20 @@
+Rust-Lightning
+==============
+
+[![Crate](https://img.shields.io/crates/v/lightning.svg?logo=rust)](https://crates.io/crates/lightning)
+[![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-Rust-Lightning, not Rusty's Lightning!
-=====
+Rust-Lightning is a Bitcoin Lightning library written in Rust. The main crate,
+`lightning`, does not handle networking, persistence, or any other I/O. Thus,
+it is runtime-agnostic, but users must implement basic networking logic, chain
+interactions, and disk storage.
 
-Documentation can be found at [docs.rs](https://docs.rs/lightning/)
+The `lightning-net-tokio` crate implements Lightning networking using the
+[Tokio](https://github.com/tokio-rs/tokio) async runtime.
+
+Status
+------
 
 The project implements all of the BOLT specifications in the 1.0 spec except
 for [channel queries](https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#query-messages). The
@@ -37,6 +48,12 @@ For security reasons, do not add new dependencies. Really do not add new
 non-optional/non-test/non-library dependencies. Really really do not add
 dependencies with dependencies. Do convince Andrew to cut down dependency usage
 in rust-bitcoin.
+
+
+Tagline
+-------
+
+*"Rust-Lightning, not Rusty's Lightning!"*
 
 Contributing
 ------------
