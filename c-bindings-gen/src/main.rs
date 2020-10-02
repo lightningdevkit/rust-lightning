@@ -1057,8 +1057,6 @@ struct FullLibraryAST {
 /// `out_path` and fills it with wrapper structs/functions to allow calling the things in the AST
 /// at `module` from C.
 fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>, in_dir: &str, out_dir: &str, path: &str, orig_crate: &str, module: &str, header_file: &mut File, cpp_header_file: &mut File) {
-	eprintln!("Converting {}...", path);
-
 	let syntax = if let Some(ast) = libast.files.get(module) { ast } else { return };
 
 	assert!(syntax.shebang.is_none()); // Not sure what this is, hope we dont have one
@@ -1095,6 +1093,8 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 		convert_file(libast, crate_types, in_dir, out_dir, &path,
 			orig_crate, &new_mod, header_file, cpp_header_file);
 	}
+
+	eprintln!("Converting {} entries...", path);
 
 	let mut type_resolver = TypeResolver::new(orig_crate, module, crate_types);
 
@@ -1139,8 +1139,18 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 						ExportStatus::Export => {},
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
-					if t.generics.lt_token.is_none() {
-						writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file);
+
+					let mut process_alias = true;
+					for tok in t.generics.params.iter() {
+						if let syn::GenericParam::Lifetime(_) = tok {}
+						else { process_alias = false; }
+					}
+					if process_alias {
+						match &*t.ty {
+							syn::Type::Path(_) =>
+								writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file),
+							_ => {}
+						}
 					}
 				}
 			},
@@ -1180,6 +1190,52 @@ fn load_ast(in_dir: &str, path: &str, module: String, ast_storage: &mut FullLibr
 	ast_storage.files.insert(module, syntax);
 }
 
+/// Insert ident -> absolute Path resolutions into imports from the given UseTree and path-prefix.
+fn process_use_intern<'a>(u: &'a syn::UseTree, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>, imports: &mut HashMap<&'a syn::Ident, syn::Path>) {
+	match u {
+		syn::UseTree::Path(p) => {
+			path.push(syn::PathSegment { ident: p.ident.clone(), arguments: syn::PathArguments::None });
+			process_use_intern(&p.tree, path, imports);
+		},
+		syn::UseTree::Name(n) => {
+			path.push(syn::PathSegment { ident: n.ident.clone(), arguments: syn::PathArguments::None });
+			imports.insert(&n.ident, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path });
+		},
+		syn::UseTree::Group(g) => {
+			for i in g.items.iter() {
+				process_use_intern(i, path.clone(), imports);
+			}
+		},
+		_ => {}
+	}
+}
+
+/// Map all the Paths in a Type into absolute paths given a set of imports (generated via process_use_intern)
+fn resolve_imported_refs(imports: &HashMap<&syn::Ident, syn::Path>, mut ty: syn::Type) -> syn::Type {
+	match &mut ty {
+		syn::Type::Path(p) => {
+			if let Some(ident) = p.path.get_ident() {
+				if let Some(newpath) = imports.get(ident) {
+					p.path = newpath.clone();
+				}
+			} else { unimplemented!(); }
+		},
+		syn::Type::Reference(r) => {
+			r.elem = Box::new(resolve_imported_refs(imports, (*r.elem).clone()));
+		},
+		syn::Type::Slice(s) => {
+			s.elem = Box::new(resolve_imported_refs(imports, (*s.elem).clone()));
+		},
+		syn::Type::Tuple(t) => {
+			for e in t.elems.iter_mut() {
+				*e = resolve_imported_refs(imports, e.clone());
+			}
+		},
+		_ => unimplemented!(),
+	}
+	ty
+}
+
 /// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
 fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
 	let syntax = if let Some(ast) = ast_storage.files.get(&module) { ast } else { return };
@@ -1189,8 +1245,13 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 		walk_ast(in_dir, &path, new_mod, ast_storage, crate_types);
 	}
 
+	let mut import_maps = HashMap::new();
+
 	for item in syntax.items.iter() {
 		match item {
+			syn::Item::Use(u) => {
+				process_use_intern(&u.tree, syn::punctuated::Punctuated::new(), &mut import_maps);
+			},
 			syn::Item::Struct(s) => {
 				if let syn::Visibility::Public(_) = s.vis {
 					match export_status(&s.attrs) {
@@ -1209,6 +1270,31 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 					}
 					let trait_path = format!("{}::{}", module, t.ident);
 					crate_types.traits.insert(trait_path, &t);
+				}
+			},
+			syn::Item::Type(t) => {
+				if let syn::Visibility::Public(_) = t.vis {
+					match export_status(&t.attrs) {
+						ExportStatus::Export => {},
+						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+					}
+					let type_path = format!("{}::{}", module, t.ident);
+					let mut process_alias = true;
+					for tok in t.generics.params.iter() {
+						if let syn::GenericParam::Lifetime(_) = tok {}
+						else { process_alias = false; }
+					}
+					if process_alias {
+						match &*t.ty {
+							syn::Type::Path(_) => {
+								// If its a path with no generics, assume we don't map the aliased type and map it opaque
+								crate_types.opaques.insert(type_path, &t.ident);
+							},
+							_ => {
+								crate_types.type_aliases.insert(type_path, resolve_imported_refs(&import_maps, (*t.ty).clone()));
+							}
+						}
+					}
 				}
 			},
 			syn::Item::Enum(e) if is_enum_opaque(e) => {
@@ -1264,7 +1350,7 @@ fn main() {
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		templates_defined: HashMap::new(), template_file: &mut derived_templates };
+		type_aliases: HashMap::new(), templates_defined: HashMap::new(), template_file: &mut derived_templates };
 	walk_ast(&args[1], "/lib.rs", "".to_string(), &libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.

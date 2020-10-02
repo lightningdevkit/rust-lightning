@@ -234,6 +234,8 @@ pub struct CrateTypes<'a> {
 	pub mirrored_enums: HashMap<String, &'a syn::ItemEnum>,
 	/// Traits which are mapped as a pointer + jump table
 	pub traits: HashMap<String, &'a syn::ItemTrait>,
+	/// Aliases from paths to some other Type
+	pub type_aliases: HashMap<String, syn::Type>,
 	/// Template continer types defined, map from mangled type name -> whether a destructor fn
 	/// exists.
 	///
@@ -1164,7 +1166,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 
 				let resolved_path = self.resolve_path(&p.path, generics);
-				if let Some(c_type) = path_lookup(&resolved_path, is_ref, ptr_for_ref) {
+				if let Some(aliased_type) = self.crate_types.type_aliases.get(&resolved_path) {
+					return self.write_conversion_inline_intern(w, aliased_type, None, is_ref, is_mut, ptr_for_ref, tupleconv, prefix, sliceconv, path_lookup, decl_lookup);
+				} else if let Some(c_type) = path_lookup(&resolved_path, is_ref, ptr_for_ref) {
 					write!(w, "{}", c_type).unwrap();
 				} else if self.crate_types.opaques.get(&resolved_path).is_some() {
 					decl_lookup(w, &DeclType::StructImported, &resolved_path, is_ref, is_mut);
@@ -1476,6 +1480,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					unimplemented!();
 				}
 				let resolved_path = self.resolve_path(&p.path, generics);
+				if let Some(aliased_type) = self.crate_types.type_aliases.get(&resolved_path) {
+					return self.write_conversion_new_var_intern(w, ident, var, aliased_type, None, is_ref, ptr_for_ref, to_c, path_lookup, container_lookup, var_prefix, var_suffix);
+				}
 				if self.is_known_container(&resolved_path, is_ref) || self.is_transparent_container(&resolved_path, is_ref) {
 					if let syn::PathArguments::AngleBracketed(args) = &p.path.segments.iter().next().unwrap().arguments {
 						convert_container!(resolved_path, args.args.len(), || args.args.iter().map(|arg| {
@@ -1948,6 +1955,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					if self.is_known_container(&full_path, is_ref) || self.is_transparent_container(&full_path, is_ref) {
 						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), generics, &full_path, is_ref, is_mut, ptr_for_ref);
+					}
+					if let Some(aliased_type) = self.crate_types.type_aliases.get(&full_path).cloned() {
+						return self.write_c_type_intern(w, &aliased_type, None, is_ref, is_mut, ptr_for_ref);
 					}
 				}
 				self.write_c_path_intern(w, &p.path, generics, is_ref, is_mut, ptr_for_ref)
