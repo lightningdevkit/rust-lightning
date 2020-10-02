@@ -1,9 +1,17 @@
+Rust-Lightning
+==============
+
+[![Crate](https://img.shields.io/crates/v/lightning.svg?logo=rust)](https://crates.io/crates/lightning)
+[![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-Rust-Lightning, not Rusty's Lightning!
-=====
+Rust-lightning is a low-level Bitcoin Lightning library written in Rust. It is
+low-level in that it does not handle networking, persistence, or any other I/O.
+Thus, it is runtime-agnostic, but users must implement basic networking logic,
+chain interactions, and disk storage.
 
-Documentation can be found at [docs.rs](https://docs.rs/lightning/)
+Status
+------
 
 The project implements all of the BOLT specifications in the 1.0 spec except
 for [channel queries](https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#query-messages). The
