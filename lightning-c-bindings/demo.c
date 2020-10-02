@@ -54,11 +54,11 @@ int main() {
 		.free = NULL
 	};
 
-	LDKManyChannelMonitor mon = {
+	LDKWatch mon = {
 		.this_arg = NULL,
-		.add_monitor = add_channel_monitor,
-		.update_monitor = update_channel_monitor,
-		.get_and_clear_pending_monitor_events = monitors_pending_monitor_events,
+		.watch_channel = add_channel_monitor,
+		.update_channel = update_channel_monitor,
+		.release_pending_monitor_events = monitors_pending_monitor_events,
 		.free = NULL,
 	};
 
