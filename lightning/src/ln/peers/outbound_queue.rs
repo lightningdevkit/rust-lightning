@@ -10,8 +10,7 @@
 /// Abstracts the buffer used to write data through a SocketDescriptor handling partial writes and
 /// flow control.
 
-use ln::peers::handler::{SocketDescriptor, SocketDescriptorFlusher};
-use ln::peers::transport::PayloadQueuer;
+use ln::peers::handler::{IOutboundQueue, SocketDescriptor};
 use std::collections::LinkedList;
 use std::cmp;
 
@@ -22,24 +21,31 @@ pub(super) struct OutboundQueue {
 	buffer_first_msg_offset: usize,
 }
 
-impl PayloadQueuer for OutboundQueue {
-	/// Unconditionally queue item. May increase queue above soft limit.
+impl OutboundQueue {
+	pub(super) fn new(soft_limit: usize) -> Self {
+		Self {
+			blocked: false,
+			soft_limit,
+			buffer: LinkedList::new(),
+			buffer_first_msg_offset: 0,
+		}
+	}
+}
+
+impl IOutboundQueue for OutboundQueue {
+
 	fn push_back(&mut self, item: Vec<u8>) {
 		self.buffer.push_back(item);
 	}
 
-	/// Returns true if the queue is empty
 	fn is_empty(&self) -> bool {
 		self.buffer.is_empty()
 	}
 
-	/// Returns the amount of free space in the queue before the soft limit
 	fn queue_space(&self) -> usize {
 		self.soft_limit - cmp::min(self.soft_limit, self.buffer.len())
 	}
-}
 
-impl SocketDescriptorFlusher for OutboundQueue {
 	fn try_flush_one(&mut self, descriptor: &mut impl SocketDescriptor) -> bool {
 		// Exit early if  a previous full write failed and haven't heard that there may be more
 		// room available
@@ -74,20 +80,6 @@ impl SocketDescriptorFlusher for OutboundQueue {
 
 	fn is_blocked(&self) -> bool {
 		self.blocked
-	}
-}
-
-impl OutboundQueue {
-
-	/// Create a new writer with a soft limit that is used to notify the SocketDescriptor when
-	/// it is OK to resume reading if it was paused
-	pub(super) fn new(soft_limit: usize) -> Self {
-		Self {
-			blocked: false,
-			soft_limit,
-			buffer: LinkedList::new(),
-			buffer_first_msg_offset: 0,
-		}
 	}
 }
 

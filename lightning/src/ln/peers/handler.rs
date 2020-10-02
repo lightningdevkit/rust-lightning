@@ -39,7 +39,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 use ln::peers::outbound_queue::OutboundQueue;
-use ln::peers::transport::{PayloadQueuer, Transport};
+use ln::peers::transport::Transport;
 use std::collections::hash_map::IterMut;
 use std::iter::Filter;
 
@@ -47,7 +47,7 @@ use std::iter::Filter;
 const OUTBOUND_QUEUE_SIZE: usize = 10;
 
 /// Interface PeerManager uses to interact with the Transport object
-pub(super) trait ITransport: MessageQueuer {
+pub(super) trait ITransport {
 	/// Instantiate the new outbound Transport
 	fn new_outbound(initiator_static_private_key: &SecretKey, responder_static_public_key: &PublicKey, initiator_ephemeral_private_key: &SecretKey) -> Self;
 
@@ -59,7 +59,7 @@ pub(super) trait ITransport: MessageQueuer {
 
 	/// Process input data similar to reading it off a descriptor directly. Returns true on the first call
 	/// that results in the transport being newly connected.
-	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String>;
+	fn process_input(&mut self, input: &[u8], outbound_queue: &mut impl IOutboundQueue) -> Result<bool, String>;
 
 	/// Returns true if the connection is established and encrypted messages can be sent.
 	fn is_connected(&self) -> bool;
@@ -67,21 +67,43 @@ pub(super) trait ITransport: MessageQueuer {
 	/// Returns the node_id of the remote node. Panics if not connected.
 	fn get_their_node_id(&self) -> PublicKey;
 
+	/// Encodes, encrypts, and enqueues a message to the outbound queue. Panics if the connection is
+	/// not established yet.
+	fn enqueue_message<M: Encode + Writeable, L: Deref>(&mut self, message: &M, outbound_queue: &mut impl IOutboundQueue, logger: L) where L::Target: Logger;
+
 	/// Returns all Messages that have been received and can be successfully parsed by the Transport
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger;
 }
 
-/// Interface PeerManager uses to queue message to send. Implemented by Transport to handle
-/// encryption/decryption post-NOISE.
-pub(super) trait MessageQueuer {
-	/// Encodes, encrypts, and enqueues a message to the outbound queue. Panics if the connection is
-	/// not established yet.
-	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger;
-}
+/// The OutboundQueue is a container for unencrypted payloads during the NOISE handshake and
+/// encrypted Messages post-NOISE. This trait abstracts the behavior to push items to a queue, flush
+/// them through a SocketDescriptor, and handle flow control. Each Peer owns a separate OutboundQueue.
+///
+/// A trait is used to enable tests to use test doubles that implement a subset of the api with
+/// cleaner test validation.
+pub(super) trait IOutboundQueue {
 
-/// Trait representing a container that can try to flush data through a SocketDescriptor. Used by the
-/// PeerManager to handle flushing the outbound queue and flow control.
-pub(super) trait SocketDescriptorFlusher {
+	//  ____            _       __  __      _   _               _
+	// |  _ \ _   _ ___| |__   |  \/  | ___| |_| |__   ___   __| |___
+	// | |_) | | | / __| '_ \  | |\/| |/ _ \ __| '_ \ / _ \ / _` / __|
+	// |  __/| |_| \__ \ | | | | |  | |  __/ |_| | | | (_) | (_| \__ \
+	// |_|    \__,_|___/_| |_| |_|  |_|\___|\__|_| |_|\___/ \__,_|___/
+
+	/// Unconditionally queue item. May increase queue above soft limit.
+	fn push_back(&mut self, item: Vec<u8>);
+
+	/// Returns true if the queue is empty
+	fn is_empty(&self) -> bool;
+
+	/// Returns the amount of free space in the queue before the soft limit
+	fn queue_space(&self) -> usize;
+
+	//  _____ _           _       __  __      _   _               _
+	// |  ___| |_   _ ___| |__   |  \/  | ___| |_| |__   ___   __| |___
+	// | |_  | | | | / __| '_ \  | |\/| |/ _ \ __| '_ \ / _ \ / _` / __|
+	// |  _| | | |_| \__ \ | | | | |  | |  __/ |_| | | | (_) | (_| \__ \
+	// |_|   |_|\__,_|___/_| |_| |_|  |_|\___|\__|_| |_|\___/ \__,_|___/
+
 	/// Write previously enqueued data to the SocketDescriptor. A return of false indicates the
 	/// underlying SocketDescriptor could not fulfill the send_data() call and the blocked state
 	/// has been set. Use unblock() when the SocketDescriptor may have more room.
@@ -583,11 +605,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 
 	// Fill remaining slots in output queue with sync messages, updating the sync state when
 	// appropriate
-	fn fill_outbound_queue_with_sync<Q: PayloadQueuer + SocketDescriptorFlusher>(
+	fn fill_outbound_queue_with_sync(
 		&self,
 		sync_status: &mut InitSyncTracker,
-		message_queuer: &mut impl MessageQueuer,
-		outbound_queue: &mut Q) {
+		transport: &mut TransportImpl,
+		outbound_queue: &mut OutboundQueue) {
 
 		let queue_space = outbound_queue.queue_space();
 		if queue_space > 0 {
@@ -597,12 +619,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					let steps = ((queue_space + 2) / 3) as u8;
 					let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
 					for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
-						message_queuer.enqueue_message(announce, outbound_queue, &*self.logger);
+						transport.enqueue_message(announce, outbound_queue, &*self.logger);
 						if let &Some(ref update_a) = update_a_option {
-							message_queuer.enqueue_message(update_a, outbound_queue, &*self.logger);
+							transport.enqueue_message(update_a, outbound_queue, &*self.logger);
 						}
 						if let &Some(ref update_b) = update_b_option {
-							message_queuer.enqueue_message(update_b, outbound_queue, &*self.logger);
+							transport.enqueue_message(update_b, outbound_queue, &*self.logger);
 						}
 						*sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
 					}
@@ -614,7 +636,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					let steps = queue_space as u8;
 					let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
 					for msg in all_messages.iter() {
-						message_queuer.enqueue_message(msg, outbound_queue, &*self.logger);
+						transport.enqueue_message(msg, outbound_queue, &*self.logger);
 						*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 					}
 					if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -626,7 +648,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 					let steps = queue_space as u8;
 					let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
 					for msg in all_messages.iter() {
-						message_queuer.enqueue_message(msg, outbound_queue, &*self.logger);
+						transport.enqueue_message(msg, outbound_queue, &*self.logger);
 						*sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 					}
 					if all_messages.is_empty() || all_messages.len() != steps as usize {
@@ -637,18 +659,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, TransportImpl
 		}
 	}
 
-	fn do_attempt_write_data<Q: PayloadQueuer + SocketDescriptorFlusher>(
+	fn do_attempt_write_data(
 		&self,
 		descriptor: &mut Descriptor,
 		post_init_state: &mut Option<PostInitState>,
-		message_queuer: &mut impl MessageQueuer,
-		outbound_queue: &mut Q) {
+		transport: &mut TransportImpl,
+		outbound_queue: &mut OutboundQueue) {
 
 		while !outbound_queue.is_blocked() {
 			// If connected, fill output queue with sync messages
 			match post_init_state {
 				None => {},
-				&mut Some(ref mut state) => self.fill_outbound_queue_with_sync(&mut state.sync_status, message_queuer, outbound_queue)
+				&mut Some(ref mut state) => self.fill_outbound_queue_with_sync(&mut state.sync_status, transport, outbound_queue)
 			}
 
 			// No messages to send

@@ -13,8 +13,8 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use ln::peers::conduit::Conduit;
-use ln::peers::handler::{SocketDescriptor, ITransport, PeerHandleError, MessageQueuer};
-use ln::peers::transport::{IPeerHandshake, PayloadQueuer};
+use ln::peers::handler::{SocketDescriptor, IOutboundQueue, ITransport, PeerHandleError};
+use ln::peers::transport::IPeerHandshake;
 
 use std::rc::Rc;
 use std::cell::{RefCell};
@@ -223,8 +223,9 @@ impl Hash for SocketDescriptorMock {
 	}
 }
 
-/// Implement PayloadQueuer for Vec<Vec<u8>> so it can be used as a Spy in tests
-impl PayloadQueuer for Vec<Vec<u8>> {
+/// Implement IOutboundQueue for Vec<Vec<u8>> so it can be used as a Spy in tests. This only implements
+/// a subset of the push methods needed for the tests.
+impl IOutboundQueue for Vec<Vec<u8>> {
 	fn push_back(&mut self, item: Vec<u8>) {
 		self.push(item)
 	}
@@ -234,6 +235,18 @@ impl PayloadQueuer for Vec<Vec<u8>> {
 	}
 
 	fn queue_space(&self) -> usize {
+		unimplemented!()
+	}
+
+	fn try_flush_one(&mut self, _descriptor: &mut impl SocketDescriptor) -> bool {
+		unimplemented!()
+	}
+
+	fn unblock(&mut self) {
+		unimplemented!()
+	}
+
+	fn is_blocked(&self) -> bool {
 		unimplemented!()
 	}
 }
@@ -296,8 +309,8 @@ impl<'a> ITransport for &'a RefCell<TransportStub> {
 		unimplemented!()
 	}
 
-	fn process_input(&mut self, input: &[u8], output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
-		self.borrow_mut().process_input(input, output_buffer)
+	fn process_input(&mut self, input: &[u8], outbound_queue: &mut impl IOutboundQueue) -> Result<bool, String> {
+		self.borrow_mut().process_input(input, outbound_queue)
 	}
 
 	fn is_connected(&self) -> bool {
@@ -308,14 +321,12 @@ impl<'a> ITransport for &'a RefCell<TransportStub> {
 		self.borrow().get_their_node_id()
 	}
 
+	fn enqueue_message<M: Encode + Writeable, L: Deref>(&mut self, message: &M, outbound_queue: &mut impl IOutboundQueue, logger: L) where L::Target: Logger {
+		self.borrow_mut().enqueue_message(message, outbound_queue, logger)
+	}
+
 	fn drain_messages<L: Deref>(&mut self, logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
 		self.borrow_mut().drain_messages(logger)
-	}
-}
-
-impl<'a> MessageQueuer for &'a RefCell<TransportStub> {
-	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, logger: L) where L::Target: Logger {
-		self.borrow_mut().enqueue_message(message, output_buffer, logger)
 	}
 }
 
@@ -345,7 +356,7 @@ impl ITransport for TransportStub {
 		unimplemented!()
 	}
 
-	fn process_input(&mut self, _input: &[u8], _output_buffer: &mut impl PayloadQueuer) -> Result<bool, String> {
+	fn process_input(&mut self, _input: &[u8], _outbound_queue: &mut impl IOutboundQueue) -> Result<bool, String> {
 		if self.process_returns_error {
 			Err("Oh no!".to_string())
 		} else {
@@ -369,16 +380,14 @@ impl ITransport for TransportStub {
 		self.their_node_id.unwrap()
 	}
 
-	fn drain_messages<L: Deref>(&mut self, _logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
-		Ok(self.messages.drain(..).collect())
-	}
-}
-
-impl MessageQueuer for TransportStub {
-	fn enqueue_message<M: Encode + Writeable, Q: PayloadQueuer, L: Deref>(&mut self, message: &M, output_buffer: &mut Q, _logger: L)
+	fn enqueue_message<M: Encode + Writeable, L: Deref>(&mut self, message: &M, outbound_queue: &mut impl IOutboundQueue, _logger: L)
 		where L::Target: Logger {
 		let mut buffer = VecWriter(Vec::new());
 		wire::write(message, &mut buffer).unwrap();
-		output_buffer.push_back(buffer.0);
+		outbound_queue.push_back(buffer.0);
+	}
+
+	fn drain_messages<L: Deref>(&mut self, _logger: L) -> Result<Vec<Message>, PeerHandleError> where L::Target: Logger {
+		Ok(self.messages.drain(..).collect())
 	}
 }
