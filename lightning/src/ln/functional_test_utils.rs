@@ -198,7 +198,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}).unwrap();
 			}
 
-			let persister = test_utils::TestPersister{};
+			let persister = test_utils::TestPersister::new();
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), self.tx_broadcaster.clone(), &self.logger, &feeest, &persister);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
@@ -1123,7 +1123,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
-		let persister = test_utils::TestPersister{};
+		let persister = test_utils::TestPersister::new();
 		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister });
 	}
 

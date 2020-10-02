@@ -64,7 +64,7 @@ pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingChannelKeys>>,
-	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
+	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
@@ -75,7 +75,7 @@ impl<'a> TestChainMonitor<'a> {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
-			update_ret: Mutex::new(Ok(())),
+			update_ret: Mutex::new(None),
 			next_update_ret: Mutex::new(None),
 		}
 	}
@@ -93,13 +93,17 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
-		assert!(self.chain_monitor.watch_channel(funding_txo, new_monitor).is_ok());
+		let watch_res = self.chain_monitor.watch_channel(funding_txo, new_monitor);
 
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
-			*self.update_ret.lock().unwrap() = next_ret;
+			*self.update_ret.lock().unwrap() = Some(next_ret);
 		}
-		ret
+		if ret.is_some() {
+			assert!(watch_res.is_ok());
+			return ret.unwrap();
+		}
+		watch_res
 	}
 
 	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
@@ -110,7 +114,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
 
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
-		assert!(self.chain_monitor.update_channel(funding_txo, update).is_ok());
+		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let monitors = self.chain_monitor.monitors.lock().unwrap();
@@ -118,15 +122,19 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		w.0.clear();
 		monitor.write_for_disk(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-				&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
-			*self.update_ret.lock().unwrap() = next_ret;
+			*self.update_ret.lock().unwrap() = Some(next_ret);
 		}
-		ret
+		if ret.is_some() {
+			assert!(update_res.is_ok());
+			return ret.unwrap();
+		}
+		update_res
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
@@ -134,15 +142,27 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 	}
 }
 
-pub struct TestPersister {}
+pub struct TestPersister {
+	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>
+}
+impl TestPersister {
+	pub fn new() -> Self {
+		Self {
+			update_ret: Mutex::new(Ok(()))
+		}
+	}
 
+	pub fn set_update_ret(&self, ret: Result<(), channelmonitor::ChannelMonitorUpdateErr>) {
+		*self.update_ret.lock().unwrap() = ret;
+	}
+}
 impl channelmonitor::Persist<EnforcingChannelKeys> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
-		Ok(())
+		self.update_ret.lock().unwrap().clone()
 	}
 
 	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
-		Ok(())
+		self.update_ret.lock().unwrap().clone()
 	}
 }
 

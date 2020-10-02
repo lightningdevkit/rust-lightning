@@ -4323,7 +4323,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	persister = test_utils::TestPersister{};
+	persister = test_utils::TestPersister::new();
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
@@ -4432,7 +4432,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	logger = test_utils::TestLogger::new();
-	persister = test_utils::TestPersister{};
+	persister = test_utils::TestPersister::new();
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
@@ -4524,7 +4524,7 @@ fn test_simple_manager_serialize_deserialize() {
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	persister = test_utils::TestPersister{};
+	persister = test_utils::TestPersister::new();
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
@@ -4604,7 +4604,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
-	persister = test_utils::TestPersister{};
+	persister = test_utils::TestPersister::new();
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
 	nodes[0].chain_monitor = &new_chain_monitor;
 
@@ -7447,7 +7447,7 @@ fn test_data_loss_protect() {
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
-	persister = test_utils::TestPersister{};
+	persister = test_utils::TestPersister::new();
 	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister);
 	node_state_0 = {
 		let mut channel_monitors = HashMap::new();
