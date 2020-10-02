@@ -109,6 +109,8 @@ jobs:
         run: |
           git remote add upstream https://github.com/rust-bitcoin/rust-lightning
           git fetch upstream
+          export GIT_COMMITTER_EMAIL="rl-ci@example.com"
+          export GIT_COMMITTER_NAME="RL CI"
           git rebase upstream/main
       - name: For each commit, run cargo check (including in fuzz)
         run: ci/check-each-commit.sh upstream/main
