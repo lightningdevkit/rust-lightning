@@ -24,7 +24,6 @@ use lightning::ln::channelmanager::SimpleArcChannelManager;
 use bitcoin::hashes::hex::ToHex;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::util::hash::BitcoinHash;
 use bitcoin::util::uint::Uint256;
 use bitcoin::hash_types::BlockHash;
 
@@ -98,7 +97,7 @@ fn stateless_check_header(header: &BlockHeader) -> Result<(), BlockSourceRespErr
 /// matches the actual PoW in child_header and the difficulty transition is possible, ie within 4x.
 /// Includes stateless header checks on previous_header.
 fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeaderData, mainnet: bool) -> Result<(), BlockSourceRespErr> {
-	if child_header.header.prev_blockhash != previous_header.header.bitcoin_hash() {
+	if child_header.header.prev_blockhash != previous_header.header.block_hash() {
 		return Err(BlockSourceRespErr::BogusData);
 	}
 
@@ -145,7 +144,7 @@ fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHead
 			return Err(BlockSourceRespErr::BogusData);
 		} else if prev_header.height < current_header.height {
 			if prev_header.height + 1 == current_header.height &&
-					prev_header.header.bitcoin_hash() == current_header.header.prev_blockhash {
+					prev_header.header.block_hash() == current_header.header.prev_blockhash {
 				// Current header is the one above prev_header, we're done!
 				steps_tx.push(ForkStep::ConnectBlock(current_header));
 			} else {
@@ -248,10 +247,10 @@ impl<CS, B, F> AChainListener for (&mut ChannelMonitor<CS>, &B, &F)
 		for tx in block.txdata.iter() {
 			txn.push(tx);
 		}
-		self.0.block_connected(&txn, height, &block.bitcoin_hash(), self.1, self.2);
+		self.0.block_connected(&txn, height, &block.block_hash(), self.1, self.2);
 	}
 	fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-		self.0.block_disconnected(height, &header.bitcoin_hash(), self.1, self.2);
+		self.0.block_disconnected(height, &header.block_hash(), self.1, self.2);
 	}
 }
 
@@ -271,7 +270,7 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 	for event in events.iter() {
 		match &event {
 			&ForkStep::DisconnectBlock(ref header) => {
-				println!("Disconnecting block {}", header.header.bitcoin_hash());
+				println!("Disconnecting block {}", header.header.block_hash());
 				if let Some(cached_head) = head_blocks.pop() {
 					assert_eq!(cached_head, *header);
 				}
@@ -293,7 +292,7 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 		if let Some(cached_head) = head_blocks.last() {
 			assert_eq!(cached_head, tip_header);
 		}
-		debug_assert_eq!(tip_header.header.bitcoin_hash(), *last_disconnect_tip.as_ref().unwrap());
+		debug_assert_eq!(tip_header.header.block_hash(), *last_disconnect_tip.as_ref().unwrap());
 	} else {
 		// Set new_tip to indicate that we got a valid header chain we wanted to connect to, but
 		// failed
@@ -302,14 +301,14 @@ async fn sync_chain_monitor<CL : AChainListener + Sized>(new_header: BlockHeader
 
 	for event in events.drain(..).rev() {
 		if let ForkStep::ConnectBlock(header_data) = event {
-			let block = match block_source.get_block(&header_data.header.bitcoin_hash()).await {
+			let block = match block_source.get_block(&header_data.header.block_hash()).await {
 				Err(e) => return Err((e, new_tip)),
 				Ok(b) => b,
 			};
 			if block.header != header_data.header || !block.check_merkle_root() || !block.check_witness_commitment() {
 				return Err((BlockSourceRespErr::BogusData, new_tip));
 			}
-			println!("Connecting block {}", header_data.header.bitcoin_hash().to_hex());
+			println!("Connecting block {}", header_data.header.block_hash().to_hex());
 			chain_notifier.a_block_connected(&block, header_data.height);
 			head_blocks.push(header_data.clone());
 			new_tip = Some(header_data);
@@ -327,10 +326,10 @@ pub async fn init_sync_chain_monitor<CL : AChainListener + Sized, B: BlockSource
 	if &old_block[..] == &[0; 32] { return; }
 
 	let new_header = block_source.get_header(&new_block, None).await.unwrap();
-	assert_eq!(new_header.header.bitcoin_hash(), new_block);
+	assert_eq!(new_header.header.block_hash(), new_block);
 	stateless_check_header(&new_header.header).unwrap();
 	let old_header = block_source.get_header(&old_block, None).await.unwrap();
-	assert_eq!(old_header.header.bitcoin_hash(), old_block);
+	assert_eq!(old_header.header.block_hash(), old_block);
 	stateless_check_header(&old_header.header).unwrap();
 	sync_chain_monitor(new_header, &old_header, block_source, &mut chain_notifier, &mut Vec::new(), false).await.unwrap();
 }
@@ -376,7 +375,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL : AC
 		let cur_blocks = vec![Err(BlockSourceRespErr::NoResponse); block_sources.len() + backup_block_sources.len()];
 		let blocks_past_common_tip = Vec::new();
 		Self {
-			chain_tip: (chain_tip.header.bitcoin_hash(), chain_tip),
+			chain_tip: (chain_tip.header.block_hash(), chain_tip),
 			block_sources, backup_block_sources, cur_blocks, blocks_past_common_tip, chain_notifier, mainnet
 		}
 	}
@@ -412,7 +411,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL : AC
 					continue;
 				}
 				let new_header = handle_err!($source.get_header(&new_hash, height_opt).await);
-				if new_header.header.bitcoin_hash() != new_hash {
+				if new_header.header.block_hash() != new_hash {
 					$cur_hash = Err(BlockSourceRespErr::BogusData);
 					continue;
 				}
@@ -425,7 +424,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL : AC
 				let syncres = sync_chain_monitor(new_header.clone(), &self.chain_tip.1, &mut *$source, &mut self.chain_notifier, &mut self.blocks_past_common_tip, self.mainnet).await;
 				if let Err((e, new_tip)) = syncres {
 					if let Some(tip) = new_tip {
-						let tiphash = tip.header.bitcoin_hash();
+						let tiphash = tip.header.block_hash();
 						if tiphash != self.chain_tip.0 {
 							self.chain_tip = (tiphash, tip);
 							blocks_connected = true;
@@ -492,10 +491,10 @@ mod tests {
 	}
 	impl AChainListener for Arc<ChainListener> {
 		fn a_block_connected(&mut self, block: &Block, height: u32) {
-			self.blocks_connected.lock().unwrap().push((block.header.bitcoin_hash(), height));
+			self.blocks_connected.lock().unwrap().push((block.header.block_hash(), height));
 		}
 		fn a_block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-			self.blocks_disconnected.lock().unwrap().push((header.bitcoin_hash(), height));
+			self.blocks_disconnected.lock().unwrap().push((header.block_hash(), height));
 		}
 	}
 
@@ -560,7 +559,7 @@ mod tests {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: genesis.block.bitcoin_hash(),
+					prev_blockhash: genesis.block.block_hash(),
 					merkle_root: Default::default(), time: 0,
 					bits: genesis.block.header.bits,
 					nonce: 647569994,
@@ -570,12 +569,12 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833).unwrap(),
 			height: 1
 		};
-		let block_1a_hash = block_1a.block.header.bitcoin_hash();
+		let block_1a_hash = block_1a.block.header.block_hash();
 		let block_2a = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_1a.block.bitcoin_hash(),
+					prev_blockhash: block_1a.block.block_hash(),
 					merkle_root: Default::default(), time: 4,
 					bits: genesis.block.header.bits,
 					nonce: 1185103332,
@@ -585,12 +584,12 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 2).unwrap(),
 			height: 2
 		};
-		let block_2a_hash = block_2a.block.header.bitcoin_hash();
+		let block_2a_hash = block_2a.block.header.block_hash();
 		let block_3a = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_2a.block.bitcoin_hash(),
+					prev_blockhash: block_2a.block.block_hash(),
 					merkle_root: Default::default(), time: 6,
 					bits: genesis.block.header.bits,
 					nonce: 198739431,
@@ -600,12 +599,12 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 3).unwrap(),
 			height: 3
 		};
-		let block_3a_hash = block_3a.block.header.bitcoin_hash();
+		let block_3a_hash = block_3a.block.header.block_hash();
 		let block_4a = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_3a.block.bitcoin_hash(),
+					prev_blockhash: block_3a.block.block_hash(),
 					merkle_root: Default::default(), time: 0,
 					bits: genesis.block.header.bits,
 					nonce: 590371681,
@@ -615,14 +614,14 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 4).unwrap(),
 			height: 4
 		};
-		let block_4a_hash = block_4a.block.header.bitcoin_hash();
+		let block_4a_hash = block_4a.block.header.block_hash();
 
 		// Build a second chain based on genesis 1b, 2b, and 3b
 		let block_1b = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: genesis.block.bitcoin_hash(),
+					prev_blockhash: genesis.block.block_hash(),
 					merkle_root: Default::default(), time: 6,
 					bits: genesis.block.header.bits,
 					nonce: 1347696353,
@@ -632,12 +631,12 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833).unwrap(),
 			height: 1
 		};
-		let block_1b_hash = block_1b.block.header.bitcoin_hash();
+		let block_1b_hash = block_1b.block.header.block_hash();
 		let block_2b = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_1b.block.bitcoin_hash(),
+					prev_blockhash: block_1b.block.block_hash(),
 					merkle_root: Default::default(), time: 5,
 					bits: genesis.block.header.bits,
 					nonce: 144775545,
@@ -647,14 +646,14 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 2).unwrap(),
 			height: 2
 		};
-		let block_2b_hash = block_2b.block.header.bitcoin_hash();
+		let block_2b_hash = block_2b.block.header.block_hash();
 
 		// Build a second chain based on 3a: 4c and 5c.
 		let block_4c = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_3a.block.bitcoin_hash(),
+					prev_blockhash: block_3a.block.block_hash(),
 					merkle_root: Default::default(), time: 17,
 					bits: genesis.block.header.bits,
 					nonce: 316634915,
@@ -664,12 +663,12 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 4).unwrap(),
 			height: 4
 		};
-		let block_4c_hash = block_4c.block.header.bitcoin_hash();
+		let block_4c_hash = block_4c.block.header.block_hash();
 		let block_5c = BlockData {
 			block: Block {
 				header: BlockHeader {
 					version: 0,
-					prev_blockhash: block_4c.block.bitcoin_hash(),
+					prev_blockhash: block_4c.block.block_hash(),
 					merkle_root: Default::default(), time: 3,
 					bits: genesis.block.header.bits,
 					nonce: 218413871,
@@ -679,7 +678,7 @@ mod tests {
 			chainwork: Uint256::from_u64(4295032833 * 5).unwrap(),
 			height: 5
 		};
-		let block_5c_hash = block_5c.block.header.bitcoin_hash();
+		let block_5c_hash = block_5c.block.header.block_hash();
 
 		// Create four block sources:
 		// * chain_one and chain_two are general purpose block sources which we use to test reorgs,
@@ -687,7 +686,7 @@ mod tests {
 		// * and backup_chain is a backup which should not receive any queries (ie disallowed is
 		//   false) until the headers_chain gets ahead of chain_one and chain_two.
 		let mut blocks_one = HashMap::new();
-		blocks_one.insert(genesis.block.header.bitcoin_hash(), genesis.clone());
+		blocks_one.insert(genesis.block.header.block_hash(), genesis.clone());
 		blocks_one.insert(block_1a_hash, block_1a.clone());
 		blocks_one.insert(block_1b_hash, block_1b);
 		blocks_one.insert(block_2b_hash, block_2b);
@@ -697,7 +696,7 @@ mod tests {
 		};
 
 		let mut blocks_two = HashMap::new();
-		blocks_two.insert(genesis.block.header.bitcoin_hash(), genesis.clone());
+		blocks_two.insert(genesis.block.header.block_hash(), genesis.clone());
 		blocks_two.insert(block_1a_hash, block_1a.clone());
 		let chain_two = Blockchain {
 			blocks: Mutex::new(blocks_two), best_block: Mutex::new((block_1a_hash, Some(1))),
@@ -705,7 +704,7 @@ mod tests {
 		};
 
 		let mut blocks_three = HashMap::new();
-		blocks_three.insert(genesis.block.header.bitcoin_hash(), genesis.clone());
+		blocks_three.insert(genesis.block.header.block_hash(), genesis.clone());
 		blocks_three.insert(block_1a_hash, block_1a.clone());
 		let header_chain = Blockchain {
 			blocks: Mutex::new(blocks_three), best_block: Mutex::new((block_1a_hash, Some(1))),
@@ -713,7 +712,7 @@ mod tests {
 		};
 
 		let mut blocks_four = HashMap::new();
-		blocks_four.insert(genesis.block.header.bitcoin_hash(), genesis);
+		blocks_four.insert(genesis.block.header.block_hash(), genesis);
 		blocks_four.insert(block_1a_hash, block_1a);
 		blocks_four.insert(block_2a_hash, block_2a.clone());
 		blocks_four.insert(block_3a_hash, block_3a.clone());
@@ -740,8 +739,8 @@ mod tests {
 		assert_eq!(&chain_notifier.blocks_disconnected.lock().unwrap()[..], &[(block_1a_hash, 1)][..]);
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_1b_hash, 1), (block_2b_hash, 2)][..]);
 		assert_eq!(client.blocks_past_common_tip.len(), 2);
-		assert_eq!(client.blocks_past_common_tip[0].header.bitcoin_hash(), block_1b_hash);
-		assert_eq!(client.blocks_past_common_tip[1].header.bitcoin_hash(), block_2b_hash);
+		assert_eq!(client.blocks_past_common_tip[0].header.block_hash(), block_1b_hash);
+		assert_eq!(client.blocks_past_common_tip[1].header.block_hash(), block_2b_hash);
 
 		// Test that even if chain_one (which we just got blocks from) stops responding to block or
 		// header requests we can still reorg back because we never wiped our block cache as
@@ -768,9 +767,9 @@ mod tests {
 		// Note that blocks_past_common_tip is not wiped as chain_one still returns 2a as its tip
 		// (though a smarter MicroSPVClient may wipe 1a and 2a from the set eventually.
 		assert_eq!(client.blocks_past_common_tip.len(), 3);
-		assert_eq!(client.blocks_past_common_tip[0].header.bitcoin_hash(), block_1a_hash);
-		assert_eq!(client.blocks_past_common_tip[1].header.bitcoin_hash(), block_2a_hash);
-		assert_eq!(client.blocks_past_common_tip[2].header.bitcoin_hash(), block_3a_hash);
+		assert_eq!(client.blocks_past_common_tip[0].header.block_hash(), block_1a_hash);
+		assert_eq!(client.blocks_past_common_tip[1].header.block_hash(), block_2a_hash);
+		assert_eq!(client.blocks_past_common_tip[2].header.block_hash(), block_3a_hash);
 
 		chain_notifier.blocks_connected.lock().unwrap().clear();
 		chain_notifier.blocks_disconnected.lock().unwrap().clear();
@@ -806,7 +805,7 @@ mod tests {
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_4a_hash, 4)][..]);
 		assert_eq!(client.blocks_past_common_tip.len(), 1);
-		assert_eq!(client.blocks_past_common_tip[0].header.bitcoin_hash(), block_4a_hash);
+		assert_eq!(client.blocks_past_common_tip[0].header.block_hash(), block_4a_hash);
 
 		chain_notifier.blocks_connected.lock().unwrap().clear();
 		chain_notifier.blocks_disconnected.lock().unwrap().clear();

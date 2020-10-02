@@ -359,7 +359,7 @@ struct GetHeaderResponse {
 	pub chainwork: String,
 	pub height: u32,
 
-	pub version: u32,
+	pub version: i32,
 	pub merkleroot: String,
 	pub time: u32,
 	pub nonce: u32,
