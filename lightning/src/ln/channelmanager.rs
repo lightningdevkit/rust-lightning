@@ -775,7 +775,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, config)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone());
 
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
@@ -847,7 +847,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	///
 	/// May generate a SendShutdown message event on success, which should be relayed.
 	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let (mut failed_htlcs, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -907,7 +907,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -1255,7 +1255,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -1423,7 +1423,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// May panic if the funding_txo is duplicative with some other channel (note that this should
 	/// be trivially prevented by using unique funding transaction keys per-channel).
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
@@ -1506,7 +1506,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	///
 	/// Panics if addresses is absurdly large (more than 500).
 	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<NetAddress>) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		if addresses.len() > 500 {
 			panic!("More than half the message size was taken up by public addresses!");
@@ -1536,7 +1536,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
@@ -1789,7 +1789,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	///
 	/// This method handles all the details, and must be called roughly once per minute.
 	pub fn timer_chan_freshness_every_min(&self) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		for (_, chan) in channel_state.by_id.iter_mut() {
@@ -1814,7 +1814,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// Returns false if no payment was found to fail backwards, true if the process of failing the
 	/// HTLC backwards has been started.
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>) -> bool {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(*payment_hash, *payment_secret));
@@ -1993,7 +1993,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, payment_secret: &Option<PaymentSecret>, expected_amount: u64) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, *payment_secret));
@@ -2178,7 +2178,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	///  4) once all remote copies are updated, you call this function with the update_id that
 	///     completed, and once it is the latest the Channel will be re-enabled.
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut close_results = Vec::new();
 		let mut htlc_forwards = Vec::new();
@@ -2922,7 +2922,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// (C-not exported) Cause its doc(hidden) anyway
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let counterparty_node_id;
 		let err: Result<(), _> = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -3062,7 +3062,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		let header_hash = header.block_hash();
 		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		{
@@ -3175,7 +3175,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// If necessary, the channel may be force-closed without letting the counterparty participate
 	/// in the shutdown.
 	pub fn block_disconnected(&self, header: &BlockHeader) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -3216,87 +3216,87 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
         L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_open_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
 	fn handle_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_accept_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_funding_created(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_funding_locked(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_closing_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_fulfill_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_fail_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_commitment_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_revoke_and_ack(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 		let mut failed_channels = Vec::new();
 		let mut failed_payments = Vec::new();
 		let mut no_channels_remain = true;
@@ -3387,7 +3387,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	fn peer_connected(&self, counterparty_node_id: &PublicKey, init_msg: &msgs::Init) {
 		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
 
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		{
 			let mut peer_state_lock = self.per_peer_state.write().unwrap();
@@ -3427,7 +3427,7 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 	}
 
 	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
-		let _ = self.total_consistency_lock.read().unwrap();
+		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
@@ -3659,7 +3659,7 @@ impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref
         L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		let _ = self.total_consistency_lock.write().unwrap();
+		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
