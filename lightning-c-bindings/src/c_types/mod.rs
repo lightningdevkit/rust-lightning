@@ -174,24 +174,6 @@ impl u8slice {
 }
 
 #[repr(C)]
-pub struct usizeslice {
-	pub data: *const usize,
-	pub datalen: usize
-}
-impl usizeslice {
-	pub(crate) fn from_slice(s: &[usize]) -> Self {
-		Self {
-			data: s.as_ptr(),
-			datalen: s.len(),
-		}
-	}
-	pub(crate) fn to_slice(&self) -> &[usize] {
-		if self.datalen == 0 { return &[]; }
-		unsafe { std::slice::from_raw_parts(self.data, self.datalen) }
-	}
-}
-
-#[repr(C)]
 #[derive(Copy, Clone)]
 /// Arbitrary 32 bytes, which could represent one of a few different things. You probably want to
 /// look up the corresponding function in rust-lightning's docs.
