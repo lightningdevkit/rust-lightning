@@ -80,32 +80,27 @@ impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref> ChainMonit
 	/// [`ChannelMonitor::block_connected`] for details. Any HTLCs that were resolved on chain will
 	/// be returned by [`chain::Watch::release_pending_monitor_events`].
 	///
-	/// Calls back to [`chain::Filter`] if any monitor indicated new outputs to watch, returning
-	/// `true` if so. Subsequent calls must not exclude any transactions matching the new outputs
-	/// nor any in-block descendants of such transactions. It is not necessary to re-fetch the block
-	/// to obtain updated `txdata`.
+	/// Calls back to [`chain::Filter`] if any monitor indicated new outputs to watch. Subsequent
+	/// calls must not exclude any transactions matching the new outputs nor any in-block
+	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
+	/// updated `txdata`.
 	///
 	/// [`ChannelMonitor::block_connected`]: ../channelmonitor/struct.ChannelMonitor.html#method.block_connected
 	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
 	/// [`chain::Filter`]: ../trait.Filter.html
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> bool {
-		let mut has_new_outputs_to_watch = false;
-		{
-			let mut monitors = self.monitors.lock().unwrap();
-			for monitor in monitors.values_mut() {
-				let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-				has_new_outputs_to_watch |= !txn_outputs.is_empty();
+	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		let mut monitors = self.monitors.lock().unwrap();
+		for monitor in monitors.values_mut() {
+			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
-				if let Some(ref chain_source) = self.chain_source {
-					for (txid, outputs) in txn_outputs.drain(..) {
-						for (idx, output) in outputs.iter().enumerate() {
-							chain_source.register_output(&OutPoint { txid, index: idx as u16 }, &output.script_pubkey);
-						}
+			if let Some(ref chain_source) = self.chain_source {
+				for (txid, outputs) in txn_outputs.drain(..) {
+					for (idx, output) in outputs.iter().enumerate() {
+						chain_source.register_output(&OutPoint { txid, index: idx as u16 }, &output.script_pubkey);
 					}
 				}
 			}
 		}
-		has_new_outputs_to_watch
 	}
 
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view

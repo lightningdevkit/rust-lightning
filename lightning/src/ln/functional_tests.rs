@@ -4852,8 +4852,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
-	assert_eq!(spend_txn[0], spend_txn[1]);
+	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
 
@@ -4885,10 +4884,9 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 3);
-	assert_eq!(spend_txn[0], spend_txn[1]); // to_remote output on revoked remote commitment_tx
-	check_spends!(spend_txn[0], revoked_local_txn[0]);
-	check_spends!(spend_txn[2], node_txn[0]);
+	assert_eq!(spend_txn.len(), 2);
+	check_spends!(spend_txn[0], revoked_local_txn[0]); // to_remote output on revoked remote commitment_tx
+	check_spends!(spend_txn[1], node_txn[0]);
 }
 
 #[test]
@@ -4983,8 +4981,8 @@ fn test_static_spendable_outputs_timeout_tx() {
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote (*2), timeout_tx.output (*1)
-	check_spends!(spend_txn[2], node_txn[0].clone());
+	assert_eq!(spend_txn.len(), 2); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
+	check_spends!(spend_txn[1], node_txn[0]);
 }
 
 #[test]
@@ -5159,12 +5157,11 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 3); // Duplicated SpendableOutput due to block rescan after revoked htlc output tracking
-	assert_eq!(spend_txn[0], spend_txn[1]);
+	assert_eq!(spend_txn.len(), 2);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
 	assert_ne!(spend_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
-	check_spends!(spend_txn[2], node_txn[1]); // spending justice tx output on the htlc success tx
+	check_spends!(spend_txn[1], node_txn[1]); // spending justice tx output on the htlc success tx
 }
 
 #[test]
@@ -5228,7 +5225,7 @@ fn test_onchain_to_onchain_claim() {
 		assert_eq!(b_txn[2].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		assert!(b_txn[2].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
 		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
-		check_spends!(b_txn[0], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor, * 2 due to block rescan
+		check_spends!(b_txn[0], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
 		assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
@@ -5726,10 +5723,9 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 3);
-	assert_eq!(spend_txn[0], spend_txn[1]);
+	assert_eq!(spend_txn.len(), 2);
 	check_spends!(spend_txn[0], local_txn[0]);
-	check_spends!(spend_txn[2], htlc_timeout);
+	check_spends!(spend_txn[1], htlc_timeout);
 }
 
 #[test]
@@ -5797,10 +5793,9 @@ fn test_key_derivation_params() {
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 3);
-	assert_eq!(spend_txn[0], spend_txn[1]);
+	assert_eq!(spend_txn.len(), 2);
 	check_spends!(spend_txn[0], local_txn_1[0]);
-	check_spends!(spend_txn[2], htlc_timeout);
+	check_spends!(spend_txn[1], htlc_timeout);
 }
 
 #[test]

@@ -81,7 +81,7 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, he
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-	while node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height) {}
+	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
 }
 
