@@ -5,11 +5,13 @@ members = [
     "lightning-net-tokio",
 ]
 
-# Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it
-[profile.test]
-opt-level = 1
-
+# Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it.
+# Ideally we would only do this in profile.test, but profile.test only applies to
+# the test binary, not dependencies, which means most of the critical code still
+# gets compiled as -O0. See
+# https://doc.rust-lang.org/cargo/reference/profiles.html#profile-selection
 [profile.dev]
+opt-level = 1
 panic = "abort"
 
 [profile.release]
