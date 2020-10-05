@@ -746,7 +746,7 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 	/// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 	/// returned block hash and the the current chain and then reconnecting blocks to get to the
 	/// best chain) upon deserializing the object!
-	pub fn write_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+	pub fn serialize_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
 		//serialization framework we have, we should migrate things over to it.
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
@@ -2141,10 +2141,10 @@ pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 	/// stored channel data). Note that you **must** persist every new monitor to
 	/// disk. See the `Persist` trait documentation for more details.
 	///
-	/// See [`ChannelMonitor::write_for_disk`] for writing out a `ChannelMonitor`,
+	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
 	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
 	///
-	/// [`ChannelMonitor::write_for_disk`]: struct.ChannelMonitor.html#method.write_for_disk
+	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
 	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
 	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<Keys>) -> Result<(), ChannelMonitorUpdateErr>;
 
@@ -2167,12 +2167,12 @@ pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 	/// them in batches. The size of each monitor grows `O(number of state updates)`
 	/// whereas updates are small and `O(1)`.
 	///
-	/// See [`ChannelMonitor::write_for_disk`] for writing out a `ChannelMonitor`,
+	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
 	/// [`ChannelMonitorUpdate::write`] for writing out an update, and
 	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
 	///
 	/// [`ChannelMonitor::update_monitor`]: struct.ChannelMonitor.html#impl-1
-	/// [`ChannelMonitor::write_for_disk`]: struct.ChannelMonitor.html#method.write_for_disk
+	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
 	/// [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
 	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
 	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<Keys>) -> Result<(), ChannelMonitorUpdateErr>;

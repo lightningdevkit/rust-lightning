@@ -26,7 +26,7 @@ impl Writer for VecWriter {
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data)) {
 		let mut w = VecWriter(Vec::new());
-		monitor.write_for_disk(&mut w).unwrap();
+		monitor.serialize_for_disk(&mut w).unwrap();
 		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0)).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);

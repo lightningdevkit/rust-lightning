@@ -111,7 +111,7 @@ impl chain::Watch for TestChainMonitor {
 
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
-		monitor.write_for_disk(&mut ser).unwrap();
+		monitor.serialize_for_disk(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
 			panic!("Already had monitor pre-watch_channel");
 		}
@@ -130,7 +130,7 @@ impl chain::Watch for TestChainMonitor {
 			read(&mut Cursor::new(&map_entry.get().1)).unwrap().1;
 		deserialized_monitor.update_monitor(&update, &&TestBroadcaster {}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
-		deserialized_monitor.write_for_disk(&mut ser).unwrap();
+		deserialized_monitor.serialize_for_disk(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
 		self.update_ret.lock().unwrap().clone()
