@@ -8497,3 +8497,50 @@ fn test_concurrent_monitor_claim() {
 		check_spends!(htlc_txn[1], bob_state_y);
 	}
 }
+
+#[test]
+fn test_htlc_no_detection() {
+	// This test is a mutation to underscore the detection logic bug we had
+        // before #653. HTLC value routed is above the remaining balance, thus
+        // inverting HTLC and `to_remote` output. HTLC will come second and
+        // it wouldn't be seen by pre-#653 detection as we were enumerate()'ing
+        // on a watched outputs vector (Vec<TxOut>) thus implicitly relying on
+        // outputs order detection for correct spending children filtring.
+
+        let chanmon_cfgs = create_chanmon_cfgs(2);
+        let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+        let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+        let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+        // Create some initial channels
+        let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+        send_payment(&nodes[0], &vec!(&nodes[1])[..], 1_000_000, 1_000_000);
+        let (_, our_payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 2_000_000);
+        let local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
+        assert_eq!(local_txn[0].input.len(), 1);
+        assert_eq!(local_txn[0].output.len(), 3);
+        check_spends!(local_txn[0], chan_1.3);
+
+        // Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
+        let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+        connect_block(&nodes[0], &Block { header, txdata: vec![local_txn[0].clone()] }, 200);
+	// We deliberately connect the local tx twice as this should provoke a failure calling
+	// this test before #653 fix.
+        connect_block(&nodes[0], &Block { header, txdata: vec![local_txn[0].clone()] }, 200);
+        check_closed_broadcast!(nodes[0], false);
+        check_added_monitors!(nodes[0], 1);
+
+        let htlc_timeout = {
+                let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+                assert_eq!(node_txn[0].input.len(), 1);
+                assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+                check_spends!(node_txn[0], local_txn[0]);
+                node_txn[0].clone()
+        };
+
+        let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+        connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, 201);
+        connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, 201, true, header_201.block_hash());
+        expect_payment_failed!(nodes[0], our_payment_hash, true);
+}
