@@ -23,6 +23,7 @@ pub fn hex_to_uint256(hex: &str) -> Option<Uint256> {
 
 #[cfg(feature = "rpc-client")]
 pub fn hex_to_vec(hex: &str) -> Option<Vec<u8>> {
+	if hex.len() % 2 != 0 { return None; }
 	let mut out = Vec::with_capacity(hex.len() / 2);
 
 	let mut b = 0;
