@@ -306,8 +306,8 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 	};
 	let mut packet = msgs::DecodedOnionErrorPacket {
 		hmac: [0; 32],
-		failuremsg: failuremsg,
-		pad: pad,
+		failuremsg,
+		pad,
 	};
 
 	let mut hmac = HmacEngine::<Sha256>::new(&um);

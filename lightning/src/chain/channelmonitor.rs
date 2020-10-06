@@ -981,7 +981,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 			counterparty_tx_cache,
 			funding_redeemscript,
-			channel_value_satoshis: channel_value_satoshis,
+			channel_value_satoshis,
 			their_cur_revocation_points: None,
 
 			on_holder_tx_csv,
@@ -1129,7 +1129,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			delayed_payment_key: commitment_tx.keys.broadcaster_delayed_payment_key,
 			per_commitment_point: commitment_tx.keys.per_commitment_point,
 			feerate_per_kw: commitment_tx.feerate_per_kw,
-			htlc_outputs: htlc_outputs,
+			htlc_outputs,
 		};
 		self.onchain_tx_handler.provide_latest_holder_tx(commitment_tx);
 		self.current_holder_commitment_number = 0xffff_ffff_ffff - ((((sequence & 0xffffff) << 3*8) | (locktime as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);

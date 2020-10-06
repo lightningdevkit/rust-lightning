@@ -323,7 +323,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			pending_outbound_buffer_first_msg_offset: 0,
 			awaiting_write_event: false,
 
-			pending_read_buffer: pending_read_buffer,
+			pending_read_buffer,
 			pending_read_buffer_pos: 0,
 			pending_read_is_header: false,
 
@@ -360,7 +360,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			pending_outbound_buffer_first_msg_offset: 0,
 			awaiting_write_event: false,
 
-			pending_read_buffer: pending_read_buffer,
+			pending_read_buffer,
 			pending_read_buffer_pos: 0,
 			pending_read_is_header: false,
 

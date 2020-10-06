@@ -487,14 +487,14 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		Ok(Channel {
-			user_id: user_id,
+			user_id,
 			config: config.channel_options.clone(),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
 			channel_outbound: true,
 			secp_ctx: Secp256k1::new(),
-			channel_value_satoshis: channel_value_satoshis,
+			channel_value_satoshis,
 
 			latest_monitor_update_id: 0,
 
@@ -715,7 +715,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		} else { None };
 
 		let chan = Channel {
-			user_id: user_id,
+			user_id,
 			config: local_config,
 
 			channel_id: msg.temporary_channel_id,
@@ -766,7 +766,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
-			holder_dust_limit_satoshis: holder_dust_limit_satoshis,
+			holder_dust_limit_satoshis,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			counterparty_selected_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -1579,7 +1579,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
-			signature: signature
+			signature
 		}, channel_monitor))
 	}
 
@@ -2135,8 +2135,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		Ok((msgs::RevokeAndACK {
 			channel_id: self.channel_id,
-			per_commitment_secret: per_commitment_secret,
-			next_per_commitment_point: next_per_commitment_point,
+			per_commitment_secret,
+			next_per_commitment_point,
 		}, commitment_signed, closing_signed, monitor_update))
 	}
 
@@ -2240,7 +2240,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				update_fulfill_htlcs,
 				update_fail_htlcs,
 				update_fail_malformed_htlcs: Vec::new(),
-				update_fee: update_fee,
+				update_fee,
 				commitment_signed,
 			}, monitor_update)), htlcs_to_fail))
 		} else {
@@ -2497,7 +2497,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		Some(msgs::UpdateFee {
 			channel_id: self.channel_id,
-			feerate_per_kw: feerate_per_kw,
+			feerate_per_kw,
 		})
 	}
 
@@ -2623,7 +2623,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
+				next_per_commitment_point,
 			})
 		} else { None };
 
@@ -2798,7 +2798,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
+				next_per_commitment_point,
 			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
 		}
 
@@ -2828,7 +2828,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
-				next_per_commitment_point: next_per_commitment_point,
+				next_per_commitment_point,
 			})
 		} else { None };
 
@@ -3443,7 +3443,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 							let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 							return Ok((Some(msgs::FundingLocked {
 								channel_id: self.channel_id,
-								next_per_commitment_point: next_per_commitment_point,
+								next_per_commitment_point,
 							}), timed_out_htlcs));
 						} else {
 							self.monitor_pending_funding_locked = true;
@@ -3492,7 +3492,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let keys = self.holder_keys.pubkeys();
 
 		msgs::OpenChannel {
-			chain_hash: chain_hash,
+			chain_hash,
 			temporary_channel_id: self.channel_id,
 			funding_satoshis: self.channel_value_satoshis,
 			push_msat: self.channel_value_satoshis * 1000 - self.value_to_self_msat,
@@ -3597,7 +3597,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			temporary_channel_id,
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
-			signature: signature
+			signature
 		})
 	}
 
@@ -3624,7 +3624,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let msg = msgs::UnsignedChannelAnnouncement {
 			features: ChannelFeatures::known(),
-			chain_hash: chain_hash,
+			chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { node_id } else { self.get_counterparty_node_id() },
 			node_id_2: if were_node_one { self.get_counterparty_node_id() } else { node_id },

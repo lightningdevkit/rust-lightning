@@ -1126,7 +1126,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					routing: PendingHTLCRouting::Forward {
 						onion_packet: outgoing_packet,
-						short_channel_id: short_channel_id,
+						short_channel_id,
 					},
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
@@ -1221,7 +1221,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
-			short_channel_id: short_channel_id,
+			short_channel_id,
 			timestamp: chan.get_update_time_counter(),
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
@@ -1447,7 +1447,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		let mut channel_state = self.channel_state.lock().unwrap();
 		channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 			node_id: chan.get_counterparty_node_id(),
-			msg: msg,
+			msg,
 		});
 		match channel_state.by_id.entry(chan.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
@@ -1745,14 +1745,14 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 										}
 									} else if total_value == data.total_msat {
 										new_events.push(events::Event::PaymentReceived {
-											payment_hash: payment_hash,
+											payment_hash,
 											payment_secret: Some(data.payment_secret),
 											amt: total_value,
 										});
 									}
 								} else {
 									new_events.push(events::Event::PaymentReceived {
-										payment_hash: payment_hash,
+										payment_hash,
 										payment_secret: None,
 										amt: amt_to_forward,
 									});
@@ -2304,7 +2304,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		pending_events.push(events::Event::FundingGenerationReady {
 			temporary_channel_id: msg.temporary_channel_id,
 			channel_value_satoshis: value,
-			output_script: output_script,
+			output_script,
 			user_channel_id: user_id,
 		});
 		Ok(())
@@ -2384,7 +2384,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::FundingBroadcastSafe {
-			funding_txo: funding_txo,
+			funding_txo,
 			user_channel_id: user_id,
 		});
 		Ok(())

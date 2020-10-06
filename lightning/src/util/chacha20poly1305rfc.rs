@@ -51,8 +51,8 @@ mod real_chachapoly {
 			ChaCha20Poly1305RFC::pad_mac_16(&mut mac, aad.len());
 
 			ChaCha20Poly1305RFC {
-				cipher: cipher,
-				mac: mac,
+				cipher,
+				mac,
 				finished: false,
 				data_len: 0,
 				aad_len: aad.len() as u64,
