@@ -94,8 +94,8 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
-		Ok(self.inner.sign_holder_commitment_phase2(commitment_number, feerate_per_kw, to_holder_value_sat, to_counterparty_value_sat, htlcs, secp_ctx).unwrap())
+	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, pre_keys: &PreCalculatedTxCreationKeys, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		Ok(self.inner.sign_holder_commitment_phase2(commitment_number, feerate_per_kw, to_holder_value_sat, to_counterparty_value_sat, htlcs, pre_keys, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]

@@ -253,6 +253,7 @@ pub trait ChannelKeys : Send+Clone {
 		to_holder_value_sat: u64,
 		to_counterparty_value_sat: u64,
 		htlcs: &Vec<HTLCOutputInCommitment>,
+		pre_keys: &PreCalculatedTxCreationKeys,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<(Signature, Vec<Signature>), ()>;
 
@@ -489,8 +490,9 @@ impl InMemoryChannelKeys {
 		to_holder_value_sat: u64,
 		to_counterparty_value_sat: u64,
 		htlcs: &Vec<HTLCOutputInCommitment>,
+		keys: &TxCreationKeys,
 		secp_ctx: &Secp256k1<T>,
-	) -> Result<(bitcoin::Transaction, Vec<HTLCOutputInCommitment>, TxCreationKeys, Vec<Script>), ()> {
+	) -> Result<(bitcoin::Transaction, Vec<HTLCOutputInCommitment>, Vec<Script>), ()> {
 		let counterparty_points = self.counterparty_pubkeys();
 
 		let to_holder_delayed_pubkey = derive_public_key(
@@ -504,8 +506,6 @@ impl InMemoryChannelKeys {
 			&per_commitment_point,
 			&counterparty_points.revocation_basepoint,
 		).map_err(|_| ())?;
-
-		let keys = TxCreationKeys::make_tx_keys(per_commitment_point, self.pubkeys(), self.counterparty_pubkeys(), secp_ctx).unwrap();
 
 		let info = CommitmentInfo {
 			is_counterparty_broadcaster: false,
@@ -526,7 +526,7 @@ impl InMemoryChannelKeys {
 			obscured_commitment_transaction_number,
 			self.funding_outpoint().into_bitcoin_outpoint(),
 		);
-		Ok((tx, htlcs, keys, scripts))
+		Ok((tx, htlcs, scripts))
 	}
 
 	fn get_commitment_transaction_number_obscure_factor(&self) -> u64 {
@@ -589,14 +589,16 @@ impl ChannelKeys for InMemoryChannelKeys {
 		Ok(holder_commitment_tx.get_holder_sig(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment_phase2<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_number: u64, feerate_per_kw: u32, to_holder_value_sat: u64, to_counterparty_value_sat: u64, htlcs: &Vec<HTLCOutputInCommitment>, pre_keys: &PreCalculatedTxCreationKeys, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		let per_commitment_point = self.get_per_commitment_point(commitment_number, secp_ctx);
-		let (tx, htlcs, keys, _) = self.build_holder_commitment_tx(
+		let keys = pre_keys.trust_key_derivation();
+		let (tx, htlcs, _) = self.build_holder_commitment_tx(
 			commitment_number,
 			&per_commitment_point,
 			to_holder_value_sat,
 			to_counterparty_value_sat,
 			htlcs,
+			keys,
 			secp_ctx,
 		)?;
 
@@ -619,7 +621,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 			dummy_sig,
 			&self.pubkeys().funding_pubkey,
 			&self.counterparty_pubkeys().funding_pubkey,
-			keys,
+			keys.clone(),
 			feerate_per_kw,
 			htlcs_with_sig,
 		);
