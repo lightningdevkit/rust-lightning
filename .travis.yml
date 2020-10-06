@@ -22,6 +22,10 @@ script:
      - if [ "$BUILD_NET_TOKIO" == "1" ]; then RUSTFLAGS="-C link-dead-code" cargo build --verbose; fi
      - if [ "$BUILD_NET_TOKIO" != "1" ]; then RUSTFLAGS="-C link-dead-code" cargo build --verbose -p lightning; fi
      - rm -f target/debug/lightning-* # Make sure we drop old test binaries
+     # Run clippy on Rust 1.39.0
+     - if [ "$(rustup show | grep default | grep 1.39.0)" != "" ]; then
+           rustup component add clippy &&
+           cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else; fi
      # Test the appropriate workspace(s)
      - if [ "$BUILD_NET_TOKIO" == "1" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose; fi
      - if [ "$BUILD_NET_TOKIO" != "1" ]; then RUSTFLAGS="-C link-dead-code" cargo test --verbose -p lightning; fi

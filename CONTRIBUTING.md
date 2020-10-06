@@ -77,6 +77,18 @@ Coding Conventions
 Use tabs. If you want to align lines, use spaces. Any desired alignment should
 display fine at any tab-length display setting.
 
+Our CI enforces [clippy's](https://github.com/rust-lang/rust-clippy) default linting
+[settings](https://rust-lang.github.io/rust-clippy/rust-1.39.0/index.html).
+This includes all lint groups except for nursery, pedantic, and cargo in addition to allowing the following lints:
+`erasing_op`, `never_loop`, `if_same_then_else`.
+
+If you use rustup, feel free to lint locally, otherwise you can just push to CI for automated linting.
+
+```bash
+rustup component add clippy
+cargo clippy
+```
+
 Security
 --------
 
