@@ -377,7 +377,7 @@ impl GetHeaderResponse {
 		};
 
 		Ok(BlockHeaderData {
-			chainwork: hex_to_uint256(&self.chainwork).ok_or(BlockSourceRespErr::BogusData)?,
+			chainwork: hex_to_uint256(&self.chainwork).or(Err(BlockSourceRespErr::BogusData))?,
 			height: self.height,
 			header,
 		})
