@@ -1,40 +1,39 @@
-use serde_json;
-
-use serde_derive::Deserialize;
-
 use crate::utils::hex_to_uint256;
 use crate::{BlockHeaderData, BlockSource, BlockSourceRespErr};
 
-use bitcoin::hashes::hex::{ToHex, FromHex};
-use bitcoin::hash_types::{BlockHash, TxMerkleNode};
-
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
+use bitcoin::hash_types::{BlockHash, TxMerkleNode};
+use bitcoin::hashes::hex::{ToHex, FromHex};
 
-use std::convert::TryInto;
+use serde_derive::Deserialize;
+
+use serde_json;
+
 use std::cmp;
+use std::convert::TryInto;
 use std::future::Future;
-use std::pin::Pin;
-use std::net::ToSocketAddrs;
 use std::io::Write;
+use std::net::ToSocketAddrs;
+use std::pin::Pin;
 use std::time::Duration;
 
+#[cfg(feature = "rpc-client")]
+use base64;
 #[cfg(feature = "rpc-client")]
 use crate::utils::hex_to_vec;
 #[cfg(feature = "rpc-client")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "rpc-client")]
-use base64;
 
-#[cfg(feature = "tokio")]
-use tokio::net::TcpStream;
 #[cfg(feature = "tokio")]
 use tokio::io::AsyncReadExt;
+#[cfg(feature = "tokio")]
+use tokio::net::TcpStream;
 
 #[cfg(not(feature = "tokio"))]
-use std::net::TcpStream;
-#[cfg(not(feature = "tokio"))]
 use std::io::Read;
+#[cfg(not(feature = "tokio"))]
+use std::net::TcpStream;
 
 /// Splits an HTTP URI into its component parts - (is_ssl, hostname, port number, and HTTP path)
 fn split_uri<'a>(uri: &'a str) -> Option<(bool, &'a str, u16, &'a str)> {

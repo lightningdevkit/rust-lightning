@@ -11,10 +11,15 @@
 //! feature `tokio`, tokio::net::TcpStream inside a Tokio runtime.
 
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
-mod utils;
+pub mod http_clients;
 
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
-pub mod http_clients;
+mod utils;
+
+use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::hex::ToHex;
+use bitcoin::util::uint::Uint256;
 
 use lightning::chain;
 use lightning::chain::{chaininterface, keysinterface};
@@ -22,16 +27,10 @@ use lightning::chain::channelmonitor::ChannelMonitor;
 use lightning::ln::channelmanager::SimpleArcChannelManager;
 use lightning::util::logger;
 
-use bitcoin::hashes::hex::ToHex;
-
-use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::util::uint::Uint256;
-use bitcoin::hash_types::BlockHash;
-
 use std::future::Future;
-use std::vec::Vec;
-use std::pin::Pin;
 use std::ops::DerefMut;
+use std::pin::Pin;
+use std::vec::Vec;
 
 #[derive(Clone, Debug, PartialEq)]
 /// A block header and some associated data. This information should be available from most block
