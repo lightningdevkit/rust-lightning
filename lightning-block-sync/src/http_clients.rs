@@ -21,8 +21,6 @@ use std::time::Duration;
 #[cfg(feature = "rpc-client")]
 use base64;
 #[cfg(feature = "rpc-client")]
-use crate::utils::hex_to_vec;
-#[cfg(feature = "rpc-client")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "tokio")]
@@ -412,7 +410,7 @@ impl BlockSource for RPCClient {
 		let param = "\"".to_string() + &header_hash.to_hex() + "\"";
 		Box::pin(async move {
 			let blockhex = self.make_rpc_call("getblock", &[&param, "0"]).await.map_err(|_| BlockSourceRespErr::NoResponse)?;
-			let blockdata = hex_to_vec(blockhex.as_str().ok_or(BlockSourceRespErr::NoResponse)?).ok_or(BlockSourceRespErr::NoResponse)?;
+			let blockdata = Vec::<u8>::from_hex(blockhex.as_str().ok_or(BlockSourceRespErr::NoResponse)?).or(Err(BlockSourceRespErr::NoResponse))?;
 			let block: Block = encode::deserialize(&blockdata).map_err(|_| BlockSourceRespErr::NoResponse)?;
 			Ok(block)
 		})
