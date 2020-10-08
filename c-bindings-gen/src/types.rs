@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
+use std::hash;
 
 use proc_macro2::{TokenTree, Span};
 
@@ -225,6 +226,13 @@ pub enum DeclType<'a> {
 	EnumIgnored,
 }
 
+// templates_defined is walked to write the C++ header, so if we use the default hashing it get
+// reordered on each genbindings run. Instead, we use SipHasher (which defaults to 0-keys) so that
+// the sorting is stable across runs. It is deprecated, but the "replacement" doesn't actually
+// accomplish the same goals, so we just ignore it.
+#[allow(deprecated)]
+type NonRandomHash = hash::BuildHasherDefault<hash::SipHasher>;
+
 /// Top-level struct tracking everything which has been defined while walking the crate.
 pub struct CrateTypes<'a> {
 	/// This may contain structs or enums, but only when either is mapped as
@@ -240,7 +248,7 @@ pub struct CrateTypes<'a> {
 	/// exists.
 	///
 	/// This is used at the end of processing to make C++ wrapper classes
-	pub templates_defined: HashMap<String, bool>,
+	pub templates_defined: HashMap<String, bool, NonRandomHash>,
 	/// The output file for any created template container types, written to as we find new
 	/// template containers which need to be defined.
 	pub template_file: &'a mut File,

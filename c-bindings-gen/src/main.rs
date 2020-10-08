@@ -1350,7 +1350,7 @@ fn main() {
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		type_aliases: HashMap::new(), templates_defined: HashMap::new(), template_file: &mut derived_templates };
+		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates };
 	walk_ast(&args[1], "/lib.rs", "".to_string(), &libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.
