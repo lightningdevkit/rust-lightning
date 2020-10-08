@@ -550,9 +550,7 @@ int main() {
 	LDKSecretKey sk;
 	memset(&sk, 42, 32);
 	LDKC2Tuple_u64u64Z kdiv_params;
-	kdiv_params.a = (uint64_t*) malloc(8);
-	kdiv_params.b = (uint64_t*) malloc(8);
-	*kdiv_params.a = 42;
-	*kdiv_params.b = 42;
+	kdiv_params.a = 42;
+	kdiv_params.b = 42;
 	LDK::InMemoryChannelKeys keys = InMemoryChannelKeys_new(sk, sk, sk, sk, sk, random_bytes, 42, kdiv_params);
 }
