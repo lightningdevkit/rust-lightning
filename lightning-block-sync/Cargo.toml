@@ -9,8 +9,8 @@ Utilities to fetch the chain from Bitcoin Core REST/RPC Interfaces and feed them
 """
 
 [features]
-rest-client = [ "serde", "serde_json", "serde_derive" ]
-rpc-client = [ "serde", "serde_json", "serde_derive", "base64" ]
+rest-client = [ "serde", "serde_json", "serde_derive", "http" ]
+rpc-client = [ "serde", "serde_json", "serde_derive", "base64", "http" ]
 
 [dependencies]
 bitcoin = "0.24"
@@ -20,6 +20,7 @@ serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 serde_derive = { version = "1", optional = true }
 base64 = { version = "0.9", optional = true }
+http = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { version = ">=0.2.12", features = [ "macros", "rt-core" ] }

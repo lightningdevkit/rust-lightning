@@ -6,6 +6,8 @@ use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::hex::{ToHex, FromHex};
 
+use http::uri::{Scheme, Uri};
+
 use serde_derive::Deserialize;
 
 use serde_json;
@@ -34,47 +36,28 @@ use std::io::Read;
 use std::net::TcpStream;
 
 /// Splits an HTTP URI into its component parts - (is_ssl, hostname, port number, and HTTP path)
-fn split_uri<'a>(uri: &'a str) -> Option<(bool, &'a str, u16, &'a str)> {
-	let mut uri_iter = uri.splitn(2, ":");
-	let ssl = match uri_iter.next() {
-		Some("http") => false,
-		Some("https") => true,
-		_ => return None,
-	};
-	let mut host_path = match uri_iter.next() {
-		Some(r) => r,
+fn split_uri<'a>(uri: &'a Uri) -> Option<(bool, &'a str, u16, &'a str)> {
+	let is_ssl = match uri.scheme() {
 		None => return None,
-	};
-	host_path = host_path.trim_start_matches("/");
-	let mut host_path_iter = host_path.splitn(2, "/");
-	let (host_port_len, host, port) = match host_path_iter.next() {
-		Some(r) if !r.is_empty() => {
-			let is_v6_explicit = r.starts_with("[");
-			let mut iter = if is_v6_explicit {
-				r[1..].splitn(2, "]")
-			} else {
-				r.splitn(2, ":")
-			};
-			(r.len(), match iter.next() {
-				Some(host) => host,
-				None => return None,
-			}, match iter.next() {
-				Some(port) if !is_v6_explicit || !port.is_empty() => match if is_v6_explicit {
-					if port.as_bytes()[0] != ':' as u8 { return None; }
-					&port[1..]
-				} else { port }
-				.parse::<u16>() {
-					Ok(p) => p,
-					Err(_) => return None,
-				},
-				_ => if ssl { 443 } else { 80 },
-			})
+		Some(scheme) => {
+			if scheme == &Scheme::HTTP { false }
+			else if scheme == &Scheme::HTTPS { true }
+			else { return None; }
 		},
-		_ => return None,
 	};
-	let path = &host_path[host_port_len..];
-
-	Some((ssl, host, port, path))
+	let host = match uri.host() {
+		None => return None,
+		Some(host) => host,
+	};
+	let port = match uri.port_u16() {
+		None => if is_ssl { 443 } else { 80 },
+		Some(port) => port,
+	};
+	let path_and_query = match uri.path_and_query() {
+		None => return None,
+		Some(path_and_query) => path_and_query.as_str(),
+	};
+	Some((is_ssl, host, port, path_and_query))
 }
 
 async fn read_http_resp(mut socket: TcpStream, max_resp: usize) -> Option<Vec<u8>> {
@@ -222,15 +205,18 @@ async fn read_http_resp(mut socket: TcpStream, max_resp: usize) -> Option<Vec<u8
 
 #[cfg(feature = "rest-client")]
 pub struct RESTClient {
-	uri: String,
+	uri: Uri,
 }
 
 #[cfg(feature = "rest-client")]
 impl RESTClient {
 	pub fn new(uri: String) -> Option<Self> {
-		match split_uri(&uri) {
-			Some((ssl, _host, _port, _path)) if !ssl => Some(Self { uri }),
-			_ => None,
+		match uri.parse::<Uri>() {
+			Err(_) => None,
+			Ok(uri) => match split_uri(&uri) {
+				Some((ssl, _host, _port, _path)) if !ssl => Some(Self { uri }),
+				_ => None,
+			},
 		}
 	}
 
@@ -248,7 +234,8 @@ impl RESTClient {
 		stream.set_write_timeout(Some(Duration::from_secs(1))).expect("Host kernel is uselessly old?");
 		stream.set_read_timeout(Some(Duration::from_secs(2))).expect("Host kernel is uselessly old?");
 
-		let req = format!("GET {}/{} HTTP/1.1\nHost: {}\nConnection: keep-alive\n\n", path, req_path, host);
+		let uri = format!("{}/{}", path.trim_end_matches("/"), req_path);
+		let req = format!("GET {} HTTP/1.1\nHost: {}\nConnection: keep-alive\n\n", uri, host);
 		match stream.write(req.as_bytes()) {
 			Ok(len) if len == req.len() => {},
 			_ => return Err(()),
@@ -277,22 +264,25 @@ impl RESTClient {
 #[cfg(feature = "rpc-client")]
 pub struct RPCClient {
 	basic_auth: String,
-	uri: String,
+	uri: Uri,
 	id: AtomicUsize,
 }
 
 #[cfg(feature = "rpc-client")]
 impl RPCClient {
 	pub fn new(user_auth: &str, uri: String) -> Option<Self> {
-		match split_uri(&uri) {
-			Some((ssl, _host, _port, _path)) if !ssl => {
-				Some(Self {
-					basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
-					uri,
-					id: AtomicUsize::new(0),
-				})
+		match uri.parse::<Uri>() {
+			Err(_) => None,
+			Ok(uri) => match split_uri(&uri) {
+				Some((ssl, _host, _port, _path)) if !ssl => {
+					Some(Self {
+						basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
+						uri,
+						id: AtomicUsize::new(0),
+					})
+				},
+				_ => None,
 			},
-			_ => None,
 		}
 	}
 
@@ -475,13 +465,11 @@ impl BlockSource for RESTClient {
 #[cfg(test)]
 #[test]
 fn test_split_uri() {
-	assert_eq!(split_uri("http://example.com:8080/path"), Some((false, "example.com", 8080, "/path")));
-	assert_eq!(split_uri("http:example.com:8080/path/b"), Some((false, "example.com", 8080, "/path/b")));
-	assert_eq!(split_uri("https://0.0.0.0/"), Some((true, "0.0.0.0", 443, "/")));
-	assert_eq!(split_uri("http:[0:bad::43]:80/"), Some((false, "0:bad::43", 80, "/")));
-	assert_eq!(split_uri("http:[::]"), Some((false, "::", 80, "")));
-	assert_eq!(split_uri("http://"), None);
-	assert_eq!(split_uri("http://example.com:70000/"), None);
-	assert_eq!(split_uri("ftp://example.com:80/"), None);
-	assert_eq!(split_uri("http://example.com"), Some((false, "example.com", 80, "")));
+	assert_eq!(split_uri(&Uri::default()), None);
+	assert_eq!(split_uri(&"http://example.com:8080/path".parse::<Uri>().unwrap()), Some((false, "example.com", 8080, "/path")));
+	assert_eq!(split_uri(&"https://0.0.0.0/".parse::<Uri>().unwrap()), Some((true, "0.0.0.0", 443, "/")));
+	assert_eq!(split_uri(&"http://[::]".parse::<Uri>().unwrap()), Some((false, "[::]", 80, "/")));
+	assert_eq!(split_uri(&"http://example.com:70000/".parse::<Uri>().unwrap()), Some((false, "example.com", 80, "/")));
+	assert_eq!(split_uri(&"ftp://example.com:80/".parse::<Uri>().unwrap()), None);
+	assert_eq!(split_uri(&"http://example.com".parse::<Uri>().unwrap()), Some((false, "example.com", 80, "/")));
 }
