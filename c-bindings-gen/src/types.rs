@@ -257,6 +257,17 @@ pub struct TypeResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	pub crate_types: &'mod_lifetime mut CrateTypes<'crate_lft>,
 }
 
+/// Returned by write_empty_rust_val_check_suffix to indicate what type of dereferencing needs to
+/// happen to get the inner value of a generic.
+enum EmptyValExpectedTy {
+	/// A type which has a flag for being empty (eg an array where we treat all-0s as empty).
+	NonPointer,
+	/// A pointer that we want to dereference and move out of.
+	OwnedPointer,
+	/// A pointer which we want to convert to a reference.
+	ReferenceAsPointer,
+}
+
 impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn new(orig_crate: &'a str, module_path: &'a str, crate_types: &'a mut CrateTypes<'c>) -> Self {
 		let mut imports = HashMap::new();
@@ -757,20 +768,21 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					let (needs_deref, ret_ref) = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
+					let ret_ref = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
-					if needs_deref && ret_ref {
-						return Some(("if ", vec![
-							(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ &mut *{} }}", var_access))
-						], ") }"));
-					} else if needs_deref {
-						return Some(("if ", vec![
-							(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ *Box::from_raw({}) }}", var_access))
-						], ") }"));
-					} else {
-						return Some(("if ", vec![
-							(format!("{} {{ None }} else {{ Some(", s), format!("{}", var_access))
-						], ") }"));
+					match ret_ref {
+						EmptyValExpectedTy::ReferenceAsPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ &mut *{} }}", var_access))
+							], ") }")),
+						EmptyValExpectedTy::OwnedPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ *Box::from_raw({}) }}", var_access))
+							], ") }")),
+						EmptyValExpectedTy::NonPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("{}", var_access))
+							], ") }")),
 					}
 				} else { unreachable!(); }
 			},
@@ -1054,23 +1066,23 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 
-	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val),
-	/// returning whether we need to dereference the inner value before using it (ie it is a
-	/// pointer).
-	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> (bool, bool) {
+	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val).
+	/// See EmptyValExpectedTy for information on return types.
+	fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> EmptyValExpectedTy {
 		match t {
 			syn::Type::Path(p) => {
 				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, ".inner.is_null()").unwrap();
-					(false, false)
+					EmptyValExpectedTy::NonPointer
 				} else {
 					if let Some(suffix) = self.empty_val_check_suffix_from_path(&resolved) {
 						write!(w, "{}", suffix).unwrap();
-						(false, false) // We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
+						// We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
+						EmptyValExpectedTy::NonPointer
 					} else {
 						write!(w, " == std::ptr::null_mut()").unwrap();
-						(true, false)
+						EmptyValExpectedTy::OwnedPointer
 					}
 				}
 			},
@@ -1078,7 +1090,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if let syn::Expr::Lit(l) = &a.len {
 					if let syn::Lit::Int(i) = &l.lit {
 						write!(w, " == [0; {}]", i.base10_digits()).unwrap();
-						(false, false)
+						EmptyValExpectedTy::NonPointer
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			},
@@ -1086,7 +1098,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				// Option<[]> always implies that we want to treat len() == 0 differently from
 				// None, so we always map an Option<[]> into a pointer.
 				write!(w, " == std::ptr::null_mut()").unwrap();
-				(true, true)
+				EmptyValExpectedTy::ReferenceAsPointer
 			},
 			_ => unimplemented!(),
 		}
