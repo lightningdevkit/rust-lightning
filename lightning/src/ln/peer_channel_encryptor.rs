@@ -95,14 +95,14 @@ impl PeerChannelEncryptor {
 
 		PeerChannelEncryptor {
 			their_node_id: Some(their_node_id),
-			secp_ctx: secp_ctx,
+			secp_ctx,
 			noise_state: NoiseState::InProgress {
 				state: NoiseStep::PreActOne,
 				directional_state: DirectionalNoiseState::Outbound {
 					ie: ephemeral_key,
 				},
 				bidirectional_state: BidirectionalNoiseState {
-					h: h,
+					h,
 					ck: NOISE_CK,
 				},
 			}
@@ -120,7 +120,7 @@ impl PeerChannelEncryptor {
 
 		PeerChannelEncryptor {
 			their_node_id: None,
-			secp_ctx: secp_ctx,
+			secp_ctx,
 			noise_state: NoiseState::InProgress {
 				state: NoiseStep::PreActOne,
 				directional_state: DirectionalNoiseState::Inbound {
@@ -129,7 +129,7 @@ impl PeerChannelEncryptor {
 					temp_k2: None,
 				},
 				bidirectional_state: BidirectionalNoiseState {
-					h: h,
+					h,
 					ck: NOISE_CK,
 				},
 			}
@@ -321,10 +321,10 @@ impl PeerChannelEncryptor {
 
 		let (sk, rk) = final_hkdf;
 		self.noise_state = NoiseState::Finished {
-			sk: sk,
+			sk,
 			sn: 0,
 			sck: ck.clone(),
-			rk: rk,
+			rk,
 			rn: 0,
 			rck: ck,
 		};
@@ -374,10 +374,10 @@ impl PeerChannelEncryptor {
 
 		let (rk, sk) = final_hkdf;
 		self.noise_state = NoiseState::Finished {
-			sk: sk,
+			sk,
 			sn: 0,
 			sck: ck.clone(),
-			rk: rk,
+			rk,
 			rn: 0,
 			rck: ck,
 		};

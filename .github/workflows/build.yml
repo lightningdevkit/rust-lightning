@@ -184,3 +184,23 @@ jobs:
             [ "$(diff lightning-c-bindings/include/lightningpp.hpp.sorted lightning-c-bindings/include/lightningpp.hpp.new.sorted)" != "" ] && exit 3
             git diff --exit-code
           fi
+
+  linting:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: 1.39.0
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          override: true
+          profile: minimal
+      - name: Install clippy
+        run: |
+          rustup component add clippy
+      - name: Run default clippy linting
+        run: |
+          cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else
