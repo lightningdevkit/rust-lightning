@@ -1697,11 +1697,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				assert!(self.write_c_type_intern(w, gen, None, false, false, false));
 			}
 			writeln!(w, ") -> {} {{", mangled_container).unwrap();
-			writeln!(w, "\t{} {{", mangled_container).unwrap();
+			write!(w, "\t{} {{ ", mangled_container).unwrap();
 			for idx in 0..args.len() {
-				writeln!(w, "\t\t{}: Box::into_raw(Box::new({})),", ('a' as u8 + idx as u8) as char, ('a' as u8 + idx as u8) as char).unwrap();
+				write!(w, "{}, ", ('a' as u8 + idx as u8) as char).unwrap();
 			}
-			writeln!(w, "\t}}\n}}\n").unwrap();
+			writeln!(w, "}}\n}}\n").unwrap();
 		} else {
 			writeln!(w, "").unwrap();
 		}

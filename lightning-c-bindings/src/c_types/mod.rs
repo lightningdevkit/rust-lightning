@@ -326,83 +326,53 @@ impl<T: Clone> Clone for CVecTempl<T> {
 
 #[repr(C)]
 pub struct C2TupleTempl<A, B> {
-	pub a: *mut A,
-	pub b: *mut B,
+	pub a: A,
+	pub b: B,
 }
 impl<A, B> From<(A, B)> for C2TupleTempl<A, B> {
 	fn from(tup: (A, B)) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(tup.0)),
-			b: Box::into_raw(Box::new(tup.1)),
+			a: tup.0,
+			b: tup.1,
 		}
 	}
 }
 impl<A, B> C2TupleTempl<A, B> {
 	pub(crate) fn to_rust(mut self) -> (A, B) {
-		let res = (unsafe { *Box::from_raw(self.a) }, unsafe { *Box::from_raw(self.b) });
-		self.a = std::ptr::null_mut();
-		self.b = std::ptr::null_mut();
-		res
+		(self.a, self.b)
 	}
 }
 pub extern "C" fn C2TupleTempl_free<A, B>(_res: C2TupleTempl<A, B>) { }
-impl<A, B> Drop for C2TupleTempl<A, B> {
-	fn drop(&mut self) {
-		if !self.a.is_null() {
-			unsafe { Box::from_raw(self.a) };
-		}
-		if !self.b.is_null() {
-			unsafe { Box::from_raw(self.b) };
-		}
-	}
-}
 impl <A: Clone, B: Clone> Clone for C2TupleTempl<A, B> {
 	fn clone(&self) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(unsafe { &*self.a }.clone())),
-			b: Box::into_raw(Box::new(unsafe { &*self.b }.clone()))
+			a: self.a.clone(),
+			b: self.b.clone()
 		}
 	}
 }
 
 #[repr(C)]
 pub struct C3TupleTempl<A, B, C> {
-	pub a: *mut A,
-	pub b: *mut B,
-	pub c: *mut C,
+	pub a: A,
+	pub b: B,
+	pub c: C,
 }
 impl<A, B, C> From<(A, B, C)> for C3TupleTempl<A, B, C> {
 	fn from(tup: (A, B, C)) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(tup.0)),
-			b: Box::into_raw(Box::new(tup.1)),
-			c: Box::into_raw(Box::new(tup.2)),
+			a: tup.0,
+			b: tup.1,
+			c: tup.2,
 		}
 	}
 }
 impl<A, B, C> C3TupleTempl<A, B, C> {
 	pub(crate) fn to_rust(mut self) -> (A, B, C) {
-		let res = (unsafe { *Box::from_raw(self.a) }, unsafe { *Box::from_raw(self.b) }, unsafe { *Box::from_raw(self.c) });
-		self.a = std::ptr::null_mut();
-		self.b = std::ptr::null_mut();
-		self.c = std::ptr::null_mut();
-		res
+		(self.a, self.b, self.c)
 	}
 }
 pub extern "C" fn C3TupleTempl_free<A, B, C>(_res: C3TupleTempl<A, B, C>) { }
-impl<A, B, C> Drop for C3TupleTempl<A, B, C> {
-	fn drop(&mut self) {
-		if !self.a.is_null() {
-			unsafe { Box::from_raw(self.a) };
-		}
-		if !self.b.is_null() {
-			unsafe { Box::from_raw(self.b) };
-		}
-		if !self.c.is_null() {
-			unsafe { Box::from_raw(self.c) };
-		}
-	}
-}
 
 /// Utility to make it easy to set a pointer to null and get its original value in line.
 pub(crate) trait TakePointer<T> {
