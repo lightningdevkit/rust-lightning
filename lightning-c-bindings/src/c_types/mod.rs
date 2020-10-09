@@ -100,7 +100,8 @@ impl Secp256k1Error {
 /// set. Similarly, while it may change in the future, all `Transaction`s you pass to Rust may have
 /// `data_is_owned` either set or unset at your discretion.
 pub struct Transaction {
-	pub data: *const u8,
+	/// This is non-const for your convenience, an object passed to Rust is never written to.
+	pub data: *mut u8,
 	pub datalen: usize,
 	pub data_is_owned: bool,
 }
