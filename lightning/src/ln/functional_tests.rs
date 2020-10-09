@@ -7157,60 +7157,6 @@ fn test_failure_delay_dust_htlc_local_commitment() {
 	do_test_failure_delay_dust_htlc_local_commitment(false);
 }
 
-#[test]
-fn test_no_failure_dust_htlc_local_commitment() {
-	// Transaction filters for failing back dust htlc based on local commitment txn infos has been
-	// prone to error, we test here that a dummy transaction don't fail them.
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-
-	// Rebalance a bit
-	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
-
-	let as_dust_limit = nodes[0].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
-
-	// We route 2 dust-HTLCs between A and B
-	let (preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (preimage_2, _) = route_payment(&nodes[1], &[&nodes[0]], as_dust_limit*1000);
-
-	// Build a dummy invalid transaction trying to spend a commitment tx
-	let input = TxIn {
-		previous_output: BitcoinOutPoint { txid: chan.3.txid(), vout: 0 },
-		script_sig: Script::new(),
-		sequence: 0,
-		witness: Vec::new(),
-	};
-
-	let outp = TxOut {
-		script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-		value: 10000,
-	};
-
-	let dummy_tx = Transaction {
-		version: 2,
-		lock_time: 0,
-		input: vec![input],
-		output: vec![outp]
-	};
-
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	nodes[0].chain_monitor.chain_monitor.block_connected(&header, &[(0, &dummy_tx)], 1);
-	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
-	// We broadcast a few more block to check everything is all right
-	connect_blocks(&nodes[0], 20, 1, true, header.block_hash());
-	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 0);
-
-	claim_payment(&nodes[0], &vec!(&nodes[1])[..], preimage_1, bs_dust_limit*1000);
-	claim_payment(&nodes[1], &vec!(&nodes[0])[..], preimage_2, as_dust_limit*1000);
-}
-
 fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	// Outbound HTLC-failure updates must be cancelled if we get a reorg before we reach ANTI_REORG_DELAY.
 	// Broadcast of revoked remote commitment tx, trigger failure-update of dust/non-dust HTLCs

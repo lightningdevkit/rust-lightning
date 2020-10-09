@@ -1772,6 +1772,20 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			let idx_and_scripts = txouts.iter().map(|o| (o.0, o.1.script_pubkey.clone())).collect();
 			self.outputs_to_watch.insert(txid.clone(), idx_and_scripts).is_none()
 		});
+		#[cfg(test)]
+		{
+		        // If we see a transaction for which we registered outputs previously,
+			// make sure the registered scriptpubkey at the expected index match
+			// the actual transaction output one. We failed this case before #653.
+			for tx in &txn_matched {
+				if let Some(outputs) = self.get_outputs_to_watch().get(&tx.txid()) {
+					for idx_and_script in outputs.iter() {
+						assert!((idx_and_script.0 as usize) < tx.output.len());
+						assert_eq!(tx.output[idx_and_script.0 as usize].script_pubkey, idx_and_script.1);
+					}
+				}
+			}
+		}
 		watch_outputs
 	}
 
@@ -1821,6 +1835,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			if let Some(outputs) = self.get_outputs_to_watch().get(&input.previous_output.txid) {
 				for (idx, _script_pubkey) in outputs.iter() {
 					if *idx == input.previous_output.vout {
+						#[cfg(test)]
+						{
+						        // If the expected script is a known type, check that the witness
+						        // appears to be spending the correct type (ie that the match would
+						        // actually succeed in BIP 158/159-style filters).
+						        if _script_pubkey.is_v0_p2wsh() {
+						                assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().clone()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+						        } else if _script_pubkey.is_v0_p2wpkh() {
+						                assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
+						        } else { panic!(); }
+						}
 						return true;
 					}
 				}
