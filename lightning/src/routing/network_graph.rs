@@ -518,13 +518,13 @@ impl Readable for NetworkGraph {
 
 impl fmt::Display for NetworkGraph {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		write!(f, "Network map\n[Channels]\n")?;
+		writeln!(f, "Network map\n[Channels]")?;
 		for (key, val) in self.channels.iter() {
-			write!(f, " {}: {}\n", key, val)?;
+			writeln!(f, " {}: {}", key, val)?;
 		}
-		write!(f, "[Nodes]\n")?;
+		writeln!(f, "[Nodes]")?;
 		for (key, val) in self.nodes.iter() {
-			write!(f, " {}: {}\n", log_pubkey!(key), val)?;
+			writeln!(f, " {}: {}", log_pubkey!(key), val)?;
 		}
 		Ok(())
 	}
