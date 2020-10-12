@@ -450,6 +450,10 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 									writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", struct_name).unwrap();
 									writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", struct_name).unwrap();
 									writeln!(w, "}}").unwrap();
+									writeln!(w, "#[no_mangle]").unwrap();
+									writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
+									writeln!(w, "\t{} {{ inner: Box::into_raw(Box::new(unsafe {{ &*orig.inner }}.clone())), is_owned: true }}", struct_name).unwrap();
+									writeln!(w, "}}").unwrap();
 									break 'attr_loop;
 								}
 							}
