@@ -31,7 +31,8 @@ use util::byte_utils;
 
 use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
 
-const MAX_BUF_SIZE: usize = 64 * 1024;
+/// serialization buffer size
+pub const MAX_BUF_SIZE: usize = 64 * 1024;
 
 /// A trait that is similar to std::io::Write but has one extra function which can be used to size
 /// buffers being written into.

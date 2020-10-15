@@ -32,13 +32,12 @@ use util::ser::{Writeable, ReadableArgs, Readable};
 use util::config::UserConfig;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hashes::HashEngine;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::util::bip143;
 use bitcoin::util::address::Address;
 use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType, OutPoint as BitcoinOutPoint};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
@@ -59,7 +58,7 @@ use std::sync::atomic::Ordering;
 use std::mem;
 
 use ln::functional_test_utils::*;
-use ln::chan_utils::PreCalculatedTxCreationKeys;
+use ln::chan_utils::CommitmentTransaction;
 
 #[test]
 fn test_insane_channel_opens() {
@@ -1617,20 +1616,20 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Get the EnforcingChannelKeys for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint, local_payment_point, local_secret, local_secret2) = {
+	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, local_secret2) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = local_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
-		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
+		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_payment_point, remote_secret1) = {
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_secret1) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = remote_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
-		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint, pubkeys.payment_point,
+		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
 		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
 	};
 
@@ -1643,70 +1642,31 @@ fn test_fee_spike_violation_fails_htlc() {
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
 	let local_chan_balance = 1313;
-	let static_payment_pk = local_payment_point.serialize();
-	let remote_commit_tx_output = TxOut {
-				script_pubkey: Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-				                             .push_slice(&WPubkeyHash::hash(&static_payment_pk)[..])
-				                             .into_script(),
-		value: local_chan_balance as u64
-	};
-
-	let local_commit_tx_output = TxOut {
-		script_pubkey: chan_utils::get_revokeable_redeemscript(&commit_tx_keys.revocation_key,
-				                                               BREAKDOWN_TIMEOUT,
-				                                               &commit_tx_keys.broadcaster_delayed_payment_key).to_v0_p2wsh(),
-				value: 95000,
-	};
 
 	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
 		offered: false,
 		amount_msat: 3460001,
 		cltv_expiry: htlc_cltv,
-		payment_hash: payment_hash,
+		payment_hash,
 		transaction_output_index: Some(1),
 	};
 
-	let htlc_output = TxOut {
-		script_pubkey: chan_utils::get_htlc_redeemscript(&accepted_htlc_info, &commit_tx_keys).to_v0_p2wsh(),
-		value: 3460001 / 1000
-	};
+	let commitment_number = INITIAL_COMMITMENT_NUMBER - 1;
 
-	let commit_tx_obscure_factor = {
-		let mut sha = Sha256::engine();
-		let remote_payment_point = &remote_payment_point.serialize();
-		sha.input(&local_payment_point.serialize());
-		sha.input(remote_payment_point);
-		let res = Sha256::from_engine(sha).into_inner();
-
-		((res[26] as u64) << 5*8) |
-		((res[27] as u64) << 4*8) |
-		((res[28] as u64) << 3*8) |
-		((res[29] as u64) << 2*8) |
-		((res[30] as u64) << 1*8) |
-		((res[31] as u64) << 0*8)
-	};
-	let commitment_number = 1;
-	let obscured_commitment_transaction_number = commit_tx_obscure_factor ^ commitment_number;
-	let lock_time = ((0x20 as u32) << 8*3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32);
-	let input = TxIn {
-		previous_output: BitcoinOutPoint { txid: chan.3.txid(), vout: 0 },
-		script_sig: Script::new(),
-		sequence: ((0x80 as u32) << 8*3) | ((obscured_commitment_transaction_number >> 3*8) as u32),
-		witness: Vec::new(),
-	};
-
-	let commit_tx = Transaction {
-		version: 2,
-		lock_time,
-		input: vec![input],
-		output: vec![remote_commit_tx_output, htlc_output, local_commit_tx_output],
-	};
 	let res = {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
 		let local_chan_keys = local_chan.get_keys();
-		let pre_commit_tx_keys = PreCalculatedTxCreationKeys::new(commit_tx_keys);
-		local_chan_keys.sign_counterparty_commitment(feerate_per_kw, &commit_tx, &pre_commit_tx_keys, &[&accepted_htlc_info], &secp_ctx).unwrap()
+		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+			commitment_number,
+			95000,
+			local_chan_balance,
+			commit_tx_keys.clone(),
+			feerate_per_kw,
+			&mut vec![(accepted_htlc_info, ())],
+			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
+		);
+		local_chan_keys.sign_counterparty_commitment(&commitment_tx, &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
