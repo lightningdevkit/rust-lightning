@@ -94,6 +94,7 @@ pub struct TestChanMonCfg {
 	pub tx_broadcaster: test_utils::TestBroadcaster,
 	pub fee_estimator: test_utils::TestFeeEstimator,
 	pub chain_source: test_utils::TestChainSource,
+	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 }
 
@@ -169,7 +170,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let old_monitors = self.chain_monitor.chain_monitor.monitors.lock().unwrap();
 				for (_, old_monitor) in old_monitors.iter() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
-					old_monitor.write_for_disk(&mut w).unwrap();
+					old_monitor.serialize_for_disk(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
 						&mut ::std::io::Cursor::new(&w.0)).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
@@ -191,14 +192,20 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
 					chain_monitor: self.chain_monitor,
-					tx_broadcaster: self.tx_broadcaster.clone(),
+					tx_broadcaster: &test_utils::TestBroadcaster {
+						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone())
+					},
 					logger: &test_utils::TestLogger::new(),
 					channel_monitors,
 				}).unwrap();
 			}
 
+			let persister = test_utils::TestPersister::new();
+			let broadcaster = test_utils::TestBroadcaster {
+				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone())
+			};
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), self.tx_broadcaster.clone(), &self.logger, &feeest);
+			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
 				if let Err(_) = chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) {
 					panic!();
@@ -247,6 +254,8 @@ macro_rules! get_revoke_commit_msgs {
 	}
 }
 
+/// Get an specific event message from the pending events queue.
+#[macro_export]
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {
 		{
@@ -263,6 +272,7 @@ macro_rules! get_event_msg {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		{
@@ -279,6 +289,7 @@ macro_rules! get_htlc_update_msgs {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_feerate {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -289,6 +300,7 @@ macro_rules! get_feerate {
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
@@ -305,6 +317,8 @@ macro_rules! get_local_commitment_txn {
 	}
 }
 
+/// Check the error from attempting a payment.
+#[macro_export]
 macro_rules! unwrap_send_err {
 	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
 		match &$res {
@@ -327,6 +341,8 @@ macro_rules! unwrap_send_err {
 	}
 }
 
+/// Check whether N channel monitor(s) have been added.
+#[macro_export]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
 		{
@@ -553,6 +569,9 @@ macro_rules! get_closing_signed_broadcast {
 	}
 }
 
+/// Check that a channel's closing channel update has been broadcasted, and optionally
+/// check whether an error message event has occurred.
+#[macro_export]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
@@ -750,6 +769,8 @@ macro_rules! commitment_signed_dance {
 	}
 }
 
+/// Get a payment preimage and hash.
+#[macro_export]
 macro_rules! get_payment_preimage_hash {
 	($node: expr) => {
 		{
@@ -779,6 +800,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
+#[cfg(test)]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -807,6 +829,7 @@ macro_rules! expect_payment_sent {
 	}
 }
 
+#[cfg(test)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
@@ -1105,7 +1128,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger });
+		let persister = test_utils::TestPersister::new();
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister });
 	}
 
 	chan_mon_cfgs
@@ -1117,7 +1141,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	for i in 0..node_count {
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator);
+		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister);
 		nodes.push(NodeCfg { chain_source: &chanmon_cfgs[i].chain_source, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chain_monitor, keys_manager, node_seed: seed });
 	}
 
@@ -1131,7 +1155,7 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 		default_config.channel_options.announced_channel = true;
 		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 		default_config.own_channel_config.our_htlc_minimum_msat = 1000; // sanitization being done by the sender, to exerce receiver logic we need to lift of limit
-		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger.clone(), &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0);
+		let node = ChannelManager::new(Network::Testnet, cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger, &cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, 0);
 		chanmgrs.push(node);
 	}
 
@@ -1284,6 +1308,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	}
 }
 
+#[cfg(test)]
 macro_rules! get_channel_value_stat {
 	($node: expr, $channel_id: expr) => {{
 		let chan_lock = $node.node.channel_state.lock().unwrap();

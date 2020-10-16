@@ -12,6 +12,7 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 
 [features]
 fuzztarget = ["bitcoin/fuzztarget"]
+_test_utils = ["hex", "regex"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -24,6 +25,9 @@ unsafe_revoked_tx_signing = []
 
 [dependencies]
 bitcoin = "0.24"
+
+hex = { version = "0.3", optional = true }
+regex = { version = "0.1.80", optional = true }
 
 [dev-dependencies.bitcoin]
 version = "0.24"

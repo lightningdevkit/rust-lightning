@@ -40,6 +40,7 @@ use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 
 use utils::test_logger;
+use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::Secp256k1;
@@ -145,13 +146,13 @@ impl<'a> std::hash::Hash for Peer<'a> {
 
 type ChannelMan = ChannelManager<
 	EnforcingChannelKeys,
-	Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
 type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
-	monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
@@ -165,7 +166,7 @@ struct MoneyLossDetector<'a> {
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
 	           manager: Arc<ChannelMan>,
-	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>>>,
+	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
 			manager,
@@ -333,7 +334,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 
 	let broadcast = Arc::new(TestBroadcaster{});
-	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone()));
+	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(), Arc::new(TestPersister{})));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();

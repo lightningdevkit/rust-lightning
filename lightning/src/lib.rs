@@ -18,7 +18,7 @@
 //! generated/etc. This makes it a good candidate for tight integration into an existing wallet
 //! instead of having a rather-separate lightning appendage to a wallet.
 
-#![cfg_attr(not(feature = "fuzztarget"), deny(missing_docs))]
+#![cfg_attr(not(any(feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
 #![forbid(unsafe_code)]
 
 // In general, rust is absolutely horrid at supporting users doing things like,
@@ -28,8 +28,8 @@
 #![allow(ellipsis_inclusive_range_patterns)]
 
 extern crate bitcoin;
-#[cfg(test)] extern crate hex;
-#[cfg(test)] extern crate regex;
+#[cfg(any(test, feature = "_test_utils"))] extern crate hex;
+#[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
 #[macro_use]
 pub mod util;
