@@ -1555,22 +1555,16 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let counterparty_pubkeys = self.counterparty_pubkeys.as_ref().unwrap();
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		macro_rules! create_monitor {
-			() => { {
-				let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
-				                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
-				                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
-				                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
-				                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
-				                                              self.get_commitment_transaction_number_obscure_factor(),
-				                                              initial_commitment_tx.clone());
+		let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
+		                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
+		                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
+		                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
+		                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                              self.get_commitment_transaction_number_obscure_factor(),
 
-				channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
-				channel_monitor
-			} }
-		}
+		                                              initial_commitment_tx.clone());
 
-		let channel_monitor = create_monitor!();
+		channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
 		self.channel_state = ChannelState::FundingSent as u32;
 		self.channel_id = funding_txo.to_channel_id();
@@ -1618,24 +1612,17 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo = self.funding_txo.as_ref().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
-		macro_rules! create_monitor {
-			() => { {
-				let commitment_tx = HolderCommitmentTransaction::new_missing_holder_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, holder_keys.clone(), self.feerate_per_kw, Vec::new());
-				let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
-				                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
-				                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
-				                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
-				                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
-				                                              self.get_commitment_transaction_number_obscure_factor(),
-				                                              commitment_tx);
+		let commitment_tx = HolderCommitmentTransaction::new_missing_holder_sig(initial_commitment_tx.clone(), msg.signature.clone(), &self.holder_keys.pubkeys().funding_pubkey, counterparty_funding_pubkey, holder_keys.clone(), self.feerate_per_kw, Vec::new());
+		let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
+		                                              &self.shutdown_pubkey, self.holder_selected_contest_delay,
+		                                              &self.destination_script, (funding_txo.clone(), funding_txo_script.clone()),
+		                                              &counterparty_pubkeys.htlc_basepoint, &counterparty_pubkeys.delayed_payment_basepoint,
+		                                              self.counterparty_selected_contest_delay, funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                              self.get_commitment_transaction_number_obscure_factor(),
 
-				channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
+		                                              commitment_tx);
 
-				channel_monitor
-			} }
-		}
-
-		let channel_monitor = create_monitor!();
+		channel_monitor.provide_latest_counterparty_commitment_tx_info(&counterparty_initial_commitment_tx, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
 		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateFailed as u32), 0); // We have no had any monitor(s) yet to fail update!
 		self.channel_state = ChannelState::FundingSent as u32;
