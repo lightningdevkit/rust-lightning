@@ -1,3 +1,4 @@
+use crate::http_endpoint::HttpEndpoint;
 use crate::utils::hex_to_uint256;
 use crate::{BlockHeaderData, BlockSource, BlockSourceRespErr};
 
@@ -5,8 +6,6 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::hex::{ToHex, FromHex};
-
-use http::uri::{Scheme, Uri};
 
 use serde_derive::Deserialize;
 
@@ -34,31 +33,6 @@ use tokio::net::TcpStream;
 use std::io::Read;
 #[cfg(not(feature = "tokio"))]
 use std::net::TcpStream;
-
-/// Splits an HTTP URI into its component parts - (is_ssl, hostname, port number, and HTTP path)
-fn split_uri<'a>(uri: &'a Uri) -> Option<(bool, &'a str, u16, &'a str)> {
-	let is_ssl = match uri.scheme() {
-		None => return None,
-		Some(scheme) => {
-			if scheme == &Scheme::HTTP { false }
-			else if scheme == &Scheme::HTTPS { true }
-			else { return None; }
-		},
-	};
-	let host = match uri.host() {
-		None => return None,
-		Some(host) => host,
-	};
-	let port = match uri.port_u16() {
-		None => if is_ssl { 443 } else { 80 },
-		Some(port) => port,
-	};
-	let path_and_query = match uri.path_and_query() {
-		None => return None,
-		Some(path_and_query) => path_and_query.as_str(),
-	};
-	Some((is_ssl, host, port, path_and_query))
-}
 
 async fn read_http_resp(mut socket: TcpStream, max_resp: usize) -> Option<Vec<u8>> {
 	let mut resp = Vec::new();
@@ -205,26 +179,20 @@ async fn read_http_resp(mut socket: TcpStream, max_resp: usize) -> Option<Vec<u8
 
 #[cfg(feature = "rest-client")]
 pub struct RESTClient {
-	uri: Uri,
+	endpoint: HttpEndpoint,
 }
 
 #[cfg(feature = "rest-client")]
 impl RESTClient {
-	pub fn new(uri: String) -> Option<Self> {
-		match uri.parse::<Uri>() {
+	pub fn new(uri: &str) -> Option<Self> {
+		match HttpEndpoint::new(uri) {
 			Err(_) => None,
-			Ok(uri) => match split_uri(&uri) {
-				Some((ssl, _host, _port, _path)) if !ssl => Some(Self { uri }),
-				_ => None,
-			},
+			Ok(endpoint) => Some(Self { endpoint }),
 		}
 	}
 
 	async fn make_raw_rest_call(&self, req_path: &str) -> Result<Vec<u8>, ()> {
-		let (ssl, host, port, path) = split_uri(&self.uri).unwrap();
-		if ssl { unreachable!(); }
-
-		let mut stream = match std::net::TcpStream::connect_timeout(&match (host, port).to_socket_addrs() {
+		let mut stream = match std::net::TcpStream::connect_timeout(&match (&(self.endpoint)).to_socket_addrs() {
 			Ok(mut sockaddrs) => match sockaddrs.next() { Some(sockaddr) => sockaddr, None => return Err(()) },
 			Err(_) => return Err(()),
 		}, Duration::from_secs(1)) {
@@ -234,8 +202,8 @@ impl RESTClient {
 		stream.set_write_timeout(Some(Duration::from_secs(1))).expect("Host kernel is uselessly old?");
 		stream.set_read_timeout(Some(Duration::from_secs(2))).expect("Host kernel is uselessly old?");
 
-		let uri = format!("{}/{}", path.trim_end_matches("/"), req_path);
-		let req = format!("GET {} HTTP/1.1\nHost: {}\nConnection: keep-alive\n\n", uri, host);
+		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), req_path);
+		let req = format!("GET {} HTTP/1.1\nHost: {}\nConnection: keep-alive\n\n", uri, self.endpoint.host());
 		match stream.write(req.as_bytes()) {
 			Ok(len) if len == req.len() => {},
 			_ => return Err(()),
@@ -264,34 +232,28 @@ impl RESTClient {
 #[cfg(feature = "rpc-client")]
 pub struct RPCClient {
 	basic_auth: String,
-	uri: Uri,
+	endpoint: HttpEndpoint,
 	id: AtomicUsize,
 }
 
 #[cfg(feature = "rpc-client")]
 impl RPCClient {
-	pub fn new(user_auth: &str, uri: String) -> Option<Self> {
-		match uri.parse::<Uri>() {
+	pub fn new(user_auth: &str, uri: &str) -> Option<Self> {
+		match HttpEndpoint::new(uri) {
 			Err(_) => None,
-			Ok(uri) => match split_uri(&uri) {
-				Some((ssl, _host, _port, _path)) if !ssl => {
-					Some(Self {
-						basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
-						uri,
-						id: AtomicUsize::new(0),
-					})
-				},
-				_ => None,
+			Ok(endpoint) => {
+				Some(Self {
+					basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
+					endpoint,
+					id: AtomicUsize::new(0),
+				})
 			},
 		}
 	}
 
 	/// params entries must be pre-quoted if appropriate
 	async fn make_rpc_call(&self, method: &str, params: &[&str]) -> Result<serde_json::Value, ()> {
-		let (ssl, host, port, path) = split_uri(&self.uri).unwrap();
-		if ssl { unreachable!(); }
-
-		let mut stream = match std::net::TcpStream::connect_timeout(&match (host, port).to_socket_addrs() {
+		let mut stream = match std::net::TcpStream::connect_timeout(&match (&(self.endpoint)).to_socket_addrs() {
 			Ok(mut sockaddrs) => match sockaddrs.next() { Some(sockaddr) => sockaddr, None => return Err(()) },
 			Err(_) => return Err(()),
 		}, Duration::from_secs(1)) {
@@ -310,7 +272,7 @@ impl RPCClient {
 		}
 		let req = "{\"method\":\"".to_string() + method + "\",\"params\":[" + &param_str + "],\"id\":" + &self.id.fetch_add(1, Ordering::AcqRel).to_string() + "}";
 
-		let req = format!("POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nConnection: keep-alive\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", path, host, &self.basic_auth, req.len(), req);
+		let req = format!("POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nConnection: keep-alive\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", self.endpoint.path(), self.endpoint.host(), &self.basic_auth, req.len(), req);
 		match stream.write(req.as_bytes()) {
 			Ok(len) if len == req.len() => {},
 			_ => return Err(()),
@@ -460,16 +422,4 @@ impl BlockSource for RESTClient {
 			Ok((BlockHash::from_hex(blockstr).map_err(|_| BlockSourceRespErr::NoResponse)?, Some(height)))
 		})
 	}
-}
-
-#[cfg(test)]
-#[test]
-fn test_split_uri() {
-	assert_eq!(split_uri(&Uri::default()), None);
-	assert_eq!(split_uri(&"http://example.com:8080/path".parse::<Uri>().unwrap()), Some((false, "example.com", 8080, "/path")));
-	assert_eq!(split_uri(&"https://0.0.0.0/".parse::<Uri>().unwrap()), Some((true, "0.0.0.0", 443, "/")));
-	assert_eq!(split_uri(&"http://[::]".parse::<Uri>().unwrap()), Some((false, "[::]", 80, "/")));
-	assert_eq!(split_uri(&"http://example.com:70000/".parse::<Uri>().unwrap()), Some((false, "example.com", 80, "/")));
-	assert_eq!(split_uri(&"ftp://example.com:80/".parse::<Uri>().unwrap()), None);
-	assert_eq!(split_uri(&"http://example.com".parse::<Uri>().unwrap()), Some((false, "example.com", 80, "/")));
 }

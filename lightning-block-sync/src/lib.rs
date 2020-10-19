@@ -14,6 +14,9 @@
 pub mod http_clients;
 
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
+mod http_endpoint;
+
+#[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 mod utils;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
