@@ -995,6 +995,10 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if needs_free {
 		writeln!(w, "#[no_mangle]\npub extern \"C\" fn {}_free(this_ptr: {}) {{ }}", e.ident, e.ident).unwrap();
 	}
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", e.ident, e.ident, e.ident).unwrap();
+	writeln!(w, "\torig.clone()").unwrap();
+	writeln!(w, "}}").unwrap();
 	write_cpp_wrapper(cpp_headers, &format!("{}", e.ident), needs_free);
 }
 
