@@ -320,7 +320,7 @@ impl<T: Clone> Clone for CVecTempl<T> {
 	fn clone(&self) -> Self {
 		let mut res = Vec::new();
 		if self.datalen == 0 { return Self::from(res); }
-		res.clone_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
 		Self::from(res)
 	}
 }
