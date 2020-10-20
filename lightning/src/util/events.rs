@@ -31,7 +31,7 @@ use std::time::Duration;
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
 /// them directly as they don't round-trip exactly (for example FundingGenerationReady is never
 /// written as it makes no sense to respond to it after reconnecting to peers).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
 	/// parameters and then call ChannelManager::funding_transaction_generated.

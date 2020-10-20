@@ -64,6 +64,7 @@ pub enum DecodeError {
 }
 
 /// An init message to be sent or received from a peer
+#[derive(Clone)]
 pub struct Init {
 	#[cfg(not(feature = "fuzztarget"))]
 	pub(crate) features: InitFeatures,
@@ -84,6 +85,7 @@ pub struct ErrorMessage {
 }
 
 /// A ping message to be sent or received from a peer
+#[derive(Clone)]
 pub struct Ping {
 	/// The desired response length
 	pub ponglen: u16,
@@ -93,6 +95,7 @@ pub struct Ping {
 }
 
 /// A pong message to be sent or received from a peer
+#[derive(Clone)]
 pub struct Pong {
 	/// The pong packet size.
 	/// This field is not sent on the wire. byteslen zeros are sent.

@@ -318,6 +318,7 @@ impl_writeable!(TxCreationKeys, 33*6,
 /// in the signer.
 /// The pre-calculated keys are an optimization, because ChannelKeys has enough
 /// information to re-derive them.
+#[derive(PartialEq, Clone)]
 pub struct PreCalculatedTxCreationKeys(TxCreationKeys);
 
 impl PreCalculatedTxCreationKeys {
