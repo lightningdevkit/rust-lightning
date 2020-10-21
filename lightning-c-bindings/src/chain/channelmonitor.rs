@@ -26,7 +26,7 @@ type nativeChannelMonitorUpdate = nativeChannelMonitorUpdateImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelMonitorUpdate {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelMonitorUpdate,
 	pub is_owned: bool,
@@ -209,7 +209,7 @@ type nativeMonitorUpdateError = nativeMonitorUpdateErrorImport;
 #[must_use]
 #[repr(C)]
 pub struct MonitorUpdateError {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeMonitorUpdateError,
 	pub is_owned: bool,
@@ -247,7 +247,7 @@ type nativeMonitorEvent = nativeMonitorEventImport;
 #[must_use]
 #[repr(C)]
 pub struct MonitorEvent {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeMonitorEvent,
 	pub is_owned: bool,
@@ -289,7 +289,7 @@ type nativeHTLCUpdate = nativeHTLCUpdateImport;
 #[must_use]
 #[repr(C)]
 pub struct HTLCUpdate {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeHTLCUpdate,
 	pub is_owned: bool,
@@ -361,7 +361,7 @@ type nativeChannelMonitor = nativeChannelMonitorImport<crate::chain::keysinterfa
 #[must_use]
 #[repr(C)]
 pub struct ChannelMonitor {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelMonitor,
 	pub is_owned: bool,

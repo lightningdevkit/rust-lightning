@@ -56,7 +56,7 @@ type nativeChannelManager = nativeChannelManagerImport<crate::chain::keysinterfa
 #[must_use]
 #[repr(C)]
 pub struct ChannelManager {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelManager,
 	pub is_owned: bool,
@@ -94,7 +94,7 @@ type nativeChannelDetails = nativeChannelDetailsImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelDetails {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelDetails,
 	pub is_owned: bool,
@@ -248,7 +248,7 @@ type nativePaymentSendFailure = nativePaymentSendFailureImport;
 #[must_use]
 #[repr(C)]
 pub struct PaymentSendFailure {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePaymentSendFailure,
 	pub is_owned: bool,
@@ -705,7 +705,7 @@ type nativeChannelManagerReadArgs = nativeChannelManagerReadArgsImport<'static, 
 #[must_use]
 #[repr(C)]
 pub struct ChannelManagerReadArgs {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelManagerReadArgs,
 	pub is_owned: bool,

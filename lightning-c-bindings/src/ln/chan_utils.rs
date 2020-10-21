@@ -90,7 +90,7 @@ type nativeTxCreationKeys = nativeTxCreationKeysImport;
 #[must_use]
 #[repr(C)]
 pub struct TxCreationKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeTxCreationKeys,
 	pub is_owned: bool,
@@ -226,7 +226,7 @@ type nativePreCalculatedTxCreationKeys = nativePreCalculatedTxCreationKeysImport
 #[must_use]
 #[repr(C)]
 pub struct PreCalculatedTxCreationKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePreCalculatedTxCreationKeys,
 	pub is_owned: bool,
@@ -289,7 +289,7 @@ type nativeChannelPublicKeys = nativeChannelPublicKeysImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelPublicKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelPublicKeys,
 	pub is_owned: bool,
@@ -454,7 +454,7 @@ type nativeHTLCOutputInCommitment = nativeHTLCOutputInCommitmentImport;
 #[must_use]
 #[repr(C)]
 pub struct HTLCOutputInCommitment {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeHTLCOutputInCommitment,
 	pub is_owned: bool,
@@ -595,7 +595,7 @@ type nativeHolderCommitmentTransaction = nativeHolderCommitmentTransactionImport
 #[must_use]
 #[repr(C)]
 pub struct HolderCommitmentTransaction {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeHolderCommitmentTransaction,
 	pub is_owned: bool,

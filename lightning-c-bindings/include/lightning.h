@@ -220,8 +220,8 @@ typedef struct LDKTxOut {
 } LDKTxOut;
 
 typedef struct LDKC2TupleTempl_usize__Transaction {
-   uintptr_t *a;
-   LDKTransaction *b;
+   uintptr_t a;
+   LDKTransaction b;
 } LDKC2TupleTempl_usize__Transaction;
 
 typedef LDKC2TupleTempl_usize__Transaction LDKC2Tuple_usizeTransactionZ;
@@ -249,7 +249,7 @@ typedef LDKCResultTempl_u8__ChannelMonitorUpdateErr LDKCResult_NoneChannelMonito
  */
 typedef struct MUST_USE_STRUCT LDKMonitorUpdateError {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeMonitorUpdateError *inner;
@@ -278,7 +278,7 @@ typedef LDKCResultTempl_u8__MonitorUpdateError LDKCResult_NoneMonitorUpdateError
  */
 typedef struct MUST_USE_STRUCT LDKOutPoint {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeOutPoint *inner;
@@ -286,8 +286,8 @@ typedef struct MUST_USE_STRUCT LDKOutPoint {
 } LDKOutPoint;
 
 typedef struct LDKC2TupleTempl_OutPoint__CVec_u8Z {
-   LDKOutPoint *a;
-   LDKCVec_u8Z *b;
+   LDKOutPoint a;
+   LDKCVec_u8Z b;
 } LDKC2TupleTempl_OutPoint__CVec_u8Z;
 
 typedef LDKC2TupleTempl_OutPoint__CVec_u8Z LDKC2Tuple_OutPointScriptZ;
@@ -306,8 +306,8 @@ typedef struct LDKCVecTempl_TxOut {
 } LDKCVecTempl_TxOut;
 
 typedef struct LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut {
-   LDKThirtyTwoBytes *a;
-   LDKCVecTempl_TxOut *b;
+   LDKThirtyTwoBytes a;
+   LDKCVecTempl_TxOut b;
 } LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut;
 
 typedef LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut LDKC2Tuple_TxidCVec_TxOutZZ;
@@ -315,8 +315,8 @@ typedef LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut LDKC2Tuple_TxidCVec_TxOu
 typedef LDKCVecTempl_TxOut LDKCVec_TxOutZ;
 
 typedef struct LDKC2TupleTempl_u64__u64 {
-   uint64_t *a;
-   uint64_t *b;
+   uint64_t a;
+   uint64_t b;
 } LDKC2TupleTempl_u64__u64;
 
 typedef LDKC2TupleTempl_u64__u64 LDKC2Tuple_u64u64Z;
@@ -331,8 +331,8 @@ typedef struct LDKCVecTempl_Signature {
 } LDKCVecTempl_Signature;
 
 typedef struct LDKC2TupleTempl_Signature__CVecTempl_Signature {
-   LDKSignature *a;
-   LDKCVecTempl_Signature *b;
+   LDKSignature a;
+   LDKCVecTempl_Signature b;
 } LDKC2TupleTempl_Signature__CVecTempl_Signature;
 
 typedef LDKC2TupleTempl_Signature__CVecTempl_Signature LDKC2Tuple_SignatureCVec_SignatureZZ;
@@ -470,7 +470,7 @@ typedef LDKCResultTempl_u8__APIError LDKCResult_NoneAPIErrorZ;
  */
 typedef struct MUST_USE_STRUCT LDKPaymentSendFailure {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePaymentSendFailure *inner;
@@ -496,7 +496,7 @@ typedef LDKCResultTempl_u8__PaymentSendFailure LDKCResult_NonePaymentSendFailure
  */
 typedef struct MUST_USE_STRUCT LDKChannelAnnouncement {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelAnnouncement *inner;
@@ -510,7 +510,7 @@ typedef struct MUST_USE_STRUCT LDKChannelAnnouncement {
  */
 typedef struct MUST_USE_STRUCT LDKChannelUpdate {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelUpdate *inner;
@@ -518,9 +518,9 @@ typedef struct MUST_USE_STRUCT LDKChannelUpdate {
 } LDKChannelUpdate;
 
 typedef struct LDKC3TupleTempl_ChannelAnnouncement__ChannelUpdate__ChannelUpdate {
-   LDKChannelAnnouncement *a;
-   LDKChannelUpdate *b;
-   LDKChannelUpdate *c;
+   LDKChannelAnnouncement a;
+   LDKChannelUpdate b;
+   LDKChannelUpdate c;
 } LDKC3TupleTempl_ChannelAnnouncement__ChannelUpdate__ChannelUpdate;
 
 typedef LDKC3TupleTempl_ChannelAnnouncement__ChannelUpdate__ChannelUpdate LDKC3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ;
@@ -536,7 +536,7 @@ typedef LDKC3TupleTempl_ChannelAnnouncement__ChannelUpdate__ChannelUpdate LDKC3T
  */
 typedef struct MUST_USE_STRUCT LDKPeerHandleError {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePeerHandleError *inner;
@@ -562,7 +562,7 @@ typedef LDKCResultTempl_u8__PeerHandleError LDKCResult_NonePeerHandleErrorZ;
  */
 typedef struct MUST_USE_STRUCT LDKHTLCOutputInCommitment {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeHTLCOutputInCommitment *inner;
@@ -570,8 +570,8 @@ typedef struct MUST_USE_STRUCT LDKHTLCOutputInCommitment {
 } LDKHTLCOutputInCommitment;
 
 typedef struct LDKC2TupleTempl_HTLCOutputInCommitment__Signature {
-   LDKHTLCOutputInCommitment *a;
-   LDKSignature *b;
+   LDKHTLCOutputInCommitment a;
+   LDKSignature b;
 } LDKC2TupleTempl_HTLCOutputInCommitment__Signature;
 
 typedef LDKC2TupleTempl_HTLCOutputInCommitment__Signature LDKC2Tuple_HTLCOutputInCommitmentSignatureZ;
@@ -801,7 +801,7 @@ typedef struct LDKEvent {
  */
 typedef struct MUST_USE_STRUCT LDKAcceptChannel {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeAcceptChannel *inner;
@@ -815,7 +815,7 @@ typedef struct MUST_USE_STRUCT LDKAcceptChannel {
  */
 typedef struct MUST_USE_STRUCT LDKOpenChannel {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeOpenChannel *inner;
@@ -829,7 +829,7 @@ typedef struct MUST_USE_STRUCT LDKOpenChannel {
  */
 typedef struct MUST_USE_STRUCT LDKFundingCreated {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeFundingCreated *inner;
@@ -843,7 +843,7 @@ typedef struct MUST_USE_STRUCT LDKFundingCreated {
  */
 typedef struct MUST_USE_STRUCT LDKFundingSigned {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeFundingSigned *inner;
@@ -857,7 +857,7 @@ typedef struct MUST_USE_STRUCT LDKFundingSigned {
  */
 typedef struct MUST_USE_STRUCT LDKFundingLocked {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeFundingLocked *inner;
@@ -871,7 +871,7 @@ typedef struct MUST_USE_STRUCT LDKFundingLocked {
  */
 typedef struct MUST_USE_STRUCT LDKAnnouncementSignatures {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeAnnouncementSignatures *inner;
@@ -886,7 +886,7 @@ typedef struct MUST_USE_STRUCT LDKAnnouncementSignatures {
  */
 typedef struct MUST_USE_STRUCT LDKCommitmentUpdate {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeCommitmentUpdate *inner;
@@ -900,7 +900,7 @@ typedef struct MUST_USE_STRUCT LDKCommitmentUpdate {
  */
 typedef struct MUST_USE_STRUCT LDKRevokeAndACK {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeRevokeAndACK *inner;
@@ -914,7 +914,7 @@ typedef struct MUST_USE_STRUCT LDKRevokeAndACK {
  */
 typedef struct MUST_USE_STRUCT LDKClosingSigned {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeClosingSigned *inner;
@@ -928,7 +928,7 @@ typedef struct MUST_USE_STRUCT LDKClosingSigned {
  */
 typedef struct MUST_USE_STRUCT LDKShutdown {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeShutdown *inner;
@@ -942,7 +942,7 @@ typedef struct MUST_USE_STRUCT LDKShutdown {
  */
 typedef struct MUST_USE_STRUCT LDKChannelReestablish {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelReestablish *inner;
@@ -956,7 +956,7 @@ typedef struct MUST_USE_STRUCT LDKChannelReestablish {
  */
 typedef struct MUST_USE_STRUCT LDKNodeAnnouncement {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNodeAnnouncement *inner;
@@ -970,7 +970,7 @@ typedef struct MUST_USE_STRUCT LDKNodeAnnouncement {
  */
 typedef struct MUST_USE_STRUCT LDKErrorMessage {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeErrorMessage *inner;
@@ -1309,7 +1309,7 @@ typedef struct LDKLogger {
  */
 typedef struct MUST_USE_STRUCT LDKChannelHandshakeConfig {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelHandshakeConfig *inner;
@@ -1333,7 +1333,7 @@ typedef struct MUST_USE_STRUCT LDKChannelHandshakeConfig {
  */
 typedef struct MUST_USE_STRUCT LDKChannelHandshakeLimits {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelHandshakeLimits *inner;
@@ -1348,7 +1348,7 @@ typedef struct MUST_USE_STRUCT LDKChannelHandshakeLimits {
  */
 typedef struct MUST_USE_STRUCT LDKChannelConfig {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelConfig *inner;
@@ -1370,7 +1370,7 @@ typedef struct LDKu8slice {
  */
 typedef struct MUST_USE_STRUCT LDKUserConfig {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUserConfig *inner;
@@ -1413,7 +1413,7 @@ typedef struct LDKAccess {
  */
 typedef struct MUST_USE_STRUCT LDKChannelPublicKeys {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelPublicKeys *inner;
@@ -1430,7 +1430,7 @@ typedef struct MUST_USE_STRUCT LDKChannelPublicKeys {
  */
 typedef struct MUST_USE_STRUCT LDKPreCalculatedTxCreationKeys {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePreCalculatedTxCreationKeys *inner;
@@ -1453,7 +1453,7 @@ typedef LDKCVecTempl_HTLCOutputInCommitment LDKCVec_HTLCOutputInCommitmentZ;
  */
 typedef struct MUST_USE_STRUCT LDKHolderCommitmentTransaction {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeHolderCommitmentTransaction *inner;
@@ -1467,7 +1467,7 @@ typedef struct MUST_USE_STRUCT LDKHolderCommitmentTransaction {
  */
 typedef struct MUST_USE_STRUCT LDKUnsignedChannelAnnouncement {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUnsignedChannelAnnouncement *inner;
@@ -1649,7 +1649,7 @@ typedef struct LDKChannelKeys {
  */
 typedef struct MUST_USE_STRUCT LDKChannelMonitor {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelMonitor *inner;
@@ -1664,7 +1664,7 @@ typedef struct MUST_USE_STRUCT LDKChannelMonitor {
  */
 typedef struct MUST_USE_STRUCT LDKChannelMonitorUpdate {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelMonitorUpdate *inner;
@@ -1678,7 +1678,7 @@ typedef struct MUST_USE_STRUCT LDKChannelMonitorUpdate {
  */
 typedef struct MUST_USE_STRUCT LDKMonitorEvent {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeMonitorEvent *inner;
@@ -1836,7 +1836,7 @@ typedef struct LDKFeeEstimator {
  */
 typedef struct MUST_USE_STRUCT LDKChainMonitor {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChainMonitor *inner;
@@ -1861,7 +1861,7 @@ typedef LDKCVecTempl_C2TupleTempl_usize__Transaction LDKCVec_C2Tuple_usizeTransa
  */
 typedef struct MUST_USE_STRUCT LDKHTLCUpdate {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeHTLCUpdate *inner;
@@ -1924,7 +1924,7 @@ typedef struct LDKKeysInterface {
  */
 typedef struct MUST_USE_STRUCT LDKInMemoryChannelKeys {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeInMemoryChannelKeys *inner;
@@ -1944,7 +1944,7 @@ typedef struct MUST_USE_STRUCT LDKInMemoryChannelKeys {
  */
 typedef struct MUST_USE_STRUCT LDKKeysManager {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeKeysManager *inner;
@@ -1993,7 +1993,7 @@ typedef struct MUST_USE_STRUCT LDKKeysManager {
  */
 typedef struct MUST_USE_STRUCT LDKChannelManager {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelManager *inner;
@@ -2007,7 +2007,7 @@ typedef struct MUST_USE_STRUCT LDKChannelManager {
  */
 typedef struct MUST_USE_STRUCT LDKChannelDetails {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelDetails *inner;
@@ -2021,7 +2021,7 @@ typedef struct MUST_USE_STRUCT LDKChannelDetails {
  */
 typedef struct MUST_USE_STRUCT LDKInitFeatures {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeInitFeatures *inner;
@@ -2043,7 +2043,7 @@ typedef LDKCVecTempl_ChannelDetails LDKCVec_ChannelDetailsZ;
  */
 typedef struct MUST_USE_STRUCT LDKRoute {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeRoute *inner;
@@ -2140,7 +2140,7 @@ typedef LDKCVecTempl_NetAddress LDKCVec_NetAddressZ;
  */
 typedef struct MUST_USE_STRUCT LDKUpdateAddHTLC {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUpdateAddHTLC *inner;
@@ -2154,7 +2154,7 @@ typedef struct MUST_USE_STRUCT LDKUpdateAddHTLC {
  */
 typedef struct MUST_USE_STRUCT LDKUpdateFulfillHTLC {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUpdateFulfillHTLC *inner;
@@ -2168,7 +2168,7 @@ typedef struct MUST_USE_STRUCT LDKUpdateFulfillHTLC {
  */
 typedef struct MUST_USE_STRUCT LDKUpdateFailHTLC {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUpdateFailHTLC *inner;
@@ -2182,7 +2182,7 @@ typedef struct MUST_USE_STRUCT LDKUpdateFailHTLC {
  */
 typedef struct MUST_USE_STRUCT LDKUpdateFailMalformedHTLC {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUpdateFailMalformedHTLC *inner;
@@ -2196,7 +2196,7 @@ typedef struct MUST_USE_STRUCT LDKUpdateFailMalformedHTLC {
  */
 typedef struct MUST_USE_STRUCT LDKCommitmentSigned {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeCommitmentSigned *inner;
@@ -2210,7 +2210,7 @@ typedef struct MUST_USE_STRUCT LDKCommitmentSigned {
  */
 typedef struct MUST_USE_STRUCT LDKUpdateFee {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUpdateFee *inner;
@@ -2224,7 +2224,7 @@ typedef struct MUST_USE_STRUCT LDKUpdateFee {
  */
 typedef struct MUST_USE_STRUCT LDKInit {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeInit *inner;
@@ -2342,7 +2342,7 @@ typedef struct LDKChannelMessageHandler {
  */
 typedef struct MUST_USE_STRUCT LDKChannelManagerReadArgs {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelManagerReadArgs *inner;
@@ -2363,7 +2363,7 @@ typedef LDKCVecTempl_ChannelMonitor LDKCVec_ChannelMonitorZ;
  */
 typedef struct MUST_USE_STRUCT LDKDecodeError {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeDecodeError *inner;
@@ -2377,7 +2377,7 @@ typedef struct MUST_USE_STRUCT LDKDecodeError {
  */
 typedef struct MUST_USE_STRUCT LDKPing {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePing *inner;
@@ -2391,7 +2391,7 @@ typedef struct MUST_USE_STRUCT LDKPing {
  */
 typedef struct MUST_USE_STRUCT LDKPong {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePong *inner;
@@ -2408,7 +2408,7 @@ typedef struct MUST_USE_STRUCT LDKPong {
  */
 typedef struct MUST_USE_STRUCT LDKDataLossProtect {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeDataLossProtect *inner;
@@ -2422,7 +2422,7 @@ typedef struct MUST_USE_STRUCT LDKDataLossProtect {
  */
 typedef struct MUST_USE_STRUCT LDKUnsignedNodeAnnouncement {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUnsignedNodeAnnouncement *inner;
@@ -2436,7 +2436,7 @@ typedef struct MUST_USE_STRUCT LDKUnsignedNodeAnnouncement {
  */
 typedef struct MUST_USE_STRUCT LDKNodeFeatures {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNodeFeatures *inner;
@@ -2450,7 +2450,7 @@ typedef struct MUST_USE_STRUCT LDKNodeFeatures {
  */
 typedef struct MUST_USE_STRUCT LDKChannelFeatures {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelFeatures *inner;
@@ -2464,7 +2464,7 @@ typedef struct MUST_USE_STRUCT LDKChannelFeatures {
  */
 typedef struct MUST_USE_STRUCT LDKUnsignedChannelUpdate {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeUnsignedChannelUpdate *inner;
@@ -2481,7 +2481,7 @@ typedef struct MUST_USE_STRUCT LDKUnsignedChannelUpdate {
  */
 typedef struct MUST_USE_STRUCT LDKQueryChannelRange {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeQueryChannelRange *inner;
@@ -2501,7 +2501,7 @@ typedef struct MUST_USE_STRUCT LDKQueryChannelRange {
  */
 typedef struct MUST_USE_STRUCT LDKReplyChannelRange {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeReplyChannelRange *inner;
@@ -2529,7 +2529,7 @@ typedef LDKCVecTempl_u64 LDKCVec_u64Z;
  */
 typedef struct MUST_USE_STRUCT LDKQueryShortChannelIds {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeQueryShortChannelIds *inner;
@@ -2546,7 +2546,7 @@ typedef struct MUST_USE_STRUCT LDKQueryShortChannelIds {
  */
 typedef struct MUST_USE_STRUCT LDKReplyShortChannelIdsEnd {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeReplyShortChannelIdsEnd *inner;
@@ -2562,7 +2562,7 @@ typedef struct MUST_USE_STRUCT LDKReplyShortChannelIdsEnd {
  */
 typedef struct MUST_USE_STRUCT LDKGossipTimestampFilter {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeGossipTimestampFilter *inner;
@@ -2576,7 +2576,7 @@ typedef struct MUST_USE_STRUCT LDKGossipTimestampFilter {
  */
 typedef struct MUST_USE_STRUCT LDKLightningError {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeLightningError *inner;
@@ -2688,7 +2688,7 @@ typedef struct LDKRoutingMessageHandler {
  */
 typedef struct MUST_USE_STRUCT LDKMessageHandler {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeMessageHandler *inner;
@@ -2755,7 +2755,7 @@ typedef struct LDKSocketDescriptor {
  */
 typedef struct MUST_USE_STRUCT LDKPeerManager {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativePeerManager *inner;
@@ -2834,7 +2834,7 @@ typedef LDKCResultTempl_PublicKey__Secp256k1Error LDKCResult_PublicKeySecpErrorZ
  */
 typedef struct MUST_USE_STRUCT LDKTxCreationKeys {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeTxCreationKeys *inner;
@@ -2867,7 +2867,7 @@ typedef LDKCVecTempl_C2TupleTempl_HTLCOutputInCommitment__Signature LDKCVec_C2Tu
  */
 typedef struct MUST_USE_STRUCT LDKRouteHop {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeRouteHop *inner;
@@ -2893,7 +2893,7 @@ typedef LDKCVecTempl_CVecTempl_RouteHop LDKCVec_CVec_RouteHopZZ;
  */
 typedef struct MUST_USE_STRUCT LDKRouteHint {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeRouteHint *inner;
@@ -2907,7 +2907,7 @@ typedef struct MUST_USE_STRUCT LDKRouteHint {
  */
 typedef struct MUST_USE_STRUCT LDKRoutingFees {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeRoutingFees *inner;
@@ -2933,7 +2933,7 @@ typedef LDKCResultTempl_Route__LightningError LDKCResult_RouteLightningErrorZ;
  */
 typedef struct MUST_USE_STRUCT LDKNetworkGraph {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNetworkGraph *inner;
@@ -2956,7 +2956,7 @@ typedef LDKCVecTempl_RouteHint LDKCVec_RouteHintZ;
  */
 typedef struct MUST_USE_STRUCT LDKLockedNetworkGraph {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeLockedNetworkGraph *inner;
@@ -2974,7 +2974,7 @@ typedef struct MUST_USE_STRUCT LDKLockedNetworkGraph {
  */
 typedef struct MUST_USE_STRUCT LDKNetGraphMsgHandler {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNetGraphMsgHandler *inner;
@@ -2989,7 +2989,7 @@ typedef struct MUST_USE_STRUCT LDKNetGraphMsgHandler {
  */
 typedef struct MUST_USE_STRUCT LDKDirectionalChannelInfo {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeDirectionalChannelInfo *inner;
@@ -3004,7 +3004,7 @@ typedef struct MUST_USE_STRUCT LDKDirectionalChannelInfo {
  */
 typedef struct MUST_USE_STRUCT LDKChannelInfo {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeChannelInfo *inner;
@@ -3018,7 +3018,7 @@ typedef struct MUST_USE_STRUCT LDKChannelInfo {
  */
 typedef struct MUST_USE_STRUCT LDKNodeAnnouncementInfo {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNodeAnnouncementInfo *inner;
@@ -3032,7 +3032,7 @@ typedef struct MUST_USE_STRUCT LDKNodeAnnouncementInfo {
  */
 typedef struct MUST_USE_STRUCT LDKNodeInfo {
    /**
-    * Nearly everyhwere, inner must be non-null, however in places where
+    * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
    LDKnativeNodeInfo *inner;

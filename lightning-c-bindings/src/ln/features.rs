@@ -28,7 +28,7 @@ type nativeInitFeatures = nativeInitFeaturesImport;
 #[must_use]
 #[repr(C)]
 pub struct InitFeatures {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeInitFeatures,
 	pub is_owned: bool,
@@ -66,7 +66,7 @@ type nativeNodeFeatures = nativeNodeFeaturesImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeFeatures {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeFeatures,
 	pub is_owned: bool,
@@ -104,7 +104,7 @@ type nativeChannelFeatures = nativeChannelFeaturesImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelFeatures {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelFeatures,
 	pub is_owned: bool,

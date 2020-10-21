@@ -15,7 +15,7 @@ type nativeOutPoint = nativeOutPointImport;
 #[must_use]
 #[repr(C)]
 pub struct OutPoint {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeOutPoint,
 	pub is_owned: bool,

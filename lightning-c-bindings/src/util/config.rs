@@ -15,7 +15,7 @@ type nativeChannelHandshakeConfig = nativeChannelHandshakeConfigImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelHandshakeConfig {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelHandshakeConfig,
 	pub is_owned: bool,
@@ -165,7 +165,7 @@ type nativeChannelHandshakeLimits = nativeChannelHandshakeLimitsImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelHandshakeLimits {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelHandshakeLimits,
 	pub is_owned: bool,
@@ -434,7 +434,7 @@ type nativeChannelConfig = nativeChannelConfigImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelConfig {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelConfig,
 	pub is_owned: bool,
@@ -595,7 +595,7 @@ type nativeUserConfig = nativeUserConfigImport;
 #[must_use]
 #[repr(C)]
 pub struct UserConfig {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUserConfig,
 	pub is_owned: bool,

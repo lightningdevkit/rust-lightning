@@ -15,7 +15,7 @@ type nativeRouteHop = nativeRouteHopImport;
 #[must_use]
 #[repr(C)]
 pub struct RouteHop {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRouteHop,
 	pub is_owned: bool,
@@ -151,7 +151,7 @@ type nativeRoute = nativeRouteImport;
 #[must_use]
 #[repr(C)]
 pub struct Route {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRoute,
 	pub is_owned: bool,
@@ -233,7 +233,7 @@ type nativeRouteHint = nativeRouteHintImport;
 #[must_use]
 #[repr(C)]
 pub struct RouteHint {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRouteHint,
 	pub is_owned: bool,

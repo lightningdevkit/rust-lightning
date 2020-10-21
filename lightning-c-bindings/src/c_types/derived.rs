@@ -19,10 +19,7 @@ pub type C2Tuple_usizeTransactionZ = crate::c_types::C2TupleTempl<usize, crate::
 pub static C2Tuple_usizeTransactionZ_free: extern "C" fn(C2Tuple_usizeTransactionZ) = crate::c_types::C2TupleTempl_free::<usize, crate::c_types::Transaction>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_usizeTransactionZ_new(a: usize, b: crate::c_types::Transaction) -> C2Tuple_usizeTransactionZ {
-	C2Tuple_usizeTransactionZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_usizeTransactionZ { a, b, }
 }
 
 #[no_mangle]
@@ -67,10 +64,7 @@ pub type C2Tuple_OutPointScriptZ = crate::c_types::C2TupleTempl<crate::chain::tr
 pub static C2Tuple_OutPointScriptZ_free: extern "C" fn(C2Tuple_OutPointScriptZ) = crate::c_types::C2TupleTempl_free::<crate::chain::transaction::OutPoint, crate::c_types::derived::CVec_u8Z>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_OutPointScriptZ_new(a: crate::chain::transaction::OutPoint, b: crate::c_types::derived::CVec_u8Z) -> C2Tuple_OutPointScriptZ {
-	C2Tuple_OutPointScriptZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_OutPointScriptZ { a, b, }
 }
 
 #[no_mangle]
@@ -89,10 +83,7 @@ pub type C2Tuple_TxidCVec_TxOutZZ = crate::c_types::C2TupleTempl<crate::c_types:
 pub static C2Tuple_TxidCVec_TxOutZZ_free: extern "C" fn(C2Tuple_TxidCVec_TxOutZZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::TxOut>>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_TxidCVec_TxOutZZ_new(a: crate::c_types::ThirtyTwoBytes, b: crate::c_types::derived::CVec_TxOutZ) -> C2Tuple_TxidCVec_TxOutZZ {
-	C2Tuple_TxidCVec_TxOutZZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_TxidCVec_TxOutZZ { a, b, }
 }
 
 #[no_mangle]
@@ -106,10 +97,7 @@ pub type C2Tuple_u64u64Z = crate::c_types::C2TupleTempl<u64, u64>;
 pub static C2Tuple_u64u64Z_free: extern "C" fn(C2Tuple_u64u64Z) = crate::c_types::C2TupleTempl_free::<u64, u64>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_u64u64Z_new(a: u64, b: u64) -> C2Tuple_u64u64Z {
-	C2Tuple_u64u64Z {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_u64u64Z { a, b, }
 }
 
 #[no_mangle]
@@ -128,10 +116,7 @@ pub type C2Tuple_SignatureCVec_SignatureZZ = crate::c_types::C2TupleTempl<crate:
 pub static C2Tuple_SignatureCVec_SignatureZZ_free: extern "C" fn(C2Tuple_SignatureCVec_SignatureZZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::Signature, crate::c_types::CVecTempl<crate::c_types::Signature>>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_SignatureCVec_SignatureZZ_new(a: crate::c_types::Signature, b: crate::c_types::derived::CVec_SignatureZ) -> C2Tuple_SignatureCVec_SignatureZZ {
-	C2Tuple_SignatureCVec_SignatureZZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_SignatureCVec_SignatureZZ { a, b, }
 }
 
 #[no_mangle]
@@ -269,11 +254,7 @@ pub type C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ = crate::c_types
 pub static C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_free: extern "C" fn(C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ) = crate::c_types::C3TupleTempl_free::<crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate>;
 #[no_mangle]
 pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_new(a: crate::ln::msgs::ChannelAnnouncement, b: crate::ln::msgs::ChannelUpdate, c: crate::ln::msgs::ChannelUpdate) -> C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-		c: Box::into_raw(Box::new(c)),
-	}
+	C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ { a, b, c, }
 }
 
 #[no_mangle]
@@ -375,10 +356,7 @@ pub type C2Tuple_HTLCOutputInCommitmentSignatureZ = crate::c_types::C2TupleTempl
 pub static C2Tuple_HTLCOutputInCommitmentSignatureZ_free: extern "C" fn(C2Tuple_HTLCOutputInCommitmentSignatureZ) = crate::c_types::C2TupleTempl_free::<crate::ln::chan_utils::HTLCOutputInCommitment, crate::c_types::Signature>;
 #[no_mangle]
 pub extern "C" fn C2Tuple_HTLCOutputInCommitmentSignatureZ_new(a: crate::ln::chan_utils::HTLCOutputInCommitment, b: crate::c_types::Signature) -> C2Tuple_HTLCOutputInCommitmentSignatureZ {
-	C2Tuple_HTLCOutputInCommitmentSignatureZ {
-		a: Box::into_raw(Box::new(a)),
-		b: Box::into_raw(Box::new(b)),
-	}
+	C2Tuple_HTLCOutputInCommitmentSignatureZ { a, b, }
 }
 
 #[no_mangle]

@@ -12,7 +12,7 @@ type nativeNetworkGraph = nativeNetworkGraphImport;
 #[must_use]
 #[repr(C)]
 pub struct NetworkGraph {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNetworkGraph,
 	pub is_owned: bool,
@@ -52,7 +52,7 @@ type nativeLockedNetworkGraph = nativeLockedNetworkGraphImport<'static>;
 #[must_use]
 #[repr(C)]
 pub struct LockedNetworkGraph {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeLockedNetworkGraph,
 	pub is_owned: bool,
@@ -94,7 +94,7 @@ type nativeNetGraphMsgHandler = nativeNetGraphMsgHandlerImport<crate::chain::Acc
 #[must_use]
 #[repr(C)]
 pub struct NetGraphMsgHandler {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNetGraphMsgHandler,
 	pub is_owned: bool,
@@ -230,7 +230,7 @@ type nativeDirectionalChannelInfo = nativeDirectionalChannelInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct DirectionalChannelInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeDirectionalChannelInfo,
 	pub is_owned: bool,
@@ -346,7 +346,7 @@ type nativeChannelInfo = nativeChannelInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelInfo,
 	pub is_owned: bool,
@@ -474,7 +474,7 @@ type nativeRoutingFees = nativeRoutingFeesImport;
 #[must_use]
 #[repr(C)]
 pub struct RoutingFees {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRoutingFees,
 	pub is_owned: bool,
@@ -569,7 +569,7 @@ type nativeNodeAnnouncementInfo = nativeNodeAnnouncementInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeAnnouncementInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeAnnouncementInfo,
 	pub is_owned: bool,
@@ -708,7 +708,7 @@ type nativeNodeInfo = nativeNodeInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeInfo,
 	pub is_owned: bool,
