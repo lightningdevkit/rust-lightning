@@ -55,6 +55,11 @@ pub enum Message {
 	ChannelAnnouncement(msgs::ChannelAnnouncement),
 	NodeAnnouncement(msgs::NodeAnnouncement),
 	ChannelUpdate(msgs::ChannelUpdate),
+	QueryShortChannelIds(msgs::QueryShortChannelIds),
+	ReplyShortChannelIdsEnd(msgs::ReplyShortChannelIdsEnd),
+	QueryChannelRange(msgs::QueryChannelRange),
+	ReplyChannelRange(msgs::ReplyChannelRange),
+	GossipTimestampFilter(msgs::GossipTimestampFilter),
 	/// A message that could not be decoded because its type is unknown.
 	Unknown(MessageType),
 }
@@ -90,6 +95,11 @@ impl Message {
 			&Message::ChannelAnnouncement(ref msg) => msg.type_id(),
 			&Message::NodeAnnouncement(ref msg) => msg.type_id(),
 			&Message::ChannelUpdate(ref msg) => msg.type_id(),
+			&Message::QueryShortChannelIds(ref msg) => msg.type_id(),
+			&Message::ReplyShortChannelIdsEnd(ref msg) => msg.type_id(),
+			&Message::QueryChannelRange(ref msg) => msg.type_id(),
+			&Message::ReplyChannelRange(ref msg) => msg.type_id(),
+			&Message::GossipTimestampFilter(ref msg) => msg.type_id(),
 			&Message::Unknown(type_id) => type_id,
 		}
 	}
@@ -185,6 +195,21 @@ pub fn read<R: ::std::io::Read>(buffer: &mut R) -> Result<Message, msgs::DecodeE
 		},
 		msgs::ChannelUpdate::TYPE => {
 			Ok(Message::ChannelUpdate(Readable::read(buffer)?))
+		},
+		msgs::QueryShortChannelIds::TYPE => {
+			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
+		},
+		msgs::ReplyShortChannelIdsEnd::TYPE => {
+			Ok(Message::ReplyShortChannelIdsEnd(Readable::read(buffer)?))
+		},
+		msgs::QueryChannelRange::TYPE => {
+			Ok(Message::QueryChannelRange(Readable::read(buffer)?))
+		},
+		msgs::ReplyChannelRange::TYPE => {
+			Ok(Message::ReplyChannelRange(Readable::read(buffer)?))
+		}
+		msgs::GossipTimestampFilter::TYPE => {
+			Ok(Message::GossipTimestampFilter(Readable::read(buffer)?))
 		},
 		_ => {
 			Ok(Message::Unknown(MessageType(message_type)))
@@ -310,6 +335,26 @@ impl Encode for msgs::NodeAnnouncement {
 
 impl Encode for msgs::ChannelUpdate {
 	const TYPE: u16 = 258;
+}
+
+impl Encode for msgs::QueryShortChannelIds {
+	const TYPE: u16 = 261;
+}
+
+impl Encode for msgs::ReplyShortChannelIdsEnd {
+	const TYPE: u16 = 262;
+}
+
+impl Encode for msgs::QueryChannelRange {
+	const TYPE: u16 = 263;
+}
+
+impl Encode for msgs::ReplyChannelRange {
+	const TYPE: u16 = 264;
+}
+
+impl Encode for msgs::GossipTimestampFilter {
+	const TYPE: u16 = 265;
 }
 
 #[cfg(test)]

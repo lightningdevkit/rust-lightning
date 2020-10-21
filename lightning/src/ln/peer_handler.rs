@@ -841,6 +841,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					// TODO: forward msg along to all our other peers!
 				}
 			},
+			wire::Message::QueryShortChannelIds(_msg) => {
+				// TODO: handle message
+			},
+			wire::Message::ReplyShortChannelIdsEnd(_msg) => {
+				// TODO: handle message
+			},
+			wire::Message::QueryChannelRange(_msg) => {
+				// TODO: handle message
+			},
+			wire::Message::ReplyChannelRange(_msg) => {
+				// TODO: handle message
+			},
+			wire::Message::GossipTimestampFilter(_msg) => {
+				// TODO: handle message
+			},
 
 			// Unknown messages:
 			wire::Message::Unknown(msg_type) if msg_type.is_even() => {
