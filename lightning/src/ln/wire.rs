@@ -415,24 +415,25 @@ mod tests {
 	fn read_lnd_init_msg() {
 		// Taken from lnd v0.9.0-beta.
 		let buffer = vec![0, 16, 0, 2, 34, 0, 0, 3, 2, 162, 161];
-		check_init_msg(buffer);
+		check_init_msg(buffer, false);
 	}
 
 	#[test]
 	fn read_clightning_init_msg() {
 		// Taken from c-lightning v0.8.0.
 		let buffer = vec![0, 16, 0, 2, 34, 0, 0, 3, 2, 170, 162, 1, 32, 6, 34, 110, 70, 17, 26, 11, 89, 202, 175, 18, 96, 67, 235, 91, 191, 40, 195, 79, 58, 94, 51, 42, 31, 199, 178, 183, 60, 241, 136, 145, 15];
-		check_init_msg(buffer);
+		check_init_msg(buffer, true);
 	}
 
-	fn check_init_msg(buffer: Vec<u8>) {
+	fn check_init_msg(buffer: Vec<u8>, expect_unknown: bool) {
 		let mut reader = ::std::io::Cursor::new(buffer);
 		let decoded_msg = read(&mut reader).unwrap();
 		match decoded_msg {
 			Message::Init(msgs::Init { features }) => {
 				assert!(features.supports_variable_length_onion());
 				assert!(features.supports_upfront_shutdown_script());
-				assert!(features.supports_unknown_bits());
+				assert!(features.supports_gossip_queries());
+				assert_eq!(expect_unknown, features.supports_unknown_bits());
 				assert!(!features.requires_unknown_bits());
 				assert!(!features.initial_routing_sync());
 			},
@@ -450,7 +451,7 @@ mod tests {
 			Message::NodeAnnouncement(msgs::NodeAnnouncement { contents: msgs::UnsignedNodeAnnouncement { features, ..}, ..}) => {
 				assert!(features.supports_variable_length_onion());
 				assert!(features.supports_upfront_shutdown_script());
-				assert!(features.supports_unknown_bits());
+				assert!(features.supports_gossip_queries());
 				assert!(!features.requires_unknown_bits());
 			},
 			_ => panic!("Expected node announcement, found message type: {}", decoded_msg.type_id())

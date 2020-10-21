@@ -584,7 +584,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = InitFeatures::known();
+									let mut features = InitFeatures::known().clear_gossip_queries();
 									if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 										features.clear_initial_routing_sync();
 									}
@@ -694,10 +694,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 
 				log_info!(
-					self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags (local and global): {}",
+					self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, gossip_queries: {}, static_remote_key: {}, unknown flags (local and global): {}",
 					if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
 					if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
 					if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+					if msg.features.supports_gossip_queries() { "supported" } else { "not supported" },
 					if msg.features.supports_static_remote_key() { "supported" } else { "not supported"},
 					if msg.features.supports_unknown_bits() { "present" } else { "none" }
 				);
@@ -712,7 +713,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 
 				if !peer.outbound {
-					let mut features = InitFeatures::known();
+					let mut features = InitFeatures::known().clear_gossip_queries();
 					if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
 						features.clear_initial_routing_sync();
 					}
