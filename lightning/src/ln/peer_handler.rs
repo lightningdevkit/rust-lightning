@@ -1131,6 +1131,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								self.do_attempt_write_data(&mut descriptor, peer);
 							},
 						}
+					},
+					MessageSendEvent::SendChannelRangeQuery { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+						self.do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendShortIdsQuery { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+						self.do_attempt_write_data(&mut descriptor, peer);
 					}
 				}
 			}
