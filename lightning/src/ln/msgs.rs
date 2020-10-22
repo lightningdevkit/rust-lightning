@@ -804,7 +804,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 }
 
 /// A trait to describe an object which can receive routing messages.
-pub trait RoutingMessageHandler : Send + Sync {
+pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvider {
 	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
@@ -827,6 +827,27 @@ pub trait RoutingMessageHandler : Send + Sync {
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 	/// Returns whether a full sync should be requested from a peer.
 	fn should_request_full_sync(&self, node_id: &PublicKey) -> bool;
+	/// Queries a peer for a list of channels with a funding UTXO in the requested
+	/// chain and range of blocks.
+	fn query_channel_range(&self, their_node_id: &PublicKey, chain_hash: BlockHash, first_blocknum: u32, number_of_blocks: u32) -> Result<(), LightningError>;
+	/// Queries a peer for routing gossip messages for a set of channels identified
+	/// by their short_channel_ids.
+	fn query_short_channel_ids(&self, their_node_id: &PublicKey, chain_hash: BlockHash, short_channel_ids: Vec<u64>) -> Result<(), LightningError>;
+	/// Handles the reply of a query we initiated to learn about channels
+	/// for a given range of blocks. We can expect to receive one or more
+	/// replies to a single query.
+	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: &ReplyChannelRange) -> Result<(), LightningError>;
+	/// Handles the reply of a query we initiated asking for routing gossip
+	/// messages for a list of channels. We should receive this message when
+	/// a node has completed its best effort to send us the pertaining routing
+	/// gossip messages.
+	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: &ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
+	/// Handles when a peer asks us to send a list of short_channel_ids
+	/// for the requested range of blocks.
+	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: &QueryChannelRange) -> Result<(), LightningError>;
+	/// Handles when a peer asks us to send routing gossip messages for a
+	/// list of short_channel_ids.
+	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: &QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
 mod fuzzy_internal_msgs {

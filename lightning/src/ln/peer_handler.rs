@@ -841,17 +841,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					// TODO: forward msg along to all our other peers!
 				}
 			},
-			wire::Message::QueryShortChannelIds(_msg) => {
-				// TODO: handle message
+			wire::Message::QueryShortChannelIds(msg) => {
+				self.message_handler.route_handler.handle_query_short_channel_ids(&peer.their_node_id.unwrap(), &msg)?;
 			},
-			wire::Message::ReplyShortChannelIdsEnd(_msg) => {
-				// TODO: handle message
+			wire::Message::ReplyShortChannelIdsEnd(msg) => {
+				self.message_handler.route_handler.handle_reply_short_channel_ids_end(&peer.their_node_id.unwrap(), &msg)?;
 			},
-			wire::Message::QueryChannelRange(_msg) => {
-				// TODO: handle message
+			wire::Message::QueryChannelRange(msg) => {
+				self.message_handler.route_handler.handle_query_channel_range(&peer.their_node_id.unwrap(), &msg)?;
 			},
-			wire::Message::ReplyChannelRange(_msg) => {
-				// TODO: handle message
+			wire::Message::ReplyChannelRange(msg) => {
+				self.message_handler.route_handler.handle_reply_channel_range(&peer.their_node_id.unwrap(), &msg)?;
 			},
 			wire::Message::GossipTimestampFilter(_msg) => {
 				// TODO: handle message
@@ -880,6 +880,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			// drop optional-ish messages when send buffers get full!
 
 			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
+			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
 			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = &mut *peers_lock;
 			for event in events_generated.drain(..) {

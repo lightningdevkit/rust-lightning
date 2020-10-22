@@ -18,19 +18,23 @@ use bitcoin::hashes::Hash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::blockdata::opcodes;
+use bitcoin::hash_types::BlockHash;
 
 use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
+use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
+use util::events;
 
 use std::{cmp, fmt};
 use std::sync::{RwLock, RwLockReadGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
@@ -59,6 +63,7 @@ pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access
 	pub network_graph: RwLock<NetworkGraph>,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
+	pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	logger: L,
 }
 
@@ -77,6 +82,7 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 			}),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
+			pending_events: Mutex::new(vec![]),
 			logger,
 		}
 	}
@@ -89,6 +95,7 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 			network_graph: RwLock::new(network_graph),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
+			pending_events: Mutex::new(vec![]),
 			logger,
 		}
 	}
@@ -211,6 +218,67 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		} else {
 			false
 		}
+	}
+
+	fn query_channel_range(&self, _their_node_id: &PublicKey, _chain_hash: BlockHash, _first_blocknum: u32, _number_of_blocks: u32) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn query_short_channel_ids(&self, _their_node_id: &PublicKey, _chain_hash: BlockHash, _short_channel_ids: Vec<u64>) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: &ReplyChannelRange) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: &ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: &QueryChannelRange) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: &QueryShortChannelIds) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+}
+
+impl<C: Deref, L: Deref> events::MessageSendEventsProvider for NetGraphMsgHandler<C, L>
+where
+	C::Target: chain::Access,
+	L::Target: Logger,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+		let mut ret = Vec::new();
+		let mut pending_events = self.pending_events.lock().unwrap();
+		std::mem::swap(&mut ret, &mut pending_events);
+		ret
 	}
 }
 
