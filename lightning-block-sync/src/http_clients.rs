@@ -12,6 +12,7 @@ use serde_derive::Deserialize;
 use serde_json;
 
 use std::cmp;
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::future::Future;
 use std::io::Write;
@@ -34,7 +35,74 @@ use std::io::Read;
 #[cfg(not(feature = "tokio"))]
 use std::net::TcpStream;
 
-async fn read_http_resp(mut socket: TcpStream, max_resp: usize) -> Option<Vec<u8>> {
+/// Maximum HTTP response size in bytes.
+const MAX_HTTP_RESPONSE_LEN: usize = 4_000_000;
+
+/// Client for making HTTP requests.
+struct HttpClient {
+	stream: TcpStream,
+}
+
+impl HttpClient {
+	/// Opens a connection to an HTTP endpoint.
+	fn connect(endpoint: &HttpEndpoint) -> std::io::Result<Self> {
+		let address = match endpoint.to_socket_addrs()?.next() {
+			None => {
+				return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "could not resolve to any addresses"));
+			},
+			Some(address) => address,
+		};
+		let stream = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1))?;
+		stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+		stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+
+		#[cfg(feature = "tokio")]
+		let stream = TcpStream::from_std(stream)?;
+
+		Ok(Self { stream })
+	}
+
+	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
+	async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
+	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
+		write!(self.stream,
+			"GET {} HTTP/1.1\r\n\
+			 Host: {}\r\n\
+			 Connection: keep-alive\r\n\
+			 \r\n", uri, host)?;
+
+		match read_http_resp(&self.stream, MAX_HTTP_RESPONSE_LEN).await {
+			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
+			Some(bytes) => F::try_from(bytes),
+		}
+	}
+
+	/// Sends a `POST` request for a resource identified by `uri` at the `host` using the given HTTP
+	/// authentication credentials.
+	///
+	/// The request body consists of the provided JSON `content`. Returns the response body in `F`
+	/// format.
+	async fn post<F>(&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
+	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
+		let content = content.to_string();
+		write!(self.stream,
+			"POST {} HTTP/1.1\r\n\
+			 Host: {}\r\n\
+			 Authorization: {}\r\n\
+			 Connection: keep-alive\r\n\
+			 Content-Type: application/json\r\n\
+			 Content-Length: {}\r\n\
+			 \r\n\
+			 {}", uri, host, auth, content.len(), content)?;
+
+		match read_http_resp(&self.stream, MAX_HTTP_RESPONSE_LEN).await {
+			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
+			Some(bytes) => F::try_from(bytes),
+		}
+	}
+}
+
+async fn read_http_resp(mut socket: &TcpStream, max_resp: usize) -> Option<Vec<u8>> {
 	let mut resp = Vec::new();
 	let mut bytes_read = 0;
 	macro_rules! read_socket { () => { {
@@ -191,39 +259,19 @@ impl RESTClient {
 		}
 	}
 
-	async fn make_raw_rest_call(&self, req_path: &str) -> Result<Vec<u8>, ()> {
-		let mut stream = match std::net::TcpStream::connect_timeout(&match (&(self.endpoint)).to_socket_addrs() {
-			Ok(mut sockaddrs) => match sockaddrs.next() { Some(sockaddr) => sockaddr, None => return Err(()) },
-			Err(_) => return Err(()),
-		}, Duration::from_secs(1)) {
-			Ok(stream) => stream,
-			Err(_) => return Err(()),
-		};
-		stream.set_write_timeout(Some(Duration::from_secs(1))).expect("Host kernel is uselessly old?");
-		stream.set_read_timeout(Some(Duration::from_secs(2))).expect("Host kernel is uselessly old?");
-
+	async fn make_raw_rest_call(&self, req_path: &str) -> std::io::Result<Vec<u8>> {
+		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), req_path);
-		let req = format!("GET {} HTTP/1.1\nHost: {}\nConnection: keep-alive\n\n", uri, self.endpoint.host());
-		match stream.write(req.as_bytes()) {
-			Ok(len) if len == req.len() => {},
-			_ => return Err(()),
-		}
-		#[cfg(feature = "tokio")]
-		let stream = TcpStream::from_std(stream).unwrap();
-		match read_http_resp(stream, 4_000_000).await {
-			Some(r) => Ok(r),
-			None => return Err(()),
-		}
+
+		let mut client = HttpClient::connect(&self.endpoint)?;
+		Ok(client.get::<BinaryResponse>(&uri, &host).await?.0)
 	}
 
-	async fn make_rest_call(&self, req_path: &str) -> Result<serde_json::Value, ()> {
-		let resp = self.make_raw_rest_call(req_path).await?;
-		let v: serde_json::Value = match serde_json::from_slice(&resp[..]) {
-			Ok(v) => v,
-			Err(_) => return Err(()),
-		};
+	async fn request_resource(&self, resource_path: &str) -> std::io::Result<serde_json::Value> {
+		let resp = self.make_raw_rest_call(resource_path).await?;
+		let v = JsonResponse::try_from(resp)?.0;
 		if !v.is_object() {
-			return Err(());
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
 		}
 		Ok(v)
 	}
@@ -251,55 +299,35 @@ impl RPCClient {
 		}
 	}
 
-	/// params entries must be pre-quoted if appropriate
-	async fn make_rpc_call(&self, method: &str, params: &[&str]) -> Result<serde_json::Value, ()> {
-		let mut stream = match std::net::TcpStream::connect_timeout(&match (&(self.endpoint)).to_socket_addrs() {
-			Ok(mut sockaddrs) => match sockaddrs.next() { Some(sockaddr) => sockaddr, None => return Err(()) },
-			Err(_) => return Err(()),
-		}, Duration::from_secs(1)) {
-			Ok(stream) => stream,
-			Err(_) => return Err(()),
-		};
-		stream.set_write_timeout(Some(Duration::from_secs(1))).expect("Host kernel is uselessly old?");
-		stream.set_read_timeout(Some(Duration::from_secs(2))).expect("Host kernel is uselessly old?");
+	async fn call_method(&self, method: &str, params: &[serde_json::Value]) -> std::io::Result<serde_json::Value>
+	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> {
+		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
+		let uri = self.endpoint.path();
+		let content = serde_json::json!({
+			"method": method,
+			"params": params,
+			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
+		});
 
-		let mut param_str = String::new();
-		for (idx, param) in params.iter().enumerate() {
-			param_str += param;
-			if idx != params.len() - 1 {
-				param_str += ",";
-			}
+		let mut client = HttpClient::connect(&self.endpoint)?;
+		let mut response = client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await?.0;
+		if !response.is_object() {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
 		}
-		let req = "{\"method\":\"".to_string() + method + "\",\"params\":[" + &param_str + "],\"id\":" + &self.id.fetch_add(1, Ordering::AcqRel).to_string() + "}";
 
-		let req = format!("POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nConnection: keep-alive\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", self.endpoint.path(), self.endpoint.host(), &self.basic_auth, req.len(), req);
-		match stream.write(req.as_bytes()) {
-			Ok(len) if len == req.len() => {},
-			_ => return Err(()),
+		let error = &response["error"];
+		if !error.is_null() {
+			// TODO: Examine error code for a more precise std::io::ErrorKind.
+			let message = error["message"].as_str().unwrap_or("unknown error");
+			return Err(std::io::Error::new(std::io::ErrorKind::Other, message));
 		}
-		#[cfg(feature = "tokio")]
-		let stream = TcpStream::from_std(stream).unwrap();
-		let resp = match read_http_resp(stream, 4_000_000).await {
-			Some(r) => r,
-			None => return Err(()),
-		};
 
-		let v: serde_json::Value = match serde_json::from_slice(&resp[..]) {
-			Ok(v) => v,
-			Err(_) => return Err(()),
-		};
-		if !v.is_object() {
-			return Err(());
+		let result = &mut response["result"];
+		if result.is_null() {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON result"));
 		}
-		let v_obj = v.as_object().unwrap();
-		if v_obj.get("error") != Some(&serde_json::Value::Null) {
-			return Err(());
-		}
-		if let Some(res) = v_obj.get("result") {
-			Ok((*res).clone())
-		} else {
-			Err(())
-		}
+
+		Ok(result.take())
 	}
 }
 
@@ -339,9 +367,9 @@ impl GetHeaderResponse {
 #[cfg(feature = "rpc-client")]
 impl BlockSource for RPCClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
-		let param = "\"".to_string() + &header_hash.to_hex() + "\"";
+		let header_hash = serde_json::json!(header_hash.to_hex());
 		Box::pin(async move {
-			let res = self.make_rpc_call("getblockheader", &[&param]).await;
+			let res = self.call_method("getblockheader", &[header_hash]).await;
 			if let Ok(mut v) = res {
 				if v.is_object() {
 					if let None = v.get("previousblockhash") {
@@ -359,9 +387,10 @@ impl BlockSource for RPCClient {
 	}
 
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceRespErr>> + 'a + Send>> {
-		let param = "\"".to_string() + &header_hash.to_hex() + "\"";
+		let header_hash = serde_json::json!(header_hash.to_hex());
+		let verbosity = serde_json::json!(0);
 		Box::pin(async move {
-			let blockhex = self.make_rpc_call("getblock", &[&param, "0"]).await.map_err(|_| BlockSourceRespErr::NoResponse)?;
+			let blockhex = self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceRespErr::NoResponse)?;
 			let blockdata = Vec::<u8>::from_hex(blockhex.as_str().ok_or(BlockSourceRespErr::NoResponse)?).or(Err(BlockSourceRespErr::NoResponse))?;
 			let block: Block = encode::deserialize(&blockdata).map_err(|_| BlockSourceRespErr::NoResponse)?;
 			Ok(block)
@@ -370,7 +399,7 @@ impl BlockSource for RPCClient {
 
 	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			if let Ok(v) = self.make_rpc_call("getblockchaininfo", &[]).await {
+			if let Ok(v) = self.call_method("getblockchaininfo", &[]).await {
 				let height = v["blocks"].as_u64().ok_or(BlockSourceRespErr::NoResponse)?
 					.try_into().map_err(|_| BlockSourceRespErr::NoResponse)?;
 				let blockstr = v["bestblockhash"].as_str().ok_or(BlockSourceRespErr::NoResponse)?;
@@ -385,7 +414,7 @@ impl BlockSource for RESTClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
 			let reqpath = format!("headers/1/{}.json", header_hash.to_hex());
-			match self.make_rest_call(&reqpath).await {
+			match self.request_resource(&reqpath).await {
 				Ok(serde_json::Value::Array(mut v)) if !v.is_empty() => {
 					let mut header = v.drain(..).next().unwrap();
 					if !header.is_object() { return Err(BlockSourceRespErr::NoResponse); }
@@ -415,11 +444,35 @@ impl BlockSource for RESTClient {
 
 	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			let v = self.make_rest_call("chaininfo.json").await.map_err(|_| BlockSourceRespErr::NoResponse)?;
+			let v = self.request_resource("chaininfo.json").await.map_err(|_| BlockSourceRespErr::NoResponse)?;
 			let height = v["blocks"].as_u64().ok_or(BlockSourceRespErr::NoResponse)?
 				.try_into().map_err(|_| BlockSourceRespErr::NoResponse)?;
 			let blockstr = v["bestblockhash"].as_str().ok_or(BlockSourceRespErr::NoResponse)?;
 			Ok((BlockHash::from_hex(blockstr).map_err(|_| BlockSourceRespErr::NoResponse)?, Some(height)))
 		})
+	}
+}
+
+/// An HTTP response body in binary format.
+struct BinaryResponse(Vec<u8>);
+
+/// An HTTP response body in JSON format.
+struct JsonResponse(serde_json::Value);
+
+/// Interprets bytes from an HTTP response body as binary data.
+impl TryFrom<Vec<u8>> for BinaryResponse {
+	type Error = std::io::Error;
+
+	fn try_from(bytes: Vec<u8>) -> std::io::Result<Self> {
+		Ok(BinaryResponse(bytes))
+	}
+}
+
+/// Interprets bytes from an HTTP response body as a JSON value.
+impl TryFrom<Vec<u8>> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_from(bytes: Vec<u8>) -> std::io::Result<Self> {
+		Ok(JsonResponse(serde_json::from_slice(&bytes)?))
 	}
 }
