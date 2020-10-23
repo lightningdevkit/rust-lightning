@@ -64,13 +64,28 @@ pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
-	/// increasing and increase by one for each new update.
+	/// increasing and increase by one for each new update, with one exception specified below.
 	///
 	/// This sequence number is also used to track up to which points updates which returned
 	/// ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+	///
+	/// The only instance where update_id values are not strictly increasing is the case where we
+	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+	/// its docs for more details.
+	///
+	/// [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
 	pub update_id: u64,
 }
+
+/// If:
+///    (1) a channel has been force closed and
+///    (2) we receive a preimage from a forward link that allows us to spend an HTLC output on
+///        this channel's (the backward link's) broadcasted commitment transaction
+/// then we allow the `ChannelManager` to send a `ChannelMonitorUpdate` with this update ID,
+/// with the update providing said payment preimage. No other update types are allowed after
+/// force-close.
+pub const CLOSED_CHANNEL_UPDATE_ID: u64 = std::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
@@ -1166,7 +1181,17 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
-		if self.latest_update_id + 1 != updates.update_id {
+		// ChannelMonitor updates may be applied after force close if we receive a
+		// preimage for a broadcasted commitment transaction HTLC output that we'd
+		// like to claim on-chain. If this is the case, we no longer have guaranteed
+		// access to the monitor's update ID, so we use a sentinel value instead.
+		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+			match updates.updates[0] {
+				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
+				_ => panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage"),
+			}
+			assert_eq!(updates.updates.len(), 1);
+		} else if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
 		for update in updates.updates.iter() {

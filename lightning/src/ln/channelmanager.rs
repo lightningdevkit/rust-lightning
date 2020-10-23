@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 use chain;
 use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
@@ -2152,12 +2152,23 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				});
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
+				let prev_outpoint = hop_data.outpoint;
 				if let Err((counterparty_node_id, err)) = match self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage) {
 					Ok(()) => Ok(()),
 					Err(None) => {
-						// TODO: There is probably a channel monitor somewhere that needs to
-						// learn the preimage as the channel already hit the chain and that's
-						// why it's missing.
+						let preimage_update = ChannelMonitorUpdate {
+							update_id: CLOSED_CHANNEL_UPDATE_ID,
+							updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+								payment_preimage: payment_preimage.clone(),
+							}],
+						};
+						// We update the ChannelMonitor on the backward link, after
+						// receiving an offchain preimage event from the forward link (the
+						// event being update_fulfill_htlc).
+						if let Err(e) = self.chain_monitor.update_channel(prev_outpoint, preimage_update) {
+							log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
+							           payment_preimage, e);
+						}
 						Ok(())
 					},
 					Err(Some(res)) => Err(res),
