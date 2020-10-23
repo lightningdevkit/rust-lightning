@@ -270,21 +270,13 @@ impl RESTClient {
 		}
 	}
 
-	async fn make_raw_rest_call(&self, req_path: &str) -> std::io::Result<Vec<u8>> {
+	async fn request_resource<F, T>(&self, resource_path: &str) -> std::io::Result<T>
+	where F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
-		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), req_path);
+		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
 
 		let mut client = HttpClient::connect(&self.endpoint)?;
-		Ok(client.get::<BinaryResponse>(&uri, &host).await?.0)
-	}
-
-	async fn request_resource(&self, resource_path: &str) -> std::io::Result<serde_json::Value> {
-		let resp = self.make_raw_rest_call(resource_path).await?;
-		let v = JsonResponse::try_from(resp)?.0;
-		if !v.is_object() {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
-		}
-		Ok(v)
+		client.get::<F>(&uri, &host).await?.try_into()
 	}
 }
 
@@ -310,8 +302,8 @@ impl RPCClient {
 		}
 	}
 
-	async fn call_method(&self, method: &str, params: &[serde_json::Value]) -> std::io::Result<serde_json::Value>
-	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> {
+	async fn call_method<T>(&self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
+	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = self.endpoint.path();
 		let content = serde_json::json!({
@@ -338,7 +330,7 @@ impl RPCClient {
 			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON result"));
 		}
 
-		Ok(result.take())
+		JsonResponse(result.take()).try_into()
 	}
 }
 
@@ -378,44 +370,23 @@ impl GetHeaderResponse {
 #[cfg(feature = "rpc-client")]
 impl BlockSource for RPCClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
-		let header_hash = serde_json::json!(header_hash.to_hex());
 		Box::pin(async move {
-			let res = self.call_method("getblockheader", &[header_hash]).await;
-			if let Ok(mut v) = res {
-				if v.is_object() {
-					if let None = v.get("previousblockhash") {
-						// Got a request for genesis block, add a dummy previousblockhash
-						v.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::Value::String("".to_string()));
-					}
-				}
-				let deser_res: Result<GetHeaderResponse, _> = serde_json::from_value(v);
-				match deser_res {
-					Ok(resp) => resp.to_block_header(),
-					Err(_) => Err(BlockSourceRespErr::NoResponse),
-				}
-			} else { Err(BlockSourceRespErr::NoResponse) }
+			let header_hash = serde_json::json!(header_hash.to_hex());
+			Ok(self.call_method("getblockheader", &[header_hash]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceRespErr>> + 'a + Send>> {
-		let header_hash = serde_json::json!(header_hash.to_hex());
-		let verbosity = serde_json::json!(0);
 		Box::pin(async move {
-			let blockhex = self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceRespErr::NoResponse)?;
-			let blockdata = Vec::<u8>::from_hex(blockhex.as_str().ok_or(BlockSourceRespErr::NoResponse)?).or(Err(BlockSourceRespErr::NoResponse))?;
-			let block: Block = encode::deserialize(&blockdata).map_err(|_| BlockSourceRespErr::NoResponse)?;
-			Ok(block)
+			let header_hash = serde_json::json!(header_hash.to_hex());
+			let verbosity = serde_json::json!(0);
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 
 	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			if let Ok(v) = self.call_method("getblockchaininfo", &[]).await {
-				let height = v["blocks"].as_u64().ok_or(BlockSourceRespErr::NoResponse)?
-					.try_into().map_err(|_| BlockSourceRespErr::NoResponse)?;
-				let blockstr = v["bestblockhash"].as_str().ok_or(BlockSourceRespErr::NoResponse)?;
-				Ok((BlockHash::from_hex(blockstr).map_err(|_| BlockSourceRespErr::NoResponse)?, Some(height)))
-			} else { Err(BlockSourceRespErr::NoResponse) }
+			Ok(self.call_method("getblockchaininfo", &[]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 }
@@ -424,42 +395,21 @@ impl BlockSource for RPCClient {
 impl BlockSource for RESTClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			let reqpath = format!("headers/1/{}.json", header_hash.to_hex());
-			match self.request_resource(&reqpath).await {
-				Ok(serde_json::Value::Array(mut v)) if !v.is_empty() => {
-					let mut header = v.drain(..).next().unwrap();
-					if !header.is_object() { return Err(BlockSourceRespErr::NoResponse); }
-					if let None = header.get("previousblockhash") {
-						// Got a request for genesis block, add a dummy previousblockhash
-						header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::Value::String("".to_string()));
-					}
-					let deser_res: Result<GetHeaderResponse, _> = serde_json::from_value(header);
-					match deser_res {
-						Ok(resp) => resp.to_block_header(),
-						Err(_) => Err(BlockSourceRespErr::NoResponse),
-					}
-				},
-				_ => Err(BlockSourceRespErr::NoResponse)
-			}
+			let resource_path = format!("headers/1/{}.json", header_hash.to_hex());
+			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			let reqpath = format!("block/{}.bin", header_hash.to_hex());
-			let blockdata = self.make_raw_rest_call(&reqpath).await.map_err(|_| BlockSourceRespErr::NoResponse)?;
-			let block: Block = encode::deserialize(&blockdata).map_err(|_| BlockSourceRespErr::NoResponse)?;
-			Ok(block)
+			let resource_path = format!("block/{}.bin", header_hash.to_hex());
+			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 
 	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
 		Box::pin(async move {
-			let v = self.request_resource("chaininfo.json").await.map_err(|_| BlockSourceRespErr::NoResponse)?;
-			let height = v["blocks"].as_u64().ok_or(BlockSourceRespErr::NoResponse)?
-				.try_into().map_err(|_| BlockSourceRespErr::NoResponse)?;
-			let blockstr = v["bestblockhash"].as_str().ok_or(BlockSourceRespErr::NoResponse)?;
-			Ok((BlockHash::from_hex(blockstr).map_err(|_| BlockSourceRespErr::NoResponse)?, Some(height)))
+			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await.map_err(|_| BlockSourceRespErr::NoResponse)?)
 		})
 	}
 }
@@ -479,11 +429,100 @@ impl TryFrom<Vec<u8>> for BinaryResponse {
 	}
 }
 
+/// Parses binary data as a block.
+impl TryInto<Block> for BinaryResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<Block> {
+		match encode::deserialize(&self.0) {
+			Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid block data")),
+			Ok(block) => Ok(block),
+		}
+	}
+}
+
 /// Interprets bytes from an HTTP response body as a JSON value.
 impl TryFrom<Vec<u8>> for JsonResponse {
 	type Error = std::io::Error;
 
 	fn try_from(bytes: Vec<u8>) -> std::io::Result<Self> {
 		Ok(JsonResponse(serde_json::from_slice(&bytes)?))
+	}
+}
+
+/// Converts a JSON value into block header data. The JSON value may be an object representing a
+/// block header or an array of such objects. In the latter case, the first object is converted.
+impl TryInto<BlockHeaderData> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<BlockHeaderData> {
+		let mut header = match self.0 {
+			serde_json::Value::Array(mut array) if !array.is_empty() => array.drain(..).next().unwrap(),
+			_ => self.0,
+		};
+
+		if !header.is_object() {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
+		}
+
+		// Add an empty previousblockhash for the genesis block.
+		if let None = header.get("previousblockhash") {
+			header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::json!(""));
+		}
+
+		match serde_json::from_value::<GetHeaderResponse>(header) {
+			Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header response")),
+			Ok(response) => match response.to_block_header() {
+				Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header data")),
+				Ok(header) => Ok(header),
+			},
+		}
+	}
+}
+
+/// Converts a JSON value into a block. Assumes the block is hex-encoded in a JSON string.
+impl TryInto<Block> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<Block> {
+		match self.0.as_str() {
+			None => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON string")),
+			Some(hex_data) => match Vec::<u8>::from_hex(hex_data) {
+				Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid hex data")),
+				Ok(block_data) => match encode::deserialize(&block_data) {
+					Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid block data")),
+					Ok(block) => Ok(block),
+				},
+			},
+		}
+	}
+}
+
+/// Converts a JSON value into the best block hash and optional height.
+impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<(BlockHash, Option<u32>)> {
+		let hash = match &self.0["bestblockhash"] {
+			serde_json::Value::String(hex_data) => match BlockHash::from_hex(&hex_data) {
+				Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid hex data")),
+				Ok(block_hash) => block_hash,
+			},
+			_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON string")),
+		};
+
+		let height = match &self.0["blocks"] {
+			serde_json::Value::Null => None,
+			serde_json::Value::Number(height) => match height.as_u64() {
+				None => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid height")),
+				Some(height) => match height.try_into() {
+					Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid height")),
+					Ok(height) => Some(height),
+				}
+			},
+			_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON number")),
+		};
+
+		Ok((hash, height))
 	}
 }
