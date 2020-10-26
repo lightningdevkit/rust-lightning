@@ -3523,7 +3523,7 @@ fn test_force_close_fail_back() {
 	{
 		let mut monitors = nodes[2].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		monitors.get_mut(&OutPoint{ txid: Txid::from_slice(&payment_event.commitment_msg.channel_id[..]).unwrap(), index: 0 }).unwrap()
-			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage);
+			.provide_payment_preimage(&our_payment_hash, &our_payment_preimage, &node_cfgs[2].tx_broadcaster, &node_cfgs[2].fee_estimator, &&logger);
 	}
 	connect_block(&nodes[2], &block, 1);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();

@@ -1159,7 +1159,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	pub(crate) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
+	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L)
+	where B::Target: BroadcasterInterface,
+		    F::Target: FeeEstimator,
+		    L::Target: Logger,
+	{
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 	}
 
@@ -1177,9 +1181,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
-		where B::Target: BroadcasterInterface,
-					L::Target: Logger,
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
+	where B::Target: BroadcasterInterface,
+		    F::Target: FeeEstimator,
+		    L::Target: Logger,
 	{
 		// ChannelMonitor updates may be applied after force close if we receive a
 		// preimage for a broadcasted commitment transaction HTLC output that we'd
@@ -1197,16 +1202,24 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
 					self.provide_latest_holder_commitment_tx_info(commitment_tx.clone(), htlc_outputs.clone())?
 				},
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
-					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger),
-				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
-				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(*idx, *secret)?,
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
+					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger)
+				},
+				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
+					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger)
+				},
+				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
+					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
+					self.provide_secret(*idx, *secret)?
+				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
+					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
@@ -2511,16 +2524,18 @@ mod tests {
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction};
-	use util::test_utils::TestLogger;
+	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
-	use std::sync::Arc;
+	use std::sync::{Arc, Mutex};
 	use chain::keysinterface::InMemoryChannelKeys;
 
 	#[test]
 	fn test_prune_preimages() {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: 253 });
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
@@ -2596,7 +2611,7 @@ mod tests {
 		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
-			monitor.provide_payment_preimage(hash, preimage);
+			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
 		}
 
 		// Now provide a secret, pruning preimages 10-15
