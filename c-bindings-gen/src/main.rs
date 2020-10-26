@@ -226,7 +226,8 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 			generated_fields.push("clone".to_owned());
 		},
 		("std::cmp::Eq", _) => {
-			writeln!(w, "\tpub eq: extern \"C\" fn (this_arg: *const c_void, other_arg: *const c_void) -> bool,").unwrap();
+			writeln!(w, "\tpub eq: extern \"C\" fn (this_arg: *const c_void, other_arg: &{}) -> bool,", trait_name).unwrap();
+			writeln!(extra_headers, "typedef struct LDK{} LDK{};", trait_name, trait_name).unwrap();
 			generated_fields.push("eq".to_owned());
 		},
 		("std::hash::Hash", _) => {
@@ -251,21 +252,25 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 		("std::cmp::Eq", _) => {
 			writeln!(w, "impl std::cmp::Eq for {} {{}}", trait_name).unwrap();
 			writeln!(w, "impl std::cmp::PartialEq for {} {{", trait_name).unwrap();
-			writeln!(w, "\tfn eq(&self, o: &Self) -> bool {{ (self.eq)(self.this_arg, o.this_arg) }}\n}}").unwrap();
+			writeln!(w, "\tfn eq(&self, o: &Self) -> bool {{ (self.eq)(self.this_arg, o) }}\n}}").unwrap();
 		},
 		("std::hash::Hash", _) => {
 			writeln!(w, "impl std::hash::Hash for {} {{", trait_name).unwrap();
 			writeln!(w, "\tfn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {{ hasher.write_u64((self.hash)(self.this_arg)) }}\n}}").unwrap();
 		},
 		("Clone", _) => {
+			writeln!(w, "#[no_mangle]").unwrap();
+			writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", trait_name, trait_name, trait_name).unwrap();
+			writeln!(w, "\t{} {{", trait_name).unwrap();
+			writeln!(w, "\t\tthis_arg: if let Some(f) = orig.clone {{ (f)(orig.this_arg) }} else {{ orig.this_arg }},").unwrap();
+			for field in generated_fields.iter() {
+				writeln!(w, "\t\t{}: orig.{}.clone(),", field, field).unwrap();
+			}
+			writeln!(w, "\t}}\n}}").unwrap();
 			writeln!(w, "impl Clone for {} {{", trait_name).unwrap();
 			writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
-			writeln!(w, "\t\tSelf {{").unwrap();
-			writeln!(w, "\t\tthis_arg: if let Some(f) = self.clone {{ (f)(self.this_arg) }} else {{ self.this_arg }},").unwrap();
-			for field in generated_fields.iter() {
-				writeln!(w, "\t\t\t{}: self.{}.clone(),", field, field).unwrap();
-			}
-			writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
+			writeln!(w, "\t\t{}_clone(self)", trait_name).unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
 		},
 		(s, i) => {
 			if s != "util::events::MessageSendEventsProvider" { unimplemented!(); }

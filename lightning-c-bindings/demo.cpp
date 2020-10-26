@@ -191,8 +191,8 @@ uintptr_t sock_send_data(void *this_arg, LDKu8slice data, bool resume_read) {
 void sock_disconnect_socket(void *this_arg) {
 	close((int)((long)this_arg));
 }
-bool sock_eq(const void *this_arg, const void *other_arg) {
-	return this_arg == other_arg;
+bool sock_eq(const void *this_arg, const LDKSocketDescriptor *other_arg) {
+	return this_arg == other_arg->this_arg;
 }
 uint64_t sock_hash(const void *this_arg) {
 	return (uint64_t)this_arg;
