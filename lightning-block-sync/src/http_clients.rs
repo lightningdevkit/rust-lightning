@@ -48,7 +48,7 @@ struct HttpClient {
 
 impl HttpClient {
 	/// Opens a connection to an HTTP endpoint.
-	fn connect(endpoint: &HttpEndpoint) -> std::io::Result<Self> {
+	fn connect<E: ToSocketAddrs>(endpoint: E) -> std::io::Result<Self> {
 		let address = match endpoint.to_socket_addrs()?.next() {
 			None => {
 				return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "could not resolve to any addresses"));
@@ -530,5 +530,73 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 		};
 
 		Ok((hash, height))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Server for handling HTTP client requests with a stock response.
+	struct HttpServer {
+		address: std::net::SocketAddr,
+		_handler: std::thread::JoinHandle<()>,
+	}
+
+	impl HttpServer {
+		fn responding_with(response: String) -> Self {
+			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			let address = listener.local_addr().unwrap();
+			let _handler = std::thread::spawn(move || {
+				for stream in listener.incoming() {
+					match stream {
+						Err(_) => panic!(),
+						Ok(mut stream) => stream.write(response.as_bytes()).unwrap(),
+					};
+				}
+			});
+
+			Self { address, _handler }
+		}
+
+		fn endpoint(&self) -> HttpEndpoint {
+			let uri = format!("http://{}:{}", self.address.ip(), self.address.port());
+			HttpEndpoint::new(&uri).unwrap()
+		}
+	}
+
+	#[test]
+	fn connect_to_unresolvable_host() {
+		match HttpClient::connect(("example.invalid", 80)) {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn connect_with_no_socket_address() {
+		match HttpClient::connect(&vec![][..]) {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn connect_with_unknown_server() {
+		match HttpClient::connect(("::", 80)) {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn connect_with_valid_endpoint() {
+		let server = HttpServer::responding_with(
+			"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string());
+
+		match HttpClient::connect(&server.endpoint()) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
 	}
 }
