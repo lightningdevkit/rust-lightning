@@ -466,10 +466,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"ln::features::InitFeatures" if is_ref && ptr_for_ref => Some("crate::ln::features::InitFeatures"),
 			"ln::features::InitFeatures" if is_ref => Some("*const crate::ln::features::InitFeatures"),
 			"ln::features::InitFeatures" => Some("crate::ln::features::InitFeatures"),
-			_ => {
-				eprintln!("    Type {} (ref: {}) unresolvable in C", full_path, is_ref);
-				None
-			},
+			_ => None,
 		}
 	}
 
@@ -534,10 +531,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
 
-			_ => {
-				eprintln!("    Type {} unconvertable from C", full_path);
-				None
-			},
+			_ => None,
 		}.map(|s| s.to_owned())
 	}
 	fn from_c_conversion_suffix_from_path<'b>(&self, full_path: &str, is_ref: bool) -> Option<String> {
@@ -593,10 +587,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
 
-			_ => {
-				eprintln!("    Type {} unconvertable from C", full_path);
-				None
-			},
+			_ => None,
 		}.map(|s| s.to_owned())
 	}
 
@@ -678,10 +669,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"ln::features::InitFeatures" if is_ref => Some("Box::into_raw(Box::new(crate::ln::features::InitFeatures { inner: &mut "),
 			"ln::features::InitFeatures" if !is_ref => Some("crate::ln::features::InitFeatures { inner: Box::into_raw(Box::new("),
 
-			_ => {
-				eprintln!("    Type {} (is_ref: {}) unconvertable to C", full_path, is_ref);
-				None
-			},
+			_ => None,
 		}.map(|s| s.to_owned())
 	}
 	fn to_c_conversion_inline_suffix_from_path(&self, full_path: &str, is_ref: bool, ptr_for_ref: bool) -> Option<String> {
@@ -743,10 +731,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"ln::features::InitFeatures" if is_ref => Some(", is_owned: false }))"),
 			"ln::features::InitFeatures" => Some(")), is_owned: true }"),
 
-			_ => {
-				eprintln!("    Type {} unconvertable to C", full_path);
-				None
-			},
+			_ => None,
 		}.map(|s| s.to_owned())
 	}
 
@@ -930,14 +915,12 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	}
 
 	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
-		eprintln!("{} mirrored", ident);
 		self.declared.insert(ident.clone(), DeclType::MirroredEnum);
 	}
 	pub fn enum_ignored(&mut self, ident: &'c syn::Ident) {
 		self.declared.insert(ident.clone(), DeclType::EnumIgnored);
 	}
-	pub fn struct_imported(&mut self, ident: &'c syn::Ident, named: String) {
-		eprintln!("Imported {} as {}", ident, named);
+	pub fn struct_imported(&mut self, ident: &'c syn::Ident) {
 		self.declared.insert(ident.clone(), DeclType::StructImported);
 	}
 	pub fn struct_ignored(&mut self, ident: &syn::Ident) {
@@ -945,7 +928,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		self.declared.insert(ident.clone(), DeclType::StructIgnored);
 	}
 	pub fn trait_declared(&mut self, ident: &syn::Ident, t: &'c syn::ItemTrait) {
-		eprintln!("Trait {} created", ident);
 		self.declared.insert(ident.clone(), DeclType::Trait(t));
 	}
 	pub fn get_declared_type(&'a self, ident: &syn::Ident) -> Option<&'a DeclType<'c>> {

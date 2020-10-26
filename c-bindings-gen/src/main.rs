@@ -588,7 +588,7 @@ fn declare_struct<'a, 'b>(s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, '
 		}
 	}
 
-	types.struct_imported(&s.ident, format!("{}", s.ident));
+	types.struct_imported(&s.ident);
 	true
 }
 
@@ -601,7 +601,6 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 	let struct_name = &format!("{}", s.ident);
 	writeln_opaque(w, &s.ident, struct_name, &s.generics, &s.attrs, types, extra_headers, cpp_headers);
 
-	eprintln!("exporting fields for {}", struct_name);
 	if let syn::Fields::Named(fields) = &s.fields {
 		let mut gen_types = GenericTypes::new();
 		assert!(gen_types.learn_generics(&s.generics, types));
