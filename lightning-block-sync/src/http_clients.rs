@@ -291,16 +291,11 @@ pub struct RPCClient {
 
 #[cfg(feature = "rpc-client")]
 impl RPCClient {
-	pub fn new(user_auth: &str, uri: &str) -> Option<Self> {
-		match HttpEndpoint::new(uri) {
-			Err(_) => None,
-			Ok(endpoint) => {
-				Some(Self {
-					basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
-					endpoint,
-					id: AtomicUsize::new(0),
-				})
-			},
+	pub fn new(user_auth: &str, endpoint: HttpEndpoint) -> Self {
+		Self {
+			basic_auth: "Basic ".to_string() + &base64::encode(user_auth),
+			endpoint,
+			id: AtomicUsize::new(0),
 		}
 	}
 
@@ -598,6 +593,18 @@ mod tests {
 		}
 	}
 
+	/// Converts a JSON value into u64.
+	impl TryInto<u64> for JsonResponse {
+		type Error = std::io::Error;
+
+		fn try_into(self) -> std::io::Result<u64> {
+			match self.0.as_u64() {
+				None => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a number")),
+				Some(n) => Ok(n),
+			}
+		}
+	}
+
 	#[test]
 	fn connect_to_unresolvable_host() {
 		match HttpClient::connect(("example.invalid", 80)) {
@@ -662,6 +669,77 @@ mod tests {
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(n) => assert_eq!(n, 42),
+		}
+	}
+
+	#[tokio::test]
+	async fn call_method_returning_unknown_response() {
+		let server = HttpServer::responding_with_not_found();
+		let client = RPCClient::new("credentials", server.endpoint());
+
+		match client.call_method::<u64>("getblockcount", &[]).await {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn call_method_returning_malfomred_response() {
+		let response = serde_json::json!("foo");
+		let server = HttpServer::responding_with_ok(Some(response));
+		let client = RPCClient::new("credentials", server.endpoint());
+
+		match client.call_method::<u64>("getblockcount", &[]).await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn call_method_returning_error() {
+		let response = serde_json::json!({
+			"error": { "code": -8, "message": "invalid parameter" },
+		});
+		let server = HttpServer::responding_with_ok(Some(response));
+		let client = RPCClient::new("credentials", server.endpoint());
+
+		let invalid_block_hash = serde_json::json!("foo");
+		match client.call_method::<u64>("getblock", &[invalid_block_hash]).await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::Other);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid parameter");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn call_method_returning_missing_result() {
+		let response = serde_json::json!({ "result": null });
+		let server = HttpServer::responding_with_ok(Some(response));
+		let client = RPCClient::new("credentials", server.endpoint());
+
+		match client.call_method::<u64>("getblockcount", &[]).await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON result");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn call_method_returning_valid_result() {
+		let response = serde_json::json!({ "result": 654470 });
+		let server = HttpServer::responding_with_ok(Some(response));
+		let client = RPCClient::new("credentials", server.endpoint());
+
+		match client.call_method::<u64>("getblockcount", &[]).await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(count) => assert_eq!(count, 654470),
 		}
 	}
 }
