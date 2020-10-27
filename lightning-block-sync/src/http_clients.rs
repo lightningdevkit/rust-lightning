@@ -268,11 +268,8 @@ pub struct RESTClient {
 
 #[cfg(feature = "rest-client")]
 impl RESTClient {
-	pub fn new(uri: &str) -> Option<Self> {
-		match HttpEndpoint::new(uri) {
-			Err(_) => None,
-			Ok(endpoint) => Some(Self { endpoint }),
-		}
+	pub fn new(endpoint: HttpEndpoint) -> Self {
+		Self { endpoint }
 	}
 
 	async fn request_resource<F, T>(&self, resource_path: &str) -> std::io::Result<T>
@@ -550,6 +547,21 @@ mod tests {
 	}
 
 	impl HttpServer {
+		fn responding_with_ok<T: ToString>(body: Option<T>) -> Self {
+			let body = body.map(|s| s.to_string()).unwrap_or_default();
+			let response = format!(
+				"HTTP/1.1 200 OK\r\n\
+				 Content-Length: {}\r\n\
+				 \r\n\
+				 {}", body.len(), body);
+			HttpServer::responding_with(response)
+		}
+
+		fn responding_with_not_found() -> Self {
+			let response = "HTTP/1.1 404 Not Found\r\n\r\n".to_string();
+			HttpServer::responding_with(response)
+		}
+
 		fn responding_with(response: String) -> Self {
 			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 			let address = listener.local_addr().unwrap();
@@ -568,6 +580,21 @@ mod tests {
 		fn endpoint(&self) -> HttpEndpoint {
 			let uri = format!("http://{}:{}", self.address.ip(), self.address.port());
 			HttpEndpoint::new(&uri).unwrap()
+		}
+	}
+
+	/// Parses binary data as string-encoded u32.
+	impl TryInto<u32> for BinaryResponse {
+		type Error = std::io::Error;
+
+		fn try_into(self) -> std::io::Result<u32> {
+			match std::str::from_utf8(&self.0) {
+				Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+				Ok(s) => match u32::from_str_radix(s, 10) {
+					Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+					Ok(n) => Ok(n),
+				}
+			}
 		}
 	}
 
@@ -597,12 +624,44 @@ mod tests {
 
 	#[tokio::test]
 	async fn connect_with_valid_endpoint() {
-		let server = HttpServer::responding_with(
-			"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string());
+		let server = HttpServer::responding_with_ok::<String>(None);
 
 		match HttpClient::connect(&server.endpoint()) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
+		}
+	}
+
+	#[tokio::test]
+	async fn request_unknown_resource() {
+		let server = HttpServer::responding_with_not_found();
+		let client = RESTClient::new(server.endpoint());
+
+		match client.request_resource::<BinaryResponse, u32>("/").await {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn request_malformed_resource() {
+		let server = HttpServer::responding_with_ok(Some("foo"));
+		let client = RESTClient::new(server.endpoint());
+
+		match client.request_resource::<BinaryResponse, u32>("/").await {
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn request_valid_resource() {
+		let server = HttpServer::responding_with_ok(Some(42));
+		let client = RESTClient::new(server.endpoint());
+
+		match client.request_resource::<BinaryResponse, u32>("/").await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(n) => assert_eq!(n, 42),
 		}
 	}
 }

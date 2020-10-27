@@ -3,13 +3,13 @@ use http::uri::{Scheme, Uri};
 
 /// Endpoint for interacting with an HTTP-based API.
 #[derive(Debug)]
-pub(crate) struct HttpEndpoint {
+pub struct HttpEndpoint {
 	uri: Uri,
 }
 
 /// Error when creating an `HttpEndpoint`.
 #[derive(Debug)]
-pub(crate) enum HttpEndpointError {
+pub enum HttpEndpointError {
 	InvalidUri(http::uri::InvalidUri),
 	RelativeUri,
 	InvalidScheme(http::uri::Scheme),
