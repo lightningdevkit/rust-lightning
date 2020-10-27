@@ -78,10 +78,8 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		match read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await {
-			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
-			Some(bytes) => F::try_from(bytes),
-		}
+		let bytes = read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await?;
+		F::try_from(bytes)
 	}
 
 	/// Sends a `POST` request for a resource identified by `uri` at the `host` using the given HTTP
@@ -106,25 +104,23 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		match read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await {
-			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
-			Some(bytes) => F::try_from(bytes),
-		}
+		let bytes = read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await?;
+		F::try_from(bytes)
 	}
 }
 
-async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u8>> {
+async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> std::io::Result<Vec<u8>> {
 	let mut resp = Vec::new();
 	let mut bytes_read = 0;
 	macro_rules! read_socket { () => { {
 		#[cfg(feature = "tokio")]
-		let res = socket.read(&mut resp[bytes_read..]).await;
+		let bytes_read = socket.read(&mut resp[bytes_read..]).await?;
 		#[cfg(not(feature = "tokio"))]
-		let res = socket.read(&mut resp[bytes_read..]);
-		match res {
-			Ok(0) => return None,
-			Ok(b) => b,
-			Err(_) => return None,
+		let bytes_read = socket.read(&mut resp[bytes_read..])?;
+		if bytes_read == 0 {
+			return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "zero bytes read"));
+		} else {
+			bytes_read
 		}
 	} } }
 
@@ -135,15 +131,17 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 	// until we know our real length.
 	resp.extend_from_slice(&[0; 8192]);
 	'read_headers: loop {
-		if bytes_read >= 8192 { return None; }
+		if bytes_read >= 8192 {
+			return Err(std::io::Error::new(std::io::ErrorKind::Other, "headers too large"));
+		}
 		bytes_read += read_socket!();
 		for line in resp[..bytes_read].split(|c| *c == '\n' as u8 || *c == '\r' as u8) {
 			let content_header = b"Content-Length: ";
 			if line.len() > content_header.len() && line[..content_header.len()].eq_ignore_ascii_case(content_header) {
 				actual_len = match match std::str::from_utf8(&line[content_header.len()..]){
-					Ok(s) => s, Err(_) => return None,
+					Ok(s) => s, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
 				}.parse() {
-					Ok(len) => len, Err(_) => return None,
+					Ok(len) => len, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
 				};
 			}
 			let http_resp_1 = b"HTTP/1.1 200 ";
@@ -156,7 +154,7 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 			if line.len() > transfer_encoding.len() && line[..transfer_encoding.len()].eq_ignore_ascii_case(transfer_encoding) {
 				match &*String::from_utf8_lossy(&line[transfer_encoding.len()..]).to_ascii_lowercase() {
 					"chunked" => chunked = true,
-					_ => return None, // Unsupported
+					_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsupported transfer encoding")),
 				}
 			}
 		}
@@ -172,14 +170,19 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 			}
 		}
 	}
-	if !ok_found || (!chunked && (actual_len == 0 || actual_len > max_resp)) { return None; } // Sorry, not implemented
+	if !ok_found {
+		return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+	}
 	bytes_read = resp.len();
 	if !chunked {
+		if actual_len == 0 || actual_len > max_resp {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
+		}
 		resp.resize(actual_len, 0);
 		while bytes_read < actual_len {
 			bytes_read += read_socket!();
 		}
-		Some(resp)
+		Ok(resp)
 	} else {
 		actual_len = 0;
 		let mut chunk_remaining = 0;
@@ -193,14 +196,14 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 					if lineiter.peek().is_none() { // We haven't yet read to the end of this line
 						if line.len() > 8 {
 							// No reason to ever have a chunk length line longer than 4 chars
-							return None;
+							return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
 						}
 						break;
 					}
 					bytes_skipped += line.len() + 1;
 					if line.len() == 0 { continue; } // Probably between the \r and \n
 					match usize::from_str_radix(&match std::str::from_utf8(line) {
-						Ok(s) => s, Err(_) => return None,
+						Ok(s) => s, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
 					}, 16) {
 						Ok(chunklen) => {
 							if chunklen == 0 { finished_read = true; }
@@ -222,13 +225,15 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 							}
 							break;
 						},
-						Err(_) => return None,
+						Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
 					}
 				}
 				if chunk_remaining != 0 {
 					bytes_read -= bytes_skipped;
 					resp.drain(actual_len..actual_len + bytes_skipped);
-					if actual_len + chunk_remaining > max_resp { return None; }
+					if actual_len + chunk_remaining > max_resp {
+						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
+					}
 					let already_in_chunk = cmp::min(bytes_read - actual_len, chunk_remaining);
 					actual_len += already_in_chunk;
 					chunk_remaining -= already_in_chunk;
@@ -238,7 +243,7 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u
 						// Note that we may leave some extra \r\ns to be read, but that's OK,
 						// we'll ignore then when parsing headers for the next request.
 						resp.resize(actual_len, 0);
-						return Some(resp);
+						return Ok(resp);
 					} else {
 						// Need to read more bytes to figure out chunk length
 					}
