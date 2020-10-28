@@ -742,4 +742,31 @@ mod tests {
 			Ok(count) => assert_eq!(count, 654470),
 		}
 	}
+
+	#[test]
+	fn from_bytes_into_binary_response() {
+		let bytes = b"foo";
+		match BinaryResponse::try_from(bytes.to_vec()) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(response) => assert_eq!(&response.0, bytes),
+		}
+	}
+
+	#[test]
+	fn from_invalid_bytes_into_json_response() {
+		let json = serde_json::json!({ "result": 42 });
+		match JsonResponse::try_from(json.to_string().as_bytes()[..5].to_vec()) {
+			Err(_) => {},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn from_valid_bytes_into_json_response() {
+		let json = serde_json::json!({ "result": 42 });
+		match JsonResponse::try_from(json.to_string().as_bytes().to_vec()) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(response) => assert_eq!(response.0, json),
+		}
+	}
 }
