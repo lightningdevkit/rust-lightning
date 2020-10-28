@@ -504,6 +504,10 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 	type Error = std::io::Error;
 
 	fn try_into(self) -> std::io::Result<(BlockHash, Option<u32>)> {
+		if !self.0.is_object() {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
+		}
+
 		let hash = match &self.0["bestblockhash"] {
 			serde_json::Value::String(hex_data) => match BlockHash::from_hex(&hex_data) {
 				Err(_) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid hex data")),
