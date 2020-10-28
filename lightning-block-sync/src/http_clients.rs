@@ -534,6 +534,9 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 mod tests {
 	use super::*;
 	use std::io::Write;
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::consensus::encode;
+	use bitcoin::network::constants::Network;
 
 	/// Server for handling HTTP client requests with a stock response.
 	struct HttpServer {
@@ -767,6 +770,71 @@ mod tests {
 		match JsonResponse::try_from(json.to_string().as_bytes().to_vec()) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(response) => assert_eq!(response.0, json),
+		}
+	}
+
+	#[test]
+	fn into_block_from_invalid_binary_response() {
+		let response = BinaryResponse(b"foo".to_vec());
+		match TryInto::<Block>::try_into(response) {
+			Err(_) => {},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_from_valid_binary_response() {
+		let genesis_block = genesis_block(Network::Bitcoin);
+		let response = BinaryResponse(encode::serialize(&genesis_block));
+		match TryInto::<Block>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(block) => assert_eq!(block, genesis_block),
+		}
+	}
+
+	#[test]
+	fn into_block_from_json_response_with_unexpected_type() {
+		let response = JsonResponse(serde_json::json!({ "result": "foo" }));
+		match TryInto::<Block>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_from_json_response_with_invalid_hex_data() {
+		let response = JsonResponse(serde_json::json!("foobar"));
+		match TryInto::<Block>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_from_json_response_with_invalid_block_data() {
+		let response = JsonResponse(serde_json::json!("abcd"));
+		match TryInto::<Block>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid block data");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_from_json_response_with_valid_block_data() {
+		let genesis_block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(serde_json::json!(encode::serialize_hex(&genesis_block)));
+		match TryInto::<Block>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(block) => assert_eq!(block, genesis_block),
 		}
 	}
 }
