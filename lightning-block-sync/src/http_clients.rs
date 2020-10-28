@@ -837,4 +837,103 @@ mod tests {
 			Ok(block) => assert_eq!(block, genesis_block),
 		}
 	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_unexpected_type() {
+		let response = JsonResponse(serde_json::json!("foo"));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_unexpected_bestblockhash_type() {
+		let response = JsonResponse(serde_json::json!({ "bestblockhash": 42 }));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_invalid_hex_data() {
+		let response = JsonResponse(serde_json::json!({ "bestblockhash": "foobar"} ));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_without_height() {
+		let block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(serde_json::json!({
+			"bestblockhash": block.block_hash().to_hex(),
+		}));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((hash, height)) => {
+				assert_eq!(hash, block.block_hash());
+				assert!(height.is_none());
+			},
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_unexpected_blocks_type() {
+		let block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(serde_json::json!({
+			"bestblockhash": block.block_hash().to_hex(),
+			"blocks": "foo",
+		}));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON number");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_invalid_height() {
+		let block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(serde_json::json!({
+			"bestblockhash": block.block_hash().to_hex(),
+			"blocks": u64::MAX,
+		}));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid height");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_hash_from_json_response_with_height() {
+		let block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(serde_json::json!({
+			"bestblockhash": block.block_hash().to_hex(),
+			"blocks": 1,
+		}));
+		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((hash, height)) => {
+				assert_eq!(hash, block.block_hash());
+				assert_eq!(height.unwrap(), 1);
+			},
+		}
+	}
 }
