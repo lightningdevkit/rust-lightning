@@ -608,6 +608,26 @@ mod tests {
 		}
 	}
 
+	/// A `BlockHeader` reference and height.
+	struct BlockHeaderAndHeight<'a>(&'a BlockHeader, u32);
+
+	/// Converts from a `BlockHeader` reference and height into a `GetHeaderResponse` JSON value.
+	impl From<BlockHeaderAndHeight<'_>> for serde_json::Value {
+		fn from(value: BlockHeaderAndHeight<'_>) -> Self {
+			let BlockHeaderAndHeight(header, height) = value;
+			serde_json::json!({
+				"chainwork": header.work().to_string()["0x".len()..],
+				"height": height,
+				"version": header.version,
+				"merkleroot": header.merkle_root.to_hex(),
+				"time": header.time,
+				"nonce": header.nonce,
+				"bits": header.bits.to_hex(),
+				"previousblockhash": header.prev_blockhash.to_hex(),
+			})
+		}
+	}
+
 	#[test]
 	fn connect_to_unresolvable_host() {
 		match HttpClient::connect(("example.invalid", 80)) {
@@ -770,6 +790,97 @@ mod tests {
 		match JsonResponse::try_from(json.to_string().as_bytes().to_vec()) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(response) => assert_eq!(response.0, json),
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_unexpected_type() {
+		let response = JsonResponse(serde_json::json!(42));
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "unexpected JSON type");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_unexpected_header_type() {
+		let response = JsonResponse(serde_json::json!([42]));
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_invalid_header_response() {
+		let block = genesis_block(Network::Bitcoin);
+		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		response.0["chainwork"].take();
+
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header response");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_invalid_header_data() {
+		let block = genesis_block(Network::Bitcoin);
+		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		response.0["chainwork"] = serde_json::json!("foobar");
+
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header data");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_valid_header() {
+		let block = genesis_block(Network::Bitcoin);
+		let response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(BlockHeaderData { chainwork, height, header }) => {
+				assert_eq!(chainwork, block.header.work());
+				assert_eq!(height, 0);
+				assert_eq!(header, block.header);
+			},
+		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_valid_header_array() {
+		let genesis_block = genesis_block(Network::Bitcoin);
+		let best_block_header = BlockHeader {
+			prev_blockhash: genesis_block.block_hash(),
+			..genesis_block.header
+		};
+		let response = JsonResponse(serde_json::json!([
+				serde_json::Value::from(BlockHeaderAndHeight(&best_block_header, 1)),
+				serde_json::Value::from(BlockHeaderAndHeight(&genesis_block.header, 0)),
+		]));
+
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(BlockHeaderData { chainwork, height, header }) => {
+				assert_eq!(chainwork, best_block_header.work());
+				assert_eq!(height, 1);
+				assert_eq!(header, best_block_header);
+			},
 		}
 	}
 
