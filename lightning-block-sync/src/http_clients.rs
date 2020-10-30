@@ -132,7 +132,7 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> std::io::Res
 	resp.extend_from_slice(&[0; 8192]);
 	'read_headers: loop {
 		if bytes_read >= 8192 {
-			return Err(std::io::Error::new(std::io::ErrorKind::Other, "headers too large"));
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "headers too large"));
 		}
 		bytes_read += read_socket!();
 		for line in resp[..bytes_read].split(|c| *c == '\n' as u8 || *c == '\r' as u8) {
