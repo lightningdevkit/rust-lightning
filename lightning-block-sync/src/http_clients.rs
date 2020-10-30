@@ -344,22 +344,22 @@ struct GetHeaderResponse {
 	pub previousblockhash: String,
 }
 
-impl GetHeaderResponse {
-	/// Always returns BogusData if we return an Err
-	pub fn to_block_header(self) -> Result<BlockHeaderData, BlockSourceRespErr> {
-		let header = BlockHeader {
-			version: self.version,
-			prev_blockhash: BlockHash::from_hex(&self.previousblockhash).map_err(|_| BlockSourceRespErr::BogusData)?,
-			merkle_root: TxMerkleNode::from_hex(&self.merkleroot).map_err(|_| BlockSourceRespErr::BogusData)?,
-			time: self.time,
-			bits: u32::from_str_radix(&self.bits, 16).map_err(|_| BlockSourceRespErr::BogusData)?,
-			nonce: self.nonce,
-		};
+/// Converts from `GetHeaderResponse` to `BlockHeaderData`.
+impl TryFrom<GetHeaderResponse> for BlockHeaderData {
+	type Error = bitcoin::hashes::hex::Error;
 
+	fn try_from(response: GetHeaderResponse) -> Result<Self, bitcoin::hashes::hex::Error> {
 		Ok(BlockHeaderData {
-			chainwork: hex_to_uint256(&self.chainwork).or(Err(BlockSourceRespErr::BogusData))?,
-			height: self.height,
-			header,
+			chainwork: hex_to_uint256(&response.chainwork)?,
+			height: response.height,
+			header: BlockHeader {
+				version: response.version,
+				prev_blockhash: BlockHash::from_hex(&response.previousblockhash)?,
+				merkle_root: TxMerkleNode::from_hex(&response.merkleroot)?,
+				time: response.time,
+				bits: u32::from_be_bytes(<[u8; 4]>::from_hex(&response.bits)?),
+				nonce: response.nonce,
+			},
 		})
 	}
 }
@@ -471,7 +471,7 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 
 		match serde_json::from_value::<GetHeaderResponse>(header) {
 			Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header response")),
-			Ok(response) => match response.to_block_header() {
+			Ok(response) => match response.try_into() {
 				Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header data")),
 				Ok(header) => Ok(header),
 			},
