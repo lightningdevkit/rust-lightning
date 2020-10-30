@@ -458,7 +458,8 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 	fn try_into(self) -> std::io::Result<BlockHeaderData> {
 		let mut header = match self.0 {
 			serde_json::Value::Array(mut array) if !array.is_empty() => array.drain(..).next().unwrap(),
-			_ => self.0,
+			serde_json::Value::Object(_) => self.0,
+			_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected JSON type")),
 		};
 
 		if !header.is_object() {
