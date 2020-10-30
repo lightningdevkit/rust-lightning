@@ -48,6 +48,15 @@ pub struct BlockHeaderData {
 	pub header: BlockHeader
 }
 
+/// Result type for `BlockSource` requests.
+type BlockSourceResult<T> = Result<T, BlockSourceError>;
+
+/// Result type for asynchronous `BlockSource` requests.
+///
+/// TODO: Replace with BlockSourceResult once async trait functions are supported. For details, see:
+/// https://areweasyncyet.rs.
+type AsyncBlockSourceResult<'a, T> = Pin<Box<dyn Future<Output = BlockSourceResult<T>> + 'a + Send>>;
+
 #[derive(Debug, Clone)]
 /// Failure type for requests to block sources.
 pub enum BlockSourceError {
@@ -68,29 +77,21 @@ pub trait BlockSource : Sync + Send {
 	/// height_hint is None is fine, though get_best_block() should never return a None for height
 	/// on the same source. Such a source should never be used in init_sync_chain_monitor as it
 	/// doesn't have any initial height information.
-	///
-	/// Sadly rust's trait system hasn't grown the ability to take impl/differentially-sized return
-	/// values yet, so we have to Box + dyn the future.
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceError>> + 'a + Send>>;
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
 
 	/// Gets the block for a given hash. BlockSources may be headers-only, in which case they
 	/// should always return Err(BlockSourceError::NoResponse) here.
-	/// Sadly rust's trait system hasn't grown the ability to take impl/differentially-sized return
-	/// values yet, so we have to Box + dyn the future.
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceError>> + 'a + Send>>;
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block>;
 
 	/// Gets the best block hash and, optionally, its height.
 	/// Including the height doesn't impact the chain-scannling algorithm, but it is passed to
 	/// get_header() which may allow some BlockSources to more effeciently find the target header.
-	///
-	/// Sadly rust's trait system hasn't grown the ability to take impl/differentially-sized return
-	/// values yet, so we have to Box + dyn the future.
-	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + 'a + Send>>;
+	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
 }
 
 /// Stateless header checks on a given header.
 #[inline]
-fn stateless_check_header(header: &BlockHeader) -> Result<(), BlockSourceError> {
+fn stateless_check_header(header: &BlockHeader) -> BlockSourceResult<()> {
 	if header.validate_pow(&header.target()).is_err() {
 		Err(BlockSourceError::BogusData)
 	} else { Ok(()) }
@@ -99,7 +100,7 @@ fn stateless_check_header(header: &BlockHeader) -> Result<(), BlockSourceError> 
 /// Check that child_header correctly builds on previous_header - the claimed work differential
 /// matches the actual PoW in child_header and the difficulty transition is possible, ie within 4x.
 /// Includes stateless header checks on previous_header.
-fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeaderData, mainnet: bool) -> Result<(), BlockSourceError> {
+fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeaderData, mainnet: bool) -> BlockSourceResult<()> {
 	if child_header.header.prev_blockhash != previous_header.header.block_hash() {
 		return Err(BlockSourceError::BogusData);
 	}
@@ -128,7 +129,7 @@ enum ForkStep {
 	DisconnectBlock(BlockHeaderData),
 	ConnectBlock(BlockHeaderData),
 }
-fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, head_blocks: &'a [BlockHeaderData], mainnet: bool) -> Pin<Box<dyn Future<Output=Result<(), BlockSourceError>> + Send + 'a>> {
+fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, head_blocks: &'a [BlockHeaderData], mainnet: bool) -> AsyncBlockSourceResult<'a, ()> {
 	Box::pin(async move {
 		if prev_header.header.prev_blockhash == current_header.header.prev_blockhash {
 			// Found the fork, get the fork point header and we're done!
@@ -193,7 +194,7 @@ fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHead
 /// Walks backwards from current_header and prev_header finding the fork and sending ForkStep events
 /// into the steps_tx Sender. There is no ordering guarantee between different ForkStep types, but
 /// DisconnectBlock and ConnectBlock events are each in reverse, height-descending order.
-async fn find_fork<'a>(current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, mut head_blocks: &'a [BlockHeaderData], mainnet: bool) -> Result<Vec<ForkStep>, BlockSourceError> {
+async fn find_fork<'a>(current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, mut head_blocks: &'a [BlockHeaderData], mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
 	let mut steps_tx = Vec::new();
 	if current_header.header == prev_header.header { return Ok(steps_tx); }
 
@@ -341,7 +342,7 @@ pub struct MicroSPVClient<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized +
 	chain_tip: (BlockHash, BlockHeaderData),
 	block_sources: Vec<B>,
 	backup_block_sources: Vec<B>,
-	cur_blocks: Vec<Result<BlockHash, BlockSourceError>>,
+	cur_blocks: Vec<BlockSourceResult<BlockHash>>,
 	blocks_past_common_tip: Vec<BlockHeaderData>,
 	chain_notifier: CL,
 	mainnet: bool
@@ -499,7 +500,7 @@ mod tests {
 		disallowed: Mutex<bool>,
 	}
 	impl BlockSource for &Blockchain {
-		fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceError>> + 'a + Send>> {
+		fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 			if *self.disallowed.lock().unwrap() { unreachable!(); }
 			Box::pin(async move {
 				match self.blocks.lock().unwrap().get(header_hash) {
@@ -515,7 +516,7 @@ mod tests {
 				}
 			})
 		}
-		fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceError>> + 'a + Send>> {
+		fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
 			if *self.disallowed.lock().unwrap() { unreachable!(); }
 			Box::pin(async move {
 				if self.headers_only {
@@ -528,7 +529,7 @@ mod tests {
 				}
 			})
 		}
-		fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + 'a + Send>> {
+		fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 			if *self.disallowed.lock().unwrap() { unreachable!(); }
 			Box::pin(async move { Ok(self.best_block.lock().unwrap().clone()) })
 		}
