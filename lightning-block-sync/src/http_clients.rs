@@ -367,7 +367,7 @@ impl BlockSource for RPCClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
-			Ok(self.call_method("getblockheader", &[header_hash]).await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.call_method("getblockheader", &[header_hash]).await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 
@@ -375,13 +375,13 @@ impl BlockSource for RPCClient {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
 			let verbosity = serde_json::json!(0);
-			Ok(self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 
 	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 		Box::pin(async move {
-			Ok(self.call_method("getblockchaininfo", &[]).await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.call_method("getblockchaininfo", &[]).await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 }
@@ -391,20 +391,20 @@ impl BlockSource for RESTClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			let resource_path = format!("headers/1/{}.json", header_hash.to_hex());
-			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
 		Box::pin(async move {
 			let resource_path = format!("block/{}.bin", header_hash.to_hex());
-			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 
 	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 		Box::pin(async move {
-			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await.map_err(|_| BlockSourceError::NoResponse)?)
+			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await.map_err(|_| BlockSourceError::Transient)?)
 		})
 	}
 }

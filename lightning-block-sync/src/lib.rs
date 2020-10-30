@@ -57,30 +57,32 @@ type BlockSourceResult<T> = Result<T, BlockSourceError>;
 /// https://areweasyncyet.rs.
 type AsyncBlockSourceResult<'a, T> = Pin<Box<dyn Future<Output = BlockSourceResult<T>> + 'a + Send>>;
 
+/// Error type for requests made to a `BlockSource`.
+///
+/// Transient errors may be resolved when re-polling, but no attempt will be made to re-poll on
+/// persistent errors.
 #[derive(Debug, Clone)]
-/// Failure type for requests to block sources.
 pub enum BlockSourceError {
-	/// Indicates a BlockSource provided bogus data. After this is returned once we will never
-	/// bother polling the returning BlockSource for block data again, so use it sparingly.
-	BogusData,
-	/// Indicates the BlockSource isn't responsive or may be misconfigured but we want to continue
-	/// polling it.
-	NoResponse,
+	/// Indicates an error that won't resolve when retrying a request (e.g., invalid data).
+	Persistent,
+	/// Indicates an error that may resolve when retrying a request (e.g., unresponsive).
+	Transient,
 }
+
 /// Abstract type for a source of block header and block data.
 pub trait BlockSource : Sync + Send {
 	/// Gets the header for a given hash. The height the header should be at is provided, though
 	/// note that you must return either the header with the requested hash, or an Err, not a
 	/// different header with the same eight.
 	///
-	/// For sources which cannot find headers based on the hash, returning NoResponse when
+	/// For sources which cannot find headers based on the hash, returning Transient when
 	/// height_hint is None is fine, though get_best_block() should never return a None for height
 	/// on the same source. Such a source should never be used in init_sync_chain_monitor as it
 	/// doesn't have any initial height information.
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
 
 	/// Gets the block for a given hash. BlockSources may be headers-only, in which case they
-	/// should always return Err(BlockSourceError::NoResponse) here.
+	/// should always return Err(BlockSourceError::Transient) here.
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block>;
 
 	/// Gets the best block hash and, optionally, its height.
@@ -93,7 +95,7 @@ pub trait BlockSource : Sync + Send {
 #[inline]
 fn stateless_check_header(header: &BlockHeader) -> BlockSourceResult<()> {
 	if header.validate_pow(&header.target()).is_err() {
-		Err(BlockSourceError::BogusData)
+		Err(BlockSourceError::Persistent)
 	} else { Ok(()) }
 }
 
@@ -102,23 +104,23 @@ fn stateless_check_header(header: &BlockHeader) -> BlockSourceResult<()> {
 /// Includes stateless header checks on previous_header.
 fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeaderData, mainnet: bool) -> BlockSourceResult<()> {
 	if child_header.header.prev_blockhash != previous_header.header.block_hash() {
-		return Err(BlockSourceError::BogusData);
+		return Err(BlockSourceError::Persistent);
 	}
 
 	stateless_check_header(&previous_header.header)?;
 	let new_work = child_header.header.work();
 	if previous_header.height != child_header.height - 1 ||
 			previous_header.chainwork + new_work != child_header.chainwork {
-		return Err(BlockSourceError::BogusData);
+		return Err(BlockSourceError::Persistent);
 	}
 	if mainnet {
 		if child_header.height % 2016 == 0 {
 			let prev_work = previous_header.header.work();
 			if new_work > prev_work << 2 || new_work < prev_work >> 2 {
-				return Err(BlockSourceError::BogusData)
+				return Err(BlockSourceError::Persistent)
 			}
 		} else if child_header.header.bits != previous_header.header.bits {
-			return Err(BlockSourceError::BogusData)
+			return Err(BlockSourceError::Persistent)
 		}
 	}
 	Ok(())
@@ -145,7 +147,7 @@ fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHead
 			}
 		} else if current_header.height == 0 {
 			// We're connect through genesis, we must be on a different chain!
-			return Err(BlockSourceError::BogusData);
+			return Err(BlockSourceError::Persistent);
 		} else if prev_header.height < current_header.height {
 			if prev_header.height + 1 == current_header.height &&
 					prev_header.header.block_hash() == current_header.header.prev_blockhash {
@@ -295,7 +297,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 				Ok(b) => b,
 			};
 			if block.header != header_data.header || !block.check_merkle_root() || !block.check_witness_commitment() {
-				return Err((BlockSourceError::BogusData, new_tip));
+				return Err((BlockSourceError::Persistent, new_tip));
 			}
 			println!("Connecting block {}", header_data.header.block_hash().to_hex());
 			chain_notifier.block_connected(&block, header_data.height);
@@ -361,7 +363,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: Cha
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
 	pub fn init(chain_tip: BlockHeaderData, block_sources: Vec<B>, backup_block_sources: Vec<B>, chain_notifier: CL, mainnet: bool) -> Self {
-		let cur_blocks = vec![Err(BlockSourceError::NoResponse); block_sources.len() + backup_block_sources.len()];
+		let cur_blocks = vec![Err(BlockSourceError::Transient); block_sources.len() + backup_block_sources.len()];
 		let blocks_past_common_tip = Vec::new();
 		Self {
 			chain_tip: (chain_tip.header.block_hash(), chain_tip),
@@ -376,7 +378,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: Cha
 
 		macro_rules! process_source {
 			($cur_hash: expr, $source: expr) => { {
-				if let Err(BlockSourceError::BogusData) = $cur_hash {
+				if let Err(BlockSourceError::Persistent) = $cur_hash {
 					// We gave up on this provider, move on.
 					continue;
 				}
@@ -384,11 +386,11 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: Cha
 					($err: expr) => {
 						match $err {
 							Ok(r) => r,
-							Err(BlockSourceError::BogusData) => {
-								$cur_hash = Err(BlockSourceError::BogusData);
+							Err(BlockSourceError::Persistent) => {
+								$cur_hash = Err(BlockSourceError::Persistent);
 								continue;
 							},
-							Err(BlockSourceError::NoResponse) => {
+							Err(BlockSourceError::Transient) => {
 								continue;
 							},
 						}
@@ -401,7 +403,7 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: Cha
 				}
 				let new_header = handle_err!($source.get_header(&new_hash, height_opt).await);
 				if new_header.header.block_hash() != new_hash {
-					$cur_hash = Err(BlockSourceError::BogusData);
+					$cur_hash = Err(BlockSourceError::Persistent);
 					continue;
 				}
 				handle_err!(stateless_check_header(&new_header.header));
@@ -512,7 +514,7 @@ mod tests {
 							header: block.block.header.clone(),
 						})
 					},
-					None => Err(BlockSourceError::NoResponse),
+					None => Err(BlockSourceError::Transient),
 				}
 			})
 		}
@@ -520,11 +522,11 @@ mod tests {
 			if *self.disallowed.lock().unwrap() { unreachable!(); }
 			Box::pin(async move {
 				if self.headers_only {
-					Err(BlockSourceError::NoResponse)
+					Err(BlockSourceError::Transient)
 				} else {
 					match self.blocks.lock().unwrap().get(header_hash) {
 						Some(block) => Ok(block.block.clone()),
-						None => Err(BlockSourceError::NoResponse),
+						None => Err(BlockSourceError::Transient),
 					}
 				}
 			})
