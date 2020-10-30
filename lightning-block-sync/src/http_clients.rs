@@ -1,6 +1,6 @@
 use crate::http_endpoint::HttpEndpoint;
 use crate::utils::hex_to_uint256;
-use crate::{BlockHeaderData, BlockSource, BlockSourceRespErr};
+use crate::{BlockHeaderData, BlockSource, BlockSourceError};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
@@ -366,47 +366,47 @@ impl TryFrom<GetHeaderResponse> for BlockHeaderData {
 
 #[cfg(feature = "rpc-client")]
 impl BlockSource for RPCClient {
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
-			Ok(self.call_method("getblockheader", &[header_hash]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.call_method("getblockheader", &[header_hash]).await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceRespErr>> + 'a + Send>> {
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
 			let verbosity = serde_json::json!(0);
-			Ok(self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 
-	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
+	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
-			Ok(self.call_method("getblockchaininfo", &[]).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.call_method("getblockchaininfo", &[]).await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 }
 
 #[cfg(feature = "rest-client")]
 impl BlockSource for RESTClient {
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceRespErr>> + 'a + Send>> {
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> Pin<Box<dyn Future<Output = Result<BlockHeaderData, BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
 			let resource_path = format!("headers/1/{}.json", header_hash.to_hex());
-			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceRespErr>> + 'a + Send>> {
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> Pin<Box<dyn Future<Output = Result<Block, BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
 			let resource_path = format!("block/{}.bin", header_hash.to_hex());
-			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 
-	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceRespErr>> + 'a + Send>> {
+	fn get_best_block<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>> + 'a + Send>> {
 		Box::pin(async move {
-			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await.map_err(|_| BlockSourceRespErr::NoResponse)?)
+			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await.map_err(|_| BlockSourceError::NoResponse)?)
 		})
 	}
 }
