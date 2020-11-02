@@ -24,6 +24,25 @@ requests.
 Major projects are tracked [here](https://github.com/rust-bitcoin/rust-lightning/projects).
 Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-lightning/milestones?direction=asc&sort=title&state=open).
 
+Getting Started
+---------------
+
+First and foremost, start small.
+
+This doesn't mean don't be ambitious with the breadth and depth of your contributions but rather
+understand the project context and culture before investing an asymmetric number of hours on
+development compared to your merged work.
+
+Even if you have an extensive open source background or sound software engineering skills, consider
+that the reviewers' comprehension of the code is as much important as technical correctness.
+
+It's very welcome to ask for review, either on IRC or LDK Slack. And also for reviewers, it's nice
+to provide timelines when you hope to fulfill the request while bearing in mind for both sides that's
+a "soft" commitment.
+
+If you're eager to increase the velocity of the dev process, reviewing other contributors work is
+the best you can do while waiting review on yours.
+
 Contribution Workflow
 ---------------------
 
