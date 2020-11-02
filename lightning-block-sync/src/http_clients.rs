@@ -608,15 +608,12 @@ mod tests {
 		}
 	}
 
-	/// A `BlockHeader` reference and height.
-	struct BlockHeaderAndHeight<'a>(&'a BlockHeader, u32);
-
-	/// Converts from a `BlockHeader` reference and height into a `GetHeaderResponse` JSON value.
-	impl From<BlockHeaderAndHeight<'_>> for serde_json::Value {
-		fn from(value: BlockHeaderAndHeight<'_>) -> Self {
-			let BlockHeaderAndHeight(header, height) = value;
+	/// Converts from `BlockHeaderData` into a `GetHeaderResponse` JSON value.
+	impl From<BlockHeaderData> for serde_json::Value {
+		fn from(data: BlockHeaderData) -> Self {
+			let BlockHeaderData { chainwork, height, header } = data;
 			serde_json::json!({
-				"chainwork": header.work().to_string()["0x".len()..],
+				"chainwork": chainwork.to_string()["0x".len()..],
 				"height": height,
 				"version": header.version,
 				"merkleroot": header.merkle_root.to_hex(),
@@ -820,7 +817,11 @@ mod tests {
 	#[test]
 	fn into_block_header_from_json_response_with_invalid_header_response() {
 		let block = genesis_block(Network::Bitcoin);
-		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		let mut response = JsonResponse(BlockHeaderData {
+			chainwork: block.header.work(),
+			height: 0,
+			header: block.header
+		}.into());
 		response.0["chainwork"].take();
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
@@ -835,7 +836,11 @@ mod tests {
 	#[test]
 	fn into_block_header_from_json_response_with_invalid_header_data() {
 		let block = genesis_block(Network::Bitcoin);
-		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		let mut response = JsonResponse(BlockHeaderData {
+			chainwork: block.header.work(),
+			height: 0,
+			header: block.header
+		}.into());
 		response.0["chainwork"] = serde_json::json!("foobar");
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
@@ -850,14 +855,18 @@ mod tests {
 	#[test]
 	fn into_block_header_from_json_response_with_valid_header() {
 		let block = genesis_block(Network::Bitcoin);
-		let response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		let response = JsonResponse(BlockHeaderData {
+			chainwork: block.header.work(),
+			height: 0,
+			header: block.header
+		}.into());
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(BlockHeaderData { chainwork, height, header }) => {
-				assert_eq!(chainwork, block.header.work());
-				assert_eq!(height, 0);
-				assert_eq!(header, block.header);
+			Ok(data) => {
+				assert_eq!(data.chainwork, block.header.work());
+				assert_eq!(data.height, 0);
+				assert_eq!(data.header, block.header);
 			},
 		}
 	}
@@ -869,17 +878,22 @@ mod tests {
 			prev_blockhash: genesis_block.block_hash(),
 			..genesis_block.header
 		};
+		let chainwork = genesis_block.header.work() + best_block_header.work();
 		let response = JsonResponse(serde_json::json!([
-				serde_json::Value::from(BlockHeaderAndHeight(&best_block_header, 1)),
-				serde_json::Value::from(BlockHeaderAndHeight(&genesis_block.header, 0)),
+				serde_json::Value::from(BlockHeaderData {
+					chainwork, height: 1, header: best_block_header,
+				}),
+				serde_json::Value::from(BlockHeaderData {
+					chainwork: genesis_block.header.work(), height: 0, header: genesis_block.header,
+				}),
 		]));
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(BlockHeaderData { chainwork, height, header }) => {
-				assert_eq!(chainwork, best_block_header.work());
-				assert_eq!(height, 1);
-				assert_eq!(header, best_block_header);
+			Ok(data) => {
+				assert_eq!(data.chainwork, chainwork);
+				assert_eq!(data.height, 1);
+				assert_eq!(data.header, best_block_header);
 			},
 		}
 	}
@@ -887,7 +901,11 @@ mod tests {
 	#[test]
 	fn into_block_header_from_json_response_without_previous_block_hash() {
 		let block = genesis_block(Network::Bitcoin);
-		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		let mut response = JsonResponse(BlockHeaderData {
+			chainwork: block.header.work(),
+			height: 0,
+			header: block.header
+		}.into());
 		response.0.as_object_mut().unwrap().remove("previousblockhash");
 
 		match TryInto::<BlockHeaderData>::try_into(response) {
