@@ -282,6 +282,8 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 
 	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
 
+	latest_height: u32,
+
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
@@ -328,6 +330,7 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 				}
 			}
 		}
+		self.latest_height.write(writer)?;
 		Ok(())
 	}
 }
@@ -387,6 +390,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			}
 			onchain_events_waiting_threshold_conf.insert(height_target, events);
 		}
+		let latest_height = Readable::read(reader)?;
 
 		Ok(OnchainTxHandler {
 			destination_script,
@@ -399,6 +403,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
+			latest_height,
 			secp_ctx: Secp256k1::new(),
 		})
 	}
@@ -420,6 +425,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_waiting_threshold_conf: HashMap::new(),
+			latest_height: 0,
 
 			secp_ctx: Secp256k1::new(),
 		}
@@ -471,7 +477,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: F, logger: L) -> Option<(Option<u32>, u32, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u32, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -657,12 +663,20 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		None
 	}
 
-	pub(crate) fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
+	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
+	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
+	/// if we receive a preimage after force-close.
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], claimable_outpoints: Vec<ClaimRequest>, latest_height: Option<u32>, broadcaster: &B, fee_estimator: &F, logger: &L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		log_trace!(logger, "Block at height {} connected with {} claim requests", height, claimable_outpoints.len());
+		let height = match latest_height {
+			Some(h) => h,
+			None => self.latest_height,
+		};
+		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
 		let mut aggregated_soonest = ::std::u32::MAX;
@@ -855,7 +869,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			}
 		}
 		for (_, claim_material) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &&*fee_estimator, &&*logger) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
 				broadcaster.broadcast_transaction(&bump_tx);
