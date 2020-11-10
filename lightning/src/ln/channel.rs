@@ -4017,12 +4017,6 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			}
 		}
 
-		for _htlc in self.pending_outbound_htlcs.drain(..) {
-			//TODO: Do something with the remaining HTLCs
-			//(we need to have the ChannelManager monitor them so we can claim the inbound HTLCs
-			//which correspond)
-		}
-
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
 		self.latest_monitor_update_id += 1;
