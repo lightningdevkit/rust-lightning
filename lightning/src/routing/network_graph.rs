@@ -716,8 +716,8 @@ impl NetworkGraph {
 					if let Some(capacity_sats) = channel.capacity_sats {
 						// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
 						// Don't query UTXO set here to reduce DoS risks.
-						if htlc_maximum_msat > capacity_sats * 1000 {
-							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity".to_owned(), action: ErrorAction::IgnoreError});
+						if capacity_sats > MAX_VALUE_MSAT / 1000 || htlc_maximum_msat > capacity_sats * 1000 {
+							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(), action: ErrorAction::IgnoreError});
 						}
 					}
 				}
@@ -1302,7 +1302,7 @@ mod tests {
 
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity")
+			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity or capacity is bogus")
 		};
 		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
 
