@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
+use std::hash;
 
 use proc_macro2::{TokenTree, Span};
 
@@ -144,7 +145,7 @@ impl<'a> GenericTypes<'a> {
 							}
 
 							assert_simple_bound(&trait_bound);
-							if let Some(mut path) = types.maybe_resolve_path(&trait_bound.path) {
+							if let Some(mut path) = types.maybe_resolve_path(&trait_bound.path, None) {
 								if types.skip_path(&path) { continue; }
 								if non_lifetimes_processed { return false; }
 								non_lifetimes_processed = true;
@@ -177,7 +178,7 @@ impl<'a> GenericTypes<'a> {
 									if non_lifetimes_processed { return false; }
 									non_lifetimes_processed = true;
 									assert_simple_bound(&trait_bound);
-									*gen = ("crate::".to_string() + &types.resolve_path(&trait_bound.path),
+									*gen = ("crate::".to_string() + &types.resolve_path(&trait_bound.path, None),
 										Some(&trait_bound.path));
 								}
 							}
@@ -225,6 +226,13 @@ pub enum DeclType<'a> {
 	EnumIgnored,
 }
 
+// templates_defined is walked to write the C++ header, so if we use the default hashing it get
+// reordered on each genbindings run. Instead, we use SipHasher (which defaults to 0-keys) so that
+// the sorting is stable across runs. It is deprecated, but the "replacement" doesn't actually
+// accomplish the same goals, so we just ignore it.
+#[allow(deprecated)]
+type NonRandomHash = hash::BuildHasherDefault<hash::SipHasher>;
+
 /// Top-level struct tracking everything which has been defined while walking the crate.
 pub struct CrateTypes<'a> {
 	/// This may contain structs or enums, but only when either is mapped as
@@ -234,11 +242,13 @@ pub struct CrateTypes<'a> {
 	pub mirrored_enums: HashMap<String, &'a syn::ItemEnum>,
 	/// Traits which are mapped as a pointer + jump table
 	pub traits: HashMap<String, &'a syn::ItemTrait>,
+	/// Aliases from paths to some other Type
+	pub type_aliases: HashMap<String, syn::Type>,
 	/// Template continer types defined, map from mangled type name -> whether a destructor fn
 	/// exists.
 	///
 	/// This is used at the end of processing to make C++ wrapper classes
-	pub templates_defined: HashMap<String, bool>,
+	pub templates_defined: HashMap<String, bool, NonRandomHash>,
 	/// The output file for any created template container types, written to as we find new
 	/// template containers which need to be defined.
 	pub template_file: &'a mut File,
@@ -253,6 +263,17 @@ pub struct TypeResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	// ident -> is-mirrored-enum
 	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
 	pub crate_types: &'mod_lifetime mut CrateTypes<'crate_lft>,
+}
+
+/// Returned by write_empty_rust_val_check_suffix to indicate what type of dereferencing needs to
+/// happen to get the inner value of a generic.
+enum EmptyValExpectedTy {
+	/// A type which has a flag for being empty (eg an array where we treat all-0s as empty).
+	NonPointer,
+	/// A pointer that we want to dereference and move out of.
+	OwnedPointer,
+	/// A pointer which we want to convert to a reference.
+	ReferenceAsPointer,
 }
 
 impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
@@ -340,8 +361,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::script::Script" if is_ref => Some("crate::c_types::u8slice"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some("crate::c_types::derived::CVec_u8Z"),
 			"bitcoin::blockdata::transaction::OutPoint" if is_ref => Some("crate::chain::transaction::OutPoint"),
-			"bitcoin::blockdata::transaction::Transaction" if is_ref && !ptr_for_ref => Some("crate::c_types::Transaction"),
-			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::derived::CVec_u8Z"),
+			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::Transaction"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some("crate::c_types::TxOut"),
 			"bitcoin::OutPoint" => Some("crate::chain::transaction::OutPoint"),
 			"bitcoin::network::constants::Network" => Some("crate::bitcoin::network::Network"),
@@ -413,7 +433,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::script::Script" if is_ref => Some("&::bitcoin::blockdata::script::Script::from(Vec::from("),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some("::bitcoin::blockdata::script::Script::from("),
 			"bitcoin::blockdata::transaction::Transaction" if is_ref => Some("&"),
-			"bitcoin::blockdata::transaction::Transaction" => Some("::bitcoin::consensus::encode::deserialize(&"),
+			"bitcoin::blockdata::transaction::Transaction" => Some(""),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some(""),
 			"bitcoin::network::constants::Network" => Some(""),
 			"bitcoin::blockdata::block::BlockHeader" => Some("&::bitcoin::consensus::encode::deserialize(unsafe { &*"),
@@ -471,8 +491,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::secp256k1::key::SecretKey" if is_ref => Some("}[..]).unwrap()"),
 			"bitcoin::blockdata::script::Script" if is_ref => Some(".to_slice()))"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some(".into_rust())"),
-			"bitcoin::blockdata::transaction::Transaction" if is_ref => Some(".into_bitcoin()"),
-			"bitcoin::blockdata::transaction::Transaction" => Some(".into_rust()[..]).unwrap()"),
+			"bitcoin::blockdata::transaction::Transaction" => Some(".into_bitcoin()"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some(".into_rust()"),
 			"bitcoin::network::constants::Network" => Some(".into_bitcoin()"),
 			"bitcoin::blockdata::block::BlockHeader" => Some(" }).unwrap()"),
@@ -553,8 +572,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::secp256k1::Error" if !is_ref => Some("crate::c_types::Secp256k1Error::from_rust("),
 			"bitcoin::blockdata::script::Script" if is_ref => Some("crate::c_types::u8slice::from_slice(&"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some(""),
-			"bitcoin::blockdata::transaction::Transaction" if is_ref && !ptr_for_ref => Some("crate::c_types::Transaction::from_slice(&local_"),
-			"bitcoin::blockdata::transaction::Transaction" => Some("local_"),
+			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::Transaction::from_vec(local_"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some("crate::c_types::TxOut::from_rust("),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some("&local_"),
 			"bitcoin::blockdata::block::Block" if is_ref => Some("crate::c_types::u8slice::from_slice(&local_"),
@@ -617,8 +635,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::secp256k1::Error" if !is_ref => Some(")"),
 			"bitcoin::blockdata::script::Script" if is_ref => Some("[..])"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some(".into_bytes().into()"),
-			"bitcoin::blockdata::transaction::Transaction" if is_ref && !ptr_for_ref => Some(")"),
-			"bitcoin::blockdata::transaction::Transaction" => Some(".into()"),
+			"bitcoin::blockdata::transaction::Transaction" => Some(")"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some(")"),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some(""),
 			"bitcoin::blockdata::block::Block" if is_ref => Some(")"),
@@ -653,6 +670,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	fn empty_val_check_suffix_from_path(&self, full_path: &str) -> Option<&str> {
 		match full_path {
 			"ln::channelmanager::PaymentSecret" => Some(".data == [0; 32]"),
+			"bitcoin::secp256k1::key::PublicKey" => Some(".is_null()"),
+			"bitcoin::secp256k1::Signature" => Some(".is_null()"),
 			_ => None
 		}
 	}
@@ -681,7 +700,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	fn is_known_container(&self, full_path: &str, is_ref: bool) -> bool {
 		(full_path == "Result" && !is_ref) || (full_path == "Vec" && !is_ref) || full_path.ends_with("Tuple")
 	}
-	fn to_c_conversion_container_new_var<'b>(&self, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
+	fn to_c_conversion_container_new_var<'b>(&self, generics: Option<&GenericTypes>, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
 			// Returns prefix + Vec<(prefix, var-name-to-inline-convert)> + suffix
 			// expecting one element in the vec per generic type, each of which is inline-converted
 			-> Option<(&'b str, Vec<(String, String)>, &'b str)> {
@@ -700,7 +719,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			"Option" => {
 				if let Some(syn::Type::Path(p)) = single_contained {
-					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path)) {
+					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)) {
 						if is_ref {
 							return Some(("if ", vec![
 								(".is_none() { std::ptr::null() } else { ".to_owned(), format!("({}.as_ref().unwrap())", var_access))
@@ -714,7 +733,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					self.write_empty_rust_val(&mut v, t);
+					self.write_empty_rust_val(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
 					return Some(("if ", vec![
 						(format!(".is_none() {{ {} }} else {{ ", s), format!("({}.unwrap())", var_access))
@@ -727,7 +746,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 	/// only_contained_has_inner implies that there is only one contained element in the container
 	/// and it has an inner field (ie is an "opaque" type we've defined).
-	fn from_c_conversion_container_new_var<'b>(&self, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
+	fn from_c_conversion_container_new_var<'b>(&self, generics: Option<&GenericTypes>, full_path: &str, is_ref: bool, single_contained: Option<&syn::Type>, var_name: &syn::Ident, var_access: &str)
 			// Returns prefix + Vec<(prefix, var-name-to-inline-convert)> + suffix
 			// expecting one element in the vec per generic type, each of which is inline-converted
 			-> Option<(&'b str, Vec<(String, String)>, &'b str)> {
@@ -746,7 +765,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			"Option" => {
 				if let Some(syn::Type::Path(p)) = single_contained {
-					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path)) {
+					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)) {
 						if is_ref {
 							return Some(("if ", vec![(".inner.is_null() { None } else { Some((*".to_string(), format!("{}", var_name))], ").clone()) }"))
 						} else {
@@ -757,16 +776,21 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 				if let Some(t) = single_contained {
 					let mut v = Vec::new();
-					let needs_deref = self.write_empty_rust_val_check_suffix(&mut v, t);
+					let ret_ref = self.write_empty_rust_val_check_suffix(generics, &mut v, t);
 					let s = String::from_utf8(v).unwrap();
-					if needs_deref {
-						return Some(("if ", vec![
-							(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ &mut *{} }}", var_access))
-						], ") }"));
-					} else {
-						return Some(("if ", vec![
-							(format!("{} {{ None }} else {{ Some(", s), format!("{}", var_access))
-						], ") }"));
+					match ret_ref {
+						EmptyValExpectedTy::ReferenceAsPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ &mut *{} }}", var_access))
+							], ") }")),
+						EmptyValExpectedTy::OwnedPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("unsafe {{ *Box::from_raw({}) }}", var_access))
+							], ") }")),
+						EmptyValExpectedTy::NonPointer =>
+							return Some(("if ", vec![
+								(format!("{} {{ None }} else {{ Some(", s), format!("{}", var_access))
+							], ") }")),
 					}
 				} else { unreachable!(); }
 			},
@@ -812,6 +836,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			syn::UseTree::Path(p) => {
 				let new_path = format!("{}", p.ident);
 				self.process_use_intern(w, &p.tree, &new_path);
+			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}", n.ident);
+				self.imports.insert(n.ident.clone(), full_path);
 			},
 			_ => unimplemented!(),
 		}
@@ -864,10 +892,17 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		} else { None }
 	}
 
-	pub fn maybe_resolve_path(&self, p: &syn::Path) -> Option<String> {
+	pub fn maybe_resolve_path(&self, p_arg: &syn::Path, generics: Option<&GenericTypes>) -> Option<String> {
+		let p = if let Some(gen_types) = generics {
+			if let Some((_, synpath)) = gen_types.maybe_resolve_path(p_arg) {
+				synpath
+			} else { p_arg }
+		} else { p_arg };
+
 		if p.leading_colon.is_some() {
-			// At some point we may need this, but for now, its unused, so just fail.
-			return None;
+			Some(p.segments.iter().enumerate().map(|(idx, seg)| {
+				format!("{}{}", if idx == 0 { "" } else { "::" }, seg.ident)
+			}).collect())
 		} else if let Some(id) = p.get_ident() {
 			self.maybe_resolve_ident(id)
 		} else {
@@ -878,23 +913,19 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			let mut seg_iter = p.segments.iter();
 			let first_seg = seg_iter.next().unwrap();
 			let remaining: String = seg_iter.map(|seg| {
-				if let syn::PathArguments::None = seg.arguments {
-					format!("{}", seg.ident)
-				} else {
-					format!("{}", seg.ident)
-				}
+				format!("::{}", seg.ident)
 			}).collect();
 			if let Some(imp) = self.imports.get(&first_seg.ident) {
 				if remaining != "" {
-					Some(imp.clone() + "::" + &remaining)
+					Some(imp.clone() + &remaining)
 				} else {
 					Some(imp.clone())
 				}
 			} else { None }
 		}
 	}
-	pub fn resolve_path(&self, p: &syn::Path) -> String {
-		self.maybe_resolve_path(p).unwrap()
+	pub fn resolve_path(&self, p: &syn::Path, generics: Option<&GenericTypes>) -> String {
+		self.maybe_resolve_path(p, generics).unwrap()
 	}
 
 	// ***********************************
@@ -902,7 +933,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// ***********************************
 
 	fn write_rust_path<W: std::io::Write>(&self, w: &mut W, path: &syn::Path) {
-		if let Some(resolved) = self.maybe_resolve_path(&path) {
+		if let Some(resolved) = self.maybe_resolve_path(&path, None) {
 			if self.is_primitive(&resolved) {
 				write!(w, "{}", path.get_ident().unwrap()).unwrap();
 			} else {
@@ -1013,10 +1044,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 	/// Prints a constructor for something which is "uninitialized" (but obviously not actually
 	/// unint'd memory).
-	pub fn write_empty_rust_val<W: std::io::Write>(&self, w: &mut W, t: &syn::Type) {
+	pub fn write_empty_rust_val<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) {
 		match t {
 			syn::Type::Path(p) => {
-				let resolved = self.resolve_path(&p.path);
+				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, "crate::{} {{ inner: std::ptr::null_mut(), is_owned: true }}", resolved).unwrap();
 				} else {
@@ -1043,23 +1074,23 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 
-	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val),
-	/// returning whether we need to dereference the inner value before using it (ie it is a
-	/// pointer).
-	pub fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, w: &mut W, t: &syn::Type) -> bool {
+	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val).
+	/// See EmptyValExpectedTy for information on return types.
+	fn write_empty_rust_val_check_suffix<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type) -> EmptyValExpectedTy {
 		match t {
 			syn::Type::Path(p) => {
-				let resolved = self.resolve_path(&p.path);
+				let resolved = self.resolve_path(&p.path, generics);
 				if self.crate_types.opaques.get(&resolved).is_some() {
 					write!(w, ".inner.is_null()").unwrap();
-					false
+					EmptyValExpectedTy::NonPointer
 				} else {
 					if let Some(suffix) = self.empty_val_check_suffix_from_path(&resolved) {
 						write!(w, "{}", suffix).unwrap();
-						false // We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
+						// We may eventually need to allow empty_val_check_suffix_from_path to specify if we need a deref or not
+						EmptyValExpectedTy::NonPointer
 					} else {
-						write!(w, ".is_null()").unwrap();
-						false
+						write!(w, " == std::ptr::null_mut()").unwrap();
+						EmptyValExpectedTy::OwnedPointer
 					}
 				}
 			},
@@ -1067,26 +1098,26 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if let syn::Expr::Lit(l) = &a.len {
 					if let syn::Lit::Int(i) = &l.lit {
 						write!(w, " == [0; {}]", i.base10_digits()).unwrap();
-						false
+						EmptyValExpectedTy::NonPointer
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			},
 			syn::Type::Slice(_) => {
 				// Option<[]> always implies that we want to treat len() == 0 differently from
 				// None, so we always map an Option<[]> into a pointer.
-				write!(w, ".is_null()").unwrap();
-				true
+				write!(w, " == std::ptr::null_mut()").unwrap();
+				EmptyValExpectedTy::ReferenceAsPointer
 			},
 			_ => unimplemented!(),
 		}
 	}
 
 	/// Prints a suffix to determine if a variable is empty (ie was set by write_empty_rust_val).
-	pub fn write_empty_rust_val_check<W: std::io::Write>(&self, w: &mut W, t: &syn::Type, var_access: &str) {
+	pub fn write_empty_rust_val_check<W: std::io::Write>(&self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type, var_access: &str) {
 		match t {
 			syn::Type::Path(_) => {
 				write!(w, "{}", var_access).unwrap();
-				self.write_empty_rust_val_check_suffix(w, t);
+				self.write_empty_rust_val_check_suffix(generics, w, t);
 			},
 			syn::Type::Array(a) => {
 				if let syn::Expr::Lit(l) = &a.len {
@@ -1098,7 +1129,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							self.from_c_conversion_prefix_from_path(&arrty, false).unwrap(),
 							var_access,
 							self.from_c_conversion_suffix_from_path(&arrty, false).unwrap()).unwrap();
-						self.write_empty_rust_val_check_suffix(w, t);
+						self.write_empty_rust_val_check_suffix(generics, w, t);
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
 			}
@@ -1115,12 +1146,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match t {
 			syn::Type::Path(p) => {
 				if p.qself.is_some() { unimplemented!(); }
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						return self.skip_path(resolved.0);
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					self.skip_path(&full_path)
 				} else { false }
 			},
@@ -1134,13 +1160,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match t {
 			syn::Type::Path(p) => {
 				if p.qself.is_some() { unimplemented!(); }
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						write!(w, "{}", self.no_arg_path_to_rust(resolved.0)).unwrap();
-						return;
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					write!(w, "{}", self.no_arg_path_to_rust(&full_path)).unwrap();
 				}
 			},
@@ -1161,42 +1181,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					ptr_for_ref, tupleconv, prefix, sliceconv, path_lookup, decl_lookup);
 			},
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					unimplemented!();
 				}
 
-				if let Some(gen_types) = generics {
-					if let Some((_, synpath)) = gen_types.maybe_resolve_path(&p.path) {
-						let genpath = self.resolve_path(&synpath);
-						assert!(!self.is_known_container(&genpath, is_ref) && !self.is_transparent_container(&genpath, is_ref));
-						if let Some(c_type) = path_lookup(&genpath, is_ref, ptr_for_ref) {
-							write!(w, "{}", c_type).unwrap();
-							return;
-						} else {
-							let synident = single_ident_generic_path_to_ident(synpath).unwrap();
-							if let Some(t) = self.crate_types.traits.get(&genpath) {
-								decl_lookup(w, &DeclType::Trait(t), &genpath, is_ref, is_mut);
-								return;
-							} else if let Some(_) = self.imports.get(synident) {
-								// crate_types lookup has to have succeeded:
-								panic!("Failed to print inline conversion for {}", synident);
-							} else if let Some(decl_type) = self.declared.get(synident) {
-								decl_lookup(w, decl_type, &self.maybe_resolve_path(synpath).unwrap(), is_ref, is_mut);
-								return;
-							} else { unimplemented!(); }
-						}
-					}
-				}
-
-				let resolved_path = self.resolve_path(&p.path);
-				if let Some(c_type) = path_lookup(&resolved_path, is_ref, ptr_for_ref) {
+				let resolved_path = self.resolve_path(&p.path, generics);
+				if let Some(aliased_type) = self.crate_types.type_aliases.get(&resolved_path) {
+					return self.write_conversion_inline_intern(w, aliased_type, None, is_ref, is_mut, ptr_for_ref, tupleconv, prefix, sliceconv, path_lookup, decl_lookup);
+				} else if let Some(c_type) = path_lookup(&resolved_path, is_ref, ptr_for_ref) {
 					write!(w, "{}", c_type).unwrap();
 				} else if self.crate_types.opaques.get(&resolved_path).is_some() {
 					decl_lookup(w, &DeclType::StructImported, &resolved_path, is_ref, is_mut);
 				} else if self.crate_types.mirrored_enums.get(&resolved_path).is_some() {
 					decl_lookup(w, &DeclType::MirroredEnum, &resolved_path, is_ref, is_mut);
 				} else if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
-					if let Some(_) = self.imports.get(ident) {
+					if let Some(t) = self.crate_types.traits.get(&resolved_path) {
+						decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
+						return;
+					} else if let Some(_) = self.imports.get(ident) {
 						// crate_types lookup has to have succeeded:
 						panic!("Failed to print inline conversion for {}", ident);
 					} else if let Some(decl_type) = self.declared.get(ident) {
@@ -1217,13 +1219,40 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				// We assume all slices contain only literals or references.
 				// This may result in some outputs not compiling.
 				if let syn::Type::Path(p) = &*s.elem {
-					let resolved = self.resolve_path(&p.path);
+					let resolved = self.resolve_path(&p.path, generics);
 					assert!(self.is_primitive(&resolved));
 					write!(w, "{}", path_lookup("[u8]", is_ref, ptr_for_ref).unwrap()).unwrap();
 				} else if let syn::Type::Reference(r) = &*s.elem {
 					if let syn::Type::Path(p) = &*r.elem {
-						write!(w, "{}", sliceconv(self.c_type_has_inner_from_path(&self.resolve_path(&p.path)))).unwrap();
+						write!(w, "{}", sliceconv(self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)))).unwrap();
 					} else { unimplemented!(); }
+				} else if let syn::Type::Tuple(t) = &*s.elem {
+					assert!(!t.elems.is_empty());
+					if prefix {
+						write!(w, "&local_").unwrap();
+					} else {
+						let mut needs_map = false;
+						for e in t.elems.iter() {
+							if let syn::Type::Reference(_) = e {
+								needs_map = true;
+							}
+						}
+						if needs_map {
+							write!(w, ".iter().map(|(").unwrap();
+							for i in 0..t.elems.len() {
+								write!(w, "{}{}", if i != 0 { ", " } else { "" }, ('a' as u8 + i as u8) as char).unwrap();
+							}
+							write!(w, ")| (").unwrap();
+							for (idx, e) in t.elems.iter().enumerate() {
+								if let syn::Type::Reference(_) = e {
+									write!(w, "{}{}", if idx != 0 { ", " } else { "" }, (idx as u8 + 'a' as u8) as char).unwrap();
+								} else if let syn::Type::Path(_) = e {
+									write!(w, "{}*{}", if idx != 0 { ", " } else { "" }, (idx as u8 + 'a' as u8) as char).unwrap();
+								} else { unimplemented!(); }
+							}
+							write!(w, ")).collect::<Vec<_>>()[..]").unwrap();
+						}
+					}
 				} else { unimplemented!(); }
 			},
 			syn::Type::Tuple(t) => {
@@ -1375,10 +1404,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					}
 					if let syn::Type::Reference(t) = ty {
 						if let syn::Type::Path(p) = &*t.elem {
-							self.c_type_has_inner_from_path(&self.resolve_path(&p.path))
+							self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics))
 						} else { false }
 					} else if let syn::Type::Path(p) = ty {
-						self.c_type_has_inner_from_path(&self.resolve_path(&p.path))
+						self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics))
 					} else { false }
 				} else { true };
 
@@ -1467,19 +1496,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			},
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					unimplemented!();
 				}
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						assert!(!self.is_known_container(&resolved.0, is_ref) && !self.is_transparent_container(&resolved.0, is_ref));
-						if let Some((prefix, suffix)) = path_lookup(&resolved.0, is_ref) {
-							write!(w, "let mut local_{} = {}{}{};", ident, prefix, var, suffix).unwrap();
-							return true;
-						} else { return false; }
-					}
+				let resolved_path = self.resolve_path(&p.path, generics);
+				if let Some(aliased_type) = self.crate_types.type_aliases.get(&resolved_path) {
+					return self.write_conversion_new_var_intern(w, ident, var, aliased_type, None, is_ref, ptr_for_ref, to_c, path_lookup, container_lookup, var_prefix, var_suffix);
 				}
-				let resolved_path = self.resolve_path(&p.path);
 				if self.is_known_container(&resolved_path, is_ref) || self.is_transparent_container(&resolved_path, is_ref) {
 					if let syn::PathArguments::AngleBracketed(args) = &p.path.segments.iter().next().unwrap().arguments {
 						convert_container!(resolved_path, args.args.len(), || args.args.iter().map(|arg| {
@@ -1507,7 +1530,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			syn::Type::Slice(s) => {
 				if let syn::Type::Path(p) = &*s.elem {
-					let resolved = self.resolve_path(&p.path);
+					let resolved = self.resolve_path(&p.path, generics);
 					assert!(self.is_primitive(&resolved));
 					let slice_path = format!("[{}]", resolved);
 					if let Some((prefix, suffix)) = path_lookup(&slice_path, true) {
@@ -1518,6 +1541,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					let tyref = [&*ty.elem];
 					is_ref = true;
 					convert_container!("Slice", 1, || tyref.iter());
+					unimplemented!("convert_container should return true as container_lookup should succeed for slices");
+				} else if let syn::Type::Tuple(t) = &*s.elem {
+					// When mapping into a temporary new var, we need to own all the underlying objects.
+					// Thus, we drop any references inside the tuple and convert with non-reference types.
+					let mut elems = syn::punctuated::Punctuated::new();
+					for elem in t.elems.iter() {
+						if let syn::Type::Reference(r) = elem {
+							elems.push((*r.elem).clone());
+						} else {
+							elems.push(elem.clone());
+						}
+					}
+					let ty = [syn::Type::Tuple(syn::TypeTuple {
+						paren_token: t.paren_token, elems
+					})];
+					is_ref = false;
+					ptr_for_ref = true;
+					convert_container!("Slice", 1, || ty.iter());
 					unimplemented!("convert_container should return true as container_lookup should succeed for slices");
 				} else { unimplemented!() }
 			},
@@ -1544,7 +1585,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 								// Opaque types with inner pointers shouldn't ever create new stack
 								// variables, so we don't handle it and just assert that it doesn't
 								// here.
-								assert!(!self.c_type_has_inner_from_path(&self.resolve_path(&p.path)));
+								assert!(!self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)));
 							}
 						}
 					}
@@ -1559,10 +1600,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 								}
 								if let syn::Type::Reference(t) = elem {
 									if let syn::Type::Path(p) = &*t.elem {
-										self.c_type_has_inner_from_path(&self.resolve_path(&p.path))
+										self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics))
 									} else { false }
 								} else if let syn::Type::Path(p) = elem {
-									self.c_type_has_inner_from_path(&self.resolve_path(&p.path))
+									self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics))
 								} else { false }
 							};
 						if idx != 0 { write!(w, ", ").unwrap(); }
@@ -1591,7 +1632,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn write_to_c_conversion_new_var_inner<W: std::io::Write>(&self, w: &mut W, ident: &syn::Ident, var_access: &str, t: &syn::Type, generics: Option<&GenericTypes>, ptr_for_ref: bool) -> bool {
 		self.write_conversion_new_var_intern(w, ident, var_access, t, generics, false, ptr_for_ref, true,
 			&|a, b| self.to_c_conversion_new_var_from_path(a, b),
-			&|a, b, c, d, e| self.to_c_conversion_container_new_var(a, b, c, d, e),
+			&|a, b, c, d, e| self.to_c_conversion_container_new_var(generics, a, b, c, d, e),
 			// We force ptr_for_ref here since we can't generate a ref on one line and use it later
 			&|a, b, c, d, e, f| self.write_to_c_conversion_inline_prefix_inner(a, b, c, d, e, f),
 			&|a, b, c, d, e, f| self.write_to_c_conversion_inline_suffix_inner(a, b, c, d, e, f))
@@ -1602,7 +1643,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn write_from_c_conversion_new_var<W: std::io::Write>(&self, w: &mut W, ident: &syn::Ident, t: &syn::Type, generics: Option<&GenericTypes>) -> bool {
 		self.write_conversion_new_var_intern(w, ident, &format!("{}", ident), t, generics, false, false, false,
 			&|a, b| self.from_c_conversion_new_var_from_path(a, b),
-			&|a, b, c, d, e| self.from_c_conversion_container_new_var(a, b, c, d, e),
+			&|a, b, c, d, e| self.from_c_conversion_container_new_var(generics, a, b, c, d, e),
 			// We force ptr_for_ref here since we can't generate a ref on one line and use it later
 			&|a, b, c, d, e, _f| self.write_from_c_conversion_prefix_inner(a, b, c, d, e),
 			&|a, b, c, d, e, _f| self.write_from_c_conversion_suffix_inner(a, b, c, d, e))
@@ -1612,7 +1653,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// *** C Container Type Equivalent and alias Printing ***
 	// ******************************************************
 
-	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, is_ref: bool) {
+	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) {
 		if container_type == "Result" {
 			assert_eq!(args.len(), 2);
 			macro_rules! write_fn {
@@ -1625,15 +1666,15 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				($call: expr, $item: expr) => { {
 					write!(w, "#[no_mangle]\npub static {}_{}: extern \"C\" fn (", mangled_container, $call).unwrap();
 					if let syn::Type::Path(syn::TypePath { path, .. }) = $item {
-						let resolved = self.resolve_path(path);
+						let resolved = self.resolve_path(path, generics);
 						if self.is_known_container(&resolved, is_ref) || self.is_transparent_container(&resolved, is_ref) {
-							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path),
+							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path), generics,
 								&format!("{}", single_ident_generic_path_to_ident(path).unwrap()), is_ref, false, false, false);
 						} else {
 							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), is_ref, true);
 						}
 					} else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = $item {
-						self.write_c_mangled_container_path_intern(w, elems.iter().collect(),
+						self.write_c_mangled_container_path_intern(w, elems.iter().collect(), generics,
 							&format!("{}Tuple", elems.len()), is_ref, false, false, false);
 					} else { unimplemented!(); }
 					write!(w, ") -> {} =\n\t{}::CResultTempl::<", mangled_container, Self::container_templ_path()).unwrap();
@@ -1653,14 +1694,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
 			for (idx, gen) in args.iter().enumerate() {
 				write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
-				self.write_c_type_intern(None, w, gen, false, false, false);
+				assert!(self.write_c_type_intern(w, gen, None, false, false, false));
 			}
 			writeln!(w, ") -> {} {{", mangled_container).unwrap();
-			writeln!(w, "\t{} {{", mangled_container).unwrap();
+			write!(w, "\t{} {{ ", mangled_container).unwrap();
 			for idx in 0..args.len() {
-				writeln!(w, "\t\t{}: Box::into_raw(Box::new({})),", ('a' as u8 + idx as u8) as char, ('a' as u8 + idx as u8) as char).unwrap();
+				write!(w, "{}, ", ('a' as u8 + idx as u8) as char).unwrap();
 			}
-			writeln!(w, "\t}}\n}}\n").unwrap();
+			writeln!(w, "}}\n}}\n").unwrap();
 		} else {
 			writeln!(w, "").unwrap();
 		}
@@ -1680,7 +1721,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(w, ">").unwrap();
 				}
 			} else if let syn::Type::Path(p_arg) = t {
-				let resolved_generic = self.resolve_path(&p_arg.path);
+				let resolved_generic = self.resolve_path(&p_arg.path, None);
 				if self.is_primitive(&resolved_generic) {
 					write!(w, "{}", resolved_generic).unwrap();
 				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
@@ -1722,16 +1763,17 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			} else if let syn::Type::Reference(r_arg) = t {
 				if let syn::Type::Path(p_arg) = &*r_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path);
-					if single_ident_generic_path_to_ident(&p_arg.path).is_some() {
-						if self.crate_types.opaques.get(&resolved).is_some() {
-							write!(w, "crate::{}", resolved).unwrap();
-						} else { unimplemented!(); }
-					} else { unimplemented!(); }
+					let resolved = self.resolve_path(&p_arg.path, None);
+					if self.crate_types.opaques.get(&resolved).is_some() {
+						write!(w, "crate::{}", resolved).unwrap();
+					} else {
+						let cty = self.c_type_from_path(&resolved, true, true).expect("Template generics should be opaque or have a predefined mapping");
+						w.write(cty.as_bytes()).unwrap();
+					}
 				} else { unimplemented!(); }
 			} else if let syn::Type::Array(a_arg) = t {
 				if let syn::Type::Path(p_arg) = &*a_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path);
+					let resolved = self.resolve_path(&p_arg.path, None);
 					assert!(self.is_primitive(&resolved));
 					if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(len), .. }) = &a_arg.len {
 						write!(w, "{}",
@@ -1741,7 +1783,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			}
 		}
 	}
-	fn check_create_container(&mut self, mangled_container: String, container_type: &str, args: Vec<&syn::Type>, is_ref: bool) {
+	fn check_create_container(&mut self, mangled_container: String, container_type: &str, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) {
 		if !self.crate_types.templates_defined.get(&mangled_container).is_some() {
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 			let mut created_container: Vec<u8> = Vec::new();
@@ -1756,7 +1798,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
-			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, is_ref);
+			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref);
 
 			self.crate_types.template_file.write(&created_container).unwrap();
 		}
@@ -1767,7 +1809,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		} else { unimplemented!(); }
 	}
 	fn write_c_mangled_container_path_intern<W: std::io::Write>
-			(&mut self, w: &mut W, args: Vec<&syn::Type>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool, in_type: bool) -> bool {
+			(&mut self, w: &mut W, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool, in_type: bool) -> bool {
 		let mut mangled_type: Vec<u8> = Vec::new();
 		if !self.is_transparent_container(ident, is_ref) {
 			write!(w, "C{}_", ident).unwrap();
@@ -1776,7 +1818,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		for arg in args.iter() {
 			macro_rules! write_path {
 				($p_arg: expr, $extra_write: expr) => {
-					let subtype = self.resolve_path(&$p_arg.path);
+					let subtype = self.resolve_path(&$p_arg.path, generics);
 					if self.is_transparent_container(ident, is_ref) {
 						// We dont (yet) support primitives or containers inside transparent
 						// containers, so check for that first:
@@ -1784,9 +1826,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						if self.is_known_container(&subtype, is_ref) { return false; }
 						if !in_type {
 							if self.c_type_has_inner_from_path(&subtype) {
-								if !self.write_c_path_intern(w, &$p_arg.path, is_ref, is_mut, ptr_for_ref) { return false; }
+								if !self.write_c_path_intern(w, &$p_arg.path, generics, is_ref, is_mut, ptr_for_ref) { return false; }
 							} else {
-								if !self.write_c_path_intern(w, &$p_arg.path, true, is_mut, true) { return false; }
+								// Option<T> needs to be converted to a *mut T, ie mut ptr-for-ref
+								if !self.write_c_path_intern(w, &$p_arg.path, generics, true, true, true) { return false; }
 							}
 						} else {
 							if $p_arg.path.segments.len() == 1 {
@@ -1796,23 +1839,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							}
 						}
 					} else if self.is_known_container(&subtype, is_ref) || self.is_transparent_container(&subtype, is_ref) {
-						if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path),
+						if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path), generics,
 								&subtype, is_ref, is_mut, ptr_for_ref, true) {
 							return false;
 						}
 						self.write_c_mangled_container_path_intern(&mut mangled_type, Self::path_to_generic_args(&$p_arg.path),
-							&subtype, is_ref, is_mut, ptr_for_ref, true);
+							generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 						if let Some(w2) = $extra_write as Option<&mut Vec<u8>> {
 							self.write_c_mangled_container_path_intern(w2, Self::path_to_generic_args(&$p_arg.path),
-								&subtype, is_ref, is_mut, ptr_for_ref, true);
+								generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 						}
-					} else if let Some(id) = single_ident_generic_path_to_ident(&$p_arg.path) {
+					} else {
+						let id = &&$p_arg.path.segments.iter().rev().next().unwrap().ident;
 						write!(w, "{}", id).unwrap();
 						write!(mangled_type, "{}", id).unwrap();
 						if let Some(w2) = $extra_write as Option<&mut Vec<u8>> {
 							write!(w2, "{}", id).unwrap();
 						}
-					} else { return false; }
+					}
 				}
 			}
 			if let syn::Type::Tuple(tuple) = arg {
@@ -1832,13 +1876,17 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					for elem in tuple.elems.iter() {
 						if let syn::Type::Path(p) = elem {
 							write_path!(p, Some(&mut mangled_tuple_type));
+						} else if let syn::Type::Reference(refelem) = elem {
+							if let syn::Type::Path(p) = &*refelem.elem {
+								write_path!(p, Some(&mut mangled_tuple_type));
+							} else { return false; }
 						} else { return false; }
 					}
 					write!(w, "Z").unwrap();
 					write!(mangled_type, "Z").unwrap();
 					write!(mangled_tuple_type, "Z").unwrap();
 					self.check_create_container(String::from_utf8(mangled_tuple_type).unwrap(),
-						&format!("{}Tuple", tuple.elems.len()), tuple.elems.iter().collect(), is_ref);
+						&format!("{}Tuple", tuple.elems.len()), tuple.elems.iter().collect(), generics, is_ref);
 				}
 			} else if let syn::Type::Path(p_arg) = arg {
 				write_path!(p_arg, None);
@@ -1856,7 +1904,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				} else { return false; }
 			} else if let syn::Type::Array(a) = arg {
 				if let syn::Type::Path(p_arg) = &*a.elem {
-					let resolved = self.resolve_path(&p_arg.path);
+					let resolved = self.resolve_path(&p_arg.path, generics);
 					if !self.is_primitive(&resolved) { return false; }
 					if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(len), .. }) = &a.len {
 						if self.c_type_from_path(&format!("[{}; {}]", resolved, len.base10_digits()), is_ref, ptr_for_ref).is_none() { return false; }
@@ -1872,23 +1920,22 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		write!(mangled_type, "Z").unwrap();
 
 		// Make sure the type is actually defined:
-		self.check_create_container(String::from_utf8(mangled_type).unwrap(), ident, args, is_ref);
+		self.check_create_container(String::from_utf8(mangled_type).unwrap(), ident, args, generics, is_ref);
 		true
 	}
-	fn write_c_mangled_container_path<W: std::io::Write>(&mut self, w: &mut W, args: Vec<&syn::Type>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+	fn write_c_mangled_container_path<W: std::io::Write>(&mut self, w: &mut W, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, ident: &str, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
 		if !self.is_transparent_container(ident, is_ref) {
 			write!(w, "{}::", Self::generated_container_path()).unwrap();
 		}
-		self.write_c_mangled_container_path_intern(w, args, ident, is_ref, is_mut, ptr_for_ref, false)
+		self.write_c_mangled_container_path_intern(w, args, generics, ident, is_ref, is_mut, ptr_for_ref, false)
 	}
 
 	// **********************************
 	// *** C Type Equivalent Printing ***
 	// **********************************
 
-	fn write_c_path_intern<W: std::io::Write>(&self, w: &mut W, path: &syn::Path, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
-//eprintln!("pcpi ({} {} {}): {:?}", is_ref, is_mut, ptr_for_ref, path);
-		let full_path = match self.maybe_resolve_path(&path) {
+	fn write_c_path_intern<W: std::io::Write>(&self, w: &mut W, path: &syn::Path, generics: Option<&GenericTypes>, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+		let full_path = match self.maybe_resolve_path(&path, generics) {
 			Some(path) => path, None => return false };
 		if let Some(c_type) = self.c_type_from_path(&full_path, is_ref, ptr_for_ref) {
 			write!(w, "{}", c_type).unwrap();
@@ -1919,43 +1966,35 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			false
 		}
 	}
-	fn write_c_type_intern<W: std::io::Write>(&mut self, generics: Option<&GenericTypes>, w: &mut W, t: &syn::Type, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
+	fn write_c_type_intern<W: std::io::Write>(&mut self, w: &mut W, t: &syn::Type, generics: Option<&GenericTypes>, is_ref: bool, is_mut: bool, ptr_for_ref: bool) -> bool {
 		match t {
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					return false;
 				}
-				if let Some(gen_types) = generics {
-					if let Some(resolved) = gen_types.maybe_resolve_path(&p.path) {
-						if self.is_known_container(&resolved.0, is_ref) { return false; }
-						if self.is_transparent_container(&resolved.0, is_ref) { return false; }
-						return self.write_c_path_intern(w, &resolved.1, is_ref, is_mut, ptr_for_ref);
-					}
-				}
-				if let Some(full_path) = self.maybe_resolve_path(&p.path) {
+				if let Some(full_path) = self.maybe_resolve_path(&p.path, generics) {
 					if self.is_known_container(&full_path, is_ref) || self.is_transparent_container(&full_path, is_ref) {
-						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), &full_path, is_ref, is_mut, ptr_for_ref);
+						return self.write_c_mangled_container_path(w, Self::path_to_generic_args(&p.path), generics, &full_path, is_ref, is_mut, ptr_for_ref);
+					}
+					if let Some(aliased_type) = self.crate_types.type_aliases.get(&full_path).cloned() {
+						return self.write_c_type_intern(w, &aliased_type, None, is_ref, is_mut, ptr_for_ref);
 					}
 				}
-				if p.path.leading_colon.is_some() { return false; }
-				self.write_c_path_intern(w, &p.path, is_ref, is_mut, ptr_for_ref)
+				self.write_c_path_intern(w, &p.path, generics, is_ref, is_mut, ptr_for_ref)
 			},
 			syn::Type::Reference(r) => {
-				if let Some(lft) = &r.lifetime {
-					if format!("{}", lft.ident) != "static" { return false; }
-				}
-				self.write_c_type_intern(generics, w, &*r.elem, true, r.mutability.is_some(), ptr_for_ref)
+				self.write_c_type_intern(w, &*r.elem, generics, true, r.mutability.is_some(), ptr_for_ref)
 			},
 			syn::Type::Array(a) => {
 				if is_ref && is_mut {
 					write!(w, "*mut [").unwrap();
-					if !self.write_c_type_intern(generics, w, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(w, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 				} else if is_ref {
 					write!(w, "*const [").unwrap();
-					if !self.write_c_type_intern(generics, w, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(w, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 				} else {
 					let mut typecheck = Vec::new();
-					if !self.write_c_type_intern(generics, &mut typecheck, &a.elem, false, false, ptr_for_ref) { return false; }
+					if !self.write_c_type_intern(&mut typecheck, &a.elem, generics, false, false, ptr_for_ref) { return false; }
 					if typecheck[..] != ['u' as u8, '8' as u8] { return false; }
 				}
 				if let syn::Expr::Lit(l) = &a.len {
@@ -1975,7 +2014,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			syn::Type::Slice(s) => {
 				if !is_ref || is_mut { return false; }
 				if let syn::Type::Path(p) = &*s.elem {
-					let resolved = self.resolve_path(&p.path);
+					let resolved = self.resolve_path(&p.path, generics);
 					if self.is_primitive(&resolved) {
 						write!(w, "{}::{}slice", Self::container_templ_path(), resolved).unwrap();
 						true
@@ -1983,7 +2022,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				} else if let syn::Type::Reference(r) = &*s.elem {
 					if let syn::Type::Path(p) = &*r.elem {
 						// Slices with "real types" inside are mapped as the equivalent non-ref Vec
-						let resolved = self.resolve_path(&p.path);
+						let resolved = self.resolve_path(&p.path, generics);
 						let mangled_container = if let Some(ident) = self.crate_types.opaques.get(&resolved) {
 							format!("CVec_{}Z", ident)
 						} else if let Some(en) = self.crate_types.mirrored_enums.get(&resolved) {
@@ -1992,16 +2031,27 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							format!("CVec_{}Z", id)
 						} else { return false; };
 						write!(w, "{}::{}", Self::generated_container_path(), mangled_container).unwrap();
-						self.check_create_container(mangled_container, "Vec", vec![&*r.elem], false);
+						self.check_create_container(mangled_container, "Vec", vec![&*r.elem], generics, false);
 						true
 					} else { false }
+				} else if let syn::Type::Tuple(_) = &*s.elem {
+					let mut args = syn::punctuated::Punctuated::new();
+					args.push(syn::GenericArgument::Type((*s.elem).clone()));
+					let mut segments = syn::punctuated::Punctuated::new();
+					segments.push(syn::PathSegment {
+						ident: syn::Ident::new("Vec", Span::call_site()),
+						arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+							colon2_token: None, lt_token: syn::Token![<](Span::call_site()), args, gt_token: syn::Token![>](Span::call_site()),
+						})
+					});
+					self.write_c_type_intern(w, &syn::Type::Path(syn::TypePath { qself: None, path: syn::Path { leading_colon: None, segments } }), generics, false, is_mut, ptr_for_ref)
 				} else { false }
 			},
 			syn::Type::Tuple(t) => {
 				if t.elems.len() == 0 {
 					true
 				} else {
-					self.write_c_mangled_container_path(w, t.elems.iter().collect(),
+					self.write_c_mangled_container_path(w, t.elems.iter().collect(), generics,
 						&format!("{}Tuple", t.elems.len()), is_ref, is_mut, ptr_for_ref)
 				}
 			},
@@ -2009,13 +2059,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 	pub fn write_c_type<W: std::io::Write>(&mut self, w: &mut W, t: &syn::Type, generics: Option<&GenericTypes>, ptr_for_ref: bool) {
-		assert!(self.write_c_type_intern(generics, w, t, false, false, ptr_for_ref));
+		assert!(self.write_c_type_intern(w, t, generics, false, false, ptr_for_ref));
 	}
 	pub fn understood_c_path(&mut self, p: &syn::Path) -> bool {
 		if p.leading_colon.is_some() { return false; }
-		self.write_c_path_intern(&mut std::io::sink(), p, false, false, false)
+		self.write_c_path_intern(&mut std::io::sink(), p, None, false, false, false)
 	}
 	pub fn understood_c_type(&mut self, t: &syn::Type, generics: Option<&GenericTypes>) -> bool {
-		self.write_c_type_intern(generics, &mut std::io::sink(), t, false, false, false)
+		self.write_c_type_intern(&mut std::io::sink(), t, generics, false, false, false)
 	}
 }

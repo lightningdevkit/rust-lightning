@@ -23,17 +23,6 @@ pub mod channelmonitor;
 pub mod transaction;
 pub mod keysinterface;
 
-/// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
-/// UTXOs.
-pub trait Access: Send + Sync {
-	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
-	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
-	/// is unknown.
-	///
-	/// [`short_channel_id`]: https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#definition-of-short_channel_id
-	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
-}
-
 /// An error when accessing the chain via [`Access`].
 ///
 /// [`Access`]: trait.Access.html
@@ -44,6 +33,17 @@ pub enum AccessError {
 
 	/// The requested transaction doesn't exist or hasn't confirmed.
 	UnknownTx,
+}
+
+/// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
+/// UTXOs.
+pub trait Access: Send + Sync {
+	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
+	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
+	/// is unknown.
+	///
+	/// [`short_channel_id`]: https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#definition-of-short_channel_id
+	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
 }
 
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as

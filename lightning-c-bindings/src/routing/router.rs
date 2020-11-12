@@ -15,7 +15,7 @@ type nativeRouteHop = nativeRouteHopImport;
 #[must_use]
 #[repr(C)]
 pub struct RouteHop {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRouteHop,
 	pub is_owned: bool,
@@ -69,6 +69,19 @@ pub extern "C" fn RouteHop_get_pubkey(this_ptr: &RouteHop) -> crate::c_types::Pu
 pub extern "C" fn RouteHop_set_pubkey(this_ptr: &mut RouteHop, mut val: crate::c_types::PublicKey) {
 	unsafe { &mut *this_ptr.inner }.pubkey = val.into_rust();
 }
+/// The node_announcement features of the node at this hop. For the last hop, these may be
+/// amended to match the features present in the invoice this node generated.
+#[no_mangle]
+pub extern "C" fn RouteHop_get_node_features(this_ptr: &RouteHop) -> crate::ln::features::NodeFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.node_features;
+	crate::ln::features::NodeFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The node_announcement features of the node at this hop. For the last hop, these may be
+/// amended to match the features present in the invoice this node generated.
+#[no_mangle]
+pub extern "C" fn RouteHop_set_node_features(this_ptr: &mut RouteHop, mut val: crate::ln::features::NodeFeatures) {
+	unsafe { &mut *this_ptr.inner }.node_features = *unsafe { Box::from_raw(val.take_ptr()) };
+}
 /// The channel that should be used from the previous hop to reach this node.
 #[no_mangle]
 pub extern "C" fn RouteHop_get_short_channel_id(this_ptr: &RouteHop) -> u64 {
@@ -79,6 +92,19 @@ pub extern "C" fn RouteHop_get_short_channel_id(this_ptr: &RouteHop) -> u64 {
 #[no_mangle]
 pub extern "C" fn RouteHop_set_short_channel_id(this_ptr: &mut RouteHop, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.short_channel_id = val;
+}
+/// The channel_announcement features of the channel that should be used from the previous hop
+/// to reach this node.
+#[no_mangle]
+pub extern "C" fn RouteHop_get_channel_features(this_ptr: &RouteHop) -> crate::ln::features::ChannelFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.channel_features;
+	crate::ln::features::ChannelFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The channel_announcement features of the channel that should be used from the previous hop
+/// to reach this node.
+#[no_mangle]
+pub extern "C" fn RouteHop_set_channel_features(this_ptr: &mut RouteHop, mut val: crate::ln::features::ChannelFeatures) {
+	unsafe { &mut *this_ptr.inner }.channel_features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// The fee taken on this hop. For the last hop, this should be the full value of the payment.
 #[no_mangle]
@@ -104,6 +130,18 @@ pub extern "C" fn RouteHop_get_cltv_expiry_delta(this_ptr: &RouteHop) -> u32 {
 pub extern "C" fn RouteHop_set_cltv_expiry_delta(this_ptr: &mut RouteHop, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.cltv_expiry_delta = val;
 }
+#[must_use]
+#[no_mangle]
+pub extern "C" fn RouteHop_new(mut pubkey_arg: crate::c_types::PublicKey, mut node_features_arg: crate::ln::features::NodeFeatures, mut short_channel_id_arg: u64, mut channel_features_arg: crate::ln::features::ChannelFeatures, mut fee_msat_arg: u64, mut cltv_expiry_delta_arg: u32) -> RouteHop {
+	RouteHop { inner: Box::into_raw(Box::new(nativeRouteHop {
+		pubkey: pubkey_arg.into_rust(),
+		node_features: *unsafe { Box::from_raw(node_features_arg.take_ptr()) },
+		short_channel_id: short_channel_id_arg,
+		channel_features: *unsafe { Box::from_raw(channel_features_arg.take_ptr()) },
+		fee_msat: fee_msat_arg,
+		cltv_expiry_delta: cltv_expiry_delta_arg,
+	})), is_owned: true }
+}
 
 use lightning::routing::router::Route as nativeRouteImport;
 type nativeRoute = nativeRouteImport;
@@ -113,7 +151,7 @@ type nativeRoute = nativeRouteImport;
 #[must_use]
 #[repr(C)]
 pub struct Route {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRoute,
 	pub is_owned: bool,
@@ -195,7 +233,7 @@ type nativeRouteHint = nativeRouteHintImport;
 #[must_use]
 #[repr(C)]
 pub struct RouteHint {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRouteHint,
 	pub is_owned: bool,
@@ -308,8 +346,8 @@ pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, 
 /// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
 /// *is* checked as they may change based on the receiving node.
 #[no_mangle]
-pub extern "C" fn get_route(our_node_id: crate::c_types::PublicKey, network: &crate::routing::network_graph::NetworkGraph, target: crate::c_types::PublicKey, mut first_hops: *mut crate::c_types::derived::CVec_ChannelDetailsZ, mut last_hops: crate::c_types::derived::CVec_RouteHintZ, mut final_value_msat: u64, mut final_cltv: u32, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CResult_RouteLightningErrorZ {
-	let mut local_first_hops_base = if first_hops.is_null() { None } else { Some( { let mut local_first_hops_0 = Vec::new(); for mut item in unsafe { &mut *first_hops }.as_slice().iter() { local_first_hops_0.push( { unsafe { &*item.inner } }); }; local_first_hops_0 }) }; let mut local_first_hops = local_first_hops_base.as_ref().map(|a| &a[..]);
+pub extern "C" fn get_route(mut our_node_id: crate::c_types::PublicKey, network: &crate::routing::network_graph::NetworkGraph, mut target: crate::c_types::PublicKey, first_hops: *mut crate::c_types::derived::CVec_ChannelDetailsZ, mut last_hops: crate::c_types::derived::CVec_RouteHintZ, mut final_value_msat: u64, mut final_cltv: u32, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CResult_RouteLightningErrorZ {
+	let mut local_first_hops_base = if first_hops == std::ptr::null_mut() { None } else { Some( { let mut local_first_hops_0 = Vec::new(); for mut item in unsafe { &mut *first_hops }.as_slice().iter() { local_first_hops_0.push( { unsafe { &*item.inner } }); }; local_first_hops_0 }) }; let mut local_first_hops = local_first_hops_base.as_ref().map(|a| &a[..]);
 	let mut local_last_hops = Vec::new(); for mut item in last_hops.as_slice().iter() { local_last_hops.push( { unsafe { &*item.inner } }); };
 	let mut ret = lightning::routing::router::get_route(&our_node_id.into_rust(), unsafe { &*network.inner }, &target.into_rust(), local_first_hops, &local_last_hops[..], final_value_msat, final_cltv, logger);
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };

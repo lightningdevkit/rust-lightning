@@ -27,7 +27,7 @@ type nativeDecodeError = nativeDecodeErrorImport;
 #[must_use]
 #[repr(C)]
 pub struct DecodeError {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeDecodeError,
 	pub is_owned: bool,
@@ -65,7 +65,7 @@ type nativeInit = nativeInitImport;
 #[must_use]
 #[repr(C)]
 pub struct Init {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeInit,
 	pub is_owned: bool,
@@ -103,7 +103,7 @@ type nativeErrorMessage = nativeErrorMessageImport;
 #[must_use]
 #[repr(C)]
 pub struct ErrorMessage {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeErrorMessage,
 	pub is_owned: bool,
@@ -190,7 +190,7 @@ type nativePing = nativePingImport;
 #[must_use]
 #[repr(C)]
 pub struct Ping {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePing,
 	pub is_owned: bool,
@@ -260,7 +260,7 @@ type nativePong = nativePongImport;
 #[must_use]
 #[repr(C)]
 pub struct Pong {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePong,
 	pub is_owned: bool,
@@ -318,7 +318,7 @@ type nativeOpenChannel = nativeOpenChannelImport;
 #[must_use]
 #[repr(C)]
 pub struct OpenChannel {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeOpenChannel,
 	pub is_owned: bool,
@@ -567,7 +567,7 @@ type nativeAcceptChannel = nativeAcceptChannelImport;
 #[must_use]
 #[repr(C)]
 pub struct AcceptChannel {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeAcceptChannel,
 	pub is_owned: bool,
@@ -772,7 +772,7 @@ type nativeFundingCreated = nativeFundingCreatedImport;
 #[must_use]
 #[repr(C)]
 pub struct FundingCreated {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeFundingCreated,
 	pub is_owned: bool,
@@ -877,7 +877,7 @@ type nativeFundingSigned = nativeFundingSignedImport;
 #[must_use]
 #[repr(C)]
 pub struct FundingSigned {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeFundingSigned,
 	pub is_owned: bool,
@@ -958,7 +958,7 @@ type nativeFundingLocked = nativeFundingLockedImport;
 #[must_use]
 #[repr(C)]
 pub struct FundingLocked {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeFundingLocked,
 	pub is_owned: bool,
@@ -1039,7 +1039,7 @@ type nativeShutdown = nativeShutdownImport;
 #[must_use]
 #[repr(C)]
 pub struct Shutdown {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeShutdown,
 	pub is_owned: bool,
@@ -1122,7 +1122,7 @@ type nativeClosingSigned = nativeClosingSignedImport;
 #[must_use]
 #[repr(C)]
 pub struct ClosingSigned {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeClosingSigned,
 	pub is_owned: bool,
@@ -1215,7 +1215,7 @@ type nativeUpdateAddHTLC = nativeUpdateAddHTLCImport;
 #[must_use]
 #[repr(C)]
 pub struct UpdateAddHTLC {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUpdateAddHTLC,
 	pub is_owned: bool,
@@ -1321,7 +1321,7 @@ type nativeUpdateFulfillHTLC = nativeUpdateFulfillHTLCImport;
 #[must_use]
 #[repr(C)]
 pub struct UpdateFulfillHTLC {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUpdateFulfillHTLC,
 	pub is_owned: bool,
@@ -1414,7 +1414,7 @@ type nativeUpdateFailHTLC = nativeUpdateFailHTLCImport;
 #[must_use]
 #[repr(C)]
 pub struct UpdateFailHTLC {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUpdateFailHTLC,
 	pub is_owned: bool,
@@ -1487,7 +1487,7 @@ type nativeUpdateFailMalformedHTLC = nativeUpdateFailMalformedHTLCImport;
 #[must_use]
 #[repr(C)]
 pub struct UpdateFailMalformedHTLC {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUpdateFailMalformedHTLC,
 	pub is_owned: bool,
@@ -1571,7 +1571,7 @@ type nativeCommitmentSigned = nativeCommitmentSignedImport;
 #[must_use]
 #[repr(C)]
 pub struct CommitmentSigned {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeCommitmentSigned,
 	pub is_owned: bool,
@@ -1660,7 +1660,7 @@ type nativeRevokeAndACK = nativeRevokeAndACKImport;
 #[must_use]
 #[repr(C)]
 pub struct RevokeAndACK {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRevokeAndACK,
 	pub is_owned: bool,
@@ -1753,7 +1753,7 @@ type nativeUpdateFee = nativeUpdateFeeImport;
 #[must_use]
 #[repr(C)]
 pub struct UpdateFee {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUpdateFee,
 	pub is_owned: bool,
@@ -1837,7 +1837,7 @@ type nativeDataLossProtect = nativeDataLossProtectImport;
 #[must_use]
 #[repr(C)]
 pub struct DataLossProtect {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeDataLossProtect,
 	pub is_owned: bool,
@@ -1920,7 +1920,7 @@ type nativeChannelReestablish = nativeChannelReestablishImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelReestablish {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelReestablish,
 	pub is_owned: bool,
@@ -2004,7 +2004,7 @@ type nativeAnnouncementSignatures = nativeAnnouncementSignaturesImport;
 #[must_use]
 #[repr(C)]
 pub struct AnnouncementSignatures {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeAnnouncementSignatures,
 	pub is_owned: bool,
@@ -2288,7 +2288,7 @@ type nativeUnsignedNodeAnnouncement = nativeUnsignedNodeAnnouncementImport;
 #[must_use]
 #[repr(C)]
 pub struct UnsignedNodeAnnouncement {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUnsignedNodeAnnouncement,
 	pub is_owned: bool,
@@ -2330,6 +2330,17 @@ impl Clone for UnsignedNodeAnnouncement {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedNodeAnnouncement)).clone() })) as *mut c_void
+}
+/// The advertised features
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_get_features(this_ptr: &UnsignedNodeAnnouncement) -> crate::ln::features::NodeFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::NodeFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The advertised features
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_set_features(this_ptr: &mut UnsignedNodeAnnouncement, mut val: crate::ln::features::NodeFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// A strictly monotonic announcement counter, with gaps allowed
 #[no_mangle]
@@ -2393,7 +2404,7 @@ type nativeNodeAnnouncement = nativeNodeAnnouncementImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeAnnouncement {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeAnnouncement,
 	pub is_owned: bool,
@@ -2474,7 +2485,7 @@ type nativeUnsignedChannelAnnouncement = nativeUnsignedChannelAnnouncementImport
 #[must_use]
 #[repr(C)]
 pub struct UnsignedChannelAnnouncement {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUnsignedChannelAnnouncement,
 	pub is_owned: bool,
@@ -2516,6 +2527,17 @@ impl Clone for UnsignedChannelAnnouncement {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelAnnouncement)).clone() })) as *mut c_void
+}
+/// The advertised channel features
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_get_features(this_ptr: &UnsignedChannelAnnouncement) -> crate::ln::features::ChannelFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::ChannelFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The advertised channel features
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_set_features(this_ptr: &mut UnsignedChannelAnnouncement, mut val: crate::ln::features::ChannelFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -2591,7 +2613,7 @@ type nativeChannelAnnouncement = nativeChannelAnnouncementImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelAnnouncement {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelAnnouncement,
 	pub is_owned: bool,
@@ -2708,7 +2730,7 @@ type nativeUnsignedChannelUpdate = nativeUnsignedChannelUpdateImport;
 #[must_use]
 #[repr(C)]
 pub struct UnsignedChannelUpdate {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeUnsignedChannelUpdate,
 	pub is_owned: bool,
@@ -2847,7 +2869,7 @@ type nativeChannelUpdate = nativeChannelUpdateImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelUpdate {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelUpdate,
 	pub is_owned: bool,
@@ -2931,7 +2953,7 @@ type nativeQueryChannelRange = nativeQueryChannelRangeImport;
 #[must_use]
 #[repr(C)]
 pub struct QueryChannelRange {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeQueryChannelRange,
 	pub is_owned: bool,
@@ -3030,7 +3052,7 @@ type nativeReplyChannelRange = nativeReplyChannelRangeImport;
 #[must_use]
 #[repr(C)]
 pub struct ReplyChannelRange {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeReplyChannelRange,
 	pub is_owned: bool,
@@ -3152,7 +3174,7 @@ type nativeQueryShortChannelIds = nativeQueryShortChannelIdsImport;
 #[must_use]
 #[repr(C)]
 pub struct QueryShortChannelIds {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeQueryShortChannelIds,
 	pub is_owned: bool,
@@ -3232,7 +3254,7 @@ type nativeReplyShortChannelIdsEnd = nativeReplyShortChannelIdsEndImport;
 #[must_use]
 #[repr(C)]
 pub struct ReplyShortChannelIdsEnd {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeReplyShortChannelIdsEnd,
 	pub is_owned: bool,
@@ -3317,7 +3339,7 @@ type nativeGossipTimestampFilter = nativeGossipTimestampFilterImport;
 #[must_use]
 #[repr(C)]
 pub struct GossipTimestampFilter {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeGossipTimestampFilter,
 	pub is_owned: bool,
@@ -3503,7 +3525,7 @@ type nativeLightningError = nativeLightningErrorImport;
 #[must_use]
 #[repr(C)]
 pub struct LightningError {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeLightningError,
 	pub is_owned: bool,
@@ -3572,7 +3594,7 @@ type nativeCommitmentUpdate = nativeCommitmentUpdateImport;
 #[must_use]
 #[repr(C)]
 pub struct CommitmentUpdate {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeCommitmentUpdate,
 	pub is_owned: bool,

@@ -86,25 +86,48 @@ impl Secp256k1Error {
 }
 
 #[repr(C)]
-/// A reference to a serialized transaction, in (pointer, length) form.
-/// This type does *not* own its own memory, so access to it after, eg, the call in which it was
-/// provided to you are invalid.
+/// A serialized transaction, in (pointer, length) form.
+///
+/// This type optionally owns its own memory, and thus the semantics around access change based on
+/// the `data_is_owned` flag. If `data_is_owned` is set, you must call `Transaction_free` to free
+/// the underlying buffer before the object goes out of scope. If `data_is_owned` is not set, any
+/// access to the buffer after the scope in which the object was provided to you is invalid. eg,
+/// access after you return from the call in which a `!data_is_owned` `Transaction` is provided to
+/// you would be invalid.
+///
+/// Note that, while it may change in the future, because transactions on the Rust side are stored
+/// in a deserialized form, all `Transaction`s generated on the Rust side will have `data_is_owned`
+/// set. Similarly, while it may change in the future, all `Transaction`s you pass to Rust may have
+/// `data_is_owned` either set or unset at your discretion.
 pub struct Transaction {
 	pub data: *const u8,
 	pub datalen: usize,
+	pub data_is_owned: bool,
 }
 impl Transaction {
 	pub(crate) fn into_bitcoin(&self) -> BitcoinTransaction {
 		if self.datalen == 0 { panic!("0-length buffer can never represent a valid Transaction"); }
 		::bitcoin::consensus::encode::deserialize(unsafe { std::slice::from_raw_parts(self.data, self.datalen) }).unwrap()
 	}
-	pub(crate) fn from_slice(s: &[u8]) -> Self {
+	pub(crate) fn from_vec(v: Vec<u8>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
 		Self {
-			data: s.as_ptr(),
-			datalen: s.len(),
+			data: unsafe { (*data).as_mut_ptr() },
+			datalen,
+			data_is_owned: true,
 		}
 	}
 }
+impl Drop for Transaction {
+	fn drop(&mut self) {
+		if self.data_is_owned && self.datalen != 0 {
+			let _ = CVecTempl { data: self.data as *mut u8, datalen: self.datalen };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn Transaction_free(_res: Transaction) { }
 
 #[repr(C)]
 #[derive(Clone)]
@@ -145,24 +168,6 @@ impl u8slice {
 		}
 	}
 	pub(crate) fn to_slice(&self) -> &[u8] {
-		if self.datalen == 0 { return &[]; }
-		unsafe { std::slice::from_raw_parts(self.data, self.datalen) }
-	}
-}
-
-#[repr(C)]
-pub struct usizeslice {
-	pub data: *const usize,
-	pub datalen: usize
-}
-impl usizeslice {
-	pub(crate) fn from_slice(s: &[usize]) -> Self {
-		Self {
-			data: s.as_ptr(),
-			datalen: s.len(),
-		}
-	}
-	pub(crate) fn to_slice(&self) -> &[usize] {
 		if self.datalen == 0 { return &[]; }
 		unsafe { std::slice::from_raw_parts(self.data, self.datalen) }
 	}
@@ -321,83 +326,53 @@ impl<T: Clone> Clone for CVecTempl<T> {
 
 #[repr(C)]
 pub struct C2TupleTempl<A, B> {
-	pub a: *mut A,
-	pub b: *mut B,
+	pub a: A,
+	pub b: B,
 }
 impl<A, B> From<(A, B)> for C2TupleTempl<A, B> {
 	fn from(tup: (A, B)) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(tup.0)),
-			b: Box::into_raw(Box::new(tup.1)),
+			a: tup.0,
+			b: tup.1,
 		}
 	}
 }
 impl<A, B> C2TupleTempl<A, B> {
 	pub(crate) fn to_rust(mut self) -> (A, B) {
-		let res = (unsafe { *Box::from_raw(self.a) }, unsafe { *Box::from_raw(self.b) });
-		self.a = std::ptr::null_mut();
-		self.b = std::ptr::null_mut();
-		res
+		(self.a, self.b)
 	}
 }
 pub extern "C" fn C2TupleTempl_free<A, B>(_res: C2TupleTempl<A, B>) { }
-impl<A, B> Drop for C2TupleTempl<A, B> {
-	fn drop(&mut self) {
-		if !self.a.is_null() {
-			unsafe { Box::from_raw(self.a) };
-		}
-		if !self.b.is_null() {
-			unsafe { Box::from_raw(self.b) };
-		}
-	}
-}
 impl <A: Clone, B: Clone> Clone for C2TupleTempl<A, B> {
 	fn clone(&self) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(unsafe { &*self.a }.clone())),
-			b: Box::into_raw(Box::new(unsafe { &*self.b }.clone()))
+			a: self.a.clone(),
+			b: self.b.clone()
 		}
 	}
 }
 
 #[repr(C)]
 pub struct C3TupleTempl<A, B, C> {
-	pub a: *mut A,
-	pub b: *mut B,
-	pub c: *mut C,
+	pub a: A,
+	pub b: B,
+	pub c: C,
 }
 impl<A, B, C> From<(A, B, C)> for C3TupleTempl<A, B, C> {
 	fn from(tup: (A, B, C)) -> Self {
 		Self {
-			a: Box::into_raw(Box::new(tup.0)),
-			b: Box::into_raw(Box::new(tup.1)),
-			c: Box::into_raw(Box::new(tup.2)),
+			a: tup.0,
+			b: tup.1,
+			c: tup.2,
 		}
 	}
 }
 impl<A, B, C> C3TupleTempl<A, B, C> {
 	pub(crate) fn to_rust(mut self) -> (A, B, C) {
-		let res = (unsafe { *Box::from_raw(self.a) }, unsafe { *Box::from_raw(self.b) }, unsafe { *Box::from_raw(self.c) });
-		self.a = std::ptr::null_mut();
-		self.b = std::ptr::null_mut();
-		self.c = std::ptr::null_mut();
-		res
+		(self.a, self.b, self.c)
 	}
 }
 pub extern "C" fn C3TupleTempl_free<A, B, C>(_res: C3TupleTempl<A, B, C>) { }
-impl<A, B, C> Drop for C3TupleTempl<A, B, C> {
-	fn drop(&mut self) {
-		if !self.a.is_null() {
-			unsafe { Box::from_raw(self.a) };
-		}
-		if !self.b.is_null() {
-			unsafe { Box::from_raw(self.b) };
-		}
-		if !self.c.is_null() {
-			unsafe { Box::from_raw(self.c) };
-		}
-	}
-}
 
 /// Utility to make it easy to set a pointer to null and get its original value in line.
 pub(crate) trait TakePointer<T> {

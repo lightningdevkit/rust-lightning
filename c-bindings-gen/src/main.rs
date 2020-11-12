@@ -56,7 +56,7 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 
 /// Convert "impl trait_path for for_obj { .. }" for manually-mapped types (ie (de)serialization)
 fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_obj: &syn::Ident, types: &TypeResolver) {
-	if let Some(t) = types.maybe_resolve_path(&trait_path) {
+	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
 		let s = types.maybe_resolve_ident(for_obj).unwrap();
 		if !types.crate_types.opaques.get(&s).is_some() { return; }
 		match &t as &str {
@@ -97,7 +97,7 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 							$( $pat => $e, )*
 						}
 					} else {
-						let path = $types.resolve_path(&supertrait.path);
+						let path = $types.resolve_path(&supertrait.path, None);
 						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
 							$( $pat => $e, )*
 						}
@@ -357,7 +357,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				let mut bounds_iter = t.bounds.iter();
 				match bounds_iter.next().unwrap() {
 					syn::TypeParamBound::Trait(tr) => {
-						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path)).unwrap();
+						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path, None)).unwrap();
 					},
 					_ => unimplemented!(),
 				}
@@ -397,7 +397,7 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, ";\n").unwrap();
 	writeln!(extra_headers, "struct native{}Opaque;\ntypedef struct native{}Opaque LDKnative{};", ident, ident, ident).unwrap();
 	writeln_docs(w, &attrs, "");
-	writeln!(w, "#[must_use]\n#[repr(C)]\npub struct {} {{\n\t/// Nearly everyhwere, inner must be non-null, however in places where", struct_name).unwrap();
+	writeln!(w, "#[must_use]\n#[repr(C)]\npub struct {} {{\n\t/// Nearly everywhere, inner must be non-null, however in places where", struct_name).unwrap();
 	writeln!(w, "\t/// the Rust equivalent takes an Option, it may be set to null to indicate None.").unwrap();
 	writeln!(w, "\tpub inner: *mut native{},\n\tpub is_owned: bool,\n}}\n", ident).unwrap();
 	writeln!(w, "impl Drop for {} {{\n\tfn drop(&mut self) {{", struct_name).unwrap();
@@ -579,7 +579,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 				if let Some(trait_path) = i.trait_.as_ref() {
 					if trait_path.0.is_some() { unimplemented!(); }
 					if types.understood_c_path(&trait_path.1) {
-						let full_trait_path = types.resolve_path(&trait_path.1);
+						let full_trait_path = types.resolve_path(&trait_path.1, None);
 						let trait_obj = *types.crate_types.traits.get(&full_trait_path).unwrap();
 						// We learn the associated types maping from the original trait object.
 						// That's great, except that they are unresolved idents, so if we learn
@@ -628,7 +628,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								if let syn::ReturnType::Type(_, rtype) = &$m.sig.output {
 									if let syn::Type::Reference(r) = &**rtype {
 										write!(w, "\n\t\t{}{}: ", $indent, $m.sig.ident).unwrap();
-										types.write_empty_rust_val(w, &*r.elem);
+										types.write_empty_rust_val(Some(&gen_types), w, &*r.elem);
 										writeln!(w, ",\n{}\t\tset_{}: Some({}_{}_set_{}),", $indent, $m.sig.ident, ident, trait_obj.ident, $m.sig.ident).unwrap();
 										printed = true;
 									}
@@ -722,7 +722,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 										writeln!(w, "\t// This is a bit race-y in the general case, but for our specific use-cases today, we're safe").unwrap();
 										writeln!(w, "\t// Specifically, we must ensure that the first time we're called it can never be in parallel").unwrap();
 										write!(w, "\tif ").unwrap();
-										types.write_empty_rust_val_check(w, &*r.elem, &format!("trait_self_arg.{}", $m.sig.ident));
+										types.write_empty_rust_val_check(Some(&gen_types), w, &*r.elem, &format!("trait_self_arg.{}", $m.sig.ident));
 										writeln!(w, " {{").unwrap();
 										writeln!(w, "\t\tunsafe {{ &mut *(trait_self_arg as *const {}  as *mut {}) }}.{} = {}_{}_{}(trait_self_arg.this_arg);", trait_obj.ident, trait_obj.ident, $m.sig.ident, ident, trait_obj.ident, $m.sig.ident).unwrap();
 										writeln!(w, "\t}}").unwrap();
@@ -1057,8 +1057,6 @@ struct FullLibraryAST {
 /// `out_path` and fills it with wrapper structs/functions to allow calling the things in the AST
 /// at `module` from C.
 fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>, in_dir: &str, out_dir: &str, path: &str, orig_crate: &str, module: &str, header_file: &mut File, cpp_header_file: &mut File) {
-	eprintln!("Converting {}...", path);
-
 	let syntax = if let Some(ast) = libast.files.get(module) { ast } else { return };
 
 	assert!(syntax.shebang.is_none()); // Not sure what this is, hope we dont have one
@@ -1096,6 +1094,8 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 			orig_crate, &new_mod, header_file, cpp_header_file);
 	}
 
+	eprintln!("Converting {} entries...", path);
+
 	let mut type_resolver = TypeResolver::new(orig_crate, module, crate_types);
 
 	for item in syntax.items.iter() {
@@ -1125,7 +1125,7 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 				// Re-export any primitive-type constants.
 				if let syn::Visibility::Public(_) = c.vis {
 					if let syn::Type::Path(p) = &*c.ty {
-						let resolved_path = type_resolver.resolve_path(&p.path);
+						let resolved_path = type_resolver.resolve_path(&p.path, None);
 						if type_resolver.is_primitive(&resolved_path) {
 							writeln!(out, "\n#[no_mangle]").unwrap();
 							writeln!(out, "pub static {}: {} = {}::{}::{};", c.ident, resolved_path, orig_crate, module, c.ident).unwrap();
@@ -1139,8 +1139,18 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 						ExportStatus::Export => {},
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
-					if t.generics.lt_token.is_none() {
-						writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file);
+
+					let mut process_alias = true;
+					for tok in t.generics.params.iter() {
+						if let syn::GenericParam::Lifetime(_) = tok {}
+						else { process_alias = false; }
+					}
+					if process_alias {
+						match &*t.ty {
+							syn::Type::Path(_) =>
+								writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file),
+							_ => {}
+						}
 					}
 				}
 			},
@@ -1180,6 +1190,52 @@ fn load_ast(in_dir: &str, path: &str, module: String, ast_storage: &mut FullLibr
 	ast_storage.files.insert(module, syntax);
 }
 
+/// Insert ident -> absolute Path resolutions into imports from the given UseTree and path-prefix.
+fn process_use_intern<'a>(u: &'a syn::UseTree, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>, imports: &mut HashMap<&'a syn::Ident, syn::Path>) {
+	match u {
+		syn::UseTree::Path(p) => {
+			path.push(syn::PathSegment { ident: p.ident.clone(), arguments: syn::PathArguments::None });
+			process_use_intern(&p.tree, path, imports);
+		},
+		syn::UseTree::Name(n) => {
+			path.push(syn::PathSegment { ident: n.ident.clone(), arguments: syn::PathArguments::None });
+			imports.insert(&n.ident, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path });
+		},
+		syn::UseTree::Group(g) => {
+			for i in g.items.iter() {
+				process_use_intern(i, path.clone(), imports);
+			}
+		},
+		_ => {}
+	}
+}
+
+/// Map all the Paths in a Type into absolute paths given a set of imports (generated via process_use_intern)
+fn resolve_imported_refs(imports: &HashMap<&syn::Ident, syn::Path>, mut ty: syn::Type) -> syn::Type {
+	match &mut ty {
+		syn::Type::Path(p) => {
+			if let Some(ident) = p.path.get_ident() {
+				if let Some(newpath) = imports.get(ident) {
+					p.path = newpath.clone();
+				}
+			} else { unimplemented!(); }
+		},
+		syn::Type::Reference(r) => {
+			r.elem = Box::new(resolve_imported_refs(imports, (*r.elem).clone()));
+		},
+		syn::Type::Slice(s) => {
+			s.elem = Box::new(resolve_imported_refs(imports, (*s.elem).clone()));
+		},
+		syn::Type::Tuple(t) => {
+			for e in t.elems.iter_mut() {
+				*e = resolve_imported_refs(imports, e.clone());
+			}
+		},
+		_ => unimplemented!(),
+	}
+	ty
+}
+
 /// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
 fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
 	let syntax = if let Some(ast) = ast_storage.files.get(&module) { ast } else { return };
@@ -1189,8 +1245,13 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 		walk_ast(in_dir, &path, new_mod, ast_storage, crate_types);
 	}
 
+	let mut import_maps = HashMap::new();
+
 	for item in syntax.items.iter() {
 		match item {
+			syn::Item::Use(u) => {
+				process_use_intern(&u.tree, syn::punctuated::Punctuated::new(), &mut import_maps);
+			},
 			syn::Item::Struct(s) => {
 				if let syn::Visibility::Public(_) = s.vis {
 					match export_status(&s.attrs) {
@@ -1209,6 +1270,31 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 					}
 					let trait_path = format!("{}::{}", module, t.ident);
 					crate_types.traits.insert(trait_path, &t);
+				}
+			},
+			syn::Item::Type(t) => {
+				if let syn::Visibility::Public(_) = t.vis {
+					match export_status(&t.attrs) {
+						ExportStatus::Export => {},
+						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+					}
+					let type_path = format!("{}::{}", module, t.ident);
+					let mut process_alias = true;
+					for tok in t.generics.params.iter() {
+						if let syn::GenericParam::Lifetime(_) = tok {}
+						else { process_alias = false; }
+					}
+					if process_alias {
+						match &*t.ty {
+							syn::Type::Path(_) => {
+								// If its a path with no generics, assume we don't map the aliased type and map it opaque
+								crate_types.opaques.insert(type_path, &t.ident);
+							},
+							_ => {
+								crate_types.type_aliases.insert(type_path, resolve_imported_refs(&import_maps, (*t.ty).clone()));
+							}
+						}
+					}
 				}
 			},
 			syn::Item::Enum(e) if is_enum_opaque(e) => {
@@ -1264,7 +1350,7 @@ fn main() {
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		templates_defined: HashMap::new(), template_file: &mut derived_templates };
+		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates };
 	walk_ast(&args[1], "/lib.rs", "".to_string(), &libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.

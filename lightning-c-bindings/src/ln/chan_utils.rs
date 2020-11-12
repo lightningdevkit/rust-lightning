@@ -19,7 +19,7 @@ pub extern "C" fn build_commitment_secret(commitment_seed: *const [u8; 32], mut 
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_private_key(per_commitment_point: crate::c_types::PublicKey, base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeySecpErrorZ {
+pub extern "C" fn derive_private_key(mut per_commitment_point: crate::c_types::PublicKey, base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeySecpErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_private_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *base_secret}[..]).unwrap());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::SecretKey::from_rust(o) }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }) };
 	local_ret
@@ -32,7 +32,7 @@ pub extern "C" fn derive_private_key(per_commitment_point: crate::c_types::Publi
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_public_key(per_commitment_point: crate::c_types::PublicKey, base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
+pub extern "C" fn derive_public_key(mut per_commitment_point: crate::c_types::PublicKey, mut base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_public_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &base_point.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::PublicKey::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }) };
 	local_ret
@@ -66,7 +66,7 @@ pub extern "C" fn derive_private_revocation_key(per_commitment_secret: *const [u
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_public_revocation_key(per_commitment_point: crate::c_types::PublicKey, countersignatory_revocation_base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
+pub extern "C" fn derive_public_revocation_key(mut per_commitment_point: crate::c_types::PublicKey, mut countersignatory_revocation_base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_public_revocation_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &countersignatory_revocation_base_point.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::PublicKey::from_rust(&o) }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }) };
 	local_ret
@@ -90,7 +90,7 @@ type nativeTxCreationKeys = nativeTxCreationKeysImport;
 #[must_use]
 #[repr(C)]
 pub struct TxCreationKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeTxCreationKeys,
 	pub is_owned: bool,
@@ -226,7 +226,7 @@ type nativePreCalculatedTxCreationKeys = nativePreCalculatedTxCreationKeysImport
 #[must_use]
 #[repr(C)]
 pub struct PreCalculatedTxCreationKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePreCalculatedTxCreationKeys,
 	pub is_owned: bool,
@@ -289,7 +289,7 @@ type nativeChannelPublicKeys = nativeChannelPublicKeysImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelPublicKeys {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelPublicKeys,
 	pub is_owned: bool,
@@ -431,7 +431,7 @@ pub extern "C" fn ChannelPublicKeys_read(ser: crate::c_types::u8slice) -> Channe
 /// Create a new TxCreationKeys from channel base points and the per-commitment point
 #[must_use]
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_derive_new(per_commitment_point: crate::c_types::PublicKey, broadcaster_delayed_payment_base: crate::c_types::PublicKey, broadcaster_htlc_base: crate::c_types::PublicKey, countersignatory_revocation_base: crate::c_types::PublicKey, countersignatory_htlc_base: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_TxCreationKeysSecpErrorZ {
+pub extern "C" fn TxCreationKeys_derive_new(mut per_commitment_point: crate::c_types::PublicKey, mut broadcaster_delayed_payment_base: crate::c_types::PublicKey, mut broadcaster_htlc_base: crate::c_types::PublicKey, mut countersignatory_revocation_base: crate::c_types::PublicKey, mut countersignatory_htlc_base: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_TxCreationKeysSecpErrorZ {
 	let mut ret = lightning::ln::chan_utils::TxCreationKeys::derive_new(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &broadcaster_delayed_payment_base.into_rust(), &broadcaster_htlc_base.into_rust(), &countersignatory_revocation_base.into_rust(), &countersignatory_htlc_base.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::TxCreationKeys { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }) };
 	local_ret
@@ -441,7 +441,7 @@ pub extern "C" fn TxCreationKeys_derive_new(per_commitment_point: crate::c_types
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
 #[no_mangle]
-pub extern "C" fn get_revokeable_redeemscript(revocation_key: crate::c_types::PublicKey, mut contest_delay: u16, broadcaster_delayed_payment_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn get_revokeable_redeemscript(mut revocation_key: crate::c_types::PublicKey, mut contest_delay: u16, mut broadcaster_delayed_payment_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
 	let mut ret = lightning::ln::chan_utils::get_revokeable_redeemscript(&revocation_key.into_rust(), contest_delay, &broadcaster_delayed_payment_key.into_rust());
 	ret.into_bytes().into()
 }
@@ -454,7 +454,7 @@ type nativeHTLCOutputInCommitment = nativeHTLCOutputInCommitmentImport;
 #[must_use]
 #[repr(C)]
 pub struct HTLCOutputInCommitment {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeHTLCOutputInCommitment,
 	pub is_owned: bool,
@@ -572,17 +572,17 @@ pub extern "C" fn get_htlc_redeemscript(htlc: &crate::ln::chan_utils::HTLCOutput
 /// Gets the redeemscript for a funding output from the two funding public keys.
 /// Note that the order of funding public keys does not matter.
 #[no_mangle]
-pub extern "C" fn make_funding_redeemscript(broadcaster: crate::c_types::PublicKey, countersignatory: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn make_funding_redeemscript(mut broadcaster: crate::c_types::PublicKey, mut countersignatory: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
 	let mut ret = lightning::ln::chan_utils::make_funding_redeemscript(&broadcaster.into_rust(), &countersignatory.into_rust());
 	ret.into_bytes().into()
 }
 
 /// panics if htlc.transaction_output_index.is_none()!
 #[no_mangle]
-pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate_per_kw: u32, mut contest_delay: u16, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, broadcaster_delayed_payment_key: crate::c_types::PublicKey, revocation_key: crate::c_types::PublicKey) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn build_htlc_transaction(prev_hash: *const [u8; 32], mut feerate_per_kw: u32, mut contest_delay: u16, htlc: &crate::ln::chan_utils::HTLCOutputInCommitment, mut broadcaster_delayed_payment_key: crate::c_types::PublicKey, mut revocation_key: crate::c_types::PublicKey) -> crate::c_types::Transaction {
 	let mut ret = lightning::ln::chan_utils::build_htlc_transaction(&::bitcoin::hash_types::Txid::from_slice(&unsafe { &*prev_hash }[..]).unwrap(), feerate_per_kw, contest_delay, unsafe { &*htlc.inner }, &broadcaster_delayed_payment_key.into_rust(), &revocation_key.into_rust());
 	let mut local_ret = ::bitcoin::consensus::encode::serialize(&ret);
-	local_ret.into()
+	crate::c_types::Transaction::from_vec(local_ret)
 }
 
 
@@ -595,7 +595,7 @@ type nativeHolderCommitmentTransaction = nativeHolderCommitmentTransactionImport
 #[must_use]
 #[repr(C)]
 pub struct HolderCommitmentTransaction {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeHolderCommitmentTransaction,
 	pub is_owned: bool,
@@ -640,15 +640,15 @@ pub(crate) extern "C" fn HolderCommitmentTransaction_clone_void(this_ptr: *const
 }
 /// The commitment transaction itself, in unsigned form.
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_get_unsigned_tx(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HolderCommitmentTransaction_get_unsigned_tx(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::Transaction {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.unsigned_tx;
 	let mut local_inner_val = ::bitcoin::consensus::encode::serialize(inner_val);
-	local_inner_val.into()
+	crate::c_types::Transaction::from_vec(local_inner_val)
 }
 /// The commitment transaction itself, in unsigned form.
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_set_unsigned_tx(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_u8Z) {
-	unsafe { &mut *this_ptr.inner }.unsigned_tx = ::bitcoin::consensus::encode::deserialize(&val.into_rust()[..]).unwrap();
+pub extern "C" fn HolderCommitmentTransaction_set_unsigned_tx(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::Transaction) {
+	unsafe { &mut *this_ptr.inner }.unsigned_tx = val.into_bitcoin();
 }
 /// Our counterparty's signature for the transaction, above.
 #[no_mangle]
@@ -694,9 +694,9 @@ pub extern "C" fn HolderCommitmentTransaction_set_per_htlc(this_ptr: &mut Holder
 /// only checks that the shape and amounts are consistent, but does not check the scriptPubkey.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_new_missing_holder_sig(mut unsigned_tx: crate::c_types::derived::CVec_u8Z, mut counterparty_sig: crate::c_types::Signature, holder_funding_key: crate::c_types::PublicKey, counterparty_funding_key: crate::c_types::PublicKey, mut keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::HolderCommitmentTransaction {
+pub extern "C" fn HolderCommitmentTransaction_new_missing_holder_sig(mut unsigned_tx: crate::c_types::Transaction, mut counterparty_sig: crate::c_types::Signature, mut holder_funding_key: crate::c_types::PublicKey, mut counterparty_funding_key: crate::c_types::PublicKey, mut keys: crate::ln::chan_utils::TxCreationKeys, mut feerate_per_kw: u32, mut htlc_data: crate::c_types::derived::CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ) -> crate::ln::chan_utils::HolderCommitmentTransaction {
 	let mut local_htlc_data = Vec::new(); for mut item in htlc_data.into_rust().drain(..) { local_htlc_data.push( { let (mut orig_htlc_data_0_0, mut orig_htlc_data_0_1) = item.to_rust(); let mut local_orig_htlc_data_0_1 = if orig_htlc_data_0_1.is_null() { None } else { Some( { orig_htlc_data_0_1.into_rust() }) }; let mut local_htlc_data_0 = (*unsafe { Box::from_raw(orig_htlc_data_0_0.take_ptr()) }, local_orig_htlc_data_0_1); local_htlc_data_0 }); };
-	let mut ret = lightning::ln::chan_utils::HolderCommitmentTransaction::new_missing_holder_sig(::bitcoin::consensus::encode::deserialize(&unsigned_tx.into_rust()[..]).unwrap(), counterparty_sig.into_rust(), &holder_funding_key.into_rust(), &counterparty_funding_key.into_rust(), *unsafe { Box::from_raw(keys.take_ptr()) }, feerate_per_kw, local_htlc_data);
+	let mut ret = lightning::ln::chan_utils::HolderCommitmentTransaction::new_missing_holder_sig(unsigned_tx.into_bitcoin(), counterparty_sig.into_rust(), &holder_funding_key.into_rust(), &counterparty_funding_key.into_rust(), *unsafe { Box::from_raw(keys.take_ptr()) }, feerate_per_kw, local_htlc_data);
 	crate::ln::chan_utils::HolderCommitmentTransaction { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -728,7 +728,7 @@ pub extern "C" fn HolderCommitmentTransaction_txid(this_arg: &HolderCommitmentTr
 /// Channel value is amount locked in funding_outpoint.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_get_holder_sig(this_arg: &HolderCommitmentTransaction, funding_key: *const [u8; 32], funding_redeemscript: crate::c_types::u8slice, mut channel_value_satoshis: u64) -> crate::c_types::Signature {
+pub extern "C" fn HolderCommitmentTransaction_get_holder_sig(this_arg: &HolderCommitmentTransaction, funding_key: *const [u8; 32], mut funding_redeemscript: crate::c_types::u8slice, mut channel_value_satoshis: u64) -> crate::c_types::Signature {
 	let mut ret = unsafe { &*this_arg.inner }.get_holder_sig(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *funding_key}[..]).unwrap(), &::bitcoin::blockdata::script::Script::from(Vec::from(funding_redeemscript.to_slice())), channel_value_satoshis, &bitcoin::secp256k1::Secp256k1::new());
 	crate::c_types::Signature::from_rust(&ret)
 }

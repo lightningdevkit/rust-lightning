@@ -48,44 +48,44 @@ const uint8_t valid_node_announcement[] = {
 // A simple block containing only one transaction (which is the channel-open transaction for the
 // channel we'll create). This was originally created by printing additional data in a simple
 // rust-lightning unit test.
-const uint8_t channel_open_block[] = {
+const uint8_t channel_open_header[80] = {
 	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0xa2, 0x47, 0xd2, 0xf8, 0xd4, 0xe0, 0x6a, 0x3f, 0xf9, 0x7a, 0x9a, 0x34,
 	0xbb, 0xa9, 0x96, 0xde, 0x63, 0x84, 0x5a, 0xce, 0xcf, 0x98, 0xb8, 0xbb, 0x75, 0x4c, 0x4f, 0x7d,
 	0xee, 0x4c, 0xa9, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+const uint8_t channel_open_tx[] = {
+	0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x01, 0x40, 0x9c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x20, 0x20, 0x12, 0x70,
-	0x44, 0x41, 0x40, 0xaf, 0xc5, 0x72, 0x97, 0xc8, 0x69, 0xba, 0x04, 0xdb, 0x28, 0x7b, 0xd7, 0x32,
-	0x07, 0x33, 0x3a, 0x4a, 0xc2, 0xc5, 0x56, 0x06, 0x05, 0x65, 0xd7, 0xa8, 0xcf, 0x01, 0x00, 0x00,
-	0x00, 0x00, 0x00
+	0x01, 0x40, 0x9c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x20, 0x20, 0x12, 0x70, 0x44,
+	0x41, 0x40, 0xaf, 0xc5, 0x72, 0x97, 0xc8, 0x69, 0xba, 0x04, 0xdb, 0x28, 0x7b, 0xd7, 0x32, 0x07,
+	0x33, 0x3a, 0x4a, 0xc2, 0xc5, 0x56, 0x06, 0x05, 0x65, 0xd7, 0xa8, 0xcf, 0x01, 0x00, 0x00, 0x00,
+	0x00, 0x00
 };
 
 // The first transaction in the block is header (80 bytes) + transaction count (1 byte) into the block data.
-const uint8_t *channel_open_tx = channel_open_block + 81;
 const uint8_t channel_open_txid[] = {
 	0x5f, 0xa9, 0x4c, 0xee, 0x7d, 0x4f, 0x4c, 0x75, 0xbb, 0xb8, 0x98, 0xcf, 0xce, 0x5a, 0x84, 0x63,
 	0xde, 0x96, 0xa9, 0xbb, 0x34, 0x9a, 0x7a, 0xf9, 0x3f, 0x6a, 0xe0, 0xd4, 0xf8, 0xd2, 0x47, 0xa2
 };
 
 // Two blocks built on top of channel_open_block:
-const uint8_t block_1[] = {
+const uint8_t header_1[80] = {
 	0x01, 0x00, 0x00, 0x00, 0x65, 0x8e, 0xf1, 0x90, 0x88, 0xfa, 0x13, 0x9c, 0x6a, 0xea, 0xf7, 0xc1,
 	0x5a, 0xdd, 0x52, 0x4d, 0x3c, 0x48, 0x03, 0xb3, 0x9b, 0x25, 0x4f, 0x02, 0x79, 0x05, 0x90, 0xe0,
 	0xc4, 0x8d, 0xa0, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00
 };
-const uint8_t block_2[] = {
+const uint8_t header_2[80] = {
 	0x01, 0x00, 0x00, 0x00, 0xf2, 0x08, 0x87, 0x51, 0xcb, 0xb1, 0x1a, 0x51, 0x76, 0x01, 0x6c, 0x5d,
 	0x76, 0x26, 0x54, 0x6f, 0xd9, 0xbd, 0xa6, 0xa5, 0xe9, 0x4b, 0x21, 0x6e, 0xda, 0xa3, 0x64, 0x23,
 	0xcd, 0xf1, 0xe2, 0xe2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00
 };
 
 const LDKThirtyTwoBytes payment_preimage_1 = {
@@ -115,18 +115,21 @@ static int num_txs_broadcasted = 0; // Technically a race, but ints are atomic o
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
 	num_txs_broadcasted += 1;
 	//TODO
+	Transaction_free(tx);
 }
 
 struct NodeMonitors {
 	std::mutex mut;
 	std::vector<std::pair<LDK::OutPoint, LDK::ChannelMonitor>> mons;
-	LDKChainWatchInterfaceUtil* watch_util;
 	LDKLogger* logger;
+
+	void ConnectBlock(const uint8_t (*header)[80], uint32_t height, LDKCVec_C2Tuple_usizeTransactionZZ tx_data, LDKBroadcasterInterface broadcast, LDKFeeEstimator fee_est) {
+		std::unique_lock<std::mutex> l(mut);
+		for (auto& mon : mons) {
+			LDK::CVec_C2Tuple_TxidCVec_TxOutZZZ res = ChannelMonitor_block_connected(&mon.second, &header_2, tx_data, height, broadcast, fee_est, *logger);
+		}
+	}
 };
-void NodeMonitors_free(void *this_arg) {
-	NodeMonitors* arg = (NodeMonitors*) this_arg;
-	delete arg;
-}
 
 LDKCResult_NoneChannelMonitorUpdateErrZ add_channel_monitor(const void *this_arg, LDKOutPoint funding_txo_arg, LDKChannelMonitor monitor_arg) {
 	// First bind the args to C++ objects so they auto-free
@@ -136,19 +139,6 @@ LDKCResult_NoneChannelMonitorUpdateErrZ add_channel_monitor(const void *this_arg
 	NodeMonitors* arg = (NodeMonitors*) this_arg;
 	std::unique_lock<std::mutex> l(arg->mut);
 
-	LDK::ChainWatchInterface watch = ChainWatchInterfaceUtil_as_ChainWatchInterface(arg->watch_util);
-	LDK::C2Tuple_OutPointScriptZ funding_info = ChannelMonitor_get_funding_txo(&mon);
-	LDKThirtyTwoBytes funding_txid;
-	memcpy(funding_txid.data, OutPoint_get_txid(funding_info->a), 32);
-	LDK::C2Tuple_Txidu32Z outpoint(C2Tuple_Txidu32Z_new(funding_txid, OutPoint_get_index(funding_info->a)));
-	watch->install_watch_outpoint(watch->this_arg, outpoint, LDKu8slice {
-		.data = funding_info->b->data,
-		.datalen = funding_info->b->datalen,
-	});
-	watch->install_watch_tx(watch->this_arg, &funding_txid.data, LDKu8slice {
-		.data = funding_info->b->data,
-		.datalen = funding_info->b->datalen,
-	});
 	arg->mons.push_back(std::make_pair(std::move(funding_txo), std::move(mon)));
 	return CResult_NoneChannelMonitorUpdateErrZ_ok();
 }
@@ -254,15 +244,14 @@ int main() {
 		.free = NULL,
 	};
 
-	LDK::ChainWatchInterfaceUtil chain1 = ChainWatchInterfaceUtil_new(network);
-	LDK::BlockNotifier blocks1 = BlockNotifier_new(ChainWatchInterfaceUtil_as_ChainWatchInterface(&chain1));
-
-	LDKManyChannelMonitor mon1 {
-		.this_arg = new NodeMonitors { .watch_util = &chain1, .logger = &logger1 },
-		.add_monitor = add_channel_monitor,
-		.update_monitor = update_channel_monitor,
-		.get_and_clear_pending_monitor_events = monitors_pending_monitor_events,
-		.free = NodeMonitors_free,
+	NodeMonitors mons1;
+	mons1.logger = &logger1;
+	LDKWatch mon1 {
+		.this_arg = &mons1,
+		.watch_channel = add_channel_monitor,
+		.update_channel = update_channel_monitor,
+		.release_pending_monitor_events = monitors_pending_monitor_events,
+		.free = NULL,
 	};
 
 	LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 0, 0);
@@ -270,14 +259,12 @@ int main() {
 	LDKSecretKey node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
 
 	LDK::UserConfig config1 = UserConfig_default();
-
 	LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), config1, 0);
-	BlockNotifier_register_listener(&blocks1, ChannelManager_as_ChainListener(&cm1));
 
 	LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
 	assert(channels->datalen == 0);
 
-	LDK::NetGraphMsgHandler net_graph1 = NetGraphMsgHandler_new(ChainWatchInterfaceUtil_as_ChainWatchInterface(&chain1), logger1);
+	LDK::NetGraphMsgHandler net_graph1 = NetGraphMsgHandler_new(NULL, logger1);
 
 	LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
 
@@ -298,15 +285,14 @@ int main() {
 		.free = NULL,
 	};
 
-	LDK::ChainWatchInterfaceUtil chain2 = ChainWatchInterfaceUtil_new(network);
-	LDK::BlockNotifier blocks2 = BlockNotifier_new(ChainWatchInterfaceUtil_as_ChainWatchInterface(&chain2));
-
-	LDKManyChannelMonitor mon2 {
-		.this_arg = new NodeMonitors { .watch_util = &chain2, .logger = &logger2 },
-		.add_monitor = add_channel_monitor,
-		.update_monitor = update_channel_monitor,
-		.get_and_clear_pending_monitor_events = monitors_pending_monitor_events,
-		.free = NodeMonitors_free,
+	NodeMonitors mons2;
+	mons2.logger = &logger2;
+	LDKWatch mon2 {
+		.this_arg = &mons2,
+		.watch_channel = add_channel_monitor,
+		.update_channel = update_channel_monitor,
+		.release_pending_monitor_events = monitors_pending_monitor_events,
+		.free = NULL,
 	};
 
 	memset(&node_seed, 1, 32);
@@ -320,12 +306,11 @@ int main() {
 	UserConfig_set_own_channel_config(&config2, handshake_config2);
 
 	LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), config2, 0);
-	BlockNotifier_register_listener(&blocks2, ChannelManager_as_ChainListener(&cm2));
 
 	LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
 	assert(channels2->datalen == 0);
 
-	LDK::NetGraphMsgHandler net_graph2 = NetGraphMsgHandler_new(ChainWatchInterfaceUtil_as_ChainWatchInterface(&chain2), logger2);
+	LDK::NetGraphMsgHandler net_graph2 = NetGraphMsgHandler_new(NULL, logger2);
 	LDK::RoutingMessageHandler net_msgs2 = NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2);
 	LDK::ChannelAnnouncement chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
 	LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
@@ -434,14 +419,31 @@ int main() {
 		std::this_thread::yield();
 	}
 
-	BlockNotifier_block_connected(&blocks1, LDKu8slice { .data = channel_open_block, .datalen = sizeof(channel_open_block) }, 1);
-	BlockNotifier_block_connected(&blocks2, LDKu8slice { .data = channel_open_block, .datalen = sizeof(channel_open_block) }, 1);
+	LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	ChannelManager_block_connected(&cm1, &channel_open_header, txdata, 1);
 
-	BlockNotifier_block_connected(&blocks1, LDKu8slice { .data = block_1, .datalen = sizeof(block_1) }, 2);
-	BlockNotifier_block_connected(&blocks2, LDKu8slice { .data = block_1, .datalen = sizeof(block_1) }, 2);
+	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	ChannelManager_block_connected(&cm2, &channel_open_header, txdata, 1);
 
-	BlockNotifier_block_connected(&blocks1, LDKu8slice { .data = block_2, .datalen = sizeof(block_2) }, 3);
-	BlockNotifier_block_connected(&blocks2, LDKu8slice { .data = block_2, .datalen = sizeof(block_2) }, 3);
+	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	mons1.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
+
+	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	mons2.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
+
+	ChannelManager_block_connected(&cm1, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
+	ChannelManager_block_connected(&cm2, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
+	mons1.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+	mons2.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+
+	ChannelManager_block_connected(&cm1, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
+	ChannelManager_block_connected(&cm2, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
+	mons1.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+	mons2.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
 
 	PeerManager_process_events(&net1);
 	PeerManager_process_events(&net2);
@@ -548,9 +550,7 @@ int main() {
 	LDKSecretKey sk;
 	memset(&sk, 42, 32);
 	LDKC2Tuple_u64u64Z kdiv_params;
-	kdiv_params.a = (uint64_t*) malloc(8);
-	kdiv_params.b = (uint64_t*) malloc(8);
-	*kdiv_params.a = 42;
-	*kdiv_params.b = 42;
+	kdiv_params.a = 42;
+	kdiv_params.b = 42;
 	LDK::InMemoryChannelKeys keys = InMemoryChannelKeys_new(sk, sk, sk, sk, sk, random_bytes, 42, kdiv_params);
 }

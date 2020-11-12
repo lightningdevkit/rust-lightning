@@ -12,7 +12,7 @@ type nativeNetworkGraph = nativeNetworkGraphImport;
 #[must_use]
 #[repr(C)]
 pub struct NetworkGraph {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNetworkGraph,
 	pub is_owned: bool,
@@ -52,7 +52,7 @@ type nativeLockedNetworkGraph = nativeLockedNetworkGraphImport<'static>;
 #[must_use]
 #[repr(C)]
 pub struct LockedNetworkGraph {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeLockedNetworkGraph,
 	pub is_owned: bool,
@@ -84,7 +84,7 @@ impl LockedNetworkGraph {
 }
 
 use lightning::routing::network_graph::NetGraphMsgHandler as nativeNetGraphMsgHandlerImport;
-type nativeNetGraphMsgHandler = nativeNetGraphMsgHandlerImport<crate::chain::chaininterface::ChainWatchInterface, crate::util::logger::Logger>;
+type nativeNetGraphMsgHandler = nativeNetGraphMsgHandlerImport<crate::chain::Access, crate::util::logger::Logger>;
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -94,7 +94,7 @@ type nativeNetGraphMsgHandler = nativeNetGraphMsgHandlerImport<crate::chain::cha
 #[must_use]
 #[repr(C)]
 pub struct NetGraphMsgHandler {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNetGraphMsgHandler,
 	pub is_owned: bool,
@@ -131,8 +131,9 @@ impl NetGraphMsgHandler {
 /// channel owners' keys.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn NetGraphMsgHandler_new(mut chain_monitor: crate::chain::chaininterface::ChainWatchInterface, mut logger: crate::util::logger::Logger) -> NetGraphMsgHandler {
-	let mut ret = lightning::routing::network_graph::NetGraphMsgHandler::new(chain_monitor, logger);
+pub extern "C" fn NetGraphMsgHandler_new(chain_access: *mut crate::chain::Access, mut logger: crate::util::logger::Logger) -> NetGraphMsgHandler {
+	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
+	let mut ret = lightning::routing::network_graph::NetGraphMsgHandler::new(local_chain_access, logger);
 	NetGraphMsgHandler { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -140,8 +141,9 @@ pub extern "C" fn NetGraphMsgHandler_new(mut chain_monitor: crate::chain::chaini
 /// assuming an existing Network Graph.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn NetGraphMsgHandler_from_net_graph(mut chain_monitor: crate::chain::chaininterface::ChainWatchInterface, mut logger: crate::util::logger::Logger, mut network_graph: crate::routing::network_graph::NetworkGraph) -> NetGraphMsgHandler {
-	let mut ret = lightning::routing::network_graph::NetGraphMsgHandler::from_net_graph(chain_monitor, logger, *unsafe { Box::from_raw(network_graph.take_ptr()) });
+pub extern "C" fn NetGraphMsgHandler_from_net_graph(chain_access: *mut crate::chain::Access, mut logger: crate::util::logger::Logger, mut network_graph: crate::routing::network_graph::NetworkGraph) -> NetGraphMsgHandler {
+	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
+	let mut ret = lightning::routing::network_graph::NetGraphMsgHandler::from_net_graph(local_chain_access, logger, *unsafe { Box::from_raw(network_graph.take_ptr()) });
 	NetGraphMsgHandler { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -214,7 +216,7 @@ extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_get_next_node_announcemen
 	local_ret.into()
 }
 #[must_use]
-extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_should_request_full_sync(this_arg: *const c_void, _node_id: crate::c_types::PublicKey) -> bool {
+extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_should_request_full_sync(this_arg: *const c_void, mut _node_id: crate::c_types::PublicKey) -> bool {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }.should_request_full_sync(&_node_id.into_rust());
 	ret
 }
@@ -228,7 +230,7 @@ type nativeDirectionalChannelInfo = nativeDirectionalChannelInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct DirectionalChannelInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeDirectionalChannelInfo,
 	pub is_owned: bool,
@@ -344,7 +346,7 @@ type nativeChannelInfo = nativeChannelInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct ChannelInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeChannelInfo,
 	pub is_owned: bool,
@@ -373,6 +375,17 @@ impl ChannelInfo {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
+}
+/// Protocol features of a channel communicated during its announcement
+#[no_mangle]
+pub extern "C" fn ChannelInfo_get_features(this_ptr: &ChannelInfo) -> crate::ln::features::ChannelFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::ChannelFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// Protocol features of a channel communicated during its announcement
+#[no_mangle]
+pub extern "C" fn ChannelInfo_set_features(this_ptr: &mut ChannelInfo, mut val: crate::ln::features::ChannelFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// Source node of the first direction of a channel
 #[no_mangle]
@@ -461,7 +474,7 @@ type nativeRoutingFees = nativeRoutingFeesImport;
 #[must_use]
 #[repr(C)]
 pub struct RoutingFees {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeRoutingFees,
 	pub is_owned: bool,
@@ -556,7 +569,7 @@ type nativeNodeAnnouncementInfo = nativeNodeAnnouncementInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeAnnouncementInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeAnnouncementInfo,
 	pub is_owned: bool,
@@ -585,6 +598,17 @@ impl NodeAnnouncementInfo {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
+}
+/// Protocol features the node announced support for
+#[no_mangle]
+pub extern "C" fn NodeAnnouncementInfo_get_features(this_ptr: &NodeAnnouncementInfo) -> crate::ln::features::NodeFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::NodeFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// Protocol features the node announced support for
+#[no_mangle]
+pub extern "C" fn NodeAnnouncementInfo_set_features(this_ptr: &mut NodeAnnouncementInfo, mut val: crate::ln::features::NodeFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_ptr()) };
 }
 /// When the last known update to the node state was issued.
 /// Value is opaque, as set in the announcement.
@@ -650,6 +674,20 @@ pub extern "C" fn NodeAnnouncementInfo_set_announcement_message(this_ptr: &mut N
 	let mut local_val = if val.inner.is_null() { None } else { Some( { *unsafe { Box::from_raw(val.take_ptr()) } }) };
 	unsafe { &mut *this_ptr.inner }.announcement_message = local_val;
 }
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NodeAnnouncementInfo_new(mut features_arg: crate::ln::features::NodeFeatures, mut last_update_arg: u32, mut rgb_arg: crate::c_types::ThreeBytes, mut alias_arg: crate::c_types::ThirtyTwoBytes, mut addresses_arg: crate::c_types::derived::CVec_NetAddressZ, mut announcement_message_arg: crate::ln::msgs::NodeAnnouncement) -> NodeAnnouncementInfo {
+	let mut local_addresses_arg = Vec::new(); for mut item in addresses_arg.into_rust().drain(..) { local_addresses_arg.push( { item.into_native() }); };
+	let mut local_announcement_message_arg = if announcement_message_arg.inner.is_null() { None } else { Some( { *unsafe { Box::from_raw(announcement_message_arg.take_ptr()) } }) };
+	NodeAnnouncementInfo { inner: Box::into_raw(Box::new(nativeNodeAnnouncementInfo {
+		features: *unsafe { Box::from_raw(features_arg.take_ptr()) },
+		last_update: last_update_arg,
+		rgb: rgb_arg.data,
+		alias: alias_arg.data,
+		addresses: local_addresses_arg,
+		announcement_message: local_announcement_message_arg,
+	})), is_owned: true }
+}
 #[no_mangle]
 pub extern "C" fn NodeAnnouncementInfo_write(obj: *const NodeAnnouncementInfo) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
@@ -670,7 +708,7 @@ type nativeNodeInfo = nativeNodeInfoImport;
 #[must_use]
 #[repr(C)]
 pub struct NodeInfo {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeNodeInfo,
 	pub is_owned: bool,

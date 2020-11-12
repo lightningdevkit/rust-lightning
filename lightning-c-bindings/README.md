@@ -218,6 +218,9 @@ These include:
 	  ...
    } LDKChannelKeys;
    ```
+ * Private and public keys are asserted valid at the FFI boundary. Thus, before passing any
+   (untrusted) private or public key material across the boundary, ensure that they represent valid
+   (ie in-range) keys.
    
 **It is highly recommended that you test any code which relies on the C (or C++) bindings in
 valgrind, AddressSanitizer, MemorySanitizer, or other similar tools to ensure correctness.**

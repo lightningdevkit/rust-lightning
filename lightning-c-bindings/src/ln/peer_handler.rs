@@ -18,7 +18,7 @@ type nativeMessageHandler = nativeMessageHandlerImport<crate::ln::msgs::ChannelM
 #[must_use]
 #[repr(C)]
 pub struct MessageHandler {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativeMessageHandler,
 	pub is_owned: bool,
@@ -186,7 +186,7 @@ type nativePeerHandleError = nativePeerHandleErrorImport;
 #[must_use]
 #[repr(C)]
 pub struct PeerHandleError {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePeerHandleError,
 	pub is_owned: bool,
@@ -251,7 +251,7 @@ type nativePeerManager = nativePeerManagerImport<crate::ln::peer_handler::Socket
 #[must_use]
 #[repr(C)]
 pub struct PeerManager {
-	/// Nearly everyhwere, inner must be non-null, however in places where
+	/// Nearly everywhere, inner must be non-null, however in places where
 	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
 	pub inner: *mut nativePeerManager,
 	pub is_owned: bool,

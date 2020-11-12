@@ -113,20 +113,15 @@ pub fn write_method_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, a
 			syn::FnArg::Typed(arg) => {
 				if types.skip_arg(&*arg.ty, generics) { continue; }
 				if !arg.attrs.is_empty() { unimplemented!(); }
-				let mut is_ref = if let syn::Type::Reference(_) = *arg.ty { true } else { false };
-				if let syn::Type::Reference(syn::TypeReference { ref elem, .. }) = *arg.ty {
-					if let syn::Type::Slice(_) = &**elem {
-						// Slices are mapped to non-ref Vec types, so we want them to be mut
-						// letting us drain(..) the underlying Vec.
-						is_ref = false;
-					}
-				}
+				// First get the c type so that we can check if it ends up being a reference:
+				let mut c_type = Vec::new();
+				types.write_c_type(&mut c_type, &*arg.ty, generics, false);
 				match &*arg.pat {
 					syn::Pat::Ident(ident) => {
 						if !ident.attrs.is_empty() || ident.subpat.is_some() {
 							unimplemented!();
 						}
-						write!(w, "{}{}{}: ", if first_arg { "" } else { ", " }, if is_ref || !fn_decl { "" } else { "mut " }, ident.ident).unwrap();
+						write!(w, "{}{}{}: ", if first_arg { "" } else { ", " }, if !fn_decl || c_type[0] == '&' as u8 || c_type[0] == '*' as u8 { "" } else { "mut " }, ident.ident).unwrap();
 						first_arg = false;
 					},
 					syn::Pat::Wild(wild) => {
@@ -136,7 +131,7 @@ pub fn write_method_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, a
 					},
 					_ => unimplemented!(),
 				}
-				types.write_c_type(w, &*arg.ty, generics, false);
+				w.write(&c_type).unwrap();
 			}
 		}
 	}
