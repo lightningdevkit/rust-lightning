@@ -1525,9 +1525,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(claimable_outpoints, Some((htlc_txid, outputs)))
 	}
 
-	fn broadcast_by_holder_state(&self, commitment_tx: &Transaction, holder_tx: &HolderSignedTx) -> (Vec<ClaimRequest>, Vec<(u32, TxOut)>, Option<(Script, PublicKey, PublicKey)>) {
+	// Returns (1) `ClaimRequest`s that can be given to the OnChainTxHandler, so that the handler can
+	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
+	// script so we can detect whether a holder transaction has been seen on-chain.
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx) -> (Vec<ClaimRequest>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
-		let mut watch_outputs = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
 		let broadcasted_holder_revokable_script = Some((redeemscript.to_v0_p2wsh(), holder_tx.per_commitment_point.clone(), holder_tx.revocation_key.clone()));
@@ -1546,11 +1548,21 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							} else { None },
 						amount: htlc.amount_msat,
 				}});
-				watch_outputs.push((transaction_output_index, commitment_tx.output[transaction_output_index as usize].clone()));
 			}
 		}
 
-		(claim_requests, watch_outputs, broadcasted_holder_revokable_script)
+		(claim_requests, broadcasted_holder_revokable_script)
+	}
+
+	// Returns holder HTLC outputs to watch and react to in case of spending.
+	fn get_broadcasted_holder_watch_outputs(&self, holder_tx: &HolderSignedTx, commitment_tx: &Transaction) -> Vec<(u32, TxOut)> {
+		let mut watch_outputs = Vec::with_capacity(holder_tx.htlc_outputs.len());
+		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
+			if let Some(transaction_output_index) = htlc.transaction_output_index {
+				watch_outputs.push((transaction_output_index, commitment_tx.output[transaction_output_index as usize].clone()));
+			}
+		}
+		watch_outputs
 	}
 
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
@@ -1585,10 +1597,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 
 		macro_rules! append_onchain_update {
-			($updates: expr) => {
+			($updates: expr, $to_watch: expr) => {
 				claim_requests = $updates.0;
-				watch_outputs.append(&mut $updates.1);
-				self.broadcasted_holder_revokable_script = $updates.2;
+				self.broadcasted_holder_revokable_script = $updates.1;
+				watch_outputs.append(&mut $to_watch);
 			}
 		}
 
@@ -1598,14 +1610,16 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if self.current_holder_commitment_tx.txid == commitment_txid {
 			is_holder_tx = true;
 			log_trace!(logger, "Got latest holder commitment tx broadcast, searching for available HTLCs to claim");
-			let mut res = self.broadcast_by_holder_state(tx, &self.current_holder_commitment_tx);
-			append_onchain_update!(res);
+			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
+			append_onchain_update!(res, to_watch);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
 			if holder_tx.txid == commitment_txid {
 				is_holder_tx = true;
 				log_trace!(logger, "Got previous holder commitment tx broadcast, searching for available HTLCs to claim");
-				let mut res = self.broadcast_by_holder_state(tx, holder_tx);
-				append_onchain_update!(res);
+				let res = self.get_broadcasted_holder_claims(holder_tx);
+				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
+				append_onchain_update!(res, to_watch);
 			}
 		}
 
@@ -1773,7 +1787,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript) {
 				self.holder_tx_signed = true;
-				let (mut new_outpoints, new_outputs, _) = self.broadcast_by_holder_state(&commitment_tx, &self.current_holder_commitment_tx);
+				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
 				}
