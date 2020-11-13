@@ -126,7 +126,7 @@ struct NodeMonitors {
 	void ConnectBlock(const uint8_t (*header)[80], uint32_t height, LDKCVec_C2Tuple_usizeTransactionZZ tx_data, LDKBroadcasterInterface broadcast, LDKFeeEstimator fee_est) {
 		std::unique_lock<std::mutex> l(mut);
 		for (auto& mon : mons) {
-			LDK::CVec_C2Tuple_TxidCVec_TxOutZZZ res = ChannelMonitor_block_connected(&mon.second, &header_2, tx_data, height, broadcast, fee_est, *logger);
+			LDK::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ res = ChannelMonitor_block_connected(&mon.second, &header_2, tx_data, height, broadcast, fee_est, *logger);
 		}
 	}
 };
@@ -159,7 +159,7 @@ LDKCResult_NoneChannelMonitorUpdateErrZ update_channel_monitor(const void *this_
 			LDKBroadcasterInterface broadcaster = {
 				.broadcast_transaction = broadcast_tx,
 			};
-			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, update, &broadcaster, arg->logger);
+			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, &update, &broadcaster, arg->logger);
 			assert(res->result_ok);
 		}
 	}
