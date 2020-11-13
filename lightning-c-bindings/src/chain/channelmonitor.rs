@@ -69,13 +69,23 @@ impl Clone for ChannelMonitorUpdate {
 pub(crate) extern "C" fn ChannelMonitorUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelMonitorUpdate)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn ChannelMonitorUpdate_clone(orig: &ChannelMonitorUpdate) -> ChannelMonitorUpdate {
+	ChannelMonitorUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The sequence number of this update. Updates *must* be replayed in-order according to this
 /// sequence number (and updates may panic if they are not). The update_id values are strictly
-/// increasing and increase by one for each new update.
+/// increasing and increase by one for each new update, with one exception specified below.
 ///
 /// This sequence number is also used to track up to which points updates which returned
 /// ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
 /// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+///
+/// The only instance where update_id values are not strictly increasing is the case where we
+/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+/// its docs for more details.
+///
+/// [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_get_update_id(this_ptr: &ChannelMonitorUpdate) -> u64 {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.update_id;
@@ -83,15 +93,24 @@ pub extern "C" fn ChannelMonitorUpdate_get_update_id(this_ptr: &ChannelMonitorUp
 }
 /// The sequence number of this update. Updates *must* be replayed in-order according to this
 /// sequence number (and updates may panic if they are not). The update_id values are strictly
-/// increasing and increase by one for each new update.
+/// increasing and increase by one for each new update, with one exception specified below.
 ///
 /// This sequence number is also used to track up to which points updates which returned
 /// ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
 /// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+///
+/// The only instance where update_id values are not strictly increasing is the case where we
+/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+/// its docs for more details.
+///
+/// [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_set_update_id(this_ptr: &mut ChannelMonitorUpdate, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.update_id = val;
 }
+
+#[no_mangle]
+pub static CLOSED_CHANNEL_UPDATE_ID: u64 = lightning::chain::channelmonitor::CLOSED_CHANNEL_UPDATE_ID;
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_write(obj: *const ChannelMonitorUpdate) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
@@ -197,6 +216,10 @@ impl ChannelMonitorUpdateErr {
 		}
 	}
 }
+#[no_mangle]
+pub extern "C" fn ChannelMonitorUpdateErr_clone(orig: &ChannelMonitorUpdateErr) -> ChannelMonitorUpdateErr {
+	orig.clone()
+}
 
 use lightning::chain::channelmonitor::MonitorUpdateError as nativeMonitorUpdateErrorImport;
 type nativeMonitorUpdateError = nativeMonitorUpdateErrorImport;
@@ -205,7 +228,7 @@ type nativeMonitorUpdateError = nativeMonitorUpdateErrorImport;
 /// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
 /// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
 /// corrupted.
-/// Contains a human-readable error message.
+/// Contains a developer-readable error message.
 #[must_use]
 #[repr(C)]
 pub struct MonitorUpdateError {
@@ -277,6 +300,23 @@ impl MonitorEvent {
 		ret
 	}
 }
+impl Clone for MonitorEvent {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn MonitorEvent_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeMonitorEvent)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn MonitorEvent_clone(orig: &MonitorEvent) -> MonitorEvent {
+	MonitorEvent { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 
 use lightning::chain::channelmonitor::HTLCUpdate as nativeHTLCUpdateImport;
 type nativeHTLCUpdate = nativeHTLCUpdateImport;
@@ -331,6 +371,10 @@ impl Clone for HTLCUpdate {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn HTLCUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHTLCUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn HTLCUpdate_clone(orig: &HTLCUpdate) -> HTLCUpdate {
+	HTLCUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 #[no_mangle]
 pub extern "C" fn HTLCUpdate_write(obj: *const HTLCUpdate) -> crate::c_types::derived::CVec_u8Z {
@@ -397,8 +441,8 @@ impl ChannelMonitor {
 /// panics if the given update is not the next update by update_id.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_update_monitor(this_arg: &mut ChannelMonitor, mut updates: crate::chain::channelmonitor::ChannelMonitorUpdate, broadcaster: &crate::chain::chaininterface::BroadcasterInterface, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CResult_NoneMonitorUpdateErrorZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.update_monitor(*unsafe { Box::from_raw(updates.take_ptr()) }, broadcaster, logger);
+pub extern "C" fn ChannelMonitor_update_monitor(this_arg: &mut ChannelMonitor, updates: &crate::chain::channelmonitor::ChannelMonitorUpdate, broadcaster: &crate::chain::chaininterface::BroadcasterInterface, fee_estimator: &crate::chain::chaininterface::FeeEstimator, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CResult_NoneMonitorUpdateErrorZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.update_monitor(unsafe { &*updates.inner }, broadcaster, fee_estimator, logger);
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::chain::channelmonitor::MonitorUpdateError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
 	local_ret
 }
@@ -477,10 +521,10 @@ pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut
 /// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_block_connected(this_arg: &mut ChannelMonitor, header: *const [u8; 80], mut txdata: crate::c_types::derived::CVec_C2Tuple_usizeTransactionZZ, mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CVec_C2Tuple_TxidCVec_TxOutZZZ {
+pub extern "C" fn ChannelMonitor_block_connected(this_arg: &mut ChannelMonitor, header: *const [u8; 80], mut txdata: crate::c_types::derived::CVec_C2Tuple_usizeTransactionZZ, mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ {
 	let mut local_txdata = Vec::new(); for mut item in txdata.into_rust().drain(..) { local_txdata.push( { let (mut orig_txdata_0_0, mut orig_txdata_0_1) = item.to_rust(); let mut local_txdata_0 = (orig_txdata_0_0, orig_txdata_0_1.into_bitcoin()); local_txdata_0 }); };
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.block_connected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), &local_txdata.iter().map(|(a, b)| (*a, b)).collect::<Vec<_>>()[..], height, broadcaster, fee_estimator, logger);
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1) = item; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::TxOut::from_rust(item) }); }; let mut local_ret_0 = (crate::c_types::ThirtyTwoBytes { data: orig_ret_0_0.into_inner() }, local_orig_ret_0_1.into()).into(); local_ret_0 }); };
+	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1) = item; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { let (mut orig_orig_ret_0_1_0_0, mut orig_orig_ret_0_1_0_1) = item; let mut local_orig_ret_0_1_0 = (orig_orig_ret_0_1_0_0, crate::c_types::TxOut::from_rust(orig_orig_ret_0_1_0_1)).into(); local_orig_ret_0_1_0 }); }; let mut local_ret_0 = (crate::c_types::ThirtyTwoBytes { data: orig_ret_0_0.into_inner() }, local_orig_ret_0_1.into()).into(); local_ret_0 }); };
 	local_ret.into()
 }
 
@@ -491,3 +535,96 @@ pub extern "C" fn ChannelMonitor_block_disconnected(this_arg: &mut ChannelMonito
 	unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.block_disconnected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), height, broadcaster, fee_estimator, logger)
 }
 
+/// `Persist` defines behavior for persisting channel monitors: this could mean
+/// writing once to disk, and/or uploading to one or more backup services.
+///
+/// Note that for every new monitor, you **must** persist the new `ChannelMonitor`
+/// to disk/backups. And, on every update, you **must** persist either the
+/// `ChannelMonitorUpdate` or the updated monitor itself. Otherwise, there is risk
+/// of situations such as revoking a transaction, then crashing before this
+/// revocation can be persisted, then unintentionally broadcasting a revoked
+/// transaction and losing money. This is a risk because previous channel states
+/// are toxic, so it's important that whatever channel state is persisted is
+/// kept up-to-date.
+#[repr(C)]
+pub struct Persist {
+	pub this_arg: *mut c_void,
+	/// Persist a new channel's data. The data can be stored any way you want, but
+	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
+	/// it is up to you to maintain a correct mapping between the outpoint and the
+	/// stored channel data). Note that you **must** persist every new monitor to
+	/// disk. See the `Persist` trait documentation for more details.
+	///
+	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
+	///
+	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
+	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
+	#[must_use]
+	pub persist_new_channel: extern "C" fn (this_arg: *const c_void, id: crate::chain::transaction::OutPoint, data: &crate::chain::channelmonitor::ChannelMonitor) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ,
+	/// Update one channel's data. The provided `ChannelMonitor` has already
+	/// applied the given update.
+	///
+	/// Note that on every update, you **must** persist either the
+	/// `ChannelMonitorUpdate` or the updated monitor itself to disk/backups. See
+	/// the `Persist` trait documentation for more details.
+	///
+	/// If an implementer chooses to persist the updates only, they need to make
+	/// sure that all the updates are applied to the `ChannelMonitors` *before*
+	/// the set of channel monitors is given to the `ChannelManager`
+	/// deserialization routine. See [`ChannelMonitor::update_monitor`] for
+	/// applying a monitor update to a monitor. If full `ChannelMonitors` are
+	/// persisted, then there is no need to persist individual updates.
+	///
+	/// Note that there could be a performance tradeoff between persisting complete
+	/// channel monitors on every update vs. persisting only updates and applying
+	/// them in batches. The size of each monitor grows `O(number of state updates)`
+	/// whereas updates are small and `O(1)`.
+	///
+	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+	/// [`ChannelMonitorUpdate::write`] for writing out an update, and
+	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
+	///
+	/// [`ChannelMonitor::update_monitor`]: struct.ChannelMonitor.html#impl-1
+	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
+	/// [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
+	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
+	#[must_use]
+	pub update_persisted_channel: extern "C" fn (this_arg: *const c_void, id: crate::chain::transaction::OutPoint, update: &crate::chain::channelmonitor::ChannelMonitorUpdate, data: &crate::chain::channelmonitor::ChannelMonitor) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ,
+	pub free: Option<extern "C" fn(this_arg: *mut c_void)>,
+}
+unsafe impl Send for Persist {}
+unsafe impl Sync for Persist {}
+
+use lightning::chain::channelmonitor::Persist as rustPersist;
+impl rustPersist<crate::chain::keysinterface::ChannelKeys> for Persist {
+	fn persist_new_channel(&self, id: lightning::chain::transaction::OutPoint, data: &lightning::chain::channelmonitor::ChannelMonitor<crate::chain::keysinterface::ChannelKeys>) -> Result<(), lightning::chain::channelmonitor::ChannelMonitorUpdateErr> {
+		let mut ret = (self.persist_new_channel)(self.this_arg, crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(id)), is_owned: true }, &crate::chain::channelmonitor::ChannelMonitor { inner: unsafe { (data as *const _) as *mut _ }, is_owned: false });
+		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(ret.contents.result.take_ptr()) })*/ }), false => Err( { (*unsafe { Box::from_raw(ret.contents.err.take_ptr()) }).into_native() })};
+		local_ret
+	}
+	fn update_persisted_channel(&self, id: lightning::chain::transaction::OutPoint, update: &lightning::chain::channelmonitor::ChannelMonitorUpdate, data: &lightning::chain::channelmonitor::ChannelMonitor<crate::chain::keysinterface::ChannelKeys>) -> Result<(), lightning::chain::channelmonitor::ChannelMonitorUpdateErr> {
+		let mut ret = (self.update_persisted_channel)(self.this_arg, crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(id)), is_owned: true }, &crate::chain::channelmonitor::ChannelMonitorUpdate { inner: unsafe { (update as *const _) as *mut _ }, is_owned: false }, &crate::chain::channelmonitor::ChannelMonitor { inner: unsafe { (data as *const _) as *mut _ }, is_owned: false });
+		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(ret.contents.result.take_ptr()) })*/ }), false => Err( { (*unsafe { Box::from_raw(ret.contents.err.take_ptr()) }).into_native() })};
+		local_ret
+	}
+}
+
+// We're essentially a pointer already, or at least a set of pointers, so allow us to be used
+// directly as a Deref trait in higher-level structs:
+impl std::ops::Deref for Persist {
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+/// Calls the free function if one is set
+#[no_mangle]
+pub extern "C" fn Persist_free(this_ptr: Persist) { }
+impl Drop for Persist {
+	fn drop(&mut self) {
+		if let Some(f) = self.free {
+			f(self.this_arg);
+		}
+	}
+}

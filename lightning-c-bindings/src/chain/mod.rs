@@ -52,6 +52,10 @@ impl AccessError {
 		}
 	}
 }
+#[no_mangle]
+pub extern "C" fn AccessError_clone(orig: &AccessError) -> AccessError {
+	orig.clone()
+}
 /// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
 /// UTXOs.
 #[repr(C)]

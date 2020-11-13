@@ -95,6 +95,23 @@ impl Init {
 		ret
 	}
 }
+impl Clone for Init {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Init_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeInit)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Init_clone(orig: &Init) -> Init {
+	Init { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 
 use lightning::ln::msgs::ErrorMessage as nativeErrorMessageImport;
 type nativeErrorMessage = nativeErrorMessageImport;
@@ -145,6 +162,10 @@ impl Clone for ErrorMessage {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ErrorMessage_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeErrorMessage)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ErrorMessage_clone(orig: &ErrorMessage) -> ErrorMessage {
+	ErrorMessage { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID involved in the error
 #[no_mangle]
@@ -220,6 +241,23 @@ impl Ping {
 		ret
 	}
 }
+impl Clone for Ping {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Ping_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePing)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Ping_clone(orig: &Ping) -> Ping {
+	Ping { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The desired response length
 #[no_mangle]
 pub extern "C" fn Ping_get_ponglen(this_ptr: &Ping) -> u16 {
@@ -289,6 +327,23 @@ impl Pong {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
+}
+impl Clone for Pong {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Pong_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePong)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Pong_clone(orig: &Pong) -> Pong {
+	Pong { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The pong packet size.
 /// This field is not sent on the wire. byteslen zeros are sent.
@@ -360,6 +415,10 @@ impl Clone for OpenChannel {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn OpenChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOpenChannel)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn OpenChannel_clone(orig: &OpenChannel) -> OpenChannel {
+	OpenChannel { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -610,6 +669,10 @@ impl Clone for AcceptChannel {
 pub(crate) extern "C" fn AcceptChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAcceptChannel)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn AcceptChannel_clone(orig: &AcceptChannel) -> AcceptChannel {
+	AcceptChannel { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// A temporary channel ID, until the funding outpoint is announced
 #[no_mangle]
 pub extern "C" fn AcceptChannel_get_temporary_channel_id(this_ptr: &AcceptChannel) -> *const [u8; 32] {
@@ -815,6 +878,10 @@ impl Clone for FundingCreated {
 pub(crate) extern "C" fn FundingCreated_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingCreated)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn FundingCreated_clone(orig: &FundingCreated) -> FundingCreated {
+	FundingCreated { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// A temporary channel ID, until the funding is established
 #[no_mangle]
 pub extern "C" fn FundingCreated_get_temporary_channel_id(this_ptr: &FundingCreated) -> *const [u8; 32] {
@@ -920,6 +987,10 @@ impl Clone for FundingSigned {
 pub(crate) extern "C" fn FundingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingSigned)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn FundingSigned_clone(orig: &FundingSigned) -> FundingSigned {
+	FundingSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn FundingSigned_get_channel_id(this_ptr: &FundingSigned) -> *const [u8; 32] {
@@ -1001,6 +1072,10 @@ impl Clone for FundingLocked {
 pub(crate) extern "C" fn FundingLocked_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingLocked)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn FundingLocked_clone(orig: &FundingLocked) -> FundingLocked {
+	FundingLocked { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn FundingLocked_get_channel_id(this_ptr: &FundingLocked) -> *const [u8; 32] {
@@ -1081,6 +1156,10 @@ impl Clone for Shutdown {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn Shutdown_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeShutdown)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Shutdown_clone(orig: &Shutdown) -> Shutdown {
+	Shutdown { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1164,6 +1243,10 @@ impl Clone for ClosingSigned {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ClosingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeClosingSigned)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ClosingSigned_clone(orig: &ClosingSigned) -> ClosingSigned {
+	ClosingSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1257,6 +1340,10 @@ impl Clone for UpdateAddHTLC {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UpdateAddHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateAddHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateAddHTLC_clone(orig: &UpdateAddHTLC) -> UpdateAddHTLC {
+	UpdateAddHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1364,6 +1451,10 @@ impl Clone for UpdateFulfillHTLC {
 pub(crate) extern "C" fn UpdateFulfillHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFulfillHTLC)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn UpdateFulfillHTLC_clone(orig: &UpdateFulfillHTLC) -> UpdateFulfillHTLC {
+	UpdateFulfillHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFulfillHTLC_get_channel_id(this_ptr: &UpdateFulfillHTLC) -> *const [u8; 32] {
@@ -1457,6 +1548,10 @@ impl Clone for UpdateFailHTLC {
 pub(crate) extern "C" fn UpdateFailHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailHTLC)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn UpdateFailHTLC_clone(orig: &UpdateFailHTLC) -> UpdateFailHTLC {
+	UpdateFailHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFailHTLC_get_channel_id(this_ptr: &UpdateFailHTLC) -> *const [u8; 32] {
@@ -1529,6 +1624,10 @@ impl Clone for UpdateFailMalformedHTLC {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UpdateFailMalformedHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailMalformedHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateFailMalformedHTLC_clone(orig: &UpdateFailMalformedHTLC) -> UpdateFailMalformedHTLC {
+	UpdateFailMalformedHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1613,6 +1712,10 @@ impl Clone for CommitmentSigned {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn CommitmentSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentSigned)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn CommitmentSigned_clone(orig: &CommitmentSigned) -> CommitmentSigned {
+	CommitmentSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1702,6 +1805,10 @@ impl Clone for RevokeAndACK {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn RevokeAndACK_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRevokeAndACK)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RevokeAndACK_clone(orig: &RevokeAndACK) -> RevokeAndACK {
+	RevokeAndACK { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -1796,6 +1903,10 @@ impl Clone for UpdateFee {
 pub(crate) extern "C" fn UpdateFee_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFee)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn UpdateFee_clone(orig: &UpdateFee) -> UpdateFee {
+	UpdateFee { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFee_get_channel_id(this_ptr: &UpdateFee) -> *const [u8; 32] {
@@ -1880,6 +1991,10 @@ impl Clone for DataLossProtect {
 pub(crate) extern "C" fn DataLossProtect_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDataLossProtect)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn DataLossProtect_clone(orig: &DataLossProtect) -> DataLossProtect {
+	DataLossProtect { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Proof that the sender knows the per-commitment secret of a specific commitment transaction
 /// belonging to the recipient
 #[no_mangle]
@@ -1962,6 +2077,10 @@ impl Clone for ChannelReestablish {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ChannelReestablish_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelReestablish)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelReestablish_clone(orig: &ChannelReestablish) -> ChannelReestablish {
+	ChannelReestablish { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -2046,6 +2165,10 @@ impl Clone for AnnouncementSignatures {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn AnnouncementSignatures_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAnnouncementSignatures)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn AnnouncementSignatures_clone(orig: &AnnouncementSignatures) -> AnnouncementSignatures {
+	AnnouncementSignatures { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The channel ID
 #[no_mangle]
@@ -2280,6 +2403,10 @@ impl NetAddress {
 }
 #[no_mangle]
 pub extern "C" fn NetAddress_free(this_ptr: NetAddress) { }
+#[no_mangle]
+pub extern "C" fn NetAddress_clone(orig: &NetAddress) -> NetAddress {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UnsignedNodeAnnouncement as nativeUnsignedNodeAnnouncementImport;
 type nativeUnsignedNodeAnnouncement = nativeUnsignedNodeAnnouncementImport;
@@ -2330,6 +2457,10 @@ impl Clone for UnsignedNodeAnnouncement {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedNodeAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_clone(orig: &UnsignedNodeAnnouncement) -> UnsignedNodeAnnouncement {
+	UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The advertised features
 #[no_mangle]
@@ -2447,6 +2578,10 @@ impl Clone for NodeAnnouncement {
 pub(crate) extern "C" fn NodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeAnnouncement)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn NodeAnnouncement_clone(orig: &NodeAnnouncement) -> NodeAnnouncement {
+	NodeAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The signature by the node key
 #[no_mangle]
 pub extern "C" fn NodeAnnouncement_get_signature(this_ptr: &NodeAnnouncement) -> crate::c_types::Signature {
@@ -2527,6 +2662,10 @@ impl Clone for UnsignedChannelAnnouncement {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_clone(orig: &UnsignedChannelAnnouncement) -> UnsignedChannelAnnouncement {
+	UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The advertised channel features
 #[no_mangle]
@@ -2656,6 +2795,10 @@ impl Clone for ChannelAnnouncement {
 pub(crate) extern "C" fn ChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelAnnouncement)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn ChannelAnnouncement_clone(orig: &ChannelAnnouncement) -> ChannelAnnouncement {
+	ChannelAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Authentication of the announcement by the first public node
 #[no_mangle]
 pub extern "C" fn ChannelAnnouncement_get_node_signature_1(this_ptr: &ChannelAnnouncement) -> crate::c_types::Signature {
@@ -2772,6 +2915,10 @@ impl Clone for UnsignedChannelUpdate {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UnsignedChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedChannelUpdate_clone(orig: &UnsignedChannelUpdate) -> UnsignedChannelUpdate {
+	UnsignedChannelUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -2912,6 +3059,10 @@ impl Clone for ChannelUpdate {
 pub(crate) extern "C" fn ChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelUpdate)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn ChannelUpdate_clone(orig: &ChannelUpdate) -> ChannelUpdate {
+	ChannelUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// A signature of the channel update
 #[no_mangle]
 pub extern "C" fn ChannelUpdate_get_signature(this_ptr: &ChannelUpdate) -> crate::c_types::Signature {
@@ -2995,6 +3146,10 @@ impl Clone for QueryChannelRange {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn QueryChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryChannelRange)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_clone(orig: &QueryChannelRange) -> QueryChannelRange {
+	QueryChannelRange { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3094,6 +3249,10 @@ impl Clone for ReplyChannelRange {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ReplyChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyChannelRange)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_clone(orig: &ReplyChannelRange) -> ReplyChannelRange {
+	ReplyChannelRange { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3217,6 +3376,10 @@ impl Clone for QueryShortChannelIds {
 pub(crate) extern "C" fn QueryShortChannelIds_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryShortChannelIds)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_clone(orig: &QueryShortChannelIds) -> QueryShortChannelIds {
+	QueryShortChannelIds { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
 pub extern "C" fn QueryShortChannelIds_get_chain_hash(this_ptr: &QueryShortChannelIds) -> *const [u8; 32] {
@@ -3296,6 +3459,10 @@ impl Clone for ReplyShortChannelIdsEnd {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ReplyShortChannelIdsEnd_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyShortChannelIdsEnd)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_clone(orig: &ReplyShortChannelIdsEnd) -> ReplyShortChannelIdsEnd {
+	ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain that was queried
 #[no_mangle]
@@ -3381,6 +3548,10 @@ impl Clone for GossipTimestampFilter {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn GossipTimestampFilter_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeGossipTimestampFilter)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_clone(orig: &GossipTimestampFilter) -> GossipTimestampFilter {
+	GossipTimestampFilter { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The genesis hash of the blockchain for channel and node information
 #[no_mangle]
@@ -3517,6 +3688,10 @@ impl ErrorAction {
 }
 #[no_mangle]
 pub extern "C" fn ErrorAction_free(this_ptr: ErrorAction) { }
+#[no_mangle]
+pub extern "C" fn ErrorAction_clone(orig: &ErrorAction) -> ErrorAction {
+	orig.clone()
+}
 
 use lightning::ln::msgs::LightningError as nativeLightningErrorImport;
 type nativeLightningError = nativeLightningErrorImport;
@@ -3636,6 +3811,10 @@ impl Clone for CommitmentUpdate {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn CommitmentUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn CommitmentUpdate_clone(orig: &CommitmentUpdate) -> CommitmentUpdate {
+	CommitmentUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// update_add_htlc messages which should be sent
 #[no_mangle]
@@ -3827,6 +4006,10 @@ impl HTLCFailChannelUpdate {
 }
 #[no_mangle]
 pub extern "C" fn HTLCFailChannelUpdate_free(this_ptr: HTLCFailChannelUpdate) { }
+#[no_mangle]
+pub extern "C" fn HTLCFailChannelUpdate_clone(orig: &HTLCFailChannelUpdate) -> HTLCFailChannelUpdate {
+	orig.clone()
+}
 /// A trait to describe an object which can receive channel messages.
 ///
 /// Messages MAY be called in parallel when they originate from different their_node_ids, however

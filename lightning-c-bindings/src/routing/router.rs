@@ -58,6 +58,10 @@ impl Clone for RouteHop {
 pub(crate) extern "C" fn RouteHop_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHop)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn RouteHop_clone(orig: &RouteHop) -> RouteHop {
+	RouteHop { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The node_id of the node at this hop.
 #[no_mangle]
 pub extern "C" fn RouteHop_get_pubkey(this_ptr: &RouteHop) -> crate::c_types::PublicKey {
@@ -194,6 +198,10 @@ impl Clone for Route {
 pub(crate) extern "C" fn Route_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoute)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn Route_clone(orig: &Route) -> Route {
+	Route { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
 /// last RouteHop in each path must be the same.
 /// Each entry represents a list of hops, NOT INCLUDING our own, where the last hop is the
@@ -262,6 +270,23 @@ impl RouteHint {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
+}
+impl Clone for RouteHint {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn RouteHint_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHint)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RouteHint_clone(orig: &RouteHint) -> RouteHint {
+	RouteHint { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The node_id of the non-target end of the route
 #[no_mangle]

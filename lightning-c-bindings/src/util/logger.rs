@@ -74,6 +74,10 @@ impl Level {
 		}
 	}
 }
+#[no_mangle]
+pub extern "C" fn Level_clone(orig: &Level) -> Level {
+	orig.clone()
+}
 /// Returns the most verbose logging level.
 #[must_use]
 #[no_mangle]

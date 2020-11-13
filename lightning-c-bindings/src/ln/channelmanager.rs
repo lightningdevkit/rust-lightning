@@ -124,6 +124,23 @@ impl ChannelDetails {
 		ret
 	}
 }
+impl Clone for ChannelDetails {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelDetails_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelDetails)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelDetails_clone(orig: &ChannelDetails) -> ChannelDetails {
+	ChannelDetails { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 /// thereafter this is the txid of the funding transaction xor the funding transaction output).
 /// Note that this means this value is *not* persistent - it can change once during the

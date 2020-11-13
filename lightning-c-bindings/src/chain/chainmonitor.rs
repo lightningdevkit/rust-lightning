@@ -26,7 +26,7 @@ use crate::c_types::*;
 
 
 use lightning::chain::chainmonitor::ChainMonitor as nativeChainMonitorImport;
-type nativeChainMonitor = nativeChainMonitorImport<crate::chain::keysinterface::ChannelKeys, crate::chain::Filter, crate::chain::chaininterface::BroadcasterInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
+type nativeChainMonitor = nativeChainMonitorImport<crate::chain::keysinterface::ChannelKeys, crate::chain::Filter, crate::chain::chaininterface::BroadcasterInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger, crate::chain::channelmonitor::Persist>;
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///
@@ -111,9 +111,9 @@ pub extern "C" fn ChainMonitor_block_disconnected(this_arg: &ChainMonitor, heade
 /// [`chain::Filter`]: ../trait.Filter.html
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChainMonitor_new(chain_source: *mut crate::chain::Filter, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut logger: crate::util::logger::Logger, mut feeest: crate::chain::chaininterface::FeeEstimator) -> ChainMonitor {
+pub extern "C" fn ChainMonitor_new(chain_source: *mut crate::chain::Filter, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut logger: crate::util::logger::Logger, mut feeest: crate::chain::chaininterface::FeeEstimator, mut persister: crate::chain::channelmonitor::Persist) -> ChainMonitor {
 	let mut local_chain_source = if chain_source == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_source) } }) };
-	let mut ret = lightning::chain::chainmonitor::ChainMonitor::new(local_chain_source, broadcaster, logger, feeest);
+	let mut ret = lightning::chain::chainmonitor::ChainMonitor::new(local_chain_source, broadcaster, logger, feeest, persister);
 	ChainMonitor { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -129,8 +129,8 @@ pub extern "C" fn ChainMonitor_as_Watch(this_arg: *const ChainMonitor) -> crate:
 }
 use lightning::chain::Watch as WatchTraitImport;
 #[must_use]
-extern "C" fn ChainMonitor_Watch_watch_channel(this_arg: *const c_void, mut funding_txo: crate::chain::transaction::OutPoint, mut monitor: crate::chain::channelmonitor::ChannelMonitor) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.watch_channel(*unsafe { Box::from_raw(funding_txo.take_ptr()) }, *unsafe { Box::from_raw(monitor.take_ptr()) });
+extern "C" fn ChainMonitor_Watch_watch_channel(this_arg: *const c_void, mut funding_outpoint: crate::chain::transaction::OutPoint, mut monitor: crate::chain::channelmonitor::ChannelMonitor) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ {
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.watch_channel(*unsafe { Box::from_raw(funding_outpoint.take_ptr()) }, *unsafe { Box::from_raw(monitor.take_ptr()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::chain::channelmonitor::ChannelMonitorUpdateErr::native_into(e) }) };
 	local_ret
 }

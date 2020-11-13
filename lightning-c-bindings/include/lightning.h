@@ -198,7 +198,10 @@ typedef enum LDKSecp256k1Error {
  * `data_is_owned` either set or unset at your discretion.
  */
 typedef struct LDKTransaction {
-   const uint8_t *data;
+   /**
+    * This is non-const for your convenience, an object passed to Rust is never written to.
+    */
+   uint8_t *data;
    uintptr_t datalen;
    bool data_is_owned;
 } LDKTransaction;
@@ -245,7 +248,7 @@ typedef LDKCResultTempl_u8__ChannelMonitorUpdateErr LDKCResult_NoneChannelMonito
  * inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
  * means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
  * corrupted.
- * Contains a human-readable error message.
+ * Contains a developer-readable error message.
  */
 typedef struct MUST_USE_STRUCT LDKMonitorUpdateError {
    /**
@@ -292,6 +295,13 @@ typedef struct LDKC2TupleTempl_OutPoint__CVec_u8Z {
 
 typedef LDKC2TupleTempl_OutPoint__CVec_u8Z LDKC2Tuple_OutPointScriptZ;
 
+typedef struct LDKC2TupleTempl_u32__TxOut {
+   uint32_t a;
+   LDKTxOut b;
+} LDKC2TupleTempl_u32__TxOut;
+
+typedef LDKC2TupleTempl_u32__TxOut LDKC2Tuple_u32TxOutZ;
+
 /**
  * Arbitrary 32 bytes, which could represent one of a few different things. You probably want to
  * look up the corresponding function in rust-lightning's docs.
@@ -300,19 +310,19 @@ typedef struct LDKThirtyTwoBytes {
    uint8_t data[32];
 } LDKThirtyTwoBytes;
 
-typedef struct LDKCVecTempl_TxOut {
-   LDKTxOut *data;
+typedef struct LDKCVecTempl_C2TupleTempl_u32__TxOut {
+   LDKC2TupleTempl_u32__TxOut *data;
    uintptr_t datalen;
-} LDKCVecTempl_TxOut;
+} LDKCVecTempl_C2TupleTempl_u32__TxOut;
 
-typedef struct LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut {
+typedef struct LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut {
    LDKThirtyTwoBytes a;
-   LDKCVecTempl_TxOut b;
-} LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut;
+   LDKCVecTempl_C2TupleTempl_u32__TxOut b;
+} LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut;
 
-typedef LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut LDKC2Tuple_TxidCVec_TxOutZZ;
+typedef LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut LDKC2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ;
 
-typedef LDKCVecTempl_TxOut LDKCVec_TxOutZ;
+typedef LDKCVecTempl_C2TupleTempl_u32__TxOut LDKCVec_C2Tuple_u32TxOutZZ;
 
 typedef struct LDKC2TupleTempl_u64__u64 {
    uint64_t a;
@@ -1820,6 +1830,68 @@ typedef struct LDKFeeEstimator {
    void (*free)(void *this_arg);
 } LDKFeeEstimator;
 
+/**
+ * `Persist` defines behavior for persisting channel monitors: this could mean
+ * writing once to disk, and/or uploading to one or more backup services.
+ *
+ * Note that for every new monitor, you **must** persist the new `ChannelMonitor`
+ * to disk/backups. And, on every update, you **must** persist either the
+ * `ChannelMonitorUpdate` or the updated monitor itself. Otherwise, there is risk
+ * of situations such as revoking a transaction, then crashing before this
+ * revocation can be persisted, then unintentionally broadcasting a revoked
+ * transaction and losing money. This is a risk because previous channel states
+ * are toxic, so it's important that whatever channel state is persisted is
+ * kept up-to-date.
+ */
+typedef struct LDKPersist {
+   void *this_arg;
+   /**
+    * Persist a new channel's data. The data can be stored any way you want, but
+    * the identifier provided by Rust-Lightning is the channel's outpoint (and
+    * it is up to you to maintain a correct mapping between the outpoint and the
+    * stored channel data). Note that you **must** persist every new monitor to
+    * disk. See the `Persist` trait documentation for more details.
+    *
+    * See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+    * and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
+    *
+    * [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
+    * [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
+    */
+   LDKCResult_NoneChannelMonitorUpdateErrZ (*persist_new_channel)(const void *this_arg, LDKOutPoint id, const LDKChannelMonitor *data);
+   /**
+    * Update one channel's data. The provided `ChannelMonitor` has already
+    * applied the given update.
+    *
+    * Note that on every update, you **must** persist either the
+    * `ChannelMonitorUpdate` or the updated monitor itself to disk/backups. See
+    * the `Persist` trait documentation for more details.
+    *
+    * If an implementer chooses to persist the updates only, they need to make
+    * sure that all the updates are applied to the `ChannelMonitors` *before*
+    * the set of channel monitors is given to the `ChannelManager`
+    * deserialization routine. See [`ChannelMonitor::update_monitor`] for
+    * applying a monitor update to a monitor. If full `ChannelMonitors` are
+    * persisted, then there is no need to persist individual updates.
+    *
+    * Note that there could be a performance tradeoff between persisting complete
+    * channel monitors on every update vs. persisting only updates and applying
+    * them in batches. The size of each monitor grows `O(number of state updates)`
+    * whereas updates are small and `O(1)`.
+    *
+    * See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+    * [`ChannelMonitorUpdate::write`] for writing out an update, and
+    * [`ChannelMonitorUpdateErr`] for requirements when returning errors.
+    *
+    * [`ChannelMonitor::update_monitor`]: struct.ChannelMonitor.html#impl-1
+    * [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
+    * [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
+    * [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
+    */
+   LDKCResult_NoneChannelMonitorUpdateErrZ (*update_persisted_channel)(const void *this_arg, LDKOutPoint id, const LDKChannelMonitorUpdate *update, const LDKChannelMonitor *data);
+   void (*free)(void *this_arg);
+} LDKPersist;
+
 
 
 /**
@@ -1875,12 +1947,12 @@ typedef struct LDKCVecTempl_Transaction {
 
 typedef LDKCVecTempl_Transaction LDKCVec_TransactionZ;
 
-typedef struct LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut {
-   LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut *data;
+typedef struct LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut {
+   LDKC2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut *data;
    uintptr_t datalen;
-} LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut;
+} LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut;
 
-typedef LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_TxOut LDKCVec_C2Tuple_TxidCVec_TxOutZZZ;
+typedef LDKCVecTempl_C2TupleTempl_ThirtyTwoBytes__CVecTempl_C2TupleTempl_u32__TxOut LDKCVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ;
 
 typedef struct LDKSecretKey {
    uint8_t bytes[32];
@@ -2735,7 +2807,7 @@ typedef struct LDKSocketDescriptor {
     * socket_disconnected but prior to socket_disconnected returning.
     */
    void (*disconnect_socket)(void *this_arg);
-   bool (*eq)(const void *this_arg, const void *other_arg);
+   bool (*eq)(const void *this_arg, const LDKSocketDescriptor *other_arg);
    uint64_t (*hash)(const void *this_arg);
    void *(*clone)(const void *this_arg);
    void (*free)(void *this_arg);
@@ -3047,13 +3119,17 @@ extern const void (*C2Tuple_OutPointScriptZ_free)(LDKC2Tuple_OutPointScriptZ);
 
 extern const void (*C2Tuple_SignatureCVec_SignatureZZ_free)(LDKC2Tuple_SignatureCVec_SignatureZZ);
 
-extern const void (*C2Tuple_TxidCVec_TxOutZZ_free)(LDKC2Tuple_TxidCVec_TxOutZZ);
+extern const void (*C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ_free)(LDKC2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ);
+
+extern const void (*C2Tuple_u32TxOutZ_free)(LDKC2Tuple_u32TxOutZ);
 
 extern const void (*C2Tuple_u64u64Z_free)(LDKC2Tuple_u64u64Z);
 
 extern const void (*C2Tuple_usizeTransactionZ_free)(LDKC2Tuple_usizeTransactionZ);
 
 extern const void (*C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_free)(LDKC3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ);
+
+extern const uint64_t CLOSED_CHANNEL_UPDATE_ID;
 
 extern const void (*CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ_free)(LDKCResult_C2Tuple_SignatureCVec_SignatureZZNoneZ);
 
@@ -3137,7 +3213,9 @@ extern const LDKCResult_boolPeerHandleErrorZ (*CResult_boolPeerHandleErrorZ_ok)(
 
 extern const void (*CVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ_free)(LDKCVec_C2Tuple_HTLCOutputInCommitmentSignatureZZ);
 
-extern const void (*CVec_C2Tuple_TxidCVec_TxOutZZZ_free)(LDKCVec_C2Tuple_TxidCVec_TxOutZZZ);
+extern const void (*CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ_free)(LDKCVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ);
+
+extern const void (*CVec_C2Tuple_u32TxOutZZ_free)(LDKCVec_C2Tuple_u32TxOutZZ);
 
 extern const void (*CVec_C2Tuple_usizeTransactionZZ_free)(LDKCVec_C2Tuple_usizeTransactionZZ);
 
@@ -3173,8 +3251,6 @@ extern const void (*CVec_SpendableOutputDescriptorZ_free)(LDKCVec_SpendableOutpu
 
 extern const void (*CVec_TransactionZ_free)(LDKCVec_TransactionZ);
 
-extern const void (*CVec_TxOutZ_free)(LDKCVec_TxOutZ);
-
 extern const void (*CVec_UpdateAddHTLCZ_free)(LDKCVec_UpdateAddHTLCZ);
 
 extern const void (*CVec_UpdateFailHTLCZ_free)(LDKCVec_UpdateFailHTLCZ);
@@ -3201,7 +3277,9 @@ LDKCResult_NoneMonitorUpdateErrorZ CResult_NoneMonitorUpdateErrorZ_ok(void);
 
 LDKC2Tuple_OutPointScriptZ C2Tuple_OutPointScriptZ_new(LDKOutPoint a, LDKCVec_u8Z b);
 
-LDKC2Tuple_TxidCVec_TxOutZZ C2Tuple_TxidCVec_TxOutZZ_new(LDKThirtyTwoBytes a, LDKCVec_TxOutZ b);
+LDKC2Tuple_u32TxOutZ C2Tuple_u32TxOutZ_new(uint32_t a, LDKTxOut b);
+
+LDKC2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ_new(LDKThirtyTwoBytes a, LDKCVec_C2Tuple_u32TxOutZZ b);
 
 LDKC2Tuple_u64u64Z C2Tuple_u64u64Z_new(uint64_t a, uint64_t b);
 
@@ -3225,7 +3303,11 @@ LDKC2Tuple_HTLCOutputInCommitmentSignatureZ C2Tuple_HTLCOutputInCommitmentSignat
 
 void Event_free(LDKEvent this_ptr);
 
+LDKEvent Event_clone(const LDKEvent *orig);
+
 void MessageSendEvent_free(LDKMessageSendEvent this_ptr);
+
+LDKMessageSendEvent MessageSendEvent_clone(const LDKMessageSendEvent *orig);
 
 /**
  * Calls the free function if one is set
@@ -3239,6 +3321,10 @@ void EventsProvider_free(LDKEventsProvider this_ptr);
 
 void APIError_free(LDKAPIError this_ptr);
 
+LDKAPIError APIError_clone(const LDKAPIError *orig);
+
+LDKLevel Level_clone(const LDKLevel *orig);
+
 /**
  * Returns the most verbose logging level.
  */
@@ -3250,6 +3336,8 @@ MUST_USE_RES LDKLevel Level_max(void);
 void Logger_free(LDKLogger this_ptr);
 
 void ChannelHandshakeConfig_free(LDKChannelHandshakeConfig this_ptr);
+
+LDKChannelHandshakeConfig ChannelHandshakeConfig_clone(const LDKChannelHandshakeConfig *orig);
 
 /**
  * Confirmations we will wait for before considering the channel locked in.
@@ -3328,6 +3416,8 @@ MUST_USE_RES LDKChannelHandshakeConfig ChannelHandshakeConfig_new(uint32_t minim
 MUST_USE_RES LDKChannelHandshakeConfig ChannelHandshakeConfig_default(void);
 
 void ChannelHandshakeLimits_free(LDKChannelHandshakeLimits this_ptr);
+
+LDKChannelHandshakeLimits ChannelHandshakeLimits_clone(const LDKChannelHandshakeLimits *orig);
 
 /**
  * Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
@@ -3521,6 +3611,8 @@ MUST_USE_RES LDKChannelHandshakeLimits ChannelHandshakeLimits_default(void);
 
 void ChannelConfig_free(LDKChannelConfig this_ptr);
 
+LDKChannelConfig ChannelConfig_clone(const LDKChannelConfig *orig);
+
 /**
  * Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
  * This may be allowed to change at runtime in a later update, however doing so must result in
@@ -3609,6 +3701,8 @@ LDKChannelConfig ChannelConfig_read(LDKu8slice ser);
 
 void UserConfig_free(LDKUserConfig this_ptr);
 
+LDKUserConfig UserConfig_clone(const LDKUserConfig *orig);
+
 /**
  * Channel config that we propose to our counterparty.
  */
@@ -3643,6 +3737,8 @@ MUST_USE_RES LDKUserConfig UserConfig_new(LDKChannelHandshakeConfig own_channel_
 
 MUST_USE_RES LDKUserConfig UserConfig_default(void);
 
+LDKAccessError AccessError_clone(const LDKAccessError *orig);
+
 /**
  * Calls the free function if one is set
  */
@@ -3662,6 +3758,8 @@ void Filter_free(LDKFilter this_ptr);
  * Calls the free function if one is set
  */
 void BroadcasterInterface_free(LDKBroadcasterInterface this_ptr);
+
+LDKConfirmationTarget ConfirmationTarget_clone(const LDKConfirmationTarget *orig);
 
 /**
  * Calls the free function if one is set
@@ -3707,7 +3805,7 @@ void ChainMonitor_block_disconnected(const LDKChainMonitor *this_arg, const uint
  *
  * [`chain::Filter`]: ../trait.Filter.html
  */
-MUST_USE_RES LDKChainMonitor ChainMonitor_new(LDKFilter *chain_source, LDKBroadcasterInterface broadcaster, LDKLogger logger, LDKFeeEstimator feeest);
+MUST_USE_RES LDKChainMonitor ChainMonitor_new(LDKFilter *chain_source, LDKBroadcasterInterface broadcaster, LDKLogger logger, LDKFeeEstimator feeest, LDKPersist persister);
 
 LDKWatch ChainMonitor_as_Watch(const LDKChainMonitor *this_arg);
 
@@ -3715,25 +3813,39 @@ LDKEventsProvider ChainMonitor_as_EventsProvider(const LDKChainMonitor *this_arg
 
 void ChannelMonitorUpdate_free(LDKChannelMonitorUpdate this_ptr);
 
+LDKChannelMonitorUpdate ChannelMonitorUpdate_clone(const LDKChannelMonitorUpdate *orig);
+
 /**
  * The sequence number of this update. Updates *must* be replayed in-order according to this
  * sequence number (and updates may panic if they are not). The update_id values are strictly
- * increasing and increase by one for each new update.
+ * increasing and increase by one for each new update, with one exception specified below.
  *
  * This sequence number is also used to track up to which points updates which returned
  * ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
  * ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+ *
+ * The only instance where update_id values are not strictly increasing is the case where we
+ * allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+ * its docs for more details.
+ *
+ * [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
  */
 uint64_t ChannelMonitorUpdate_get_update_id(const LDKChannelMonitorUpdate *this_ptr);
 
 /**
  * The sequence number of this update. Updates *must* be replayed in-order according to this
  * sequence number (and updates may panic if they are not). The update_id values are strictly
- * increasing and increase by one for each new update.
+ * increasing and increase by one for each new update, with one exception specified below.
  *
  * This sequence number is also used to track up to which points updates which returned
  * ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
  * ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+ *
+ * The only instance where update_id values are not strictly increasing is the case where we
+ * allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+ * its docs for more details.
+ *
+ * [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
  */
 void ChannelMonitorUpdate_set_update_id(LDKChannelMonitorUpdate *this_ptr, uint64_t val);
 
@@ -3741,11 +3853,17 @@ LDKCVec_u8Z ChannelMonitorUpdate_write(const LDKChannelMonitorUpdate *obj);
 
 LDKChannelMonitorUpdate ChannelMonitorUpdate_read(LDKu8slice ser);
 
+LDKChannelMonitorUpdateErr ChannelMonitorUpdateErr_clone(const LDKChannelMonitorUpdateErr *orig);
+
 void MonitorUpdateError_free(LDKMonitorUpdateError this_ptr);
 
 void MonitorEvent_free(LDKMonitorEvent this_ptr);
 
+LDKMonitorEvent MonitorEvent_clone(const LDKMonitorEvent *orig);
+
 void HTLCUpdate_free(LDKHTLCUpdate this_ptr);
+
+LDKHTLCUpdate HTLCUpdate_clone(const LDKHTLCUpdate *orig);
 
 LDKCVec_u8Z HTLCUpdate_write(const LDKHTLCUpdate *obj);
 
@@ -3759,7 +3877,7 @@ void ChannelMonitor_free(LDKChannelMonitor this_ptr);
  *
  * panics if the given update is not the next update by update_id.
  */
-MUST_USE_RES LDKCResult_NoneMonitorUpdateErrorZ ChannelMonitor_update_monitor(LDKChannelMonitor *this_arg, LDKChannelMonitorUpdate updates, const LDKBroadcasterInterface *broadcaster, const LDKLogger *logger);
+MUST_USE_RES LDKCResult_NoneMonitorUpdateErrorZ ChannelMonitor_update_monitor(LDKChannelMonitor *this_arg, const LDKChannelMonitorUpdate *updates, const LDKBroadcasterInterface *broadcaster, const LDKFeeEstimator *fee_estimator, const LDKLogger *logger);
 
 /**
  * Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -3816,7 +3934,7 @@ MUST_USE_RES LDKCVec_TransactionZ ChannelMonitor_get_latest_holder_commitment_tx
  *
  * [`get_outputs_to_watch`]: #method.get_outputs_to_watch
  */
-MUST_USE_RES LDKCVec_C2Tuple_TxidCVec_TxOutZZZ ChannelMonitor_block_connected(LDKChannelMonitor *this_arg, const uint8_t (*header)[80], LDKCVec_C2Tuple_usizeTransactionZZ txdata, uint32_t height, LDKBroadcasterInterface broadcaster, LDKFeeEstimator fee_estimator, LDKLogger logger);
+MUST_USE_RES LDKCVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ ChannelMonitor_block_connected(LDKChannelMonitor *this_arg, const uint8_t (*header)[80], LDKCVec_C2Tuple_usizeTransactionZZ txdata, uint32_t height, LDKBroadcasterInterface broadcaster, LDKFeeEstimator fee_estimator, LDKLogger logger);
 
 /**
  * Determines if the disconnected block contained any transactions of interest and updates
@@ -3824,7 +3942,14 @@ MUST_USE_RES LDKCVec_C2Tuple_TxidCVec_TxOutZZZ ChannelMonitor_block_connected(LD
  */
 void ChannelMonitor_block_disconnected(LDKChannelMonitor *this_arg, const uint8_t (*header)[80], uint32_t height, LDKBroadcasterInterface broadcaster, LDKFeeEstimator fee_estimator, LDKLogger logger);
 
+/**
+ * Calls the free function if one is set
+ */
+void Persist_free(LDKPersist this_ptr);
+
 void OutPoint_free(LDKOutPoint this_ptr);
+
+LDKOutPoint OutPoint_clone(const LDKOutPoint *orig);
 
 /**
  * The referenced transaction's txid.
@@ -3859,6 +3984,10 @@ LDKOutPoint OutPoint_read(LDKu8slice ser);
 
 void SpendableOutputDescriptor_free(LDKSpendableOutputDescriptor this_ptr);
 
+LDKSpendableOutputDescriptor SpendableOutputDescriptor_clone(const LDKSpendableOutputDescriptor *orig);
+
+LDKChannelKeys ChannelKeys_clone(const LDKChannelKeys *orig);
+
 /**
  * Calls the free function if one is set
  */
@@ -3870,6 +3999,8 @@ void ChannelKeys_free(LDKChannelKeys this_ptr);
 void KeysInterface_free(LDKKeysInterface this_ptr);
 
 void InMemoryChannelKeys_free(LDKInMemoryChannelKeys this_ptr);
+
+LDKInMemoryChannelKeys InMemoryChannelKeys_clone(const LDKInMemoryChannelKeys *orig);
 
 /**
  * Private key of anchor tx
@@ -4004,6 +4135,8 @@ LDKKeysInterface KeysManager_as_KeysInterface(const LDKKeysManager *this_arg);
 void ChannelManager_free(LDKChannelManager this_ptr);
 
 void ChannelDetails_free(LDKChannelDetails this_ptr);
+
+LDKChannelDetails ChannelDetails_clone(const LDKChannelDetails *orig);
 
 /**
  * The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
@@ -4444,7 +4577,11 @@ void DecodeError_free(LDKDecodeError this_ptr);
 
 void Init_free(LDKInit this_ptr);
 
+LDKInit Init_clone(const LDKInit *orig);
+
 void ErrorMessage_free(LDKErrorMessage this_ptr);
+
+LDKErrorMessage ErrorMessage_clone(const LDKErrorMessage *orig);
 
 /**
  * The channel ID involved in the error
@@ -4476,6 +4613,8 @@ MUST_USE_RES LDKErrorMessage ErrorMessage_new(LDKThirtyTwoBytes channel_id_arg, 
 
 void Ping_free(LDKPing this_ptr);
 
+LDKPing Ping_clone(const LDKPing *orig);
+
 /**
  * The desired response length
  */
@@ -4502,6 +4641,8 @@ MUST_USE_RES LDKPing Ping_new(uint16_t ponglen_arg, uint16_t byteslen_arg);
 
 void Pong_free(LDKPong this_ptr);
 
+LDKPong Pong_clone(const LDKPong *orig);
+
 /**
  * The pong packet size.
  * This field is not sent on the wire. byteslen zeros are sent.
@@ -4517,6 +4658,8 @@ void Pong_set_byteslen(LDKPong *this_ptr, uint16_t val);
 MUST_USE_RES LDKPong Pong_new(uint16_t byteslen_arg);
 
 void OpenChannel_free(LDKOpenChannel this_ptr);
+
+LDKOpenChannel OpenChannel_clone(const LDKOpenChannel *orig);
 
 /**
  * The genesis hash of the blockchain where the channel is to be opened
@@ -4700,6 +4843,8 @@ void OpenChannel_set_channel_flags(LDKOpenChannel *this_ptr, uint8_t val);
 
 void AcceptChannel_free(LDKAcceptChannel this_ptr);
 
+LDKAcceptChannel AcceptChannel_clone(const LDKAcceptChannel *orig);
+
 /**
  * A temporary channel ID, until the funding outpoint is announced
  */
@@ -4842,6 +4987,8 @@ void AcceptChannel_set_first_per_commitment_point(LDKAcceptChannel *this_ptr, LD
 
 void FundingCreated_free(LDKFundingCreated this_ptr);
 
+LDKFundingCreated FundingCreated_clone(const LDKFundingCreated *orig);
+
 /**
  * A temporary channel ID, until the funding is established
  */
@@ -4886,6 +5033,8 @@ MUST_USE_RES LDKFundingCreated FundingCreated_new(LDKThirtyTwoBytes temporary_ch
 
 void FundingSigned_free(LDKFundingSigned this_ptr);
 
+LDKFundingSigned FundingSigned_clone(const LDKFundingSigned *orig);
+
 /**
  * The channel ID
  */
@@ -4910,6 +5059,8 @@ MUST_USE_RES LDKFundingSigned FundingSigned_new(LDKThirtyTwoBytes channel_id_arg
 
 void FundingLocked_free(LDKFundingLocked this_ptr);
 
+LDKFundingLocked FundingLocked_clone(const LDKFundingLocked *orig);
+
 /**
  * The channel ID
  */
@@ -4933,6 +5084,8 @@ void FundingLocked_set_next_per_commitment_point(LDKFundingLocked *this_ptr, LDK
 MUST_USE_RES LDKFundingLocked FundingLocked_new(LDKThirtyTwoBytes channel_id_arg, LDKPublicKey next_per_commitment_point_arg);
 
 void Shutdown_free(LDKShutdown this_ptr);
+
+LDKShutdown Shutdown_clone(const LDKShutdown *orig);
 
 /**
  * The channel ID
@@ -4959,6 +5112,8 @@ void Shutdown_set_scriptpubkey(LDKShutdown *this_ptr, LDKCVec_u8Z val);
 MUST_USE_RES LDKShutdown Shutdown_new(LDKThirtyTwoBytes channel_id_arg, LDKCVec_u8Z scriptpubkey_arg);
 
 void ClosingSigned_free(LDKClosingSigned this_ptr);
+
+LDKClosingSigned ClosingSigned_clone(const LDKClosingSigned *orig);
 
 /**
  * The channel ID
@@ -4993,6 +5148,8 @@ void ClosingSigned_set_signature(LDKClosingSigned *this_ptr, LDKSignature val);
 MUST_USE_RES LDKClosingSigned ClosingSigned_new(LDKThirtyTwoBytes channel_id_arg, uint64_t fee_satoshis_arg, LDKSignature signature_arg);
 
 void UpdateAddHTLC_free(LDKUpdateAddHTLC this_ptr);
+
+LDKUpdateAddHTLC UpdateAddHTLC_clone(const LDKUpdateAddHTLC *orig);
 
 /**
  * The channel ID
@@ -5046,6 +5203,8 @@ void UpdateAddHTLC_set_cltv_expiry(LDKUpdateAddHTLC *this_ptr, uint32_t val);
 
 void UpdateFulfillHTLC_free(LDKUpdateFulfillHTLC this_ptr);
 
+LDKUpdateFulfillHTLC UpdateFulfillHTLC_clone(const LDKUpdateFulfillHTLC *orig);
+
 /**
  * The channel ID
  */
@@ -5080,6 +5239,8 @@ MUST_USE_RES LDKUpdateFulfillHTLC UpdateFulfillHTLC_new(LDKThirtyTwoBytes channe
 
 void UpdateFailHTLC_free(LDKUpdateFailHTLC this_ptr);
 
+LDKUpdateFailHTLC UpdateFailHTLC_clone(const LDKUpdateFailHTLC *orig);
+
 /**
  * The channel ID
  */
@@ -5101,6 +5262,8 @@ uint64_t UpdateFailHTLC_get_htlc_id(const LDKUpdateFailHTLC *this_ptr);
 void UpdateFailHTLC_set_htlc_id(LDKUpdateFailHTLC *this_ptr, uint64_t val);
 
 void UpdateFailMalformedHTLC_free(LDKUpdateFailMalformedHTLC this_ptr);
+
+LDKUpdateFailMalformedHTLC UpdateFailMalformedHTLC_clone(const LDKUpdateFailMalformedHTLC *orig);
 
 /**
  * The channel ID
@@ -5134,6 +5297,8 @@ void UpdateFailMalformedHTLC_set_failure_code(LDKUpdateFailMalformedHTLC *this_p
 
 void CommitmentSigned_free(LDKCommitmentSigned this_ptr);
 
+LDKCommitmentSigned CommitmentSigned_clone(const LDKCommitmentSigned *orig);
+
 /**
  * The channel ID
  */
@@ -5162,6 +5327,8 @@ void CommitmentSigned_set_htlc_signatures(LDKCommitmentSigned *this_ptr, LDKCVec
 MUST_USE_RES LDKCommitmentSigned CommitmentSigned_new(LDKThirtyTwoBytes channel_id_arg, LDKSignature signature_arg, LDKCVec_SignatureZ htlc_signatures_arg);
 
 void RevokeAndACK_free(LDKRevokeAndACK this_ptr);
+
+LDKRevokeAndACK RevokeAndACK_clone(const LDKRevokeAndACK *orig);
 
 /**
  * The channel ID
@@ -5197,6 +5364,8 @@ MUST_USE_RES LDKRevokeAndACK RevokeAndACK_new(LDKThirtyTwoBytes channel_id_arg, 
 
 void UpdateFee_free(LDKUpdateFee this_ptr);
 
+LDKUpdateFee UpdateFee_clone(const LDKUpdateFee *orig);
+
 /**
  * The channel ID
  */
@@ -5220,6 +5389,8 @@ void UpdateFee_set_feerate_per_kw(LDKUpdateFee *this_ptr, uint32_t val);
 MUST_USE_RES LDKUpdateFee UpdateFee_new(LDKThirtyTwoBytes channel_id_arg, uint32_t feerate_per_kw_arg);
 
 void DataLossProtect_free(LDKDataLossProtect this_ptr);
+
+LDKDataLossProtect DataLossProtect_clone(const LDKDataLossProtect *orig);
 
 /**
  * Proof that the sender knows the per-commitment secret of a specific commitment transaction
@@ -5246,6 +5417,8 @@ void DataLossProtect_set_my_current_per_commitment_point(LDKDataLossProtect *thi
 MUST_USE_RES LDKDataLossProtect DataLossProtect_new(LDKThirtyTwoBytes your_last_per_commitment_secret_arg, LDKPublicKey my_current_per_commitment_point_arg);
 
 void ChannelReestablish_free(LDKChannelReestablish this_ptr);
+
+LDKChannelReestablish ChannelReestablish_clone(const LDKChannelReestablish *orig);
 
 /**
  * The channel ID
@@ -5278,6 +5451,8 @@ uint64_t ChannelReestablish_get_next_remote_commitment_number(const LDKChannelRe
 void ChannelReestablish_set_next_remote_commitment_number(LDKChannelReestablish *this_ptr, uint64_t val);
 
 void AnnouncementSignatures_free(LDKAnnouncementSignatures this_ptr);
+
+LDKAnnouncementSignatures AnnouncementSignatures_clone(const LDKAnnouncementSignatures *orig);
 
 /**
  * The channel ID
@@ -5323,7 +5498,11 @@ MUST_USE_RES LDKAnnouncementSignatures AnnouncementSignatures_new(LDKThirtyTwoBy
 
 void NetAddress_free(LDKNetAddress this_ptr);
 
+LDKNetAddress NetAddress_clone(const LDKNetAddress *orig);
+
 void UnsignedNodeAnnouncement_free(LDKUnsignedNodeAnnouncement this_ptr);
+
+LDKUnsignedNodeAnnouncement UnsignedNodeAnnouncement_clone(const LDKUnsignedNodeAnnouncement *orig);
 
 /**
  * The advertised features
@@ -5386,6 +5565,8 @@ void UnsignedNodeAnnouncement_set_addresses(LDKUnsignedNodeAnnouncement *this_pt
 
 void NodeAnnouncement_free(LDKNodeAnnouncement this_ptr);
 
+LDKNodeAnnouncement NodeAnnouncement_clone(const LDKNodeAnnouncement *orig);
+
 /**
  * The signature by the node key
  */
@@ -5409,6 +5590,8 @@ void NodeAnnouncement_set_contents(LDKNodeAnnouncement *this_ptr, LDKUnsignedNod
 MUST_USE_RES LDKNodeAnnouncement NodeAnnouncement_new(LDKSignature signature_arg, LDKUnsignedNodeAnnouncement contents_arg);
 
 void UnsignedChannelAnnouncement_free(LDKUnsignedChannelAnnouncement this_ptr);
+
+LDKUnsignedChannelAnnouncement UnsignedChannelAnnouncement_clone(const LDKUnsignedChannelAnnouncement *orig);
 
 /**
  * The advertised channel features
@@ -5482,6 +5665,8 @@ void UnsignedChannelAnnouncement_set_bitcoin_key_2(LDKUnsignedChannelAnnouncemen
 
 void ChannelAnnouncement_free(LDKChannelAnnouncement this_ptr);
 
+LDKChannelAnnouncement ChannelAnnouncement_clone(const LDKChannelAnnouncement *orig);
+
 /**
  * Authentication of the announcement by the first public node
  */
@@ -5535,6 +5720,8 @@ void ChannelAnnouncement_set_contents(LDKChannelAnnouncement *this_ptr, LDKUnsig
 MUST_USE_RES LDKChannelAnnouncement ChannelAnnouncement_new(LDKSignature node_signature_1_arg, LDKSignature node_signature_2_arg, LDKSignature bitcoin_signature_1_arg, LDKSignature bitcoin_signature_2_arg, LDKUnsignedChannelAnnouncement contents_arg);
 
 void UnsignedChannelUpdate_free(LDKUnsignedChannelUpdate this_ptr);
+
+LDKUnsignedChannelUpdate UnsignedChannelUpdate_clone(const LDKUnsignedChannelUpdate *orig);
 
 /**
  * The genesis hash of the blockchain where the channel is to be opened
@@ -5618,6 +5805,8 @@ void UnsignedChannelUpdate_set_fee_proportional_millionths(LDKUnsignedChannelUpd
 
 void ChannelUpdate_free(LDKChannelUpdate this_ptr);
 
+LDKChannelUpdate ChannelUpdate_clone(const LDKChannelUpdate *orig);
+
 /**
  * A signature of the channel update
  */
@@ -5641,6 +5830,8 @@ void ChannelUpdate_set_contents(LDKChannelUpdate *this_ptr, LDKUnsignedChannelUp
 MUST_USE_RES LDKChannelUpdate ChannelUpdate_new(LDKSignature signature_arg, LDKUnsignedChannelUpdate contents_arg);
 
 void QueryChannelRange_free(LDKQueryChannelRange this_ptr);
+
+LDKQueryChannelRange QueryChannelRange_clone(const LDKQueryChannelRange *orig);
 
 /**
  * The genesis hash of the blockchain being queried
@@ -5675,6 +5866,8 @@ void QueryChannelRange_set_number_of_blocks(LDKQueryChannelRange *this_ptr, uint
 MUST_USE_RES LDKQueryChannelRange QueryChannelRange_new(LDKThirtyTwoBytes chain_hash_arg, uint32_t first_blocknum_arg, uint32_t number_of_blocks_arg);
 
 void ReplyChannelRange_free(LDKReplyChannelRange this_ptr);
+
+LDKReplyChannelRange ReplyChannelRange_clone(const LDKReplyChannelRange *orig);
 
 /**
  * The genesis hash of the blockchain being queried
@@ -5727,6 +5920,8 @@ MUST_USE_RES LDKReplyChannelRange ReplyChannelRange_new(LDKThirtyTwoBytes chain_
 
 void QueryShortChannelIds_free(LDKQueryShortChannelIds this_ptr);
 
+LDKQueryShortChannelIds QueryShortChannelIds_clone(const LDKQueryShortChannelIds *orig);
+
 /**
  * The genesis hash of the blockchain being queried
  */
@@ -5745,6 +5940,8 @@ void QueryShortChannelIds_set_short_channel_ids(LDKQueryShortChannelIds *this_pt
 MUST_USE_RES LDKQueryShortChannelIds QueryShortChannelIds_new(LDKThirtyTwoBytes chain_hash_arg, LDKCVec_u64Z short_channel_ids_arg);
 
 void ReplyShortChannelIdsEnd_free(LDKReplyShortChannelIdsEnd this_ptr);
+
+LDKReplyShortChannelIdsEnd ReplyShortChannelIdsEnd_clone(const LDKReplyShortChannelIdsEnd *orig);
 
 /**
  * The genesis hash of the blockchain that was queried
@@ -5771,6 +5968,8 @@ void ReplyShortChannelIdsEnd_set_full_information(LDKReplyShortChannelIdsEnd *th
 MUST_USE_RES LDKReplyShortChannelIdsEnd ReplyShortChannelIdsEnd_new(LDKThirtyTwoBytes chain_hash_arg, bool full_information_arg);
 
 void GossipTimestampFilter_free(LDKGossipTimestampFilter this_ptr);
+
+LDKGossipTimestampFilter GossipTimestampFilter_clone(const LDKGossipTimestampFilter *orig);
 
 /**
  * The genesis hash of the blockchain for channel and node information
@@ -5806,6 +6005,8 @@ MUST_USE_RES LDKGossipTimestampFilter GossipTimestampFilter_new(LDKThirtyTwoByte
 
 void ErrorAction_free(LDKErrorAction this_ptr);
 
+LDKErrorAction ErrorAction_clone(const LDKErrorAction *orig);
+
 void LightningError_free(LDKLightningError this_ptr);
 
 /**
@@ -5831,6 +6032,8 @@ void LightningError_set_action(LDKLightningError *this_ptr, LDKErrorAction val);
 MUST_USE_RES LDKLightningError LightningError_new(LDKCVec_u8Z err_arg, LDKErrorAction action_arg);
 
 void CommitmentUpdate_free(LDKCommitmentUpdate this_ptr);
+
+LDKCommitmentUpdate CommitmentUpdate_clone(const LDKCommitmentUpdate *orig);
 
 /**
  * update_add_htlc messages which should be sent
@@ -5875,6 +6078,8 @@ void CommitmentUpdate_set_commitment_signed(LDKCommitmentUpdate *this_ptr, LDKCo
 MUST_USE_RES LDKCommitmentUpdate CommitmentUpdate_new(LDKCVec_UpdateAddHTLCZ update_add_htlcs_arg, LDKCVec_UpdateFulfillHTLCZ update_fulfill_htlcs_arg, LDKCVec_UpdateFailHTLCZ update_fail_htlcs_arg, LDKCVec_UpdateFailMalformedHTLCZ update_fail_malformed_htlcs_arg, LDKUpdateFee update_fee_arg, LDKCommitmentSigned commitment_signed_arg);
 
 void HTLCFailChannelUpdate_free(LDKHTLCFailChannelUpdate this_ptr);
+
+LDKHTLCFailChannelUpdate HTLCFailChannelUpdate_clone(const LDKHTLCFailChannelUpdate *orig);
 
 /**
  * Calls the free function if one is set
@@ -6037,6 +6242,8 @@ const LDKRoutingMessageHandler *MessageHandler_get_route_handler(const LDKMessag
 void MessageHandler_set_route_handler(LDKMessageHandler *this_ptr, LDKRoutingMessageHandler val);
 
 MUST_USE_RES LDKMessageHandler MessageHandler_new(LDKChannelMessageHandler chan_handler_arg, LDKRoutingMessageHandler route_handler_arg);
+
+LDKSocketDescriptor SocketDescriptor_clone(const LDKSocketDescriptor *orig);
 
 /**
  * Calls the free function if one is set
@@ -6212,6 +6419,8 @@ LDKCResult_PublicKeySecpErrorZ derive_public_revocation_key(LDKPublicKey per_com
 
 void TxCreationKeys_free(LDKTxCreationKeys this_ptr);
 
+LDKTxCreationKeys TxCreationKeys_clone(const LDKTxCreationKeys *orig);
+
 /**
  * The broadcaster's per-commitment public key which was used to derive the other keys.
  */
@@ -6274,6 +6483,8 @@ LDKTxCreationKeys TxCreationKeys_read(LDKu8slice ser);
 
 void PreCalculatedTxCreationKeys_free(LDKPreCalculatedTxCreationKeys this_ptr);
 
+LDKPreCalculatedTxCreationKeys PreCalculatedTxCreationKeys_clone(const LDKPreCalculatedTxCreationKeys *orig);
+
 /**
  * Create a new PreCalculatedTxCreationKeys from TxCreationKeys
  */
@@ -6291,6 +6502,8 @@ MUST_USE_RES LDKTxCreationKeys PreCalculatedTxCreationKeys_trust_key_derivation(
 MUST_USE_RES LDKPublicKey PreCalculatedTxCreationKeys_per_commitment_point(const LDKPreCalculatedTxCreationKeys *this_arg);
 
 void ChannelPublicKeys_free(LDKChannelPublicKeys this_ptr);
+
+LDKChannelPublicKeys ChannelPublicKeys_clone(const LDKChannelPublicKeys *orig);
 
 /**
  * The public key which is used to sign all commitment transactions, as it appears in the
@@ -6380,6 +6593,8 @@ LDKCVec_u8Z get_revokeable_redeemscript(LDKPublicKey revocation_key, uint16_t co
 
 void HTLCOutputInCommitment_free(LDKHTLCOutputInCommitment this_ptr);
 
+LDKHTLCOutputInCommitment HTLCOutputInCommitment_clone(const LDKHTLCOutputInCommitment *orig);
+
 /**
  * Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
  * Note that this is not the same as whether it is ountbound *from us*. To determine that you
@@ -6450,6 +6665,8 @@ LDKCVec_u8Z make_funding_redeemscript(LDKPublicKey broadcaster, LDKPublicKey cou
 LDKTransaction build_htlc_transaction(const uint8_t (*prev_hash)[32], uint32_t feerate_per_kw, uint16_t contest_delay, const LDKHTLCOutputInCommitment *htlc, LDKPublicKey broadcaster_delayed_payment_key, LDKPublicKey revocation_key);
 
 void HolderCommitmentTransaction_free(LDKHolderCommitmentTransaction this_ptr);
+
+LDKHolderCommitmentTransaction HolderCommitmentTransaction_clone(const LDKHolderCommitmentTransaction *orig);
 
 /**
  * The commitment transaction itself, in unsigned form.
@@ -6550,6 +6767,8 @@ void ChannelFeatures_free(LDKChannelFeatures this_ptr);
 
 void RouteHop_free(LDKRouteHop this_ptr);
 
+LDKRouteHop RouteHop_clone(const LDKRouteHop *orig);
+
 /**
  * The node_id of the node at this hop.
  */
@@ -6620,6 +6839,8 @@ MUST_USE_RES LDKRouteHop RouteHop_new(LDKPublicKey pubkey_arg, LDKNodeFeatures n
 
 void Route_free(LDKRoute this_ptr);
 
+LDKRoute Route_clone(const LDKRoute *orig);
+
 /**
  * The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
  * last RouteHop in each path must be the same.
@@ -6637,6 +6858,8 @@ LDKCVec_u8Z Route_write(const LDKRoute *obj);
 LDKRoute Route_read(LDKu8slice ser);
 
 void RouteHint_free(LDKRouteHint this_ptr);
+
+LDKRouteHint RouteHint_clone(const LDKRouteHint *orig);
 
 /**
  * The node_id of the non-target end of the route
@@ -6883,6 +7106,8 @@ LDKCVec_u8Z ChannelInfo_write(const LDKChannelInfo *obj);
 LDKChannelInfo ChannelInfo_read(LDKu8slice ser);
 
 void RoutingFees_free(LDKRoutingFees this_ptr);
+
+LDKRoutingFees RoutingFees_clone(const LDKRoutingFees *orig);
 
 /**
  * Flat routing fee in satoshis
