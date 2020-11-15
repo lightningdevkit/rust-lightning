@@ -8687,3 +8687,143 @@ fn test_onchain_htlc_settlement_after_close() {
 	do_test_onchain_htlc_settlement_after_close(true, false);
 	do_test_onchain_htlc_settlement_after_close(false, false);
 }
+
+#[test]
+fn test_duplicate_chan_id() {
+	// Test that if a given peer tries to open a channel with the same channel_id as one that is
+	// already open we reject it and keep the old channel.
+	//
+	// Previously, full_stack_target managed to figure out that if you tried to open two channels
+	// with the same funding output (ie post-funding channel_id), we'd create a monitor update for
+	// the existing channel when we detect the duplicate new channel, screwing up our monitor
+	// updating logic for the existing channel.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create an initial channel
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_msg);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	// Try to create a second channel with the same temporary_channel_id as the first and check
+	// that it is rejected.
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_msg);
+	{
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+				// Technically, at this point, nodes[1] would be justified in thinking both the
+				// first (valid) and second (invalid) channels are closed, given they both have
+				// the same non-temporary channel_id. However, currently we do not, so we just
+				// move forward with it.
+				assert_eq!(msg.channel_id, open_chan_msg.temporary_channel_id);
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	// Move the first channel through the funding flow...
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	check_added_monitors!(nodes[0], 0);
+
+	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	{
+		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
+	}
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+
+	let funding_outpoint = ::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index };
+	let channel_id = funding_outpoint.to_channel_id();
+
+	// Now we have the first channel past funding_created (ie it has a txid-based channel_id, not a
+	// temporary one).
+
+	// First try to open a second channel with a temporary channel id equal to the txid-based one.
+	// Technically this is allowed by the spec, but we don't support it and there's little reason
+	// to. Still, it shouldn't cause any other issues.
+	open_chan_msg.temporary_channel_id = channel_id;
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_msg);
+	{
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+				// Technically, at this point, nodes[1] would be justified in thinking both
+				// channels are closed, but currently we do not, so we just move forward with it.
+				assert_eq!(msg.channel_id, open_chan_msg.temporary_channel_id);
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	// Now try to create a second channel which has a duplicate funding output.
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let open_chan_2_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_2_msg);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+	create_funding_transaction(&nodes[0], 100000, 42); // Get and check the FundingGenerationReady event
+
+	let funding_created = {
+		let mut a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let mut as_chan = a_channel_lock.by_id.get_mut(&open_chan_2_msg.temporary_channel_id).unwrap();
+		let logger = test_utils::TestLogger::new();
+		as_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap()
+	};
+	check_added_monitors!(nodes[0], 0);
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
+	// At this point we'll try to add a duplicate channel monitor, which will be rejected, but
+	// still needs to be cleared here.
+	check_added_monitors!(nodes[1], 1);
+
+	// ...still, nodes[1] will reject the duplicate channel.
+	{
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+				// Technically, at this point, nodes[1] would be justified in thinking both
+				// channels are closed, but currently we do not, so we just move forward with it.
+				assert_eq!(msg.channel_id, channel_id);
+				assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	// finally, finish creating the original channel and send a payment over it to make sure
+	// everything is functional.
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	{
+		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		assert_eq!(added_monitors[0].0, funding_output);
+		added_monitors.clear();
+	}
+
+	let events_4 = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_4.len(), 1);
+	match events_4[0] {
+		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
+			assert_eq!(user_channel_id, 42);
+			assert_eq!(*funding_txo, funding_output);
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
+}

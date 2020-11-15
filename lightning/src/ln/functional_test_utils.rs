@@ -487,7 +487,11 @@ pub fn create_announced_chan_between_nodes<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'
 
 pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
 	let chan_announcement = create_chan_between_nodes_with_value(&nodes[a], &nodes[b], channel_value, push_msat, a_flags, b_flags);
+	update_nodes_with_chan_announce(nodes, a, b, &chan_announcement.0, &chan_announcement.1, &chan_announcement.2);
+	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
+}
 
+pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
 	nodes[a].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
 	let a_events = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(a_events.len(), 1);
@@ -509,13 +513,12 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 	};
 
 	for node in nodes {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(&chan_announcement.0).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(&chan_announcement.1).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&chan_announcement.2).unwrap();
+		assert!(node.net_graph_msg_handler.handle_channel_announcement(ann).unwrap());
+		node.net_graph_msg_handler.handle_channel_update(upd_1).unwrap();
+		node.net_graph_msg_handler.handle_channel_update(upd_2).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&a_node_announcement).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&b_node_announcement).unwrap();
 	}
-	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
 
 macro_rules! check_spends {
