@@ -64,13 +64,28 @@ pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
-	/// increasing and increase by one for each new update.
+	/// increasing and increase by one for each new update, with one exception specified below.
 	///
 	/// This sequence number is also used to track up to which points updates which returned
 	/// ChannelMonitorUpdateErr::TemporaryFailure have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
+	///
+	/// The only instance where update_id values are not strictly increasing is the case where we
+	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
+	/// its docs for more details.
+	///
+	/// [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
 	pub update_id: u64,
 }
+
+/// If:
+///    (1) a channel has been force closed and
+///    (2) we receive a preimage from a forward link that allows us to spend an HTLC output on
+///        this channel's (the backward link's) broadcasted commitment transaction
+/// then we allow the `ChannelManager` to send a `ChannelMonitorUpdate` with this update ID,
+/// with the update providing said payment preimage. No other update types are allowed after
+/// force-close.
+pub const CLOSED_CHANNEL_UPDATE_ID: u64 = std::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
@@ -1144,8 +1159,47 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	pub(crate) fn provide_payment_preimage(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage) {
+	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L)
+	where B::Target: BroadcasterInterface,
+		    F::Target: FeeEstimator,
+		    L::Target: Logger,
+	{
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
+
+		// If the channel is force closed, try to claim the output from this preimage.
+		// First check if a counterparty commitment transaction has been broadcasted:
+		macro_rules! claim_htlcs {
+			($commitment_number: expr, $txid: expr) => {
+				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, None, broadcaster, fee_estimator, logger);
+			}
+		}
+		if let Some(txid) = self.current_counterparty_commitment_txid {
+			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
+				claim_htlcs!(*commitment_number, txid);
+				return;
+			}
+		}
+		if let Some(txid) = self.prev_counterparty_commitment_txid {
+			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
+				claim_htlcs!(*commitment_number, txid);
+				return;
+			}
+		}
+
+		// Then if a holder commitment transaction has been seen on-chain, broadcast transactions
+		// claiming the HTLC output from each of the holder commitment transactions.
+		// Note that we can't just use `self.holder_tx_signed`, because that only covers the case where
+		// *we* sign a holder commitment transaction, not when e.g. a watchtower broadcasts one of our
+		// holder commitment transactions.
+		if self.broadcasted_holder_revokable_script.is_some() {
+			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+			}
+		}
 	}
 
 	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
@@ -1162,26 +1216,45 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, logger: &L) -> Result<(), MonitorUpdateError>
-		where B::Target: BroadcasterInterface,
-					L::Target: Logger,
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
+	where B::Target: BroadcasterInterface,
+		    F::Target: FeeEstimator,
+		    L::Target: Logger,
 	{
-		if self.latest_update_id + 1 != updates.update_id {
+		// ChannelMonitor updates may be applied after force close if we receive a
+		// preimage for a broadcasted commitment transaction HTLC output that we'd
+		// like to claim on-chain. If this is the case, we no longer have guaranteed
+		// access to the monitor's update ID, so we use a sentinel value instead.
+		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+			match updates.updates[0] {
+				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
+				_ => panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage"),
+			}
+			assert_eq!(updates.updates.len(), 1);
+		} else if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
 					self.provide_latest_holder_commitment_tx_info(commitment_tx.clone(), htlc_outputs.clone())?
 				},
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } =>
-					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger),
-				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } =>
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage),
-				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } =>
-					self.provide_secret(*idx, *secret)?,
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
+					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger)
+				},
+				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
+					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger)
+				},
+				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
+					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
+					self.provide_secret(*idx, *secret)?
+				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
+					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
@@ -1425,39 +1498,55 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				check_htlc_fails!(txid, "previous", 'prev_loop);
 			}
 
+			let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs(commitment_number, commitment_txid, Some(tx));
+			for req in htlc_claim_reqs {
+				claimable_outpoints.push(req);
+			}
+
+		}
+		(claimable_outpoints, (commitment_txid, watch_outputs))
+	}
+
+	fn get_counterparty_htlc_output_claim_reqs(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>) -> Vec<ClaimRequest> {
+		let mut claims = Vec::new();
+		if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&commitment_txid) {
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
+					// If the counterparty commitment tx is the latest valid state, use their latest
+					// per-commitment point
 					if revocation_points.0 == commitment_number { Some(&revocation_points.1) }
 					else if let Some(point) = revocation_points.2.as_ref() {
+						// If counterparty commitment tx is the state previous to the latest valid state, use
+						// their previous per-commitment point (non-atomicity of revocation means it's valid for
+						// them to temporarily have two valid commitment txns from our viewpoint)
 						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
 				if let Some(revocation_point) = revocation_point_option {
-					self.counterparty_payment_script = {
-						// Note that the Network here is ignored as we immediately drop the address for the
-						// script_pubkey version
-						let payment_hash160 = WPubkeyHash::hash(&self.keys.pubkeys().payment_point.serialize());
-						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_hash160[..]).into_script()
-					};
-
-					// Then, try to find htlc outputs
-					for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
+					for (_, &(ref htlc, _)) in htlc_outputs.iter().enumerate() {
 						if let Some(transaction_output_index) = htlc.transaction_output_index {
-							if transaction_output_index as usize >= tx.output.len() ||
-									tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
-								return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
+							if let Some(transaction) = tx {
+								if transaction_output_index as usize >= transaction.output.len() ||
+									transaction.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
+										return claims; // Corrupted per_commitment_data, fuck this user
+									}
 							}
-							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
+							let preimage =
+								if htlc.offered {
+									if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) {
+										Some(*p)
+									} else { None }
+								} else { None };
 							let aggregable = if !htlc.offered { false } else { true };
 							if preimage.is_some() || !htlc.offered {
 								let witness_data = InputMaterial::CounterpartyHTLC { per_commitment_point: *revocation_point, counterparty_delayed_payment_base_key: self.counterparty_tx_cache.counterparty_delayed_payment_base_key, counterparty_htlc_base_key: self.counterparty_tx_cache.counterparty_htlc_base_key, preimage, htlc: htlc.clone() };
-								claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
+								claims.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
 							}
 						}
 					}
 				}
 			}
 		}
-		(claimable_outpoints, (commitment_txid, watch_outputs))
+		claims
 	}
 
 	/// Attempts to claim a counterparty HTLC-Success/HTLC-Timeout's outputs using the revocation key
@@ -1487,9 +1576,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		(claimable_outpoints, Some((htlc_txid, outputs)))
 	}
 
-	fn broadcast_by_holder_state(&self, commitment_tx: &Transaction, holder_tx: &HolderSignedTx) -> (Vec<ClaimRequest>, Vec<(u32, TxOut)>, Option<(Script, PublicKey, PublicKey)>) {
+	// Returns (1) `ClaimRequest`s that can be given to the OnChainTxHandler, so that the handler can
+	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
+	// script so we can detect whether a holder transaction has been seen on-chain.
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx) -> (Vec<ClaimRequest>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
-		let mut watch_outputs = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
 		let broadcasted_holder_revokable_script = Some((redeemscript.to_v0_p2wsh(), holder_tx.per_commitment_point.clone(), holder_tx.revocation_key.clone()));
@@ -1508,11 +1599,21 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 							} else { None },
 						amount: htlc.amount_msat,
 				}});
-				watch_outputs.push((transaction_output_index, commitment_tx.output[transaction_output_index as usize].clone()));
 			}
 		}
 
-		(claim_requests, watch_outputs, broadcasted_holder_revokable_script)
+		(claim_requests, broadcasted_holder_revokable_script)
+	}
+
+	// Returns holder HTLC outputs to watch and react to in case of spending.
+	fn get_broadcasted_holder_watch_outputs(&self, holder_tx: &HolderSignedTx, commitment_tx: &Transaction) -> Vec<(u32, TxOut)> {
+		let mut watch_outputs = Vec::with_capacity(holder_tx.htlc_outputs.len());
+		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
+			if let Some(transaction_output_index) = htlc.transaction_output_index {
+				watch_outputs.push((transaction_output_index, commitment_tx.output[transaction_output_index as usize].clone()));
+			}
+		}
+		watch_outputs
 	}
 
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
@@ -1547,10 +1648,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 
 		macro_rules! append_onchain_update {
-			($updates: expr) => {
+			($updates: expr, $to_watch: expr) => {
 				claim_requests = $updates.0;
-				watch_outputs.append(&mut $updates.1);
-				self.broadcasted_holder_revokable_script = $updates.2;
+				self.broadcasted_holder_revokable_script = $updates.1;
+				watch_outputs.append(&mut $to_watch);
 			}
 		}
 
@@ -1560,14 +1661,16 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		if self.current_holder_commitment_tx.txid == commitment_txid {
 			is_holder_tx = true;
 			log_trace!(logger, "Got latest holder commitment tx broadcast, searching for available HTLCs to claim");
-			let mut res = self.broadcast_by_holder_state(tx, &self.current_holder_commitment_tx);
-			append_onchain_update!(res);
+			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
+			append_onchain_update!(res, to_watch);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
 			if holder_tx.txid == commitment_txid {
 				is_holder_tx = true;
 				log_trace!(logger, "Got previous holder commitment tx broadcast, searching for available HTLCs to claim");
-				let mut res = self.broadcast_by_holder_state(tx, holder_tx);
-				append_onchain_update!(res);
+				let res = self.get_broadcasted_holder_claims(holder_tx);
+				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
+				append_onchain_update!(res, to_watch);
 			}
 		}
 
@@ -1735,7 +1838,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript) {
 				self.holder_tx_signed = true;
-				let (mut new_outpoints, new_outputs, _) = self.broadcast_by_holder_state(&commitment_tx, &self.current_holder_commitment_tx);
+				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
 				if !new_outputs.is_empty() {
 					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
 				}
@@ -1763,7 +1867,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			}
 		}
 
-		self.onchain_tx_handler.block_connected(&txn_matched, claimable_outpoints, height, &*broadcaster, &*fee_estimator, &*logger);
+		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, Some(height), &&*broadcaster, &&*fee_estimator, &&*logger);
 		self.last_block_hash = block_hash;
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
@@ -2486,16 +2590,18 @@ mod tests {
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction};
-	use util::test_utils::TestLogger;
+	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
-	use std::sync::Arc;
+	use std::sync::{Arc, Mutex};
 	use chain::keysinterface::InMemoryChannelKeys;
 
 	#[test]
 	fn test_prune_preimages() {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: 253 });
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
@@ -2571,7 +2677,7 @@ mod tests {
 		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
-			monitor.provide_payment_preimage(hash, preimage);
+			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
 		}
 
 		// Now provide a secret, pruning preimages 10-15

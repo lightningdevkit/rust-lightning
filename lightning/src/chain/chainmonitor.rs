@@ -198,7 +198,7 @@ where C::Target: chain::Filter,
 			},
 			Some(orig_monitor) => {
 				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-				let update_res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.logger);
+				let update_res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
 				if let Err(e) = &update_res {
 					log_error!(self.logger, "Failed to update channel monitor: {:?}", e);
 				}

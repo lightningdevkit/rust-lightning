@@ -128,7 +128,7 @@ impl chain::Watch for TestChainMonitor {
 		};
 		let mut deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::
 			read(&mut Cursor::new(&map_entry.get().1)).unwrap().1;
-		deserialized_monitor.update_monitor(&update, &&TestBroadcaster {}, &self.logger).unwrap();
+		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &&FuzzEstimator{}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.serialize_for_disk(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));

@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 use chain;
 use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
@@ -118,9 +118,15 @@ pub(super) enum PendingHTLCStatus {
 
 pub(super) enum HTLCForwardInfo {
 	AddHTLC {
+		forward_info: PendingHTLCInfo,
+
+		// These fields are produced in `forward_htlcs()` and consumed in
+		// `process_pending_htlc_forwards()` for constructing the
+		// `HTLCSource::PreviousHopData` for failed and forwarded
+		// HTLCs.
 		prev_short_channel_id: u64,
 		prev_htlc_id: u64,
-		forward_info: PendingHTLCInfo,
+		prev_funding_outpoint: OutPoint,
 	},
 	FailHTLC {
 		htlc_id: u64,
@@ -134,6 +140,10 @@ pub(crate) struct HTLCPreviousHopData {
 	short_channel_id: u64,
 	htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
+
+	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
+	// channel with a preimage provided by the forward channel.
+	outpoint: OutPoint,
 }
 
 struct ClaimableHTLC {
@@ -1554,9 +1564,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							failed_forwards.reserve(pending_forwards.len());
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info } => {
+									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info,
+									                           prev_funding_outpoint } => {
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
+											outpoint: prev_funding_outpoint,
 											htlc_id: prev_htlc_id,
 											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 										});
@@ -1583,10 +1595,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 								HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
 										routing: PendingHTLCRouting::Forward {
 											onion_packet, ..
-										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value }, } => {
+										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
+										prev_funding_outpoint } => {
 									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(payment_hash.0), prev_short_channel_id, short_chan_id);
 									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
+										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
 									});
@@ -1701,9 +1715,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
 									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
-									incoming_shared_secret, payment_hash, amt_to_forward, .. }, } => {
+									incoming_shared_secret, payment_hash, amt_to_forward, .. },
+									prev_funding_outpoint } => {
 								let prev_hop = HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
+									outpoint: prev_funding_outpoint,
 									htlc_id: prev_htlc_id,
 									incoming_packet_shared_secret: incoming_shared_secret,
 								};
@@ -1738,6 +1754,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 											);
 											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: htlc.prev_hop.short_channel_id,
+													outpoint: prev_funding_outpoint,
 													htlc_id: htlc.prev_hop.htlc_id,
 													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
 												}), payment_hash,
@@ -1940,7 +1957,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					}
 				}
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, .. }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
@@ -2135,12 +2152,23 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				});
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
+				let prev_outpoint = hop_data.outpoint;
 				if let Err((counterparty_node_id, err)) = match self.claim_funds_from_hop(&mut channel_state_lock, hop_data, payment_preimage) {
 					Ok(()) => Ok(()),
 					Err(None) => {
-						// TODO: There is probably a channel monitor somewhere that needs to
-						// learn the preimage as the channel already hit the chain and that's
-						// why it's missing.
+						let preimage_update = ChannelMonitorUpdate {
+							update_id: CLOSED_CHANNEL_UPDATE_ID,
+							updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+								payment_preimage: payment_preimage.clone(),
+							}],
+						};
+						// We update the ChannelMonitor on the backward link, after
+						// receiving an offchain preimage event from the forward link (the
+						// event being update_fulfill_htlc).
+						if let Err(e) = self.chain_monitor.update_channel(prev_outpoint, preimage_update) {
+							log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
+							           payment_preimage, e);
+						}
 						Ok(())
 					},
 					Err(Some(res)) => Err(res),
@@ -2201,7 +2229,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored(&self.logger);
 			if !pending_forwards.is_empty() {
-				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), pending_forwards));
+				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), funding_txo.clone(), pending_forwards));
 			}
 			htlc_failures.append(&mut pending_failures);
 
@@ -2685,8 +2713,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Vec<(PendingHTLCInfo, u64)>)]) {
-		for &mut (prev_short_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)]) {
+		for &mut (prev_short_channel_id, prev_funding_outpoint, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
 				let mut channel_state = self.channel_state.lock().unwrap();
@@ -2699,10 +2727,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							PendingHTLCRouting::Receive { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
+							                                                prev_htlc_id, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
+							                                             prev_htlc_id, forward_info }));
 						}
 					}
 				}
@@ -2755,18 +2785,18 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 							msg,
 						});
 					}
-					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel")))
+					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"), chan.get().get_funding_txo().unwrap()))
 				},
 				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id);
 		match res {
-			Ok((pending_forwards, mut pending_failures, short_channel_id)) => {
+			Ok((pending_forwards, mut pending_failures, short_channel_id, channel_outpoint)) => {
 				for failure in pending_failures.drain(..) {
 					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 				}
-				self.forward_htlcs(&mut [(short_channel_id, pending_forwards)]);
+				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, pending_forwards)]);
 				Ok(())
 			},
 			Err(e) => Err(e)
@@ -3543,6 +3573,7 @@ impl Readable for PendingHTLCStatus {
 
 impl_writeable!(HTLCPreviousHopData, 0, {
 	short_channel_id,
+	outpoint,
 	htlc_id,
 	incoming_packet_shared_secret
 });
@@ -3619,9 +3650,10 @@ impl Readable for HTLCFailReason {
 impl Writeable for HTLCForwardInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		match self {
-			&HTLCForwardInfo::AddHTLC { ref prev_short_channel_id, ref prev_htlc_id, ref forward_info } => {
+			&HTLCForwardInfo::AddHTLC { ref prev_short_channel_id, ref prev_funding_outpoint, ref prev_htlc_id, ref forward_info } => {
 				0u8.write(writer)?;
 				prev_short_channel_id.write(writer)?;
+				prev_funding_outpoint.write(writer)?;
 				prev_htlc_id.write(writer)?;
 				forward_info.write(writer)?;
 			},
@@ -3640,6 +3672,7 @@ impl Readable for HTLCForwardInfo {
 		match <u8 as Readable>::read(reader)? {
 			0 => Ok(HTLCForwardInfo::AddHTLC {
 				prev_short_channel_id: Readable::read(reader)?,
+				prev_funding_outpoint: Readable::read(reader)?,
 				prev_htlc_id: Readable::read(reader)?,
 				forward_info: Readable::read(reader)?,
 			}),
