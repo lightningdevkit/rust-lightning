@@ -35,10 +35,11 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -182,6 +183,47 @@ impl KeysInterface for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]
+	}
+}
+
+#[inline]
+fn check_api_err(api_err: APIError) {
+	match api_err {
+		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
+		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
+		APIError::RouteError { .. } => panic!("Our routes should work"),
+		APIError::ChannelUnavailable { err } => {
+			// Test the error against a list of errors we can hit, and reject
+			// all others. If you hit this panic, the list of acceptable errors
+			// is probably just stale and you should add new messages here.
+			match err.as_str() {
+				"Peer for first hop currently disconnected/pending monitor update!" => {},
+				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
+				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
+				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
+				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
+				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
+				_ => panic!(err),
+			}
+		},
+		APIError::MonitorUpdateFailed => {
+			// We can (obviously) temp-fail a monitor update
+		},
+	}
+}
+#[inline]
+fn check_payment_err(send_err: PaymentSendFailure) {
+	match send_err {
+		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err),
+		PaymentSendFailure::PathParameterError(per_path_results) => {
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+		},
+		PaymentSendFailure::AllFailedRetrySafe(per_path_results) => {
+			for api_err in per_path_results { check_api_err(api_err); }
+		},
+		PaymentSendFailure::PartialFailure(per_path_results) => {
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+		},
 	}
 }
 
@@ -407,7 +449,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			($source: expr, $dest: expr, $amt: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
+				if let Err(err) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
@@ -417,14 +459,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &None) {
-					// Probably ran out of funds
-					test_return!();
+					check_payment_err(err);
 				}
 			} };
 			($source: expr, $middle: expr, $dest: expr, $amt: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
+				if let Err(err) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
@@ -441,8 +482,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &None) {
-					// Probably ran out of funds
-					test_return!();
+					check_payment_err(err);
 				}
 			} }
 		}
@@ -452,7 +492,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				payment_id = payment_id.wrapping_add(1);
 				let payment_secret = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
+				if let Err(err) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
@@ -483,8 +523,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &Some(PaymentSecret(payment_secret.into_inner()))) {
-					// Probably ran out of funds
-					test_return!();
+					check_payment_err(err);
 				}
 			} }
 		}
