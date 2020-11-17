@@ -596,10 +596,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
 						},
-						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {
-							// Can be generated at any processing step to send back an error, disconnect
-							// peer or just ignore
-						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
