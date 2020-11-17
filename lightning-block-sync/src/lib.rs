@@ -16,6 +16,8 @@ pub mod http_clients;
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http_endpoint;
 
+pub mod poller;
+
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 mod utils;
 
@@ -35,7 +37,7 @@ use std::ops::DerefMut;
 use std::pin::Pin;
 use std::vec::Vec;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 /// A block header and some associated data. This information should be available from most block
 /// sources (and, notably, is available in Bitcoin Core's RPC and REST interfaces).
 pub struct BlockHeaderData {
@@ -61,7 +63,7 @@ type AsyncBlockSourceResult<'a, T> = Pin<Box<dyn Future<Output = BlockSourceResu
 ///
 /// Transient errors may be resolved when re-polling, but no attempt will be made to re-poll on
 /// persistent errors.
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BlockSourceError {
 	/// Indicates an error that won't resolve when retrying a request (e.g., invalid data).
 	Persistent,
@@ -89,6 +91,30 @@ pub trait BlockSource : Sync + Send {
 	/// Including the height doesn't impact the chain-scannling algorithm, but it is passed to
 	/// get_header() which may allow some BlockSources to more effeciently find the target header.
 	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
+}
+
+/// The `Poll` trait defines behavior for polling block sources for a chain tip.
+pub trait Poll<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
+	/// Returns a chain tip relative to the provided chain tip along with the block source from
+	/// which it originated.
+	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
+		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
+	where 'b: 'a;
+}
+
+/// A chain tip relative to another chain tip in terms of block hash and chainwork.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChainTip {
+	/// A chain tip with the same hash as another chain's tip. The boolean indicates whether every
+	/// block source polled returned the same tip.
+	Common(bool),
+
+	/// A chain tip with more chainwork than another chain's tip.
+	Better(BlockHash, BlockHeaderData),
+
+	/// A chain tip with less or equal chainwork than another chain's tip. In either case, the
+	/// hashes of each tip will be different.
+	Worse(BlockHash, BlockHeaderData),
 }
 
 /// Stateless header checks on a given header.
@@ -340,131 +366,96 @@ pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(
 /// This prevents one block source from being able to orphan us on a fork of its own creation by
 /// not responding to requests for old headers on that fork. However, if one block source is
 /// unreachable this may result in our memory usage growing in accordance with the chain.
-pub struct MicroSPVClient<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: ChainListener + Sized> {
+pub struct MicroSPVClient<'a, P, B, CL>
+where P: Poll<'a, B>,
+	  B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send,
+	  CL: ChainListener + Sized {
 	chain_tip: (BlockHash, BlockHeaderData),
-	block_sources: Vec<B>,
+	chain_poller: P,
 	backup_block_sources: Vec<B>,
-	cur_blocks: Vec<BlockSourceResult<BlockHash>>,
 	blocks_past_common_tip: Vec<BlockHeaderData>,
 	chain_notifier: CL,
 	mainnet: bool
 }
-impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send, CL: ChainListener + Sized> MicroSPVClient<'a, B, CL> {
-	/// Create a new MicroSPVClient with a set of block sources and a chain listener which will
-	/// receive updates of the new tip.
+
+impl<'a, P, B, CL> MicroSPVClient<'a, P, B, CL>
+where P: Poll<'a, B>,
+	  B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send,
+	  CL: ChainListener + Sized {
+
+	/// Creates a new `MicroSPVClient` with a chain poller for polling one or more block sources and
+	/// a chain listener for receiving updates of the new chain tip.
 	///
-	/// We assume that at least one of the provided BlockSources can provide all neccessary headers
-	/// to disconnect from the given chain_tip back to its common ancestor with the best chain.
-	/// We assume that the height, hash, and chain work given in chain_tip are correct.
+	/// At least one of the polled `BlockSource`s must provide the necessary headers to disconnect
+	/// from the given `chain_tip` back to its common ancestor with the best chain assuming that its
+	/// height, hash, and chainwork are correct.
 	///
 	/// `backup_block_sources` are never queried unless we learned, via some `block_sources` source
 	/// that there exists a better, valid header chain but we failed to fetch the blocks. This is
 	/// useful when you have a block source which is more censorship-resistant than others but
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
-	pub fn init(chain_tip: BlockHeaderData, block_sources: Vec<B>, backup_block_sources: Vec<B>, chain_notifier: CL, mainnet: bool) -> Self {
-		let cur_blocks = vec![Err(BlockSourceError::Transient); block_sources.len() + backup_block_sources.len()];
+	pub fn init(chain_tip: BlockHeaderData, chain_poller: P, backup_block_sources: Vec<B>, chain_notifier: CL, mainnet: bool) -> Self {
 		let blocks_past_common_tip = Vec::new();
 		Self {
 			chain_tip: (chain_tip.header.block_hash(), chain_tip),
-			block_sources, backup_block_sources, cur_blocks, blocks_past_common_tip, chain_notifier, mainnet
+			chain_poller, backup_block_sources, blocks_past_common_tip, chain_notifier, mainnet
 		}
 	}
+
 	/// Check each source for a new best tip and update the chain listener accordingly.
 	/// Returns true if some blocks were [dis]connected, false otherwise.
 	pub async fn poll_best_tip(&mut self) -> bool {
-		let mut highest_valid_tip = self.chain_tip.1.chainwork;
-		let mut blocks_connected = false;
-
-		macro_rules! process_source {
-			($cur_hash: expr, $source: expr) => { {
-				if let Err(BlockSourceError::Persistent) = $cur_hash {
-					// We gave up on this provider, move on.
-					continue;
-				}
-				macro_rules! handle_err {
-					($err: expr) => {
-						match $err {
-							Ok(r) => r,
-							Err(BlockSourceError::Persistent) => {
-								$cur_hash = Err(BlockSourceError::Persistent);
-								continue;
-							},
-							Err(BlockSourceError::Transient) => {
-								continue;
-							},
+		macro_rules! sync_chain_monitor {
+			($new_hash: expr, $new_header: expr, $source: expr) => { {
+				let mut blocks_connected = false;
+				match sync_chain_monitor($new_header, &self.chain_tip.1, $source, &mut self.chain_notifier, &mut self.blocks_past_common_tip, self.mainnet).await {
+					Err((_, latest_tip)) => {
+						if let Some(latest_tip) = latest_tip {
+							let latest_tip_hash = latest_tip.header.block_hash();
+							if latest_tip_hash != self.chain_tip.0 {
+								self.chain_tip = (latest_tip_hash, latest_tip);
+								blocks_connected = true;
+							}
 						}
-					}
+					},
+					Ok(_) => {
+						self.chain_tip = ($new_hash, $new_header);
+						blocks_connected = true;
+					},
 				}
-				let (new_hash, height_opt) = handle_err!($source.get_best_block().await);
-				if new_hash == self.chain_tip.0 {
-					$cur_hash = Ok(new_hash);
-					continue;
-				}
-				let new_header = handle_err!($source.get_header(&new_hash, height_opt).await);
-				if new_header.header.block_hash() != new_hash {
-					$cur_hash = Err(BlockSourceError::Persistent);
-					continue;
-				}
-				handle_err!(stateless_check_header(&new_header.header));
-				if new_header.chainwork <= self.chain_tip.1.chainwork {
-					$cur_hash = Ok(new_hash);
-					continue;
-				}
-
-				let syncres = sync_chain_monitor(new_header.clone(), &self.chain_tip.1, &mut *$source, &mut self.chain_notifier, &mut self.blocks_past_common_tip, self.mainnet).await;
-				if let Err((e, new_tip)) = syncres {
-					if let Some(tip) = new_tip {
-						let tiphash = tip.header.block_hash();
-						if tiphash != self.chain_tip.0 {
-							self.chain_tip = (tiphash, tip);
-							blocks_connected = true;
-						}
-						// We set cur_hash to where we got to since we don't mind dropping our
-						// block header cache if its on a fork that no block sources care about,
-						// but we (may) want to continue trying to get the blocks from this source
-						// the next time we poll.
-						$cur_hash = Ok(tiphash);
-						highest_valid_tip = std::cmp::max(highest_valid_tip, new_header.chainwork);
-					}
-					handle_err!(Err(e));
-				} else {
-					highest_valid_tip = std::cmp::max(highest_valid_tip, new_header.chainwork);
-					self.chain_tip = (new_hash, new_header);
-					$cur_hash = Ok(new_hash);
-					blocks_connected = true;
-				}
+				blocks_connected
 			} }
 		}
 
-		for (cur_hash, source) in self.cur_blocks.iter_mut().take(self.block_sources.len())
-				.zip(self.block_sources.iter_mut()) {
-			process_source!(*cur_hash, *source);
-		}
-
-		if highest_valid_tip != self.chain_tip.1.chainwork {
-			for (cur_hash, source) in self.cur_blocks.iter_mut().skip(self.block_sources.len())
-					.zip(self.backup_block_sources.iter_mut()) {
-				process_source!(*cur_hash, *source);
-				if highest_valid_tip == self.chain_tip.1.chainwork { break; }
-			}
-		}
-
-		let mut common_tip = true;
-		for cur_hash in self.cur_blocks.iter() {
-			if let Ok(hash) = cur_hash {
-				if *hash != self.chain_tip.0 {
-					common_tip = false;
-					break;
+		match self.chain_poller.poll_chain_tip(self.chain_tip.1).await {
+			Err(BlockSourceError::Persistent) => false,
+			Err(BlockSourceError::Transient) => false,
+			Ok((ChainTip::Common(all_common), _)) => {
+				if all_common {
+					self.blocks_past_common_tip.clear();
 				}
-			}
+				false
+			},
+			Ok((ChainTip::Better(new_hash, new_header), block_source)) => {
+				debug_assert_ne!(new_hash, self.chain_tip.0);
+				debug_assert!(new_header.chainwork > self.chain_tip.1.chainwork);
+				let mut blocks_connected = false;
+				let backup_block_sources = self.backup_block_sources.iter_mut().map(|s| &mut **s);
+				for source in std::iter::once(block_source).chain(backup_block_sources) {
+					blocks_connected |= sync_chain_monitor!(new_hash, new_header, source);
+					if self.chain_tip.0 == new_hash {
+						break;
+					}
+				}
+				blocks_connected
+			},
+			Ok((ChainTip::Worse(hash, header), _)) => {
+				debug_assert_ne!(hash, self.chain_tip.0);
+				debug_assert!(header.chainwork <= self.chain_tip.1.chainwork);
+				false
+			},
 		}
-		if common_tip {
-			// All block sources have the same tip. Assume we will be able to trivially get old
-			// headers and drop our reorg cache.
-			self.blocks_past_common_tip.clear();
-		}
-		blocks_connected
 	}
 }
 
@@ -721,7 +712,7 @@ mod tests {
 		let mut source_three = &header_chain;
 		let mut source_four = &backup_chain;
 		let mut client = MicroSPVClient::init((&chain_one).get_header(&block_1a_hash, Some(1)).await.unwrap(),
-			vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource],
+			poller::MultipleChainPoller::new(vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource]),
 			vec![&mut source_four as &mut dyn BlockSource],
 			Arc::clone(&chain_notifier), true);
 
