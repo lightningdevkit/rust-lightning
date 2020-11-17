@@ -286,7 +286,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.create_channel($dest.get_our_node_id(), 10000000, 42, 0, None).unwrap();
+			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -498,28 +498,28 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50000,
+						fee_msat: 50_000,
 						cltv_expiry_delta: 100,
 					},RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: 10_000_000,
 						cltv_expiry_delta: 200,
 					}],vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50000,
+						fee_msat: 50_000,
 						cltv_expiry_delta: 100,
 					},RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: 10_000_000,
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &Some(PaymentSecret(payment_secret.into_inner()))) {
@@ -700,39 +700,39 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}
 
 		match get_slice!(1)[0] {
+			// In general, we keep related message groups close together in binary form, allowing
+			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
+			// harm in doing so.
+
 			0x00 => *monitor_a.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
 			0x01 => *monitor_b.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
 			0x02 => *monitor_c.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x03 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
-			0x04 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
-			0x05 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
-			0x06 => {
+			0x04 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
+			0x05 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
+			0x06 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
+
+			0x08 => {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
 				}
 			},
-			0x07 => {
+			0x09 => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
 				}
 			},
-			0x24 => {
+			0x0a => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
 				}
 			},
-			0x08 => {
+			0x0b => {
 				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
 				}
 			},
-			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a), 5_000_000),
-			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a), 5_000_000),
-			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b), 5_000_000),
-			0x0c => send_payment!(nodes[2], (&nodes[1], chan_b), 5_000_000),
-			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 5_000_000),
-			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 5_000_000),
-			0x0f => {
+
+			0x0c => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
@@ -740,7 +740,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
-			0x10 => {
+			0x0d => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
@@ -748,33 +748,35 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					drain_msg_events_on_disconnect!(2);
 				}
 			},
-			0x11 => {
+			0x0e => {
 				if chan_a_disconnected {
 					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_a_disconnected = false;
 				}
 			},
-			0x12 => {
+			0x0f => {
 				if chan_b_disconnected {
 					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_b_disconnected = false;
 				}
 			},
-			0x13 => process_msg_events!(0, true),
-			0x14 => process_msg_events!(0, false),
-			0x15 => process_events!(0, true),
-			0x16 => process_events!(0, false),
-			0x17 => process_msg_events!(1, true),
-			0x18 => process_msg_events!(1, false),
-			0x19 => process_events!(1, true),
-			0x1a => process_events!(1, false),
-			0x1b => process_msg_events!(2, true),
-			0x1c => process_msg_events!(2, false),
-			0x1d => process_events!(2, true),
-			0x1e => process_events!(2, false),
-			0x1f => {
+
+			0x10 => process_msg_events!(0, true),
+			0x11 => process_msg_events!(0, false),
+			0x12 => process_events!(0, true),
+			0x13 => process_events!(0, false),
+			0x14 => process_msg_events!(1, true),
+			0x15 => process_msg_events!(1, false),
+			0x16 => process_events!(1, true),
+			0x17 => process_events!(1, false),
+			0x18 => process_msg_events!(2, true),
+			0x19 => process_msg_events!(2, false),
+			0x1a => process_events!(2, true),
+			0x1b => process_events!(2, false),
+
+			0x1c => {
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
 					chan_a_disconnected = true;
@@ -785,7 +787,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				nodes[0] = node_a.clone();
 				monitor_a = new_monitor_a;
 			},
-			0x20 => {
+			0x1d => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					chan_a_disconnected = true;
@@ -803,7 +805,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				nodes[1] = node_b.clone();
 				monitor_b = new_monitor_b;
 			},
-			0x21 => {
+			0x1e => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					chan_b_disconnected = true;
@@ -814,27 +816,67 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				nodes[2] = node_c.clone();
 				monitor_c = new_monitor_c;
 			},
-			0x22 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
-			0x23 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
-			0x25 => send_payment!(nodes[0], (&nodes[1], chan_a), 10),
-			0x26 => send_payment!(nodes[1], (&nodes[0], chan_a), 10),
-			0x27 => send_payment!(nodes[1], (&nodes[2], chan_b), 10),
-			0x28 => send_payment!(nodes[2], (&nodes[1], chan_b), 10),
-			0x29 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10),
-			0x2a => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10),
-			0x2b => send_payment!(nodes[0], (&nodes[1], chan_a), 1_000),
-			0x2c => send_payment!(nodes[1], (&nodes[0], chan_a), 1_000),
-			0x2d => send_payment!(nodes[1], (&nodes[2], chan_b), 1_000),
-			0x2e => send_payment!(nodes[2], (&nodes[1], chan_b), 1_000),
-			0x2f => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1_000),
-			0x30 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1_000),
-			0x31 => send_payment!(nodes[0], (&nodes[1], chan_a), 100_000),
-			0x32 => send_payment!(nodes[1], (&nodes[0], chan_a), 100_000),
-			0x33 => send_payment!(nodes[1], (&nodes[2], chan_b), 100_000),
-			0x34 => send_payment!(nodes[2], (&nodes[1], chan_b), 100_000),
-			0x35 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 100_000),
-			0x36 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 100_000),
-			// 0x24 defined above
+
+			// 1/10th the channel size:
+			0x20 => send_payment!(nodes[0], (&nodes[1], chan_a), 10_000_000),
+			0x21 => send_payment!(nodes[1], (&nodes[0], chan_a), 10_000_000),
+			0x22 => send_payment!(nodes[1], (&nodes[2], chan_b), 10_000_000),
+			0x23 => send_payment!(nodes[2], (&nodes[1], chan_b), 10_000_000),
+			0x24 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10_000_000),
+			0x25 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10_000_000),
+
+			0x26 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
+			0x27 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
+
+			0x28 => send_payment!(nodes[0], (&nodes[1], chan_a), 1_000_000),
+			0x29 => send_payment!(nodes[1], (&nodes[0], chan_a), 1_000_000),
+			0x2a => send_payment!(nodes[1], (&nodes[2], chan_b), 1_000_000),
+			0x2b => send_payment!(nodes[2], (&nodes[1], chan_b), 1_000_000),
+			0x2c => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1_000_000),
+			0x2d => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1_000_000),
+
+			0x30 => send_payment!(nodes[0], (&nodes[1], chan_a), 100_000),
+			0x31 => send_payment!(nodes[1], (&nodes[0], chan_a), 100_000),
+			0x32 => send_payment!(nodes[1], (&nodes[2], chan_b), 100_000),
+			0x33 => send_payment!(nodes[2], (&nodes[1], chan_b), 100_000),
+			0x34 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 100_000),
+			0x35 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 100_000),
+
+			0x38 => send_payment!(nodes[0], (&nodes[1], chan_a), 10_000),
+			0x39 => send_payment!(nodes[1], (&nodes[0], chan_a), 10_000),
+			0x3a => send_payment!(nodes[1], (&nodes[2], chan_b), 10_000),
+			0x3b => send_payment!(nodes[2], (&nodes[1], chan_b), 10_000),
+			0x3c => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10_000),
+			0x3d => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10_000),
+
+			0x40 => send_payment!(nodes[0], (&nodes[1], chan_a), 1_000),
+			0x41 => send_payment!(nodes[1], (&nodes[0], chan_a), 1_000),
+			0x42 => send_payment!(nodes[1], (&nodes[2], chan_b), 1_000),
+			0x43 => send_payment!(nodes[2], (&nodes[1], chan_b), 1_000),
+			0x44 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1_000),
+			0x45 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1_000),
+
+			0x48 => send_payment!(nodes[0], (&nodes[1], chan_a), 100),
+			0x49 => send_payment!(nodes[1], (&nodes[0], chan_a), 100),
+			0x4a => send_payment!(nodes[1], (&nodes[2], chan_b), 100),
+			0x4b => send_payment!(nodes[2], (&nodes[1], chan_b), 100),
+			0x4c => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 100),
+			0x4d => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 100),
+
+			0x50 => send_payment!(nodes[0], (&nodes[1], chan_a), 10),
+			0x51 => send_payment!(nodes[1], (&nodes[0], chan_a), 10),
+			0x52 => send_payment!(nodes[1], (&nodes[2], chan_b), 10),
+			0x53 => send_payment!(nodes[2], (&nodes[1], chan_b), 10),
+			0x54 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10),
+			0x55 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10),
+
+			0x58 => send_payment!(nodes[0], (&nodes[1], chan_a), 1),
+			0x59 => send_payment!(nodes[1], (&nodes[0], chan_a), 1),
+			0x5a => send_payment!(nodes[1], (&nodes[2], chan_b), 1),
+			0x5b => send_payment!(nodes[2], (&nodes[1], chan_b), 1),
+			0x5c => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1),
+			0x5d => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1),
+
 			_ => test_return!(),
 		}
 
