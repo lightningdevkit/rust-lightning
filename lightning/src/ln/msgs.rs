@@ -827,12 +827,10 @@ pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvide
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
 	/// Returns whether a full sync should be requested from a peer.
 	fn should_request_full_sync(&self, node_id: &PublicKey) -> bool;
-	/// Queries a peer for a list of channels with a funding UTXO in the requested
-	/// chain and range of blocks.
-	fn query_channel_range(&self, their_node_id: &PublicKey, chain_hash: BlockHash, first_blocknum: u32, number_of_blocks: u32) -> Result<(), LightningError>;
-	/// Queries a peer for routing gossip messages for a set of channels identified
-	/// by their short_channel_ids.
-	fn query_short_channel_ids(&self, their_node_id: &PublicKey, chain_hash: BlockHash, short_channel_ids: Vec<u64>) -> Result<(), LightningError>;
+	/// Initiates routing gossip sync by querying a peer to discover channels
+	/// and their associated routing gossip messages. This method will use a
+	/// sync strategy defined by the implementor.
+	fn sync_routing_table(&self, their_node_id: &PublicKey);
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
