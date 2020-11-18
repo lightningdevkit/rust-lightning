@@ -885,6 +885,20 @@ mod tests {
 	}
 
 	#[test]
+	fn into_block_header_from_json_response_without_previous_block_hash() {
+		let block = genesis_block(Network::Bitcoin);
+		let mut response = JsonResponse(BlockHeaderAndHeight(&block.header, 0).into());
+		response.0.as_object_mut().unwrap().remove("previousblockhash");
+
+		match TryInto::<BlockHeaderData>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(BlockHeaderData { chainwork: _, height: _, header }) => {
+				assert_eq!(header, block.header);
+			},
+		}
+	}
+
+	#[test]
 	fn into_block_from_invalid_binary_response() {
 		let response = BinaryResponse(b"foo".to_vec());
 		match TryInto::<Block>::try_into(response) {
