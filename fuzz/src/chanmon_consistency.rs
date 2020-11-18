@@ -542,7 +542,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					bc_events.clear();
 					new_events
 				} else { Vec::new() };
+				let mut had_events = false;
 				for event in events.iter().chain(nodes[$node].get_and_clear_pending_msg_events().iter()) {
+					had_events = true;
 					match event {
 						events::MessageSendEvent::UpdateHTLCs { ref node_id, updates: CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 							for dest in nodes.iter() {
@@ -599,6 +601,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						_ => panic!("Unhandled message event"),
 					}
 				}
+				had_events
 			} }
 		}
 
@@ -678,6 +681,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						} else { Ordering::Equal }
 					} else { Ordering::Equal }
 				});
+				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentReceived { payment_hash, payment_secret, amt } => {
@@ -697,6 +701,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						_ => panic!("Unhandled event"),
 					}
 				}
+				had_events
 			} }
 		}
 
@@ -764,18 +769,18 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 			},
 
-			0x10 => process_msg_events!(0, true),
-			0x11 => process_msg_events!(0, false),
-			0x12 => process_events!(0, true),
-			0x13 => process_events!(0, false),
-			0x14 => process_msg_events!(1, true),
-			0x15 => process_msg_events!(1, false),
-			0x16 => process_events!(1, true),
-			0x17 => process_events!(1, false),
-			0x18 => process_msg_events!(2, true),
-			0x19 => process_msg_events!(2, false),
-			0x1a => process_events!(2, true),
-			0x1b => process_events!(2, false),
+			0x10 => { process_msg_events!(0, true); },
+			0x11 => { process_msg_events!(0, false); },
+			0x12 => { process_events!(0, true); },
+			0x13 => { process_events!(0, false); },
+			0x14 => { process_msg_events!(1, true); },
+			0x15 => { process_msg_events!(1, false); },
+			0x16 => { process_events!(1, true); },
+			0x17 => { process_events!(1, false); },
+			0x18 => { process_msg_events!(2, true); },
+			0x19 => { process_msg_events!(2, false); },
+			0x1a => { process_events!(2, true); },
+			0x1b => { process_events!(2, false); },
 
 			0x1c => {
 				if !chan_a_disconnected {
@@ -875,6 +880,62 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
 			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
 
+			0xff => {
+				// Test that no channel is in a stuck state where neither party can send funds even
+				// after we resolve all pending events.
+				// First make sure there are no pending monitor updates, resetting the error state
+				// and calling channel_monitor_updated for each monitor.
+				*monitor_a.update_ret.lock().unwrap() = Ok(());
+				*monitor_b.update_ret.lock().unwrap() = Ok(());
+				*monitor_c.update_ret.lock().unwrap() = Ok(());
+
+				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
+					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+				}
+				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
+					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+				}
+				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
+					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+				}
+				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
+					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+				}
+
+				// Next, make sure peers are all connected to each other
+				if chan_a_disconnected {
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					chan_a_disconnected = false;
+				}
+				if chan_b_disconnected {
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					chan_b_disconnected = false;
+				}
+
+				for i in 0..std::usize::MAX {
+					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
+					// Then, make sure any current forwards make their way to their destination
+					if process_msg_events!(0, false) { continue; }
+					if process_msg_events!(1, false) { continue; }
+					if process_msg_events!(2, false) { continue; }
+					// ...making sure any pending PendingHTLCsForwardable events are handled and
+					// payments claimed.
+					if process_events!(0, false) { continue; }
+					if process_events!(1, false) { continue; }
+					if process_events!(2, false) { continue; }
+					break;
+				}
+
+				// Finally, make sure that at least one end of each channel can make a substantial payment.
+				assert!(
+					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id) ||
+					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id));
+				assert!(
+					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id) ||
+					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id));
+			},
 			_ => test_return!(),
 		}
 
