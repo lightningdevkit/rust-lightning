@@ -467,7 +467,8 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 
 		// Add an empty previousblockhash for the genesis block.
 		if let None = header.get("previousblockhash") {
-			header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::json!(""));
+			let hash: BlockHash = Default::default();
+			header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::json!(hash.to_hex()));
 		}
 
 		match serde_json::from_value::<GetHeaderResponse>(header) {
