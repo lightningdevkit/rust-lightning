@@ -11,6 +11,7 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 """
 
 [features]
+allow_wallclock_use = []
 fuzztarget = ["bitcoin/fuzztarget", "regex"]
 # Internal test utilities exposed to other repo crates
 _test_utils = ["hex", "regex"]
@@ -38,3 +39,6 @@ features = ["bitcoinconsensus"]
 [dev-dependencies]
 hex = "0.3"
 regex = "0.1.80"
+
+[package.metadata.docs.rs]
+features = ["allow_wallclock_use"] # When https://github.com/rust-lang/rust/issues/43781 complies with our MSVR, we can add nice banners in the docs for the methods behind this feature-gate.
