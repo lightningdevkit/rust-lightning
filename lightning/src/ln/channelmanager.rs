@@ -2198,6 +2198,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
 	/// exists largely only to prevent races between this and concurrent update_monitor calls.
 	///
+	/// XXX: Update to note re-entrancy - this is really terrible - the reentrancy only happens in
+	/// a really rare case making it incredibly likely users will miss it and never hit it in
+	/// testing.
+	///
 	/// Thus, the anticipated use is, at a high level:
 	///  1) You register a chain::Watch with this ChannelManager,
 	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
@@ -2209,34 +2213,45 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
-		let mut close_results = Vec::new();
-		let mut htlc_forwards = Vec::new();
-		let mut htlc_failures = Vec::new();
-		let mut pending_events = Vec::new();
+		let mut htlc_forwards = None;
+		let mut htlc_failures;
+		let htlc_forwarding_failures;
+		let mut pending_event = None;
 
-		{
+		let (counterparty_node_id, res) = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
-			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
-			let channel = match channel_state.by_id.get_mut(&funding_txo.to_channel_id()) {
-				Some(chan) => chan,
-				None => return,
+			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
+				hash_map::Entry::Vacant(_) => return,
+				hash_map::Entry::Occupied(e) => e,
 			};
-			if !channel.is_awaiting_monitor_update() || channel.get_latest_monitor_update_id() != highest_applied_update_id {
+			if !channel.get().is_awaiting_monitor_update() || channel.get().get_latest_monitor_update_id() != highest_applied_update_id {
 				return;
 			}
+			let counterparty_node_id = channel.get().get_counterparty_node_id();
 
-			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored(&self.logger);
+			let (raa, commitment_update, order, chanmon_update, pending_forwards, pending_failures, forwarding_failds, needs_broadcast_safe, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
 			if !pending_forwards.is_empty() {
-				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), funding_txo.clone(), pending_forwards));
+				htlc_forwards = Some((channel.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), funding_txo.clone(), pending_forwards));
 			}
-			htlc_failures.append(&mut pending_failures);
+			htlc_failures = pending_failures;
+			htlc_forwarding_failures = forwarding_failds;
 
 			macro_rules! handle_cs { () => {
+				if let Some(monitor_update) = chanmon_update {
+					assert!(order == RAACommitmentOrder::RevokeAndACKFirst);
+					assert!(!needs_broadcast_safe);
+					assert!(funding_locked.is_none());
+					assert!(commitment_update.is_some());
+					if let Err(e) = self.chain_monitor.update_channel(*funding_txo, monitor_update) {
+						break (counterparty_node_id,
+							handle_monitor_err!(self, e, channel_state, channel, RAACommitmentOrder::CommitmentFirst, false, true));
+					}
+				}
 				if let Some(update) = commitment_update {
 					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: channel.get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						updates: update,
 					});
 				}
@@ -2244,7 +2259,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 			macro_rules! handle_raa { () => {
 				if let Some(revoke_and_ack) = raa {
 					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-						node_id: channel.get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						msg: revoke_and_ack,
 					});
 				}
@@ -2260,35 +2275,38 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				},
 			}
 			if needs_broadcast_safe {
-				pending_events.push(events::Event::FundingBroadcastSafe {
-					funding_txo: channel.get_funding_txo().unwrap(),
-					user_channel_id: channel.get_user_id(),
+				pending_event = Some(events::Event::FundingBroadcastSafe {
+					funding_txo: channel.get().get_funding_txo().unwrap(),
+					user_channel_id: channel.get().get_user_id(),
 				});
 			}
 			if let Some(msg) = funding_locked {
 				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: channel.get_counterparty_node_id(),
+					node_id: counterparty_node_id,
 					msg,
 				});
-				if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
+				if let Some(announcement_sigs) = self.get_announcement_sigs(channel.get()) {
 					pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: channel.get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						msg: announcement_sigs,
 					});
 				}
-				short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+				channel_state.short_to_id.insert(channel.get().get_short_channel_id().unwrap(), channel.get().channel_id());
 			}
+			break (counterparty_node_id, Ok(()));
+		};
+		let _ = handle_error!(self, res, counterparty_node_id);
+
+		if let Some(ev) = pending_event {
+			self.pending_events.lock().unwrap().push(ev);
 		}
 
-		self.pending_events.lock().unwrap().append(&mut pending_events);
-
+		self.fail_holding_cell_htlcs(htlc_forwarding_failures, funding_txo.to_channel_id());
 		for failure in htlc_failures.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
-		self.forward_htlcs(&mut htlc_forwards[..]);
-
-		for res in close_results.drain(..) {
-			self.finish_force_close_channel(res);
+		if let Some(forwards) = htlc_forwards {
+			self.forward_htlcs(&mut [forwards][..]);
 		}
 	}
 
