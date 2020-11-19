@@ -3871,14 +3871,20 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		let latest_block_height: u32 = Readable::read(reader)?;
 		let last_block_hash: BlockHash = Readable::read(reader)?;
 
-		let mut failed_htlcs = Vec::new();
+		let mut perm_failed_htlcs = Vec::new();
+		let mut holding_cell_failed_htlcs = Vec::new();
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
-			let mut channel: Channel<ChanSigner> = Readable::read(reader)?;
+			let channel_and_failed_htlcs: (Channel<ChanSigner>, Vec<(HTLCSource, PaymentHash)>) = Readable::read(reader)?;
+			let (mut channel, chan_failed_htlcs) = channel_and_failed_htlcs;
+			for (_, ref payment_hash) in chan_failed_htlcs.iter() {
+				log_trace!(args.logger, "Going to fail HTLC with hash {} which was pending-forwarding when we were serialized.", log_bytes!(&payment_hash.0[..]));
+			}
+			holding_cell_failed_htlcs.push((channel.channel_id(), chan_failed_htlcs));
 			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -3898,7 +3904,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
 					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
-					failed_htlcs.append(&mut new_failed_htlcs);
+					perm_failed_htlcs.append(&mut new_failed_htlcs);
 					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
@@ -3993,8 +3999,11 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 			default_configuration: args.default_config,
 		};
 
-		for htlc_source in failed_htlcs.drain(..) {
+		for htlc_source in perm_failed_htlcs.drain(..) {
 			channel_manager.fail_htlc_backwards_internal(channel_manager.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+		}
+		for (chan_id, htlcs) in holding_cell_failed_htlcs.drain(..) {
+			channel_manager.fail_holding_cell_htlcs(htlcs, chan_id);
 		}
 
 		//TODO: Broadcast channel update for closed channels, but only after we've made a

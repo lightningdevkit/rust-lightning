@@ -4064,8 +4064,8 @@ impl Readable for InboundHTLCRemovalReason {
 
 impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
-		// called but include holding cell updates (and obviously we don't modify self).
+		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused
+		// had just been called.
 
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
@@ -4156,13 +4156,10 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 		(self.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for update in self.holding_cell_htlc_updates.iter() {
 			match update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, ref cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet } => {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
 					0u8.write(writer)?;
-					amount_msat.write(writer)?;
-					cltv_expiry.write(writer)?;
-					payment_hash.write(writer)?;
 					source.write(writer)?;
-					onion_routing_packet.write(writer)?;
+					payment_hash.write(writer)?;
 				},
 				&HTLCUpdateAwaitingACK::ClaimHTLC { ref payment_preimage, ref htlc_id } => {
 					1u8.write(writer)?;
@@ -4248,7 +4245,7 @@ impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
+impl<ChanSigner: ChannelKeys + Readable> Readable for (Channel<ChanSigner>, Vec<(HTLCSource, PaymentHash)>) {
 	fn read<R : ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
@@ -4312,27 +4309,22 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 			});
 		}
 
+		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
 		for _ in 0..holding_cell_htlc_update_count {
-			holding_cell_htlc_updates.push(match <u8 as Readable>::read(reader)? {
-				0 => HTLCUpdateAwaitingACK::AddHTLC {
-					amount_msat: Readable::read(reader)?,
-					cltv_expiry: Readable::read(reader)?,
-					payment_hash: Readable::read(reader)?,
-					source: Readable::read(reader)?,
-					onion_routing_packet: Readable::read(reader)?,
-				},
-				1 => HTLCUpdateAwaitingACK::ClaimHTLC {
+			match <u8 as Readable>::read(reader)? {
+				0 => failed_htlcs.push((Readable::read(reader)?, Readable::read(reader)?)),
+				1 => holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::ClaimHTLC {
 					payment_preimage: Readable::read(reader)?,
 					htlc_id: Readable::read(reader)?,
-				},
-				2 => HTLCUpdateAwaitingACK::FailHTLC {
+				}),
+				2 => holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
 					htlc_id: Readable::read(reader)?,
 					err_packet: Readable::read(reader)?,
-				},
+				}),
 				_ => return Err(DecodeError::InvalidValue),
-			});
+			}
 		}
 
 		let resend_order = match <u8 as Readable>::read(reader)? {
@@ -4398,7 +4390,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 		let counterparty_shutdown_scriptpubkey = Readable::read(reader)?;
 		let commitment_secrets = Readable::read(reader)?;
 
-		Ok(Channel {
+		Ok((Channel {
 			user_id,
 
 			config,
@@ -4472,7 +4464,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 			commitment_secrets,
 
 			network_sync: UpdateStatus::Fresh,
-		})
+		}, failed_htlcs))
 	}
 }
 
