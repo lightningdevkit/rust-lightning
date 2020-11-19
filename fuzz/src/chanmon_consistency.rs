@@ -748,23 +748,27 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			0x06 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
 
 			0x08 => {
-				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+				let mon_id = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding).map(|(id, _)| *id);
+				if let Some(id) = mon_id {
+					nodes[0].channel_monitor_updated(&chan_1_funding, id);
 				}
 			},
 			0x09 => {
-				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+				let mon_id = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding).map(|(id, _)| *id);
+				if let Some(id) = mon_id {
+					nodes[1].channel_monitor_updated(&chan_1_funding, id);
 				}
 			},
 			0x0a => {
-				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+				let mon_id = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding).map(|(id, _)| *id);
+				if let Some(id) = mon_id {
+					nodes[1].channel_monitor_updated(&chan_2_funding, id);
 				}
 			},
 			0x0b => {
-				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+				let mon_id = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding).map(|(id, _)| *id);
+				if let Some(id) = mon_id {
+					nodes[2].channel_monitor_updated(&chan_2_funding, id);
 				}
 			},
 
@@ -919,17 +923,29 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				*monitor_b.update_ret.lock().unwrap() = Ok(());
 				*monitor_c.update_ret.lock().unwrap() = Ok(());
 
-				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+				{
+					let mon_id = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding).map(|(id, _)| *id);
+					if let Some(id) = mon_id {
+						nodes[0].channel_monitor_updated(&chan_1_funding, id);
+					}
 				}
-				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+				{
+					let mon_id = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding).map(|(id, _)| *id);
+					if let Some(id) = mon_id {
+						nodes[1].channel_monitor_updated(&chan_1_funding, id);
+					}
 				}
-				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+				{
+					let mon_id = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding).map(|(id, _)| *id);
+					if let Some(id) = mon_id {
+						nodes[1].channel_monitor_updated(&chan_2_funding, id);
+					}
 				}
-				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+				{
+					let mon_id = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding).map(|(id, _)| *id);
+					if let Some(id) = mon_id {
+						nodes[2].channel_monitor_updated(&chan_2_funding, id);
+					}
 				}
 
 				// Next, make sure peers are all connected to each other
