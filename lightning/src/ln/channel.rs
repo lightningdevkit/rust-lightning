@@ -2756,7 +2756,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (
+			Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Option<ChannelMonitorUpdate>,
+			Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Vec<(HTLCSource, PaymentHash)>,
+			bool, Option<msgs::FundingLocked>) where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
@@ -2786,25 +2789,39 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, needs_broadcast_safe, funding_locked);
+			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, None, forwards, failures, Vec::new(), needs_broadcast_safe, funding_locked);
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
 			Some(self.get_last_revoke_and_ack())
 		} else { None };
-		let commitment_update = if self.monitor_pending_commitment_signed {
+		let mut commitment_update = if self.monitor_pending_commitment_signed {
 			Some(self.get_last_commitment_update(logger))
 		} else { None };
 
+		let mut order = self.resend_order.clone();
 		self.monitor_pending_revoke_and_ack = false;
 		self.monitor_pending_commitment_signed = false;
-		let order = self.resend_order.clone();
+
+		let mut htlcs_failed_to_forward = Vec::new();
+		let mut chanmon_update = None;
+		if commitment_update.is_none() && self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32) == 0 {
+			order = RAACommitmentOrder::RevokeAndACKFirst;
+
+			let (update_opt, mut failed_htlcs) = self.free_holding_cell_htlcs(logger).unwrap();
+			htlcs_failed_to_forward.append(&mut failed_htlcs);
+			if let Some((com_update, mon_update)) = update_opt {
+				commitment_update = Some(com_update);
+				chanmon_update = Some(mon_update);
+			}
+		}
+
 		log_trace!(logger, "Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
 			if needs_broadcast_safe { "a funding broadcast safe, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe, funding_locked)
+		(raa, commitment_update, order, chanmon_update, forwards, failures, htlcs_failed_to_forward, needs_broadcast_safe, funding_locked)
 	}
 
 	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
