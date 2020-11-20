@@ -3363,7 +3363,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let chan_restoration_res = {
+		let (htlcs_failed_forward, chan_restoration_res) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
@@ -3376,7 +3376,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// disconnect, so Channel's reestablish will never hand us any holding cell
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, shutdown) =
+					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, htlcs_failed_forward, shutdown) =
 						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
@@ -3384,12 +3384,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							msg,
 						});
 					}
-					handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked)
+					(htlcs_failed_forward, handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked))
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
+		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id);
 		Ok(())
 	}
 
@@ -4052,7 +4053,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
-		let mut failed_payments = Vec::new();
 		let mut no_channels_remain = true;
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -4081,15 +4081,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(counterparty_node_id));
 				channel_state.by_id.retain(|_, chan| {
 					if chan.get_counterparty_node_id() == *counterparty_node_id {
-						// Note that currently on channel reestablish we assert that there are no
-						// holding cell add-HTLCs, so if in the future we stop removing uncommitted HTLCs
-						// on peer disconnect here, there will need to be corresponding changes in
-						// reestablish logic.
-						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
-						if !failed_adds.is_empty() {
-							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
-							failed_payments.push((chan_update, failed_adds));
-						}
+						chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 						if chan.is_shutdown() {
 							if let Some(short_id) = chan.get_short_channel_id() {
 								short_to_id.remove(&short_id);
@@ -4132,11 +4124,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
-		}
-		for (chan_update, mut htlc_sources) in failed_payments {
-			for (htlc_source, payment_hash) in htlc_sources.drain(..) {
-				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.clone() });
-			}
 		}
 	}
 
