@@ -754,16 +754,34 @@ macro_rules! handle_chan_restoration_locked {
 		let channel_id = $channel_entry.get().channel_id();
 
 		let res = loop {
-			if !$pending_forwards.is_empty() {
+			let forwards: Vec<(PendingHTLCInfo, u64)> = $pending_forwards; // Force type-checking to resolve
+			if !forwards.is_empty() {
 				htlc_forwards = Some(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
-					$channel_entry.get().get_funding_txo().unwrap(), $pending_forwards));
+					$channel_entry.get().get_funding_txo().unwrap(), forwards));
+			}
+			if $chanmon_update.is_some() {
+				assert!($commitment_update.is_some());
+				assert!($funding_locked.is_none());
+			}
+
+			if let Some(msg) = $funding_locked {
+				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+					node_id: counterparty_node_id,
+					msg,
+				});
+				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: counterparty_node_id,
+						msg: announcement_sigs,
+					});
+				}
+				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), channel_id);
 			}
 
 			macro_rules! handle_cs { () => {
 				if let Some(monitor_update) = $chanmon_update {
 					assert!($order == RAACommitmentOrder::RevokeAndACKFirst);
 					assert!(!$broadcast_safe);
-					assert!($funding_locked.is_none());
 					assert!($commitment_update.is_some());
 					if let Err(e) = $self.chain_monitor.update_channel($channel_entry.get().get_funding_txo().unwrap(), monitor_update) {
 						break handle_monitor_err!($self, e, $channel_state, $channel_entry, RAACommitmentOrder::CommitmentFirst, false, true);
@@ -800,19 +818,6 @@ macro_rules! handle_chan_restoration_locked {
 					user_channel_id: $channel_entry.get().get_user_id(),
 				});
 			}
-			if let Some(msg) = $funding_locked {
-				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: counterparty_node_id,
-					msg,
-				});
-				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
-					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: counterparty_node_id,
-						msg: announcement_sigs,
-					});
-				}
-				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), channel_id);
-			}
 			break Ok(());
 		};
 
@@ -830,8 +835,11 @@ macro_rules! post_handle_chan_restoration {
 			$self.pending_events.lock().unwrap().push(ev);
 		}
 
-		$self.fail_holding_cell_htlcs($forwarding_failures, channel_id);
-		for failure in $pending_failures.drain(..) {
+		let forwarding_failures: Vec<(HTLCSource, PaymentHash)> = $forwarding_failures; // Force type-checking to resolve
+		$self.fail_holding_cell_htlcs(forwarding_failures, channel_id);
+
+		let mut pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)> = $pending_failures; // Force type-checking to resolve
+		for failure in pending_failures.drain(..) {
 			$self.fail_htlc_backwards_internal($self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
 		if let Some(forwards) = htlc_forwards {
@@ -2364,7 +2372,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let (mut pending_failures, forwarding_failures, chan_restoration_res) = {
+		let (pending_failures, forwarding_failures, chan_restoration_res) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
@@ -2967,77 +2975,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
+		let chan_restoration_res = {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
 
-		match channel_state.by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
-				// Currently, we expect all holding cell update_adds to be dropped on peer
-				// disconnect, so Channel's reestablish will never hand us any holding cell
-				// freed HTLCs to fail backwards. If in the future we no longer drop pending
-				// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
-					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
-				if let Some(monitor_update) = monitor_update_opt {
-					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-						// channel_reestablish doesn't guarantee the order it returns is sensical
-						// for the messages it returns, but if we're setting what messages to
-						// re-transmit on monitor update success, we need to make sure it is sane.
-						if revoke_and_ack.is_none() {
-							order = RAACommitmentOrder::CommitmentFirst;
-						}
-						if commitment_update.is_none() {
-							order = RAACommitmentOrder::RevokeAndACKFirst;
-						}
-						return_monitor_err!(self, e, channel_state, chan, order, revoke_and_ack.is_some(), commitment_update.is_some());
-						//TODO: Resend the funding_locked if needed once we get the monitor running again
+			match channel_state.by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan) => {
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-				}
-				if let Some(msg) = funding_locked {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-						node_id: counterparty_node_id.clone(),
-						msg
-					});
-				}
-				macro_rules! send_raa { () => {
-					if let Some(msg) = revoke_and_ack {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+					// Currently, we expect all holding cell update_adds to be dropped on peer
+					// disconnect, so Channel's reestablish will never hand us any holding cell
+					// freed HTLCs to fail backwards. If in the future we no longer drop pending
+					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
+					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, shutdown) =
+						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
+					if let Some(msg) = shutdown {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
-							msg
+							msg,
 						});
 					}
-				} }
-				macro_rules! send_cu { () => {
-					if let Some(updates) = commitment_update {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: counterparty_node_id.clone(),
-							updates
-						});
-					}
-				} }
-				match order {
-					RAACommitmentOrder::RevokeAndACKFirst => {
-						send_raa!();
-						send_cu!();
-					},
-					RAACommitmentOrder::CommitmentFirst => {
-						send_cu!();
-						send_raa!();
-					},
-				}
-				if let Some(msg) = shutdown {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: counterparty_node_id.clone(),
-						msg,
-					});
-				}
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
-		}
+					handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), false, funding_locked)
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			}
+		};
+		post_handle_chan_restoration!(self, chan_restoration_res, Vec::new(), Vec::new());
+		Ok(())
 	}
 
 	/// Begin Update fee process. Allowed only on an outbound channel.
