@@ -2593,7 +2593,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let mut close_results = Vec::new();
 		let mut htlc_forwards = Vec::new();
 		let mut htlc_failures = Vec::new();
 		let mut pending_events = Vec::new();
@@ -2668,10 +2667,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
 		}
 		self.forward_htlcs(&mut htlc_forwards[..]);
-
-		for res in close_results.drain(..) {
-			self.finish_force_close_channel(res);
-		}
 	}
 
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
