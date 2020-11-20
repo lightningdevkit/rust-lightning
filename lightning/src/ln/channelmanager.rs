@@ -885,6 +885,81 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
+macro_rules! handle_chan_restoration_locked {
+	($self: expr, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
+	 $raa: expr, $commitment_update: expr, $order: expr,
+	 $pending_forwards: expr, $pending_failures: expr, $funding_broadcastable: expr, $funding_locked: expr) => { {
+		let mut htlc_forwards = Vec::new();
+		let mut htlc_failures = Vec::new();
+		let mut pending_events = Vec::new();
+
+		{
+			if !$pending_forwards.is_empty() {
+				htlc_forwards.push(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
+					$channel_entry.get().get_funding_txo().unwrap(), $pending_forwards));
+			}
+			htlc_failures.append(&mut $pending_failures);
+
+			macro_rules! handle_cs { () => {
+				if let Some(update) = $commitment_update {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: $channel_entry.get().get_counterparty_node_id(),
+						updates: update,
+					});
+				}
+			} }
+			macro_rules! handle_raa { () => {
+				if let Some(revoke_and_ack) = $raa {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+						node_id: $channel_entry.get().get_counterparty_node_id(),
+						msg: revoke_and_ack,
+					});
+				}
+			} }
+			match $order {
+				RAACommitmentOrder::CommitmentFirst => {
+					handle_cs!();
+					handle_raa!();
+				},
+				RAACommitmentOrder::RevokeAndACKFirst => {
+					handle_raa!();
+					handle_cs!();
+				},
+			}
+			if let Some(tx) = $funding_broadcastable {
+				log_info!($self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
+				$self.tx_broadcaster.broadcast_transaction(&tx);
+			}
+			if let Some(msg) = $funding_locked {
+				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+					node_id: $channel_entry.get().get_counterparty_node_id(),
+					msg,
+				});
+				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: $channel_entry.get().get_counterparty_node_id(),
+						msg: announcement_sigs,
+					});
+				}
+				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), $channel_entry.get().channel_id());
+			}
+		}
+		(htlc_forwards, htlc_failures, pending_events)
+	} }
+}
+
+macro_rules! post_handle_chan_restoration {
+	($self: expr, $locked_res: expr) => { {
+		let (mut htlc_forwards, mut htlc_failures, mut pending_events) = $locked_res;
+		$self.pending_events.lock().unwrap().append(&mut pending_events);
+
+		for failure in htlc_failures.drain(..) {
+			$self.fail_htlc_backwards_internal($self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		}
+		$self.forward_htlcs(&mut htlc_forwards[..]);
+	} }
+}
+
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
@@ -2593,80 +2668,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let mut htlc_forwards = Vec::new();
-		let mut htlc_failures = Vec::new();
-		let mut pending_events = Vec::new();
-
-		{
+		let chan_restoration_res = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
-			let short_to_id = &mut channel_state.short_to_id;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
-			let channel = match channel_state.by_id.get_mut(&funding_txo.to_channel_id()) {
-				Some(chan) => chan,
-				None => return,
+			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
+				hash_map::Entry::Occupied(chan) => chan,
+				hash_map::Entry::Vacant(_) => return,
 			};
-			if !channel.is_awaiting_monitor_update() || channel.get_latest_monitor_update_id() != highest_applied_update_id {
+			if !channel.get().is_awaiting_monitor_update() || channel.get().get_latest_monitor_update_id() != highest_applied_update_id {
 				return;
 			}
 
-			let (raa, commitment_update, order, pending_forwards, mut pending_failures, funding_broadcastable, funding_locked) = channel.monitor_updating_restored(&self.logger);
-			if !pending_forwards.is_empty() {
-				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), funding_txo.clone(), pending_forwards));
-			}
-			htlc_failures.append(&mut pending_failures);
-
-			macro_rules! handle_cs { () => {
-				if let Some(update) = commitment_update {
-					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: channel.get_counterparty_node_id(),
-						updates: update,
-					});
-				}
-			} }
-			macro_rules! handle_raa { () => {
-				if let Some(revoke_and_ack) = raa {
-					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-						node_id: channel.get_counterparty_node_id(),
-						msg: revoke_and_ack,
-					});
-				}
-			} }
-			match order {
-				RAACommitmentOrder::CommitmentFirst => {
-					handle_cs!();
-					handle_raa!();
-				},
-				RAACommitmentOrder::RevokeAndACKFirst => {
-					handle_raa!();
-					handle_cs!();
-				},
-			}
-			if let Some(tx) = funding_broadcastable {
-				log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
-				self.tx_broadcaster.broadcast_transaction(&tx);
-			}
-			if let Some(msg) = funding_locked {
-				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: channel.get_counterparty_node_id(),
-					msg,
-				});
-				if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
-					pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: channel.get_counterparty_node_id(),
-						msg: announcement_sigs,
-					});
-				}
-				short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
-			}
-		}
-
-		self.pending_events.lock().unwrap().append(&mut pending_events);
-
-		for failure in htlc_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
-		}
-		self.forward_htlcs(&mut htlc_forwards[..]);
+			let (raa, commitment_update, order, pending_forwards, mut pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
+			handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked)
+		};
+		post_handle_chan_restoration!(self, chan_restoration_res);
 	}
 
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
