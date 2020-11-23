@@ -517,6 +517,10 @@ impl Clone for RoutingFees {
 pub(crate) extern "C" fn RoutingFees_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoutingFees)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn RoutingFees_clone(orig: &RoutingFees) -> RoutingFees {
+	RoutingFees { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Flat routing fee in satoshis
 #[no_mangle]
 pub extern "C" fn RoutingFees_get_base_msat(this_ptr: &RoutingFees) -> u32 {

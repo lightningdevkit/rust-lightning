@@ -73,23 +73,32 @@ pub type CVec_TransactionZ = crate::c_types::CVecTempl<crate::c_types::Transacti
 pub static CVec_TransactionZ_free: extern "C" fn(CVec_TransactionZ) = crate::c_types::CVecTempl_free::<crate::c_types::Transaction>;
 
 #[no_mangle]
-pub type CVec_TxOutZ = crate::c_types::CVecTempl<crate::c_types::TxOut>;
+pub type C2Tuple_u32TxOutZ = crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>;
 #[no_mangle]
-pub static CVec_TxOutZ_free: extern "C" fn(CVec_TxOutZ) = crate::c_types::CVecTempl_free::<crate::c_types::TxOut>;
-
+pub static C2Tuple_u32TxOutZ_free: extern "C" fn(C2Tuple_u32TxOutZ) = crate::c_types::C2TupleTempl_free::<u32, crate::c_types::TxOut>;
 #[no_mangle]
-pub type C2Tuple_TxidCVec_TxOutZZ = crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::TxOut>>;
-#[no_mangle]
-pub static C2Tuple_TxidCVec_TxOutZZ_free: extern "C" fn(C2Tuple_TxidCVec_TxOutZZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::TxOut>>;
-#[no_mangle]
-pub extern "C" fn C2Tuple_TxidCVec_TxOutZZ_new(a: crate::c_types::ThirtyTwoBytes, b: crate::c_types::derived::CVec_TxOutZ) -> C2Tuple_TxidCVec_TxOutZZ {
-	C2Tuple_TxidCVec_TxOutZZ { a, b, }
+pub extern "C" fn C2Tuple_u32TxOutZ_new(a: u32, b: crate::c_types::TxOut) -> C2Tuple_u32TxOutZ {
+	C2Tuple_u32TxOutZ { a, b, }
 }
 
 #[no_mangle]
-pub type CVec_C2Tuple_TxidCVec_TxOutZZZ = crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::TxOut>>>;
+pub type CVec_C2Tuple_u32TxOutZZ = crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>;
 #[no_mangle]
-pub static CVec_C2Tuple_TxidCVec_TxOutZZZ_free: extern "C" fn(CVec_C2Tuple_TxidCVec_TxOutZZZ) = crate::c_types::CVecTempl_free::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::TxOut>>>;
+pub static CVec_C2Tuple_u32TxOutZZ_free: extern "C" fn(CVec_C2Tuple_u32TxOutZZ) = crate::c_types::CVecTempl_free::<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>;
+
+#[no_mangle]
+pub type C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ = crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>>;
+#[no_mangle]
+pub static C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ_free: extern "C" fn(C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>>;
+#[no_mangle]
+pub extern "C" fn C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ_new(a: crate::c_types::ThirtyTwoBytes, b: crate::c_types::derived::CVec_C2Tuple_u32TxOutZZ) -> C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ {
+	C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZ { a, b, }
+}
+
+#[no_mangle]
+pub type CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ = crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>>>;
+#[no_mangle]
+pub static CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ_free: extern "C" fn(CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ) = crate::c_types::CVecTempl_free::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>>>;
 
 #[no_mangle]
 pub type C2Tuple_u64u64Z = crate::c_types::C2TupleTempl<u64, u64>;

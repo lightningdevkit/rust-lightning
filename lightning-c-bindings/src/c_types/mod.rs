@@ -100,7 +100,8 @@ impl Secp256k1Error {
 /// set. Similarly, while it may change in the future, all `Transaction`s you pass to Rust may have
 /// `data_is_owned` either set or unset at your discretion.
 pub struct Transaction {
-	pub data: *const u8,
+	/// This is non-const for your convenience, an object passed to Rust is never written to.
+	pub data: *mut u8,
 	pub datalen: usize,
 	pub data_is_owned: bool,
 }
@@ -319,7 +320,7 @@ impl<T: Clone> Clone for CVecTempl<T> {
 	fn clone(&self) -> Self {
 		let mut res = Vec::new();
 		if self.datalen == 0 { return Self::from(res); }
-		res.clone_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
 		Self::from(res)
 	}
 }

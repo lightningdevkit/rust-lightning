@@ -133,6 +133,10 @@ impl Clone for TxCreationKeys {
 pub(crate) extern "C" fn TxCreationKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeTxCreationKeys)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn TxCreationKeys_clone(orig: &TxCreationKeys) -> TxCreationKeys {
+	TxCreationKeys { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The broadcaster's per-commitment public key which was used to derive the other keys.
 #[no_mangle]
 pub extern "C" fn TxCreationKeys_get_per_commitment_point(this_ptr: &TxCreationKeys) -> crate::c_types::PublicKey {
@@ -256,6 +260,23 @@ impl PreCalculatedTxCreationKeys {
 		ret
 	}
 }
+impl Clone for PreCalculatedTxCreationKeys {
+	fn clone(&self) -> Self {
+		Self {
+			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn PreCalculatedTxCreationKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePreCalculatedTxCreationKeys)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn PreCalculatedTxCreationKeys_clone(orig: &PreCalculatedTxCreationKeys) -> PreCalculatedTxCreationKeys {
+	PreCalculatedTxCreationKeys { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Create a new PreCalculatedTxCreationKeys from TxCreationKeys
 #[must_use]
 #[no_mangle]
@@ -331,6 +352,10 @@ impl Clone for ChannelPublicKeys {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ChannelPublicKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelPublicKeys)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelPublicKeys_clone(orig: &ChannelPublicKeys) -> ChannelPublicKeys {
+	ChannelPublicKeys { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The public key which is used to sign all commitment transactions, as it appears in the
 /// on-chain channel lock-in 2-of-2 multisig output.
@@ -497,6 +522,10 @@ impl Clone for HTLCOutputInCommitment {
 pub(crate) extern "C" fn HTLCOutputInCommitment_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHTLCOutputInCommitment)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn HTLCOutputInCommitment_clone(orig: &HTLCOutputInCommitment) -> HTLCOutputInCommitment {
+	HTLCOutputInCommitment { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
 /// Note that this is not the same as whether it is ountbound *from us*. To determine that you
 /// need to compare this value to whether the commitment transaction in question is that of
@@ -637,6 +666,10 @@ impl Clone for HolderCommitmentTransaction {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn HolderCommitmentTransaction_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHolderCommitmentTransaction)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn HolderCommitmentTransaction_clone(orig: &HolderCommitmentTransaction) -> HolderCommitmentTransaction {
+	HolderCommitmentTransaction { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// The commitment transaction itself, in unsigned form.
 #[no_mangle]

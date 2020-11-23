@@ -160,3 +160,7 @@ impl APIError {
 }
 #[no_mangle]
 pub extern "C" fn APIError_free(this_ptr: APIError) { }
+#[no_mangle]
+pub extern "C" fn APIError_clone(orig: &APIError) -> APIError {
+	orig.clone()
+}

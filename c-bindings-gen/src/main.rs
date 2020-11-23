@@ -148,6 +148,9 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 	}
 	writeln_docs(w, &t.attrs, "");
 
+	let mut gen_types = GenericTypes::new();
+	assert!(gen_types.learn_generics(&t.generics, types));
+
 	writeln!(w, "#[repr(C)]\npub struct {} {{", trait_name).unwrap();
 	writeln!(w, "\tpub this_arg: *mut c_void,").unwrap();
 	let associated_types = learn_associated_types(t);
@@ -158,14 +161,16 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				match export_status(&m.attrs) {
 					ExportStatus::NoExport => {
 						// NoExport in this context means we'll hit an unimplemented!() at runtime,
-						// so add a comment noting that this needs to change in the output.
-						writeln!(w, "\t//XXX: Need to export {}", m.sig.ident).unwrap();
-						continue;
+						// so bail out.
+						unimplemented!();
 					},
 					ExportStatus::Export => {},
 					ExportStatus::TestOnly => continue,
 				}
 				if m.default.is_some() { unimplemented!(); }
+
+				gen_types.push_ctx();
+				assert!(gen_types.learn_generics(&m.sig.generics, types));
 
 				writeln_docs(w, &m.attrs, "\t");
 
@@ -183,7 +188,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 						// called when the trait method is called which allows updating on the fly.
 						write!(w, "\tpub {}: ", m.sig.ident).unwrap();
 						generated_fields.push(format!("{}", m.sig.ident));
-						types.write_c_type(w, &*r.elem, None, false);
+						types.write_c_type(w, &*r.elem, Some(&gen_types), false);
 						writeln!(w, ",").unwrap();
 						writeln!(w, "\t/// Fill in the {} field as a reference to it will be given to Rust after this returns", m.sig.ident).unwrap();
 						writeln!(w, "\t/// Note that this takes a pointer to this object, not the this_ptr like other methods do").unwrap();
@@ -195,6 +200,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 						// which does not compile since Thing is not defined before it is used.
 						writeln!(extra_headers, "struct LDK{};", trait_name).unwrap();
 						writeln!(extra_headers, "typedef struct LDK{} LDK{};", trait_name, trait_name).unwrap();
+						gen_types.pop_ctx();
 						continue;
 					}
 					// Sadly, this currently doesn't do what we want, but it should be easy to get
@@ -204,8 +210,10 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 
 				write!(w, "\tpub {}: extern \"C\" fn (", m.sig.ident).unwrap();
 				generated_fields.push(format!("{}", m.sig.ident));
-				write_method_params(w, &m.sig, &associated_types, "c_void", types, None, true, false);
+				write_method_params(w, &m.sig, &associated_types, "c_void", types, Some(&gen_types), true, false);
 				writeln!(w, ",").unwrap();
+
+				gen_types.pop_ctx();
 			},
 			&syn::TraitItem::Type(_) => {},
 			_ => unimplemented!(),
@@ -218,7 +226,8 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 			generated_fields.push("clone".to_owned());
 		},
 		("std::cmp::Eq", _) => {
-			writeln!(w, "\tpub eq: extern \"C\" fn (this_arg: *const c_void, other_arg: *const c_void) -> bool,").unwrap();
+			writeln!(w, "\tpub eq: extern \"C\" fn (this_arg: *const c_void, other_arg: &{}) -> bool,", trait_name).unwrap();
+			writeln!(extra_headers, "typedef struct LDK{} LDK{};", trait_name, trait_name).unwrap();
 			generated_fields.push("eq".to_owned());
 		},
 		("std::hash::Hash", _) => {
@@ -243,21 +252,25 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 		("std::cmp::Eq", _) => {
 			writeln!(w, "impl std::cmp::Eq for {} {{}}", trait_name).unwrap();
 			writeln!(w, "impl std::cmp::PartialEq for {} {{", trait_name).unwrap();
-			writeln!(w, "\tfn eq(&self, o: &Self) -> bool {{ (self.eq)(self.this_arg, o.this_arg) }}\n}}").unwrap();
+			writeln!(w, "\tfn eq(&self, o: &Self) -> bool {{ (self.eq)(self.this_arg, o) }}\n}}").unwrap();
 		},
 		("std::hash::Hash", _) => {
 			writeln!(w, "impl std::hash::Hash for {} {{", trait_name).unwrap();
 			writeln!(w, "\tfn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {{ hasher.write_u64((self.hash)(self.this_arg)) }}\n}}").unwrap();
 		},
 		("Clone", _) => {
+			writeln!(w, "#[no_mangle]").unwrap();
+			writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", trait_name, trait_name, trait_name).unwrap();
+			writeln!(w, "\t{} {{", trait_name).unwrap();
+			writeln!(w, "\t\tthis_arg: if let Some(f) = orig.clone {{ (f)(orig.this_arg) }} else {{ orig.this_arg }},").unwrap();
+			for field in generated_fields.iter() {
+				writeln!(w, "\t\t{}: orig.{}.clone(),", field, field).unwrap();
+			}
+			writeln!(w, "\t}}\n}}").unwrap();
 			writeln!(w, "impl Clone for {} {{", trait_name).unwrap();
 			writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
-			writeln!(w, "\t\tSelf {{").unwrap();
-			writeln!(w, "\t\tthis_arg: if let Some(f) = self.clone {{ (f)(self.this_arg) }} else {{ self.this_arg }},").unwrap();
-			for field in generated_fields.iter() {
-				writeln!(w, "\t\t\t{}: self.{}.clone(),", field, field).unwrap();
-			}
-			writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
+			writeln!(w, "\t\t{}_clone(self)", trait_name).unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
 		},
 		(s, i) => {
 			if s != "util::events::MessageSendEventsProvider" { unimplemented!(); }
@@ -284,8 +297,10 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 						m.sig.abi.is_some() || m.sig.variadic.is_some() {
 					unimplemented!();
 				}
+				gen_types.push_ctx();
+				assert!(gen_types.learn_generics(&m.sig.generics, types));
 				write!(w, "\tfn {}", m.sig.ident).unwrap();
-				types.write_rust_generic_param(w, m.sig.generics.params.iter());
+				types.write_rust_generic_param(w, Some(&gen_types), m.sig.generics.params.iter());
 				write!(w, "(").unwrap();
 				for inp in m.sig.inputs.iter() {
 					match inp {
@@ -309,11 +324,11 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 											ident.mutability.is_some() || ident.subpat.is_some() {
 										unimplemented!();
 									}
-									write!(w, ", {}{}: ", if types.skip_arg(&*arg.ty, None) { "_" } else { "" }, ident.ident).unwrap();
+									write!(w, ", {}{}: ", if types.skip_arg(&*arg.ty, Some(&gen_types)) { "_" } else { "" }, ident.ident).unwrap();
 								}
 								_ => unimplemented!(),
 							}
-							types.write_rust_type(w, &*arg.ty);
+							types.write_rust_type(w, Some(&gen_types), &*arg.ty);
 						}
 					}
 				}
@@ -321,15 +336,14 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				match &m.sig.output {
 					syn::ReturnType::Type(_, rtype) => {
 						write!(w, " -> ").unwrap();
-						types.write_rust_type(w, &*rtype)
+						types.write_rust_type(w, Some(&gen_types), &*rtype)
 					},
 					_ => {},
 				}
 				write!(w, " {{\n\t\t").unwrap();
 				match export_status(&m.attrs) {
 					ExportStatus::NoExport => {
-						writeln!(w, "unimplemented!();\n\t}}").unwrap();
-						continue;
+						unimplemented!();
 					},
 					_ => {},
 				}
@@ -339,25 +353,27 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 						writeln!(w, "if let Some(f) = self.set_{} {{", m.sig.ident).unwrap();
 						writeln!(w, "\t\t\t(f)(self);").unwrap();
 						write!(w, "\t\t}}\n\t\t").unwrap();
-						types.write_from_c_conversion_to_ref_prefix(w, &*r.elem, None);
+						types.write_from_c_conversion_to_ref_prefix(w, &*r.elem, Some(&gen_types));
 						write!(w, "self.{}", m.sig.ident).unwrap();
-						types.write_from_c_conversion_to_ref_suffix(w, &*r.elem, None);
+						types.write_from_c_conversion_to_ref_suffix(w, &*r.elem, Some(&gen_types));
 						writeln!(w, "\n\t}}").unwrap();
+						gen_types.pop_ctx();
 						continue;
 					}
 				}
-				write_method_var_decl_body(w, &m.sig, "\t", types, None, true);
+				write_method_var_decl_body(w, &m.sig, "\t", types, Some(&gen_types), true);
 				write!(w, "(self.{})(", m.sig.ident).unwrap();
-				write_method_call_params(w, &m.sig, &associated_types, "\t", types, None, "", true);
+				write_method_call_params(w, &m.sig, &associated_types, "\t", types, Some(&gen_types), "", true);
 
 				writeln!(w, "\n\t}}").unwrap();
+				gen_types.pop_ctx();
 			},
 			&syn::TraitItem::Type(ref t) => {
 				if t.default.is_some() || t.generics.lt_token.is_some() { unimplemented!(); }
 				let mut bounds_iter = t.bounds.iter();
 				match bounds_iter.next().unwrap() {
 					syn::TypeParamBound::Trait(tr) => {
-						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path, None)).unwrap();
+						writeln!(w, "\ttype {} = crate::{};", t.ident, types.resolve_path(&tr.path, Some(&gen_types))).unwrap();
 					},
 					_ => unimplemented!(),
 				}
@@ -438,6 +454,10 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 									writeln!(w, "/// Used only if an object of this type is returned as a trait impl by a method").unwrap();
 									writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", struct_name).unwrap();
 									writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", struct_name).unwrap();
+									writeln!(w, "}}").unwrap();
+									writeln!(w, "#[no_mangle]").unwrap();
+									writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
+									writeln!(w, "\t{} {{ inner: Box::into_raw(Box::new(unsafe {{ &*orig.inner }}.clone())), is_owned: true }}", struct_name).unwrap();
 									writeln!(w, "}}").unwrap();
 									break 'attr_loop;
 								}
@@ -980,6 +1000,10 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if needs_free {
 		writeln!(w, "#[no_mangle]\npub extern \"C\" fn {}_free(this_ptr: {}) {{ }}", e.ident, e.ident).unwrap();
 	}
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", e.ident, e.ident, e.ident).unwrap();
+	writeln!(w, "\torig.clone()").unwrap();
+	writeln!(w, "}}").unwrap();
 	write_cpp_wrapper(cpp_headers, &format!("{}", e.ident), needs_free);
 }
 

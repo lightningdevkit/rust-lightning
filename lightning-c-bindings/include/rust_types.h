@@ -116,6 +116,7 @@ struct nativeCommitmentUpdateOpaque;
 typedef struct nativeCommitmentUpdateOpaque LDKnativeCommitmentUpdate;
 struct nativeMessageHandlerOpaque;
 typedef struct nativeMessageHandlerOpaque LDKnativeMessageHandler;
+typedef struct LDKSocketDescriptor LDKSocketDescriptor;
 struct nativePeerHandleErrorOpaque;
 typedef struct nativePeerHandleErrorOpaque LDKnativePeerHandleError;
 struct nativePeerManagerOpaque;

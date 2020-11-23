@@ -179,7 +179,7 @@ pub enum ChannelMonitorUpdateErr {
 pub struct MonitorUpdateError(pub &'static str);
 
 /// An event to be processed by the ChannelManager.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),

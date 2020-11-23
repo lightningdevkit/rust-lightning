@@ -110,6 +110,12 @@ uint32_t get_fee(const void *this_arg, LDKConfirmationTarget target) {
 	}
 	// Note that we don't call _free() on target, but that's OK, its unitary
 }
+// We use the same fee estimator globally:
+const LDKFeeEstimator fee_est {
+	.this_arg = NULL,
+	.get_est_sat_per_1000_weight = get_fee,
+	.free = NULL,
+};
 
 static int num_txs_broadcasted = 0; // Technically a race, but ints are atomic on x86
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
@@ -126,7 +132,7 @@ struct NodeMonitors {
 	void ConnectBlock(const uint8_t (*header)[80], uint32_t height, LDKCVec_C2Tuple_usizeTransactionZZ tx_data, LDKBroadcasterInterface broadcast, LDKFeeEstimator fee_est) {
 		std::unique_lock<std::mutex> l(mut);
 		for (auto& mon : mons) {
-			LDK::CVec_C2Tuple_TxidCVec_TxOutZZZ res = ChannelMonitor_block_connected(&mon.second, &header_2, tx_data, height, broadcast, fee_est, *logger);
+			LDK::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ res = ChannelMonitor_block_connected(&mon.second, &header_2, tx_data, height, broadcast, fee_est, *logger);
 		}
 	}
 };
@@ -159,7 +165,7 @@ LDKCResult_NoneChannelMonitorUpdateErrZ update_channel_monitor(const void *this_
 			LDKBroadcasterInterface broadcaster = {
 				.broadcast_transaction = broadcast_tx,
 			};
-			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, update, &broadcaster, arg->logger);
+			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, &update, &broadcaster, &fee_est, arg->logger);
 			assert(res->result_ok);
 		}
 	}
@@ -191,8 +197,8 @@ uintptr_t sock_send_data(void *this_arg, LDKu8slice data, bool resume_read) {
 void sock_disconnect_socket(void *this_arg) {
 	close((int)((long)this_arg));
 }
-bool sock_eq(const void *this_arg, const void *other_arg) {
-	return this_arg == other_arg;
+bool sock_eq(const void *this_arg, const LDKSocketDescriptor *other_arg) {
+	return this_arg == other_arg->this_arg;
 }
 uint64_t sock_hash(const void *this_arg) {
 	return (uint64_t)this_arg;
@@ -224,12 +230,6 @@ int main() {
 	LDKNetwork network = LDKNetwork_Testnet;
 
 	// Trait implementations:
-	LDKFeeEstimator fee_est {
-		.this_arg = NULL,
-		.get_est_sat_per_1000_weight = get_fee,
-		.free = NULL,
-	};
-
 	LDKBroadcasterInterface broadcast {
 		.this_arg = NULL,
 		.broadcast_transaction = broadcast_tx,
@@ -420,19 +420,19 @@ int main() {
 	}
 
 	LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 	ChannelManager_block_connected(&cm1, &channel_open_header, txdata, 1);
 
 	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 	ChannelManager_block_connected(&cm2, &channel_open_header, txdata, 1);
 
 	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 	mons1.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 
 	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 	mons2.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 
 	ChannelManager_block_connected(&cm1, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);

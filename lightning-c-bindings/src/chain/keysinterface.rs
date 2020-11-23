@@ -220,6 +220,10 @@ impl SpendableOutputDescriptor {
 }
 #[no_mangle]
 pub extern "C" fn SpendableOutputDescriptor_free(this_ptr: SpendableOutputDescriptor) { }
+#[no_mangle]
+pub extern "C" fn SpendableOutputDescriptor_clone(orig: &SpendableOutputDescriptor) -> SpendableOutputDescriptor {
+	orig.clone()
+}
 /// Set of lightning keys needed to operate a channel as described in BOLT 3.
 ///
 /// Signing services could be implemented on a hardware wallet. In this case,
@@ -362,26 +366,30 @@ pub struct ChannelKeys {
 	pub free: Option<extern "C" fn(this_arg: *mut c_void)>,
 }
 unsafe impl Send for ChannelKeys {}
+#[no_mangle]
+pub extern "C" fn ChannelKeys_clone(orig: &ChannelKeys) -> ChannelKeys {
+	ChannelKeys {
+		this_arg: if let Some(f) = orig.clone { (f)(orig.this_arg) } else { orig.this_arg },
+		get_per_commitment_point: orig.get_per_commitment_point.clone(),
+		release_commitment_secret: orig.release_commitment_secret.clone(),
+		pubkeys: orig.pubkeys.clone(),
+		set_pubkeys: orig.set_pubkeys.clone(),
+		key_derivation_params: orig.key_derivation_params.clone(),
+		sign_counterparty_commitment: orig.sign_counterparty_commitment.clone(),
+		sign_holder_commitment: orig.sign_holder_commitment.clone(),
+		sign_holder_commitment_htlc_transactions: orig.sign_holder_commitment_htlc_transactions.clone(),
+		sign_justice_transaction: orig.sign_justice_transaction.clone(),
+		sign_counterparty_htlc_transaction: orig.sign_counterparty_htlc_transaction.clone(),
+		sign_closing_transaction: orig.sign_closing_transaction.clone(),
+		sign_channel_announcement: orig.sign_channel_announcement.clone(),
+		on_accept: orig.on_accept.clone(),
+		clone: orig.clone.clone(),
+		free: orig.free.clone(),
+	}
+}
 impl Clone for ChannelKeys {
 	fn clone(&self) -> Self {
-		Self {
-		this_arg: if let Some(f) = self.clone { (f)(self.this_arg) } else { self.this_arg },
-			get_per_commitment_point: self.get_per_commitment_point.clone(),
-			release_commitment_secret: self.release_commitment_secret.clone(),
-			pubkeys: self.pubkeys.clone(),
-			set_pubkeys: self.set_pubkeys.clone(),
-			key_derivation_params: self.key_derivation_params.clone(),
-			sign_counterparty_commitment: self.sign_counterparty_commitment.clone(),
-			sign_holder_commitment: self.sign_holder_commitment.clone(),
-			sign_holder_commitment_htlc_transactions: self.sign_holder_commitment_htlc_transactions.clone(),
-			sign_justice_transaction: self.sign_justice_transaction.clone(),
-			sign_counterparty_htlc_transaction: self.sign_counterparty_htlc_transaction.clone(),
-			sign_closing_transaction: self.sign_closing_transaction.clone(),
-			sign_channel_announcement: self.sign_channel_announcement.clone(),
-			on_accept: self.on_accept.clone(),
-			clone: self.clone.clone(),
-			free: self.free.clone(),
-		}
+		ChannelKeys_clone(self)
 	}
 }
 
@@ -590,6 +598,10 @@ impl Clone for InMemoryChannelKeys {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn InMemoryChannelKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeInMemoryChannelKeys)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn InMemoryChannelKeys_clone(orig: &InMemoryChannelKeys) -> InMemoryChannelKeys {
+	InMemoryChannelKeys { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// Private key of anchor tx
 #[no_mangle]

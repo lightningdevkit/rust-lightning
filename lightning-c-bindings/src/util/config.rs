@@ -58,6 +58,10 @@ impl Clone for ChannelHandshakeConfig {
 pub(crate) extern "C" fn ChannelHandshakeConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeConfig)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn ChannelHandshakeConfig_clone(orig: &ChannelHandshakeConfig) -> ChannelHandshakeConfig {
+	ChannelHandshakeConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Confirmations we will wait for before considering the channel locked in.
 /// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
 /// equivalent limit applied to outbound channels).
@@ -207,6 +211,10 @@ impl Clone for ChannelHandshakeLimits {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn ChannelHandshakeLimits_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeLimits)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelHandshakeLimits_clone(orig: &ChannelHandshakeLimits) -> ChannelHandshakeLimits {
+	ChannelHandshakeLimits { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
 /// only applies to inbound channels.
@@ -477,6 +485,10 @@ impl Clone for ChannelConfig {
 pub(crate) extern "C" fn ChannelConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelConfig)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn ChannelConfig_clone(orig: &ChannelConfig) -> ChannelConfig {
+	ChannelConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
 /// This may be allowed to change at runtime in a later update, however doing so must result in
 /// update messages sent to notify all nodes of our updated relay fee.
@@ -637,6 +649,10 @@ impl Clone for UserConfig {
 /// Used only if an object of this type is returned as a trait impl by a method
 pub(crate) extern "C" fn UserConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUserConfig)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UserConfig_clone(orig: &UserConfig) -> UserConfig {
+	UserConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 /// Channel config that we propose to our counterparty.
 #[no_mangle]

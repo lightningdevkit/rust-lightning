@@ -167,7 +167,7 @@ else
 fi
 
 # Now build with LTO on on both C++ and rust, but without cross-language LTO:
-cargo rustc -v --release -- -C lto
+CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C lto
 clang++ -std=c++11 -Wall -flto -O2 -pthread demo.cpp target/release/libldk.a -ldl
 echo "C++ Bin size and runtime with only RL (LTO) optimized:"
 ls -lha a.out
@@ -179,7 +179,7 @@ if [ "$HOST_PLATFORM" != "host: x86_64-apple-darwin" -a "$CLANGPP" != "" ]; then
 	# or Ubuntu packages). This should work fine on Distros which do more involved
 	# packaging than simply shipping the rustup binaries (eg Debian should Just Work
 	# here).
-	cargo rustc -v --release -- -C linker-plugin-lto -C lto -C link-arg=-fuse-ld=lld
+	CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C linker-plugin-lto -C lto -C link-arg=-fuse-ld=lld
 	$CLANGPP -Wall -std=c++11 -flto -fuse-ld=lld -O2 -pthread demo.cpp target/release/libldk.a -ldl
 	echo "C++ Bin size and runtime with cross-language LTO:"
 	ls -lha a.out

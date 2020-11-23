@@ -118,29 +118,33 @@ pub struct SocketDescriptor {
 	/// though races may occur whereby disconnect_socket is called after a call to
 	/// socket_disconnected but prior to socket_disconnected returning.
 	pub disconnect_socket: extern "C" fn (this_arg: *mut c_void),
-	pub eq: extern "C" fn (this_arg: *const c_void, other_arg: *const c_void) -> bool,
+	pub eq: extern "C" fn (this_arg: *const c_void, other_arg: &SocketDescriptor) -> bool,
 	pub hash: extern "C" fn (this_arg: *const c_void) -> u64,
 	pub clone: Option<extern "C" fn (this_arg: *const c_void) -> *mut c_void>,
 	pub free: Option<extern "C" fn(this_arg: *mut c_void)>,
 }
 impl std::cmp::Eq for SocketDescriptor {}
 impl std::cmp::PartialEq for SocketDescriptor {
-	fn eq(&self, o: &Self) -> bool { (self.eq)(self.this_arg, o.this_arg) }
+	fn eq(&self, o: &Self) -> bool { (self.eq)(self.this_arg, o) }
 }
 impl std::hash::Hash for SocketDescriptor {
 	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64((self.hash)(self.this_arg)) }
 }
+#[no_mangle]
+pub extern "C" fn SocketDescriptor_clone(orig: &SocketDescriptor) -> SocketDescriptor {
+	SocketDescriptor {
+		this_arg: if let Some(f) = orig.clone { (f)(orig.this_arg) } else { orig.this_arg },
+		send_data: orig.send_data.clone(),
+		disconnect_socket: orig.disconnect_socket.clone(),
+		eq: orig.eq.clone(),
+		hash: orig.hash.clone(),
+		clone: orig.clone.clone(),
+		free: orig.free.clone(),
+	}
+}
 impl Clone for SocketDescriptor {
 	fn clone(&self) -> Self {
-		Self {
-		this_arg: if let Some(f) = self.clone { (f)(self.this_arg) } else { self.this_arg },
-			send_data: self.send_data.clone(),
-			disconnect_socket: self.disconnect_socket.clone(),
-			eq: self.eq.clone(),
-			hash: self.hash.clone(),
-			clone: self.clone.clone(),
-			free: self.free.clone(),
-		}
+		SocketDescriptor_clone(self)
 	}
 }
 

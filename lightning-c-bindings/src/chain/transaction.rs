@@ -58,6 +58,10 @@ impl Clone for OutPoint {
 pub(crate) extern "C" fn OutPoint_clone_void(this_ptr: *const c_void) -> *mut c_void {
 	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOutPoint)).clone() })) as *mut c_void
 }
+#[no_mangle]
+pub extern "C" fn OutPoint_clone(orig: &OutPoint) -> OutPoint {
+	OutPoint { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+}
 /// The referenced transaction's txid.
 #[no_mangle]
 pub extern "C" fn OutPoint_get_txid(this_ptr: &OutPoint) -> *const [u8; 32] {

@@ -93,6 +93,10 @@ impl ConfirmationTarget {
 		}
 	}
 }
+#[no_mangle]
+pub extern "C" fn ConfirmationTarget_clone(orig: &ConfirmationTarget) -> ConfirmationTarget {
+	orig.clone()
+}
 /// A trait which should be implemented to provide feerate information on a number of time
 /// horizons.
 ///

@@ -113,6 +113,7 @@ impl Readable for Route {
 }
 
 /// A channel descriptor which provides a last-hop route to get_route
+#[derive(Clone)]
 pub struct RouteHint {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
