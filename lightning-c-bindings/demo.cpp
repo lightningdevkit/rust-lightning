@@ -110,6 +110,12 @@ uint32_t get_fee(const void *this_arg, LDKConfirmationTarget target) {
 	}
 	// Note that we don't call _free() on target, but that's OK, its unitary
 }
+// We use the same fee estimator globally:
+const LDKFeeEstimator fee_est {
+	.this_arg = NULL,
+	.get_est_sat_per_1000_weight = get_fee,
+	.free = NULL,
+};
 
 static int num_txs_broadcasted = 0; // Technically a race, but ints are atomic on x86
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
@@ -159,7 +165,7 @@ LDKCResult_NoneChannelMonitorUpdateErrZ update_channel_monitor(const void *this_
 			LDKBroadcasterInterface broadcaster = {
 				.broadcast_transaction = broadcast_tx,
 			};
-			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, &update, &broadcaster, arg->logger);
+			LDK::CResult_NoneMonitorUpdateErrorZ res = ChannelMonitor_update_monitor(&mon.second, &update, &broadcaster, &fee_est, arg->logger);
 			assert(res->result_ok);
 		}
 	}
@@ -224,12 +230,6 @@ int main() {
 	LDKNetwork network = LDKNetwork_Testnet;
 
 	// Trait implementations:
-	LDKFeeEstimator fee_est {
-		.this_arg = NULL,
-		.get_est_sat_per_1000_weight = get_fee,
-		.free = NULL,
-	};
-
 	LDKBroadcasterInterface broadcast {
 		.this_arg = NULL,
 		.broadcast_transaction = broadcast_tx,
