@@ -93,10 +93,18 @@ fn run_test_cases() {
 			}
 		}
 	}
+	let mut failed_outputs = Vec::new();
 	for (test, thread) in threads.drain(..) {
 		if let Some(output) = thread.join().unwrap() {
-			println!("Output of {}:\n{}", test, output);
-			panic!();
+			println!("\nOutput of {}:\n{}\n", test, output);
+			failed_outputs.push(test);
 		}
+	}
+	if !failed_outputs.is_empty() {
+		println!("Test cases which failed: ");
+		for case in failed_outputs {
+			println!("{}", case);
+		}
+		panic!();
 	}
 }
