@@ -194,6 +194,13 @@ where C::Target: chain::Filter,
 		match monitors.get_mut(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
+
+				// We should never ever trigger this from within ChannelManager. Technically a
+				// user could use this object with some proxying in between which makes this
+				// possible, but in tests and fuzzing, this should be a panic.
+				#[cfg(any(test, feature = "fuzztarget"))]
+				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
+				#[cfg(not(any(test, feature = "fuzztarget")))]
 				Err(ChannelMonitorUpdateErr::PermanentFailure)
 			},
 			Some(orig_monitor) => {

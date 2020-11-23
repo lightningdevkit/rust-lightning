@@ -8458,6 +8458,43 @@ fn test_concurrent_monitor_claim() {
 }
 
 #[test]
+fn test_pre_lockin_no_chan_closed_update() {
+	// Test that if a peer closes a channel in response to a funding_created message we don't
+	// generate a channel update (as the channel cannot appear on chain without a funding_signed
+	// message).
+	//
+	// Doing so would imply a channel monitor update before the initial channel monitor
+	// registration, violating our API guarantees.
+	//
+	// Previously, full_stack_target managed to hit this case by opening then closing a channel,
+	// then opening a second channel with the same funding output as the first (which is not
+	// rejected because the first channel does not exist in the ChannelManager) and closing it
+	// before receiving funding_signed.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Create an initial channel
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_msg);
+	let accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
+
+	// Move the first channel through the funding flow...
+	let (temporary_channel_id, _tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	check_added_monitors!(nodes[0], 0);
+
+	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	let channel_id = ::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
+	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
+}
+
+#[test]
 fn test_htlc_no_detection() {
 	// This test is a mutation to underscore the detection logic bug we had
         // before #653. HTLC value routed is above the remaining balance, thus
