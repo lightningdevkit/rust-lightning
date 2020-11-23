@@ -35,10 +35,11 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
@@ -186,6 +187,93 @@ impl KeysInterface for KeyProvider {
 }
 
 #[inline]
+fn check_api_err(api_err: APIError) {
+	match api_err {
+		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
+		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
+		APIError::RouteError { .. } => panic!("Our routes should work"),
+		APIError::ChannelUnavailable { err } => {
+			// Test the error against a list of errors we can hit, and reject
+			// all others. If you hit this panic, the list of acceptable errors
+			// is probably just stale and you should add new messages here.
+			match err.as_str() {
+				"Peer for first hop currently disconnected/pending monitor update!" => {},
+				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
+				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
+				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
+				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
+				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
+				_ => panic!(err),
+			}
+		},
+		APIError::MonitorUpdateFailed => {
+			// We can (obviously) temp-fail a monitor update
+		},
+	}
+}
+#[inline]
+fn check_payment_err(send_err: PaymentSendFailure) {
+	match send_err {
+		PaymentSendFailure::ParameterError(api_err) => check_api_err(api_err),
+		PaymentSendFailure::PathParameterError(per_path_results) => {
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+		},
+		PaymentSendFailure::AllFailedRetrySafe(per_path_results) => {
+			for api_err in per_path_results { check_api_err(api_err); }
+		},
+		PaymentSendFailure::PartialFailure(per_path_results) => {
+			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+		},
+	}
+}
+
+type ChanMan = ChannelManager<EnforcingChannelKeys, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
+
+#[inline]
+fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
+	let payment_hash = Sha256::hash(&[*payment_id; 1]);
+	*payment_id = payment_id.wrapping_add(1);
+	if let Err(err) = source.send_payment(&Route {
+		paths: vec![vec![RouteHop {
+			pubkey: dest.get_our_node_id(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: dest_chan_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: amt,
+			cltv_expiry_delta: 200,
+		}]],
+	}, PaymentHash(payment_hash.into_inner()), &None) {
+		check_payment_err(err);
+		false
+	} else { true }
+}
+#[inline]
+fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
+	let payment_hash = Sha256::hash(&[*payment_id; 1]);
+	*payment_id = payment_id.wrapping_add(1);
+	if let Err(err) = source.send_payment(&Route {
+		paths: vec![vec![RouteHop {
+			pubkey: middle.get_our_node_id(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: middle_chan_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 50000,
+			cltv_expiry_delta: 100,
+		},RouteHop {
+			pubkey: dest.get_our_node_id(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: dest_chan_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: amt,
+			cltv_expiry_delta: 200,
+		}]],
+	}, PaymentHash(payment_hash.into_inner()), &None) {
+		check_payment_err(err);
+		false
+	} else { true }
+}
+
+#[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
@@ -200,7 +288,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0)),
+			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0),
 			monitor)
 		} }
 	}
@@ -237,14 +325,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChannelManager<EnforcingChannelKeys, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
+			(<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.create_channel($dest.get_our_node_id(), 10000000, 42, 0, None).unwrap();
+			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -347,9 +435,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (mut node_a, mut monitor_a) = make_node!(0);
-	let (mut node_b, mut monitor_b) = make_node!(1);
-	let (mut node_c, mut monitor_c) = make_node!(2);
+	let (node_a, mut monitor_a) = make_node!(0);
+	let (node_b, mut monitor_b) = make_node!(1);
+	let (node_c, mut monitor_c) = make_node!(2);
 
 	let mut nodes = [node_a, node_b, node_c];
 
@@ -365,7 +453,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let chan_a = nodes[0].list_usable_channels()[0].short_channel_id.unwrap();
 	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
 
-	let mut payment_id = 0;
+	let mut payment_id: u8 = 0;
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
@@ -403,88 +491,44 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	loop {
-		macro_rules! send_payment {
-			($source: expr, $dest: expr, $amt: expr) => { {
-				let payment_hash = Sha256::hash(&[payment_id; 1]);
-				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
-					paths: vec![vec![RouteHop {
-						pubkey: $dest.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $dest.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: $amt,
-						cltv_expiry_delta: 200,
-					}]],
-				}, PaymentHash(payment_hash.into_inner()), &None) {
-					// Probably ran out of funds
-					test_return!();
-				}
-			} };
-			($source: expr, $middle: expr, $dest: expr, $amt: expr) => { {
-				let payment_hash = Sha256::hash(&[payment_id; 1]);
-				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
-					paths: vec![vec![RouteHop {
-						pubkey: $middle.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $middle.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50000,
-						cltv_expiry_delta: 100,
-					},RouteHop {
-						pubkey: $dest.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $dest.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: $amt,
-						cltv_expiry_delta: 200,
-					}]],
-				}, PaymentHash(payment_hash.into_inner()), &None) {
-					// Probably ran out of funds
-					test_return!();
-				}
-			} }
-		}
 		macro_rules! send_payment_with_secret {
 			($source: expr, $middle: expr, $dest: expr) => { {
 				let payment_hash = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
 				let payment_secret = Sha256::hash(&[payment_id; 1]);
 				payment_id = payment_id.wrapping_add(1);
-				if let Err(_) = $source.send_payment(&Route {
+				if let Err(err) = $source.send_payment(&Route {
 					paths: vec![vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50000,
+						fee_msat: 50_000,
 						cltv_expiry_delta: 100,
 					},RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: 10_000_000,
 						cltv_expiry_delta: 200,
 					}],vec![RouteHop {
 						pubkey: $middle.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $middle.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50000,
+						fee_msat: 50_000,
 						cltv_expiry_delta: 100,
 					},RouteHop {
 						pubkey: $dest.0.get_our_node_id(),
 						node_features: NodeFeatures::empty(),
 						short_channel_id: $dest.1,
 						channel_features: ChannelFeatures::empty(),
-						fee_msat: 5000000,
+						fee_msat: 10_000_000,
 						cltv_expiry_delta: 200,
 					}]],
 				}, PaymentHash(payment_hash.into_inner()), &Some(PaymentSecret(payment_secret.into_inner()))) {
-					// Probably ran out of funds
-					test_return!();
+					check_payment_err(err);
 				}
 			} }
 		}
@@ -498,7 +542,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					bc_events.clear();
 					new_events
 				} else { Vec::new() };
+				let mut had_events = false;
 				for event in events.iter().chain(nodes[$node].get_and_clear_pending_msg_events().iter()) {
+					had_events = true;
 					match event {
 						events::MessageSendEvent::UpdateHTLCs { ref node_id, updates: CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 							for dest in nodes.iter() {
@@ -552,13 +598,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
 						},
-						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {
-							// Can be generated at any processing step to send back an error, disconnect
-							// peer or just ignore
-						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
+				had_events
 			} }
 		}
 
@@ -638,6 +681,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						} else { Ordering::Equal }
 					} else { Ordering::Equal }
 				});
+				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentReceived { payment_hash, payment_secret, amt } => {
@@ -657,43 +701,44 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						_ => panic!("Unhandled event"),
 					}
 				}
+				had_events
 			} }
 		}
 
 		match get_slice!(1)[0] {
+			// In general, we keep related message groups close together in binary form, allowing
+			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
+			// harm in doing so.
+
 			0x00 => *monitor_a.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
 			0x01 => *monitor_b.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
 			0x02 => *monitor_c.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x03 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
-			0x04 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
-			0x05 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
-			0x06 => {
+			0x04 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
+			0x05 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
+			0x06 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
+
+			0x08 => {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
 				}
 			},
-			0x07 => {
+			0x09 => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
 				}
 			},
-			0x24 => {
+			0x0a => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
 				}
 			},
-			0x08 => {
+			0x0b => {
 				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
 					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
 				}
 			},
-			0x09 => send_payment!(nodes[0], (&nodes[1], chan_a), 5_000_000),
-			0x0a => send_payment!(nodes[1], (&nodes[0], chan_a), 5_000_000),
-			0x0b => send_payment!(nodes[1], (&nodes[2], chan_b), 5_000_000),
-			0x0c => send_payment!(nodes[2], (&nodes[1], chan_b), 5_000_000),
-			0x0d => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 5_000_000),
-			0x0e => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 5_000_000),
-			0x0f => {
+
+			0x0c => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
@@ -701,7 +746,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
-			0x10 => {
+			0x0d => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
@@ -709,44 +754,45 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					drain_msg_events_on_disconnect!(2);
 				}
 			},
-			0x11 => {
+			0x0e => {
 				if chan_a_disconnected {
 					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_a_disconnected = false;
 				}
 			},
-			0x12 => {
+			0x0f => {
 				if chan_b_disconnected {
 					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
 					chan_b_disconnected = false;
 				}
 			},
-			0x13 => process_msg_events!(0, true),
-			0x14 => process_msg_events!(0, false),
-			0x15 => process_events!(0, true),
-			0x16 => process_events!(0, false),
-			0x17 => process_msg_events!(1, true),
-			0x18 => process_msg_events!(1, false),
-			0x19 => process_events!(1, true),
-			0x1a => process_events!(1, false),
-			0x1b => process_msg_events!(2, true),
-			0x1c => process_msg_events!(2, false),
-			0x1d => process_events!(2, true),
-			0x1e => process_events!(2, false),
-			0x1f => {
+
+			0x10 => { process_msg_events!(0, true); },
+			0x11 => { process_msg_events!(0, false); },
+			0x12 => { process_events!(0, true); },
+			0x13 => { process_events!(0, false); },
+			0x14 => { process_msg_events!(1, true); },
+			0x15 => { process_msg_events!(1, false); },
+			0x16 => { process_events!(1, true); },
+			0x17 => { process_events!(1, false); },
+			0x18 => { process_msg_events!(2, true); },
+			0x19 => { process_msg_events!(2, false); },
+			0x1a => { process_events!(2, true); },
+			0x1b => { process_events!(2, false); },
+
+			0x1c => {
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
 				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a);
-				node_a = Arc::new(new_node_a);
-				nodes[0] = node_a.clone();
+				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
-			0x20 => {
+			0x1d => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					chan_a_disconnected = true;
@@ -760,42 +806,136 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					bc_events.clear();
 				}
 				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b);
-				node_b = Arc::new(new_node_b);
-				nodes[1] = node_b.clone();
+				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
-			0x21 => {
+			0x1e => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
 				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c);
-				node_c = Arc::new(new_node_c);
-				nodes[2] = node_c.clone();
+				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},
-			0x22 => send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)),
-			0x23 => send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)),
-			0x25 => send_payment!(nodes[0], (&nodes[1], chan_a), 10),
-			0x26 => send_payment!(nodes[1], (&nodes[0], chan_a), 10),
-			0x27 => send_payment!(nodes[1], (&nodes[2], chan_b), 10),
-			0x28 => send_payment!(nodes[2], (&nodes[1], chan_b), 10),
-			0x29 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 10),
-			0x2a => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 10),
-			0x2b => send_payment!(nodes[0], (&nodes[1], chan_a), 1_000),
-			0x2c => send_payment!(nodes[1], (&nodes[0], chan_a), 1_000),
-			0x2d => send_payment!(nodes[1], (&nodes[2], chan_b), 1_000),
-			0x2e => send_payment!(nodes[2], (&nodes[1], chan_b), 1_000),
-			0x2f => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 1_000),
-			0x30 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 1_000),
-			0x31 => send_payment!(nodes[0], (&nodes[1], chan_a), 100_000),
-			0x32 => send_payment!(nodes[1], (&nodes[0], chan_a), 100_000),
-			0x33 => send_payment!(nodes[1], (&nodes[2], chan_b), 100_000),
-			0x34 => send_payment!(nodes[2], (&nodes[1], chan_b), 100_000),
-			0x35 => send_payment!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b), 100_000),
-			0x36 => send_payment!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a), 100_000),
-			// 0x24 defined above
+
+			// 1/10th the channel size:
+			0x20 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id); },
+			0x21 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id); },
+			0x22 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id); },
+			0x23 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id); },
+			0x24 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id); },
+			0x25 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id); },
+
+			0x26 => { send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)); },
+			0x27 => { send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)); },
+
+			0x28 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id); },
+			0x29 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id); },
+			0x2a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id); },
+			0x2b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id); },
+			0x2c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id); },
+			0x2d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id); },
+
+			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id); },
+			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id); },
+			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id); },
+			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id); },
+			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id); },
+			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id); },
+
+			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id); },
+			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id); },
+			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id); },
+			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id); },
+			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id); },
+			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id); },
+
+			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id); },
+			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id); },
+			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id); },
+			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id); },
+			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id); },
+			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id); },
+
+			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id); },
+			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id); },
+			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id); },
+			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id); },
+			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id); },
+			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id); },
+
+			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id); },
+			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id); },
+			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id); },
+			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id); },
+			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id); },
+			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id); },
+
+			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id); },
+			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id); },
+			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id); },
+			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id); },
+			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
+			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
+
+			0xff => {
+				// Test that no channel is in a stuck state where neither party can send funds even
+				// after we resolve all pending events.
+				// First make sure there are no pending monitor updates, resetting the error state
+				// and calling channel_monitor_updated for each monitor.
+				*monitor_a.update_ret.lock().unwrap() = Ok(());
+				*monitor_b.update_ret.lock().unwrap() = Ok(());
+				*monitor_c.update_ret.lock().unwrap() = Ok(());
+
+				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
+					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+				}
+				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
+					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+				}
+				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
+					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+				}
+				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
+					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+				}
+
+				// Next, make sure peers are all connected to each other
+				if chan_a_disconnected {
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					chan_a_disconnected = false;
+				}
+				if chan_b_disconnected {
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					chan_b_disconnected = false;
+				}
+
+				for i in 0..std::usize::MAX {
+					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
+					// Then, make sure any current forwards make their way to their destination
+					if process_msg_events!(0, false) { continue; }
+					if process_msg_events!(1, false) { continue; }
+					if process_msg_events!(2, false) { continue; }
+					// ...making sure any pending PendingHTLCsForwardable events are handled and
+					// payments claimed.
+					if process_events!(0, false) { continue; }
+					if process_events!(1, false) { continue; }
+					if process_events!(2, false) { continue; }
+					break;
+				}
+
+				// Finally, make sure that at least one end of each channel can make a substantial payment.
+				assert!(
+					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id) ||
+					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id));
+				assert!(
+					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id) ||
+					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id));
+			},
 			_ => test_return!(),
 		}
 
