@@ -4016,11 +4016,23 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 				_ => {}
 			}
 		}
+		let funding_txo = if let Some(funding_txo) = self.funding_txo {
+			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
+			// returning a channel monitor update here would imply a channel monitor update before
+			// we even registered the channel monitor to begin with, which is invalid.
+			// Thus, if we aren't actually at a point where we could conceivably broadcast the
+			// funding transaction, don't return a funding txo (which prevents providing the
+			// monitor update to the user, even if we return one).
+			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
+			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelFunded as u32 | ChannelState::ShutdownComplete as u32) != 0 {
+				Some(funding_txo.clone())
+			} else { None }
+		} else { None };
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
 		self.latest_monitor_update_id += 1;
-		(self.funding_txo.clone(), ChannelMonitorUpdate {
+		(funding_txo, ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
 			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
 		}, dropped_outbound_htlcs)

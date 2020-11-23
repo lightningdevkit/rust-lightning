@@ -2363,7 +2363,12 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					// channel, not the temporary_channel_id. This is compatible with ourselves, but the
 					// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
 					// any messages referencing a previously-closed channel anyway.
-					return Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id, chan.force_shutdown(true), None));
+					// We do not do a force-close here as that would generate a monitor update for
+					// a monitor that we didn't manage to store (and that we don't care about - we
+					// don't respond with the funding_signed so the channel can never go on chain).
+					let (_funding_txo_option, _monitor_update, failed_htlcs) = chan.force_shutdown(true);
+					assert!(failed_htlcs.is_empty());
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id));
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
 					// There's no problem signing a counterparty's funding transaction if our monitor
