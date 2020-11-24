@@ -11,20 +11,22 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
+use bitcoin::secp256k1;
+
 use lightning::chain;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::ln::msgs::RoutingMessageHandler;
 use lightning::routing::router::{get_route, RouteHint};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
-use lightning::routing::network_graph::{NetGraphMsgHandler, RoutingFees};
+use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 
 use bitcoin::secp256k1::key::PublicKey;
 
 use utils::test_logger;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -150,16 +152,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
-	let chain_source = if get_slice!(1)[0] % 2 == 0 {
-		None
-	} else {
-		Some(Arc::new(FuzzChainSource {
-			input: Arc::clone(&input),
-		}))
-	};
 
 	let our_pubkey = get_pubkey!();
-	let net_graph_msg_handler = NetGraphMsgHandler::new(chain_source, Arc::clone(&logger));
+	let mut net_graph = NetworkGraph::new();
+
+	let mut node_pks = HashSet::new();
+	let mut scid = 42;
 
 	loop {
 		match get_slice!(1)[0] {
@@ -169,39 +167,44 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				if addr_len > (37+1)*4 {
 					return;
 				}
-				let _ = net_graph_msg_handler.handle_node_announcement(&decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288));
+				let msg = decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288);
+				node_pks.insert(msg.contents.node_id);
+				let _ = net_graph.update_node_from_announcement::<secp256k1::VerifyOnly>(&msg, None);
 			},
 			1 => {
-				let _ = net_graph_msg_handler.handle_channel_announcement(&decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4));
+				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
+				node_pks.insert(msg.contents.node_id_1);
+				node_pks.insert(msg.contents.node_id_2);
+				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly>(&msg, None, None);
 			},
 			2 => {
-				let _ = net_graph_msg_handler.handle_channel_update(&decode_msg!(msgs::ChannelUpdate, 136));
+				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
+				node_pks.insert(msg.contents.node_id_1);
+				node_pks.insert(msg.contents.node_id_2);
+				let val = slice_to_be64(get_slice!(8));
+				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly>(&msg, Some(val), None);
 			},
 			3 => {
-				match get_slice!(1)[0] {
-					0 => {
-						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage {msg: decode_msg!(msgs::ChannelUpdate, 136)});
-					},
-					1 => {
-						let short_channel_id = slice_to_be64(get_slice!(8));
-						net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed {short_channel_id, is_permanent: false});
-					},
-					_ => return,
-				}
+				let _ = net_graph.update_channel(&decode_msg!(msgs::ChannelUpdate, 136), None);
 			},
 			4 => {
-				let target = get_pubkey!();
+				let short_channel_id = slice_to_be64(get_slice!(8));
+				net_graph.close_channel_from_update(short_channel_id, false);
+			},
+			_ if node_pks.is_empty() => {},
+			_ => {
 				let mut first_hops_vec = Vec::new();
 				let first_hops = match get_slice!(1)[0] {
 					0 => None,
-					1 => {
-						let count = slice_to_be16(get_slice!(2));
+					count => {
 						for _ in 0..count {
+							scid += 1;
+							let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
 							first_hops_vec.push(ChannelDetails {
 								channel_id: [0; 32],
-								short_channel_id: Some(slice_to_be64(get_slice!(8))),
-								remote_network_id: get_pubkey!(),
-								counterparty_features: InitFeatures::empty(),
+								short_channel_id: Some(scid),
+								remote_network_id: *rnid,
+								counterparty_features: InitFeatures::known(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
 								inbound_capacity_msat: 0,
@@ -211,15 +214,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						}
 						Some(&first_hops_vec[..])
 					},
-					_ => return,
 				};
 				let mut last_hops_vec = Vec::new();
-				let last_hops = {
-					let count = slice_to_be16(get_slice!(2));
+				{
+					let count = get_slice!(1)[0];
 					for _ in 0..count {
+						scid += 1;
+						let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
 						last_hops_vec.push(RouteHint {
-							src_node_id: get_pubkey!(),
-							short_channel_id: slice_to_be64(get_slice!(8)),
+							src_node_id: *rnid,
+							short_channel_id: scid,
 							fees: RoutingFees {
 								base_msat: slice_to_be32(get_slice!(4)),
 								proportional_millionths: slice_to_be32(get_slice!(4)),
@@ -228,14 +232,15 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							htlc_minimum_msat: slice_to_be64(get_slice!(8)),
 						});
 					}
-					&last_hops_vec[..]
-				};
-				let _ = get_route(&our_pubkey, &net_graph_msg_handler.network_graph.read().unwrap(), &target,
-					first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
-					&last_hops.iter().collect::<Vec<_>>(),
-					slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
+				}
+				let last_hops = &last_hops_vec[..];
+				for target in node_pks.iter() {
+					let _ = get_route(&our_pubkey, &net_graph, target,
+						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
+						&last_hops.iter().collect::<Vec<_>>(),
+						slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
+				}
 			},
-			_ => return,
 		}
 	}
 }
