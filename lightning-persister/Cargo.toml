@@ -9,7 +9,7 @@ Utilities to manage channel data persistence and retrieval.
 
 [dependencies]
 bitcoin = "0.24"
-lightning = { version = "0.0.11", path = "../lightning" }
+lightning = { version = "0.0.12", path = "../lightning" }
 libc = "0.2"
 
 [dev-dependencies.bitcoin]
@@ -17,4 +17,4 @@ version = "0.24"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
-lightning = { version = "0.0.11", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.12", path = "../lightning", features = ["_test_utils"] }

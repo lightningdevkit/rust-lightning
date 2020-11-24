@@ -11,7 +11,7 @@ For Rust-Lightning clients which wish to make direct connections to Lightning P2
 
 [dependencies]
 bitcoin = "0.24"
-lightning = { version = "0.0.11", path = "../lightning" }
+lightning = { version = "0.0.12", path = "../lightning" }
 tokio = { version = ">=0.2.12", features = [ "io-util", "macros", "rt-core", "sync", "tcp", "time" ] }
 
 [dev-dependencies]
