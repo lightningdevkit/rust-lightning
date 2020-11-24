@@ -40,7 +40,7 @@ use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
+use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use lightning::util::errors::APIError;
 use lightning::util::events;
@@ -624,7 +624,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -637,7 +636,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -649,17 +647,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				for event in events.drain(..) {
 					let push = match event {
 						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { false }
+							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 						},
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { false }
+							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { false }
+							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => false,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
-						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => false,
 						_ => panic!("Unhandled message event"),
 					};
 					if push { msg_sink.push(event); }
