@@ -175,14 +175,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
 				node_pks.insert(msg.contents.node_id_1);
 				node_pks.insert(msg.contents.node_id_2);
-				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly>(&msg, None, None);
+				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly, &FuzzChainSource>(&msg, &None, None);
 			},
 			2 => {
 				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
 				node_pks.insert(msg.contents.node_id_1);
 				node_pks.insert(msg.contents.node_id_2);
-				let val = slice_to_be64(get_slice!(8));
-				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly>(&msg, Some(val), None);
+				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly, &FuzzChainSource>(&msg, &Some(&FuzzChainSource { input: Arc::clone(&input) }), None);
 			},
 			3 => {
 				let _ = net_graph.update_channel(&decode_msg!(msgs::ChannelUpdate, 136), None);
