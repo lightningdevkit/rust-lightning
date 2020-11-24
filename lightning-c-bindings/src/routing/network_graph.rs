@@ -826,6 +826,64 @@ pub extern "C" fn NetworkGraph_new() -> crate::routing::network_graph::NetworkGr
 	crate::routing::network_graph::NetworkGraph { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
+/// For an already known node (from channel announcements), update its stored properties from a
+/// given node announcement.
+///
+/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+/// routing messages from a source using a protocol other than the lightning P2P protocol.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_node_from_announcement(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::NodeAnnouncement) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_node_from_announcement(unsafe { &*msg.inner }, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
+}
+
+/// For an already known node (from channel announcements), update its stored properties from a
+/// given node announcement without verifying the associated signatures. Because we aren't
+/// given the associated signatures here we cannot relay the node announcement to any of our
+/// peers.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_node_from_unsigned_announcement(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::UnsignedNodeAnnouncement) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_node_from_unsigned_announcement(unsafe { &*msg.inner });
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
+}
+
+/// Store or update channel info from a channel announcement.
+///
+/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+/// routing messages from a source using a protocol other than the lightning P2P protocol.
+///
+/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+/// the corresponding UTXO exists on chain and is correctly-formatted.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_channel_from_announcement(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::ChannelAnnouncement, chain_access: *mut crate::chain::Access) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_channel_from_announcement(unsafe { &*msg.inner }, &local_chain_access, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
+}
+
+/// Store or update channel info from a channel announcement without verifying the associated
+/// signatures. Because we aren't given the associated signatures here we cannot relay the
+/// channel announcement to any of our peers.
+///
+/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+/// the corresponding UTXO exists on chain and is correctly-formatted.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_channel_from_unsigned_announcement(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::UnsignedChannelAnnouncement, chain_access: *mut crate::chain::Access) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_channel_from_unsigned_announcement(unsafe { &*msg.inner }, &local_chain_access);
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
+}
+
 /// Close a channel if a corresponding HTLC fail was sent.
 /// If permanent, removes a channel from the local storage.
 /// May cause the removal of nodes too, if this was their last channel.
@@ -833,5 +891,30 @@ pub extern "C" fn NetworkGraph_new() -> crate::routing::network_graph::NetworkGr
 #[no_mangle]
 pub extern "C" fn NetworkGraph_close_channel_from_update(this_arg: &mut NetworkGraph, mut short_channel_id: u64, mut is_permanent: bool) {
 	unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.close_channel_from_update(short_channel_id, is_permanent)
+}
+
+/// For an already known (from announcement) channel, update info about one of the directions
+/// of the channel.
+///
+/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+/// routing messages from a source using a protocol other than the lightning P2P protocol.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_channel(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::ChannelUpdate) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_channel(unsafe { &*msg.inner }, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
+}
+
+/// For an already known (from announcement) channel, update info about one of the directions
+/// of the channel without verifying the associated signatures. Because we aren't given the
+/// associated signatures here we cannot relay the channel update to any of our peers.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn NetworkGraph_update_channel_unsigned(this_arg: &mut NetworkGraph, msg: &crate::ln::msgs::UnsignedChannelUpdate) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
+	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeNetworkGraph)) }.update_channel_unsigned(unsafe { &*msg.inner });
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_ret
 }
 
