@@ -16,7 +16,7 @@ crate-type = ["staticlib"
 
 [dependencies]
 bitcoin = "0.24"
-lightning = { version = "0.0.11", path = "../lightning" }
+lightning = { version = "0.0.12", path = "../lightning" }
 
 # We eventually want to join the root workspace, but for now, the bindings generation is
 # a bit brittle and we don't want to hold up other developers from making changes just
