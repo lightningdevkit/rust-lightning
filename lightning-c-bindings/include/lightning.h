@@ -586,6 +586,32 @@ typedef struct LDKC2TupleTempl_HTLCOutputInCommitment__Signature {
 
 typedef LDKC2TupleTempl_HTLCOutputInCommitment__Signature LDKC2Tuple_HTLCOutputInCommitmentSignatureZ;
 
+
+
+/**
+ * An Err type for failure to process messages.
+ */
+typedef struct MUST_USE_STRUCT LDKLightningError {
+   /**
+    * Nearly everywhere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeLightningError *inner;
+   bool is_owned;
+} LDKLightningError;
+
+typedef union LDKCResultPtr_u8__LightningError {
+   uint8_t *result;
+   LDKLightningError *err;
+} LDKCResultPtr_u8__LightningError;
+
+typedef struct LDKCResultTempl_u8__LightningError {
+   LDKCResultPtr_u8__LightningError contents;
+   bool result_ok;
+} LDKCResultTempl_u8__LightningError;
+
+typedef LDKCResultTempl_u8__LightningError LDKCResult_NoneLightningErrorZ;
+
 typedef struct LDKPublicKey {
    uint8_t compressed_form[33];
 } LDKPublicKey;
@@ -2641,20 +2667,6 @@ typedef struct MUST_USE_STRUCT LDKGossipTimestampFilter {
    bool is_owned;
 } LDKGossipTimestampFilter;
 
-
-
-/**
- * An Err type for failure to process messages.
- */
-typedef struct MUST_USE_STRUCT LDKLightningError {
-   /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
-    */
-   LDKnativeLightningError *inner;
-   bool is_owned;
-} LDKLightningError;
-
 typedef struct LDKCVecTempl_UpdateAddHTLC {
    LDKUpdateAddHTLC *data;
    uintptr_t datalen;
@@ -3153,6 +3165,10 @@ extern const LDKCResult_NoneChannelMonitorUpdateErrZ (*CResult_NoneChannelMonito
 
 extern const void (*CResult_NoneChannelMonitorUpdateErrZ_free)(LDKCResult_NoneChannelMonitorUpdateErrZ);
 
+extern const LDKCResult_NoneLightningErrorZ (*CResult_NoneLightningErrorZ_err)(LDKLightningError);
+
+extern const void (*CResult_NoneLightningErrorZ_free)(LDKCResult_NoneLightningErrorZ);
+
 extern const LDKCResult_NoneMonitorUpdateErrorZ (*CResult_NoneMonitorUpdateErrorZ_err)(LDKMonitorUpdateError);
 
 extern const void (*CResult_NoneMonitorUpdateErrorZ_free)(LDKCResult_NoneMonitorUpdateErrorZ);
@@ -3300,6 +3316,8 @@ LDKC3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ C3Tuple_ChannelAnnounc
 LDKCResult_NonePeerHandleErrorZ CResult_NonePeerHandleErrorZ_ok(void);
 
 LDKC2Tuple_HTLCOutputInCommitmentSignatureZ C2Tuple_HTLCOutputInCommitmentSignatureZ_new(LDKHTLCOutputInCommitment a, LDKSignature b);
+
+LDKCResult_NoneLightningErrorZ CResult_NoneLightningErrorZ_ok(void);
 
 void Event_free(LDKEvent this_ptr);
 
@@ -7263,11 +7281,68 @@ LDKNetworkGraph NetworkGraph_read(LDKu8slice ser);
 MUST_USE_RES LDKNetworkGraph NetworkGraph_new(void);
 
 /**
+ * For an already known node (from channel announcements), update its stored properties from a
+ * given node announcement.
+ *
+ * You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+ * RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+ * routing messages from a source using a protocol other than the lightning P2P protocol.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_node_from_announcement(LDKNetworkGraph *this_arg, const LDKNodeAnnouncement *msg);
+
+/**
+ * For an already known node (from channel announcements), update its stored properties from a
+ * given node announcement without verifying the associated signatures. Because we aren't
+ * given the associated signatures here we cannot relay the node announcement to any of our
+ * peers.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_node_from_unsigned_announcement(LDKNetworkGraph *this_arg, const LDKUnsignedNodeAnnouncement *msg);
+
+/**
+ * Store or update channel info from a channel announcement.
+ *
+ * You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+ * RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+ * routing messages from a source using a protocol other than the lightning P2P protocol.
+ *
+ * If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+ * the corresponding UTXO exists on chain and is correctly-formatted.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_channel_from_announcement(LDKNetworkGraph *this_arg, const LDKChannelAnnouncement *msg, LDKAccess *chain_access);
+
+/**
+ * Store or update channel info from a channel announcement without verifying the associated
+ * signatures. Because we aren't given the associated signatures here we cannot relay the
+ * channel announcement to any of our peers.
+ *
+ * If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+ * the corresponding UTXO exists on chain and is correctly-formatted.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_channel_from_unsigned_announcement(LDKNetworkGraph *this_arg, const LDKUnsignedChannelAnnouncement *msg, LDKAccess *chain_access);
+
+/**
  * Close a channel if a corresponding HTLC fail was sent.
  * If permanent, removes a channel from the local storage.
  * May cause the removal of nodes too, if this was their last channel.
  * If not permanent, makes channels unavailable for routing.
  */
 void NetworkGraph_close_channel_from_update(LDKNetworkGraph *this_arg, uint64_t short_channel_id, bool is_permanent);
+
+/**
+ * For an already known (from announcement) channel, update info about one of the directions
+ * of the channel.
+ *
+ * You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+ * RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
+ * routing messages from a source using a protocol other than the lightning P2P protocol.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_channel(LDKNetworkGraph *this_arg, const LDKChannelUpdate *msg);
+
+/**
+ * For an already known (from announcement) channel, update info about one of the directions
+ * of the channel without verifying the associated signatures. Because we aren't given the
+ * associated signatures here we cannot relay the channel update to any of our peers.
+ */
+MUST_USE_RES LDKCResult_NoneLightningErrorZ NetworkGraph_update_channel_unsigned(LDKNetworkGraph *this_arg, const LDKUnsignedChannelUpdate *msg);
 
 /* Text to put at the end of the generated file */

@@ -1830,6 +1830,20 @@ public:
 	const LDKCResult_RouteLightningErrorZ* operator &() const { return &self; }
 	const LDKCResult_RouteLightningErrorZ* operator ->() const { return &self; }
 };
+class CResult_NoneLightningErrorZ {
+private:
+	LDKCResult_NoneLightningErrorZ self;
+public:
+	CResult_NoneLightningErrorZ(const CResult_NoneLightningErrorZ&) = delete;
+	~CResult_NoneLightningErrorZ() { CResult_NoneLightningErrorZ_free(self); }
+	CResult_NoneLightningErrorZ(CResult_NoneLightningErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_NoneLightningErrorZ)); }
+	CResult_NoneLightningErrorZ(LDKCResult_NoneLightningErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_NoneLightningErrorZ)); }
+	operator LDKCResult_NoneLightningErrorZ() { LDKCResult_NoneLightningErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_NoneLightningErrorZ)); return res; }
+	LDKCResult_NoneLightningErrorZ* operator &() { return &self; }
+	LDKCResult_NoneLightningErrorZ* operator ->() { return &self; }
+	const LDKCResult_NoneLightningErrorZ* operator &() const { return &self; }
+	const LDKCResult_NoneLightningErrorZ* operator ->() const { return &self; }
+};
 class CResult_CVec_SignatureZNoneZ {
 private:
 	LDKCResult_CVec_SignatureZNoneZ self;

@@ -400,3 +400,16 @@ pub static CResult_RouteLightningErrorZ_ok: extern "C" fn (crate::routing::route
 pub static CResult_RouteLightningErrorZ_err: extern "C" fn (crate::ln::msgs::LightningError) -> CResult_RouteLightningErrorZ =
 	crate::c_types::CResultTempl::<crate::routing::router::Route, crate::ln::msgs::LightningError>::err;
 
+#[no_mangle]
+pub type CResult_NoneLightningErrorZ = crate::c_types::CResultTempl<u8, crate::ln::msgs::LightningError>;
+#[no_mangle]
+pub static CResult_NoneLightningErrorZ_free: extern "C" fn(CResult_NoneLightningErrorZ) = crate::c_types::CResultTempl_free::<u8, crate::ln::msgs::LightningError>;
+#[no_mangle]
+pub extern "C" fn CResult_NoneLightningErrorZ_ok() -> CResult_NoneLightningErrorZ {
+	crate::c_types::CResultTempl::ok(0)
+}
+
+#[no_mangle]
+pub static CResult_NoneLightningErrorZ_err: extern "C" fn (crate::ln::msgs::LightningError) -> CResult_NoneLightningErrorZ =
+	crate::c_types::CResultTempl::<u8, crate::ln::msgs::LightningError>::err;
+
