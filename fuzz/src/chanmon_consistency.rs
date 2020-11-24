@@ -624,6 +624,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						events::MessageSendEvent::SendFundingLocked { .. } => {
 							// Can be generated as a reestablish response
 						},
+						events::MessageSendEvent::SendAnnouncementSignatures { .. } => {
+							// Can be generated as a reestablish response
+						},
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
@@ -644,6 +647,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
@@ -656,6 +660,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
@@ -677,6 +682,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							if *node_id != drop_node_id { true } else { false }
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => false,
+						events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
 						_ => panic!("Unhandled message event"),
 					};
