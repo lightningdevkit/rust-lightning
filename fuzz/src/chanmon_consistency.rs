@@ -37,7 +37,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
+use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use lightning::util::errors::APIError;
 use lightning::util::events;
@@ -645,7 +645,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -658,7 +657,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-							events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => {},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -680,7 +678,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => false,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
-						events::MessageSendEvent::HandleError { action: ErrorAction::IgnoreError, .. } => false,
 						_ => panic!("Unhandled message event"),
 					};
 					if push { msg_sink.push(event); }
