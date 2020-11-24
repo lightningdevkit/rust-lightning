@@ -11,8 +11,6 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::secp256k1;
-
 use lightning::chain;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
@@ -120,7 +118,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		($MsgType: path, $len: expr) => {{
 			let mut reader = ::std::io::Cursor::new(get_slice!($len));
 			match <$MsgType>::read(&mut reader) {
-				Ok(msg) => msg,
+				Ok(msg) => {
+					assert_eq!(reader.position(), $len as u64);
+					msg
+				},
 				Err(e) => match e {
 					msgs::DecodeError::UnknownVersion => return,
 					msgs::DecodeError::UnknownRequiredFeature => return,
@@ -134,10 +135,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	macro_rules! decode_msg_with_len16 {
-		($MsgType: path, $begin_len: expr, $excess: expr) => {
+		($MsgType: path, $excess: expr) => {
 			{
-				let extra_len = slice_to_be16(&get_slice_nonadvancing!($begin_len as usize + 2)[$begin_len..$begin_len + 2]);
-				decode_msg!($MsgType, $begin_len as usize + 2 + (extra_len as usize) + $excess)
+				let extra_len = slice_to_be16(get_slice_nonadvancing!(2));
+				decode_msg!($MsgType, 2 + (extra_len as usize) + $excess)
 			}
 		}
 	}
@@ -162,29 +163,29 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	loop {
 		match get_slice!(1)[0] {
 			0 => {
-				let start_len = slice_to_be16(&get_slice_nonadvancing!(64 + 2)[64..64 + 2]) as usize;
-				let addr_len = slice_to_be16(&get_slice_nonadvancing!(64+start_len+2 + 74)[64+start_len+2 + 72..64+start_len+2 + 74]);
+				let start_len = slice_to_be16(&get_slice_nonadvancing!(2)[0..2]) as usize;
+				let addr_len = slice_to_be16(&get_slice_nonadvancing!(start_len+2 + 74)[start_len+2 + 72..start_len+2 + 74]);
 				if addr_len > (37+1)*4 {
 					return;
 				}
-				let msg = decode_msg_with_len16!(msgs::NodeAnnouncement, 64, 288);
-				node_pks.insert(msg.contents.node_id);
-				let _ = net_graph.update_node_from_announcement::<secp256k1::VerifyOnly>(&msg, None);
+				let msg = decode_msg_with_len16!(msgs::UnsignedNodeAnnouncement, 288);
+				node_pks.insert(msg.node_id);
+				let _ = net_graph.update_node_from_unsigned_announcement(&msg);
 			},
 			1 => {
-				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
-				node_pks.insert(msg.contents.node_id_1);
-				node_pks.insert(msg.contents.node_id_2);
-				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly, &FuzzChainSource>(&msg, &None, None);
+				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
+				node_pks.insert(msg.node_id_1);
+				node_pks.insert(msg.node_id_2);
+				let _ = net_graph.update_channel_from_unsigned_announcement::<&FuzzChainSource>(&msg, &None);
 			},
 			2 => {
-				let msg = decode_msg_with_len16!(msgs::ChannelAnnouncement, 64*4, 32+8+33*4);
-				node_pks.insert(msg.contents.node_id_1);
-				node_pks.insert(msg.contents.node_id_2);
-				let _ = net_graph.update_channel_from_announcement::<secp256k1::VerifyOnly, &FuzzChainSource>(&msg, &Some(&FuzzChainSource { input: Arc::clone(&input) }), None);
+				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
+				node_pks.insert(msg.node_id_1);
+				node_pks.insert(msg.node_id_2);
+				let _ = net_graph.update_channel_from_unsigned_announcement(&msg, &Some(&FuzzChainSource { input: Arc::clone(&input) }));
 			},
 			3 => {
-				let _ = net_graph.update_channel(&decode_msg!(msgs::ChannelUpdate, 136), None);
+				let _ = net_graph.update_channel_unsigned(&decode_msg!(msgs::UnsignedChannelUpdate, 72));
 			},
 			4 => {
 				let short_channel_id = slice_to_be64(get_slice!(8));

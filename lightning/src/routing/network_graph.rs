@@ -121,19 +121,20 @@ macro_rules! secp_verify_sig {
 
 impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().update_node_from_announcement(msg, Some(&self.secp_ctx))
+		self.network_graph.write().unwrap().update_node_from_announcement(msg, &self.secp_ctx)?;
+		Ok(msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty())
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		let result = self.network_graph.write().unwrap().update_channel_from_announcement(msg, &self.chain_access, Some(&self.secp_ctx));
+		self.network_graph.write().unwrap().update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
-		result
+		Ok(msg.contents.excess_data.is_empty())
 	}
 
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
 		match update {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
-				let _ = self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx));
+				let _ = self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx);
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
 				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, is_permanent);
@@ -145,7 +146,8 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().update_channel(msg, Some(&self.secp_ctx))
+		self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx)?;
+		Ok(msg.contents.excess_data.is_empty())
 	}
 
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
@@ -529,39 +531,47 @@ impl NetworkGraph {
 		}
 	}
 
-	/// For an already known node (from channel announcements), update its stored properties from a given node announcement.
+	/// For an already known node (from channel announcements), update its stored properties from a
+	/// given node announcement.
 	///
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
-	/// routing messages without checking their signatures.
-	///
-	/// Announcement signatures are checked here only if Secp256k1 object is provided.
-	pub fn update_node_from_announcement<T: secp256k1::Verification>(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: Option<&Secp256k1<T>>) -> Result<bool, LightningError> {
-		if let Some(sig_verifier) = secp_ctx {
-			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-			secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &msg.contents.node_id);
-		}
+	/// routing messages from a source using a protocol other than the lightning P2P protocol.
+	pub fn update_node_from_announcement<T: secp256k1::Verification>(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
+		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
+	}
 
-		match self.nodes.get_mut(&msg.contents.node_id) {
+	/// For an already known node (from channel announcements), update its stored properties from a
+	/// given node announcement without verifying the associated signatures. Because we aren't
+	/// given the associated signatures here we cannot relay the node announcement to any of our
+	/// peers.
+	pub fn update_node_from_unsigned_announcement(&mut self, msg: &msgs::UnsignedNodeAnnouncement) -> Result<(), LightningError> {
+		self.update_node_from_announcement_intern(msg, None)
+	}
+
+	fn update_node_from_announcement_intern(&mut self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
+		match self.nodes.get_mut(&msg.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
-					if node_info.last_update  >= msg.contents.timestamp {
+					if node_info.last_update  >= msg.timestamp {
 						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
 					}
 				}
 
-				let should_relay = msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty();
+				let should_relay = msg.excess_data.is_empty() && msg.excess_address_data.is_empty();
 				node.announcement_info = Some(NodeAnnouncementInfo {
-					features: msg.contents.features.clone(),
-					last_update: msg.contents.timestamp,
-					rgb: msg.contents.rgb,
-					alias: msg.contents.alias,
-					addresses: msg.contents.addresses.clone(),
-					announcement_message: if should_relay { Some(msg.clone()) } else { None },
+					features: msg.features.clone(),
+					last_update: msg.timestamp,
+					rgb: msg.rgb,
+					alias: msg.alias,
+					addresses: msg.addresses.clone(),
+					announcement_message: if should_relay { full_msg.cloned() } else { None },
 				});
 
-				Ok(should_relay)
+				Ok(())
 			}
 		}
 	}
@@ -570,26 +580,41 @@ impl NetworkGraph {
 	///
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
-	/// routing messages without checking their signatures.
+	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
 	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	///
-	/// Announcement signatures are checked here only if Secp256k1 object is provided.
 	pub fn update_channel_from_announcement<T: secp256k1::Verification, C: Deref>
-			(&mut self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>, secp_ctx: Option<&Secp256k1<T>>)
-			-> Result<bool, LightningError>
+			(&mut self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>, secp_ctx: &Secp256k1<T>)
+			-> Result<(), LightningError>
 			where C::Target: chain::Access {
-		if msg.contents.node_id_1 == msg.contents.node_id_2 || msg.contents.bitcoin_key_1 == msg.contents.bitcoin_key_2 {
-			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
-		}
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
+		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), chain_access)
+	}
 
-		if let Some(sig_verifier) = secp_ctx {
-			let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-			secp_verify_sig!(sig_verifier, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
-			secp_verify_sig!(sig_verifier, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
-			secp_verify_sig!(sig_verifier, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
-			secp_verify_sig!(sig_verifier, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
+	/// Store or update channel info from a channel announcement without verifying the associated
+	/// signatures. Because we aren't given the associated signatures here we cannot relay the
+	/// channel announcement to any of our peers.
+	///
+	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+	/// the corresponding UTXO exists on chain and is correctly-formatted.
+	pub fn update_channel_from_unsigned_announcement<C: Deref>
+			(&mut self, msg: &msgs::UnsignedChannelAnnouncement, chain_access: &Option<C>)
+			-> Result<(), LightningError>
+			where C::Target: chain::Access {
+		self.update_channel_from_unsigned_announcement_intern(msg, None, chain_access)
+	}
+
+	fn update_channel_from_unsigned_announcement_intern<C: Deref>
+			(&mut self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, chain_access: &Option<C>)
+			-> Result<(), LightningError>
+			where C::Target: chain::Access {
+		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
+			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
 		let utxo_value = match &chain_access {
@@ -598,11 +623,11 @@ impl NetworkGraph {
 				None
 			},
 			&Some(ref chain_access) => {
-				match chain_access.get_utxo(&msg.contents.chain_hash, msg.contents.short_channel_id) {
+				match chain_access.get_utxo(&msg.chain_hash, msg.short_channel_id) {
 					Ok(TxOut { value, script_pubkey }) => {
 						let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-						                                    .push_slice(&msg.contents.bitcoin_key_1.serialize())
-						                                    .push_slice(&msg.contents.bitcoin_key_2.serialize())
+						                                    .push_slice(&msg.bitcoin_key_1.serialize())
+						                                    .push_slice(&msg.bitcoin_key_2.serialize())
 						                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
 						                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 						if script_pubkey != expected_script {
@@ -613,7 +638,7 @@ impl NetworkGraph {
 						Some(value)
 					},
 					Err(chain::AccessError::UnknownChain) => {
-						return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.contents.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
+						return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
 					},
 					Err(chain::AccessError::UnknownTx) => {
 						return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
@@ -622,18 +647,17 @@ impl NetworkGraph {
 			},
 		};
 
-		let should_relay = msg.contents.excess_data.is_empty();
 		let chan_info = ChannelInfo {
-				features: msg.contents.features.clone(),
-				node_one: msg.contents.node_id_1.clone(),
+				features: msg.features.clone(),
+				node_one: msg.node_id_1.clone(),
 				one_to_two: None,
-				node_two: msg.contents.node_id_2.clone(),
+				node_two: msg.node_id_2.clone(),
 				two_to_one: None,
 				capacity_sats: utxo_value,
-				announcement_message: if should_relay { Some(msg.clone()) } else { None },
+				announcement_message: if msg.excess_data.is_empty() { full_msg.cloned() } else { None },
 			};
 
-		match self.channels.entry(msg.contents.short_channel_id) {
+		match self.channels.entry(msg.short_channel_id) {
 			BtreeEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
@@ -647,7 +671,7 @@ impl NetworkGraph {
 					// b) we don't track UTXOs of channels we know about and remove them if they
 					//    get reorg'd out.
 					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
-					Self::remove_channel_in_nodes(&mut self.nodes, &entry.get(), msg.contents.short_channel_id);
+					Self::remove_channel_in_nodes(&mut self.nodes, &entry.get(), msg.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
 					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreError})
@@ -662,11 +686,11 @@ impl NetworkGraph {
 			( $node_id: expr ) => {
 				match self.nodes.entry($node_id) {
 					BtreeEntry::Occupied(node_entry) => {
-						node_entry.into_mut().channels.push(msg.contents.short_channel_id);
+						node_entry.into_mut().channels.push(msg.short_channel_id);
 					},
 					BtreeEntry::Vacant(node_entry) => {
 						node_entry.insert(NodeInfo {
-							channels: vec!(msg.contents.short_channel_id),
+							channels: vec!(msg.short_channel_id),
 							lowest_inbound_channel_fees: None,
 							announcement_info: None,
 						});
@@ -675,10 +699,10 @@ impl NetworkGraph {
 			};
 		}
 
-		add_channel_to_node!(msg.contents.node_id_1);
-		add_channel_to_node!(msg.contents.node_id_2);
+		add_channel_to_node!(msg.node_id_1);
+		add_channel_to_node!(msg.node_id_2);
 
-		Ok(should_relay)
+		Ok(())
 	}
 
 	/// Close a channel if a corresponding HTLC fail was sent.
@@ -710,22 +734,32 @@ impl NetworkGraph {
 		}
 	}
 
-	/// For an already known (from announcement) channel, update info about one of the directions of a channel.
+	/// For an already known (from announcement) channel, update info about one of the directions
+	/// of the channel.
 	///
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
-	/// routing messages without checking their signatures.
-	///
-	/// Announcement signatures are checked here only if Secp256k1 object is provided.
-	pub fn update_channel(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: Option<&Secp256k1<secp256k1::VerifyOnly>>) -> Result<bool, LightningError> {
+	/// routing messages from a source using a protocol other than the lightning P2P protocol.
+	pub fn update_channel<T: secp256k1::Verification>(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
+		self.update_channel_intern(&msg.contents, Some(&msg), Some((&msg.signature, secp_ctx)))
+	}
+
+	/// For an already known (from announcement) channel, update info about one of the directions
+	/// of the channel without verifying the associated signatures. Because we aren't given the
+	/// associated signatures here we cannot relay the channel update to any of our peers.
+	pub fn update_channel_unsigned(&mut self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
+		self.update_channel_intern(msg, None, None::<(&secp256k1::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
+	}
+
+	fn update_channel_intern<T: secp256k1::Verification>(&mut self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
 		let dest_node_id;
-		let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
 
-		match self.channels.get_mut(&msg.contents.short_channel_id) {
+		match self.channels.get_mut(&msg.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
-				if let OptionalField::Present(htlc_maximum_msat) = msg.contents.htlc_maximum_msat {
+				if let OptionalField::Present(htlc_maximum_msat) = msg.htlc_maximum_msat {
 					if htlc_maximum_msat > MAX_VALUE_MSAT {
 						return Err(LightningError{err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(), action: ErrorAction::IgnoreError});
 					}
@@ -741,7 +775,7 @@ impl NetworkGraph {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
-							if existing_chan_info.last_update >= msg.contents.timestamp {
+							if existing_chan_info.last_update >= msg.timestamp {
 								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
@@ -749,21 +783,17 @@ impl NetworkGraph {
 							chan_was_enabled = false;
 						}
 
-						let last_update_message = if msg.contents.excess_data.is_empty() {
-							Some(msg.clone())
-						} else {
-							None
-						};
+						let last_update_message = if msg.excess_data.is_empty() { full_msg.cloned() } else { None };
 
 						let updated_channel_dir_info = DirectionalChannelInfo {
 							enabled: chan_enabled,
-							last_update: msg.contents.timestamp,
-							cltv_expiry_delta: msg.contents.cltv_expiry_delta,
-							htlc_minimum_msat: msg.contents.htlc_minimum_msat,
-							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.contents.htlc_maximum_msat { Some(max_value) } else { None },
+							last_update: msg.timestamp,
+							cltv_expiry_delta: msg.cltv_expiry_delta,
+							htlc_minimum_msat: msg.htlc_minimum_msat,
+							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.htlc_maximum_msat { Some(max_value) } else { None },
 							fees: RoutingFees {
-								base_msat: msg.contents.fee_base_msat,
-								proportional_millionths: msg.contents.fee_proportional_millionths,
+								base_msat: msg.fee_base_msat,
+								proportional_millionths: msg.fee_proportional_millionths,
 							},
 							last_update_message
 						};
@@ -771,17 +801,17 @@ impl NetworkGraph {
 					}
 				}
 
-				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-				if msg.contents.flags & 1 == 1 {
+				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+				if msg.flags & 1 == 1 {
 					dest_node_id = channel.node_one.clone();
-					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_two);
+					if let Some((sig, ctx)) = sig_info {
+						secp_verify_sig!(ctx, &msg_hash, &sig, &channel.node_two);
 					}
 					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
 				} else {
 					dest_node_id = channel.node_two.clone();
-					if let Some(sig_verifier) = secp_ctx {
-						secp_verify_sig!(sig_verifier, &msg_hash, &msg.signature, &channel.node_one);
+					if let Some((sig, ctx)) = sig_info {
+						secp_verify_sig!(ctx, &msg_hash, &sig, &channel.node_one);
 					}
 					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
 				}
@@ -790,8 +820,8 @@ impl NetworkGraph {
 
 		if chan_enabled {
 			let node = self.nodes.get_mut(&dest_node_id).unwrap();
-			let mut base_msat = msg.contents.fee_base_msat;
-			let mut proportional_millionths = msg.contents.fee_proportional_millionths;
+			let mut base_msat = msg.fee_base_msat;
+			let mut proportional_millionths = msg.fee_proportional_millionths;
 			if let Some(fees) = node.lowest_inbound_channel_fees {
 				base_msat = cmp::min(base_msat, fees.base_msat);
 				proportional_millionths = cmp::min(proportional_millionths, fees.proportional_millionths);
@@ -825,7 +855,7 @@ impl NetworkGraph {
 			node.lowest_inbound_channel_fees = lowest_inbound_channel_fees;
 		}
 
-		Ok(msg.contents.excess_data.is_empty())
+		Ok(())
 	}
 
 	fn remove_channel_in_nodes(nodes: &mut BTreeMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
@@ -1171,8 +1201,8 @@ mod tests {
 		unsigned_announcement.node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let channel_to_itself_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_1_privkey),
+			node_signature_1: secp_ctx.sign(&msghash, node_2_privkey),
+			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
 			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
 			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
 			contents: unsigned_announcement.clone(),
