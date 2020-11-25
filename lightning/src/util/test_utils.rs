@@ -87,7 +87,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
-		monitor.serialize_for_disk(&mut w).unwrap();
+		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == monitor);
@@ -120,7 +120,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		let monitors = self.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
-		monitor.serialize_for_disk(&mut w).unwrap();
+		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);

@@ -5,7 +5,7 @@ use bitcoin::hash_types::BlockHash;
 
 use lightning::chain::channelmonitor;
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
-use lightning::util::ser::{Readable, Writer};
+use lightning::util::ser::{Readable, Writer, Writeable};
 
 use utils::test_logger;
 
@@ -26,7 +26,7 @@ impl Writer for VecWriter {
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(data)) {
 		let mut w = VecWriter(Vec::new());
-		monitor.serialize_for_disk(&mut w).unwrap();
+		monitor.write(&mut w).unwrap();
 		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(&mut Cursor::new(&w.0)).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);

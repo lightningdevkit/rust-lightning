@@ -617,6 +617,12 @@ impl Readable for ChannelMonitorUpdateStep {
 /// get_and_clear_pending_monitor_events or get_and_clear_pending_events are serialized to disk and
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
+///
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+/// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
+/// returned block hash and the the current chain and then reconnecting blocks to get to the
+/// best chain) upon deserializing the object!
 pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
@@ -755,15 +761,8 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
-	/// Writes this monitor into the given writer, suitable for writing to disk.
-	///
-	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
-	/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-	/// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
-	/// returned block hash and the the current chain and then reconnecting blocks to get to the
-	/// best chain) upon deserializing the object!
-	pub fn serialize_for_disk<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+impl<ChanSigner: ChannelKeys> Writeable for ChannelMonitor<ChanSigner> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
 		//serialization framework we have, we should migrate things over to it.
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;

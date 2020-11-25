@@ -26,7 +26,7 @@ use routing::router::get_route;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
-use util::ser::Readable;
+use util::ser::{Readable, Writeable};
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -105,7 +105,7 @@ fn test_monitor_and_persister_update_fail() {
 		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.serialize_for_disk(&mut w).unwrap();
+		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
 			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
 		assert!(new_monitor == *monitor);

@@ -45,7 +45,7 @@ trait DiskWriteable {
 
 impl<ChanSigner: ChannelKeys> DiskWriteable for ChannelMonitor<ChanSigner> {
 	fn write(&self, writer: &mut fs::File) -> Result<(), Error> {
-		self.serialize_for_disk(writer)
+		Writeable::write(self, writer)
 	}
 }
 
