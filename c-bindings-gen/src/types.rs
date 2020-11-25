@@ -1734,14 +1734,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path), generics,
 								&format!("{}", single_ident_generic_path_to_ident(path).unwrap()), is_ref, false, false, false);
 						} else {
-							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), is_ref, true);
+							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), generics, is_ref, true);
 						}
 					} else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = $item {
 						self.write_c_mangled_container_path_intern(w, elems.iter().collect(), generics,
 							&format!("{}Tuple", elems.len()), is_ref, false, false, false);
 					} else { unimplemented!(); }
 					write!(w, ") -> {} =\n\t{}::CResultTempl::<", mangled_container, Self::container_templ_path()).unwrap();
-					self.write_template_generics(w, &mut args.iter().map(|t| *t), is_ref, true);
+					self.write_template_generics(w, &mut args.iter().map(|t| *t), generics, is_ref, true);
 					writeln!(w, ">::{};\n", $call).unwrap();
 				} }
 			}
@@ -1770,7 +1770,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 
-	fn write_template_generics<'b, W: std::io::Write>(&self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, is_ref: bool, in_crate: bool) {
+	fn write_template_generics<'b, W: std::io::Write>(&self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool, in_crate: bool) {
 		for (idx, t) in args.enumerate() {
 			if idx != 0 {
 				write!(w, ", ").unwrap();
@@ -1780,11 +1780,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(w, "u8").unwrap();
 				} else {
 					write!(w, "{}::C{}TupleTempl<", Self::container_templ_path(), tup.elems.len()).unwrap();
-					self.write_template_generics(w, &mut tup.elems.iter(), is_ref, in_crate);
+					self.write_template_generics(w, &mut tup.elems.iter(), generics, is_ref, in_crate);
 					write!(w, ">").unwrap();
 				}
 			} else if let syn::Type::Path(p_arg) = t {
-				let resolved_generic = self.resolve_path(&p_arg.path, None);
+				let resolved_generic = self.resolve_path(&p_arg.path, generics);
 				if self.is_primitive(&resolved_generic) {
 					write!(w, "{}", resolved_generic).unwrap();
 				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
@@ -1794,19 +1794,19 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
 								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								is_ref, in_crate);
+								generics, is_ref, in_crate);
 						} else { unimplemented!(); }
 						write!(w, ">").unwrap();
 					} else if resolved_generic == "Option" {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
 								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								is_ref, in_crate);
+								generics, is_ref, in_crate);
 						} else { unimplemented!(); }
 					} else if in_crate {
 						write!(w, "{}", c_type).unwrap();
 					} else {
-						self.write_rust_type(w, None, &t);
+						self.write_rust_type(w, generics, &t);
 					}
 				} else {
 					// If we just write out resolved_generic, it may mostly work, however for
@@ -1826,7 +1826,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			} else if let syn::Type::Reference(r_arg) = t {
 				if let syn::Type::Path(p_arg) = &*r_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path, None);
+					let resolved = self.resolve_path(&p_arg.path, generics);
 					if self.crate_types.opaques.get(&resolved).is_some() {
 						write!(w, "crate::{}", resolved).unwrap();
 					} else {
@@ -1836,7 +1836,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				} else { unimplemented!(); }
 			} else if let syn::Type::Array(a_arg) = t {
 				if let syn::Type::Path(p_arg) = &*a_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path, None);
+					let resolved = self.resolve_path(&p_arg.path, generics);
 					assert!(self.is_primitive(&resolved));
 					if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(len), .. }) = &a_arg.len {
 						write!(w, "{}",
@@ -1853,12 +1853,12 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 			write!(&mut created_container, "#[no_mangle]\npub type {} = ", mangled_container).unwrap();
 			write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
+			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
 			write!(&mut created_container, "#[no_mangle]\npub static {}_free: extern \"C\" fn({}) = ", mangled_container, mangled_container).unwrap();
 			write!(&mut created_container, "{}::C{}Templ_free::<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
+			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
 			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref);
