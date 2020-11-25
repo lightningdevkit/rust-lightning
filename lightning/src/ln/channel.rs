@@ -33,7 +33,7 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitor
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::transaction_utils;
-use util::ser::{Readable, Writeable, Writer};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
@@ -4072,7 +4072,13 @@ impl<ChanSigner: ChannelKeys> Writeable for Channel<ChanSigner> {
 
 		self.latest_monitor_update_id.write(writer)?;
 
-		self.holder_keys.write(writer)?;
+		let mut key_data = VecWriter(Vec::new());
+		self.holder_keys.write(&mut key_data)?;
+		assert!(key_data.0.len() < std::usize::MAX);
+		assert!(key_data.0.len() < std::u32::MAX as usize);
+		(key_data.0.len() as u32).write(writer)?;
+		writer.write_all(&key_data.0[..])?;
+
 		self.shutdown_pubkey.write(writer)?;
 		self.destination_script.write(writer)?;
 
@@ -4237,8 +4243,10 @@ impl<ChanSigner: ChannelKeys> Writeable for Channel<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
-	fn read<R : ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+const MAX_ALLOC_SIZE: usize = 64*1024;
+impl<'a, ChanSigner: ChannelKeys, K: Deref> ReadableArgs<&'a K> for Channel<ChanSigner>
+		where K::Target: KeysInterface<ChanKeySigner = ChanSigner> {
+	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -4254,7 +4262,17 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for Channel<ChanSigner> {
 
 		let latest_monitor_update_id = Readable::read(reader)?;
 
-		let holder_keys = Readable::read(reader)?;
+		let keys_len: u32 = Readable::read(reader)?;
+		let mut keys_data = Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE));
+		while keys_data.len() != keys_len as usize {
+			// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
+			let mut data = [0; 1024];
+			let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.len())];
+			reader.read_exact(read_slice)?;
+			keys_data.extend_from_slice(read_slice);
+		}
+		let holder_keys = keys_source.read_chan_signer(&keys_data)?;
+
 		let shutdown_pubkey = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
 
@@ -4528,7 +4546,7 @@ mod tests {
 			self.chan_keys.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
-		fn read_chan_signer(&self, data: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> { panic!(); }
+		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

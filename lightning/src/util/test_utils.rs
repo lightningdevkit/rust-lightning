@@ -21,7 +21,7 @@ use ln::msgs::OptionalField;
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::events;
 use util::logger::{Logger, Level, Record};
-use util::ser::{Readable, Writer, Writeable};
+use util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -60,6 +60,21 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 	}
 }
 
+pub struct OnlyReadsKeysInterface {}
+impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
+	type ChanKeySigner = EnforcingChannelKeys;
+
+	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
+	fn get_destination_script(&self) -> Script { unreachable!(); }
+	fn get_shutdown_pubkey(&self) -> PublicKey { unreachable!(); }
+	fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingChannelKeys { unreachable!(); }
+	fn get_secure_random_bytes(&self) -> [u8; 32] { unreachable!(); }
+
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
+		EnforcingChannelKeys::read(&mut std::io::Cursor::new(reader))
+	}
+}
+
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
@@ -89,7 +104,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
@@ -122,7 +137,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-			&mut ::std::io::Cursor::new(&w.0)).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 

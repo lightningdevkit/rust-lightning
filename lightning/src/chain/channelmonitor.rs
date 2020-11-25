@@ -43,9 +43,9 @@ use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys};
+use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys, KeysInterface};
 use util::logger::Logger;
-use util::ser::{Readable, MaybeReadable, Writer, Writeable, U48};
+use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
 use util::events::Event;
 
@@ -2301,8 +2301,9 @@ pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor<ChanSigner>) {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+impl<'a, ChanSigner: ChannelKeys, K: KeysInterface<ChanKeySigner = ChanSigner>> ReadableArgs<&'a K>
+		for (BlockHash, ChannelMonitor<ChanSigner>) {
+	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
 				match $key {
@@ -2536,7 +2537,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for (BlockHash, ChannelMonitor
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler = Readable::read(reader)?;
+		let onchain_tx_handler = ReadableArgs::read(reader, keys_manager)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;

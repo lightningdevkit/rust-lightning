@@ -27,9 +27,9 @@ use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use chain::keysinterface::ChannelKeys;
+use chain::keysinterface::{ChannelKeys, KeysInterface};
 use util::logger::Logger;
-use util::ser::{Readable, Writer, Writeable};
+use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
 use std::collections::{HashMap, hash_map};
@@ -294,8 +294,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		self.prev_holder_commitment.write(writer)?;
 		self.prev_holder_htlc_sigs.write(writer)?;
 
-		self.key_storage.write(writer)?;
 		self.channel_transaction_parameters.write(writer)?;
+
+		let mut key_data = VecWriter(Vec::new());
+		self.key_storage.write(&mut key_data)?;
+		assert!(key_data.0.len() < std::usize::MAX);
+		assert!(key_data.0.len() < std::u32::MAX as usize);
+		(key_data.0.len() as u32).write(writer)?;
+		writer.write_all(&key_data.0[..])?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
 		for (ref ancestor_claim_txid, claim_tx_data) in self.pending_claim_requests.iter() {
@@ -333,8 +339,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigner> {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySigner> {
+	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 
 		let holder_commitment = Readable::read(reader)?;
@@ -342,8 +348,18 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 		let prev_holder_commitment = Readable::read(reader)?;
 		let prev_holder_htlc_sigs = Readable::read(reader)?;
 
-		let key_storage = Readable::read(reader)?;
 		let channel_parameters = Readable::read(reader)?;
+
+		let keys_len: u32 = Readable::read(reader)?;
+		let mut keys_data = Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE));
+		while keys_data.len() != keys_len as usize {
+			// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
+			let mut data = [0; 1024];
+			let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.len())];
+			reader.read_exact(read_slice)?;
+			keys_data.extend_from_slice(read_slice);
+		}
+		let key_storage = keys_manager.read_chan_signer(&keys_data)?;
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
