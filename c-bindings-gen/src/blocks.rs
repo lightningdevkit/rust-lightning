@@ -274,34 +274,12 @@ pub fn write_method_call_params<W: std::io::Write>(w: &mut W, sig: &syn::Signatu
 		syn::ReturnType::Type(_, rtype) => {
 			write!(w, ";\n\t{}", extra_indent).unwrap();
 
+			let self_segs_iter = first_seg_self(&*rtype);
 			if to_c && first_seg_self(&*rtype).is_some() {
 				// Assume rather blindly that we're returning an associated trait from a C fn call to a Rust trait object.
 				write!(w, "ret").unwrap();
-			} else if !to_c && first_seg_self(&*rtype).is_some() {
-				if let Some(mut remaining_path) = first_seg_self(&*rtype) {
-					if let Some(associated_seg) = get_single_remaining_path_seg(&mut remaining_path) {
-						// Build a fake path with only associated_seg and resolve it:
-						let mut segments = syn::punctuated::Punctuated::new();
-						segments.push(syn::PathSegment {
-							ident: associated_seg.clone(), arguments: syn::PathArguments::None });
-						let (_, real_path) = generics.unwrap().maybe_resolve_path(&syn::Path {
-							leading_colon: None, segments }).unwrap();
-
-						assert_eq!(real_path.segments.len(), 1);
-						let real_ident = &real_path.segments.iter().next().unwrap().ident;
-						if let Some(t) = types.crate_types.traits.get(&types.maybe_resolve_ident(&real_ident).unwrap()) {
-							// We're returning an associated trait from a Rust fn call to a C trait
-							// object.
-							writeln!(w, "let mut rust_obj = {} {{ inner: Box::into_raw(Box::new(ret)), is_owned: true }};", this_type).unwrap();
-							writeln!(w, "\t{}let mut ret = {}_as_{}(&rust_obj);", extra_indent, this_type, t.ident).unwrap();
-							writeln!(w, "\t{}// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn", extra_indent).unwrap();
-							writeln!(w, "\t{}rust_obj.inner = std::ptr::null_mut();", extra_indent).unwrap();
-							writeln!(w, "\t{}ret.free = Some({}_free_void);", extra_indent, this_type).unwrap();
-							writeln!(w, "\t{}ret", extra_indent).unwrap();
-							return;
-						}
-					}
-				}
+			} else if !to_c && self_segs_iter.is_some() && self_segs_iter.unwrap().next().is_none() {
+				// If we're returning "Self" (and not "Self::X"), just do it manually
 				write!(w, "{} {{ inner: Box::into_raw(Box::new(ret)), is_owned: true }}", this_type).unwrap();
 			} else if to_c {
 				let new_var = types.write_from_c_conversion_new_var(w, &syn::Ident::new("ret", Span::call_site()), rtype, generics);

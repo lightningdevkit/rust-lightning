@@ -1250,17 +1250,16 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					decl_lookup(w, &DeclType::StructImported, &resolved_path, is_ref, is_mut);
 				} else if self.crate_types.mirrored_enums.get(&resolved_path).is_some() {
 					decl_lookup(w, &DeclType::MirroredEnum, &resolved_path, is_ref, is_mut);
+				} else if let Some(t) = self.crate_types.traits.get(&resolved_path) {
+					decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
 				} else if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
-					if let Some(t) = self.crate_types.traits.get(&resolved_path) {
-						decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
-						return;
-					} else if let Some(_) = self.imports.get(ident) {
+					if let Some(_) = self.imports.get(ident) {
 						// crate_types lookup has to have succeeded:
 						panic!("Failed to print inline conversion for {}", ident);
 					} else if let Some(decl_type) = self.declared.get(ident) {
 						decl_lookup(w, decl_type, &self.maybe_resolve_ident(ident).unwrap(), is_ref, is_mut);
 					} else { unimplemented!(); }
-				}
+				} else { unimplemented!(); }
 			},
 			syn::Type::Array(a) => {
 				// We assume all arrays contain only [int_literal; X]s.
@@ -1343,6 +1342,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						DeclType::EnumIgnored|DeclType::StructImported if !is_ref =>
 							write!(w, "crate::{} {{ inner: Box::into_raw(Box::new(", decl_path).unwrap(),
 						DeclType::Trait(_) if is_ref => write!(w, "&").unwrap(),
+						DeclType::Trait(_) if !is_ref => {},
 						_ => panic!("{:?}", decl_path),
 					}
 				});
@@ -1365,6 +1365,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						write!(w, ", is_owned: true }}").unwrap(),
 					DeclType::EnumIgnored|DeclType::StructImported if !is_ref => write!(w, ")), is_owned: true }}").unwrap(),
 					DeclType::Trait(_) if is_ref => {},
+					DeclType::Trait(_) => {
+						// This is used when we're converting a concrete Rust type into a C trait
+						// for use when a Rust trait method returns an associated type.
+						// Because all of our C traits implement From<RustTypesImplementingTraits>
+						// we can just call .into() here and be done.
+						write!(w, ".into()").unwrap()
+					},
 					_ => unimplemented!(),
 				});
 	}

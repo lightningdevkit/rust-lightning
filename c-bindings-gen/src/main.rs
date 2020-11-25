@@ -600,6 +600,21 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							ExportStatus::Export => {},
 							ExportStatus::NoExport|ExportStatus::TestOnly => return,
 						}
+
+						// For cases where we have a concrete native object which implements a
+						// trait and need to return the C-mapped version of the trait, provide a
+						// From<> implementation which does all the work to ensure free is handled
+						// properly. This way we can call this method from deep in the
+						// type-conversion logic without actually knowing the concrete native type.
+						writeln!(w, "impl From<native{}> for crate::{} {{", ident, full_trait_path).unwrap();
+						writeln!(w, "\tfn from(obj: native{}) -> Self {{", ident).unwrap();
+						writeln!(w, "\t\tlet mut rust_obj = {} {{ inner: Box::into_raw(Box::new(obj)), is_owned: true }};", ident).unwrap();
+						writeln!(w, "\t\tlet mut ret = {}_as_{}(&rust_obj);", ident, trait_obj.ident).unwrap();
+						writeln!(w, "\t\t// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn").unwrap();
+						writeln!(w, "\t\trust_obj.inner = std::ptr::null_mut();").unwrap();
+						writeln!(w, "\t\tret.free = Some({}_free_void);", ident).unwrap();
+						writeln!(w, "\t\tret\n\t}}\n}}").unwrap();
+
 						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: *const {}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
 						writeln!(w, "\tcrate::{} {{", full_trait_path).unwrap();
 						writeln!(w, "\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
