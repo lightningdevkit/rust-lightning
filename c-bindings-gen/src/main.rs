@@ -454,7 +454,7 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, "#[allow(unused)]").unwrap();
 	writeln!(w, "/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy").unwrap();
 	writeln!(w, "impl {} {{", struct_name).unwrap();
-	writeln!(w, "\tpub(crate) fn take_ptr(mut self) -> *mut native{} {{", struct_name).unwrap();
+	writeln!(w, "\tpub(crate) fn take_inner(mut self) -> *mut native{} {{", struct_name).unwrap();
 	writeln!(w, "\t\tassert!(self.is_owned);").unwrap();
 	writeln!(w, "\t\tlet ret = self.inner;").unwrap();
 	writeln!(w, "\t\tself.inner = std::ptr::null_mut();").unwrap();

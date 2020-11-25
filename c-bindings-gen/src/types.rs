@@ -550,7 +550,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 			// List of structs we map (possibly during processing of other files):
 			"ln::features::InitFeatures" if is_ref => Some(".inner) }"),
-			"ln::features::InitFeatures" if !is_ref => Some(".take_ptr()) }"),
+			"ln::features::InitFeatures" if !is_ref => Some(".take_inner()) }"),
 
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
@@ -1410,7 +1410,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				|w, decl_type, _full_path, is_ref, _is_mut| match decl_type {
 					DeclType::StructImported if is_ref && ptr_for_ref => write!(w, ").inner }}").unwrap(),
 					DeclType::StructImported if is_ref => write!(w, ".inner }}").unwrap(),
-					DeclType::StructImported if !is_ref => write!(w, ".take_ptr()) }}").unwrap(),
+					DeclType::StructImported if !is_ref => write!(w, ".take_inner()) }}").unwrap(),
 					DeclType::MirroredEnum if is_ref => write!(w, ".to_native()").unwrap(),
 					DeclType::MirroredEnum => write!(w, ".into_native()").unwrap(),
 					DeclType::Trait(_) => {},
