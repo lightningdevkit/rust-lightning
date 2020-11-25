@@ -43,7 +43,7 @@ trait DiskWriteable {
 	fn write(&self, writer: &mut fs::File) -> Result<(), Error>;
 }
 
-impl<ChanSigner: ChannelKeys + Writeable> DiskWriteable for ChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys> DiskWriteable for ChannelMonitor<ChanSigner> {
 	fn write(&self, writer: &mut fs::File) -> Result<(), Error> {
 		self.serialize_for_disk(writer)
 	}
@@ -94,7 +94,7 @@ impl FilesystemPersister {
 	}
 
 	#[cfg(test)]
-	fn load_channel_data<ChanSigner: ChannelKeys + Readable + Writeable>(&self) ->
+	fn load_channel_data<ChanSigner: ChannelKeys + Readable>(&self) ->
 		Result<HashMap<OutPoint, ChannelMonitor<ChanSigner>>, ChannelMonitorUpdateErr> {
 		if let Err(_) = fs::create_dir_all(&self.path_to_channel_data) {
 			return Err(ChannelMonitorUpdateErr::PermanentFailure);
@@ -128,7 +128,7 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
+impl<ChanSigner: ChannelKeys + Readable + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		self.write_channel_data(funding_txo, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)

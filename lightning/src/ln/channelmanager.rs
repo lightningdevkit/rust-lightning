@@ -3693,7 +3693,7 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,

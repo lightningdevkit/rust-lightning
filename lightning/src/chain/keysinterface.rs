@@ -204,7 +204,7 @@ impl Readable for SpendableOutputDescriptor {
 // routine).
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
-pub trait ChannelKeys : Send+Clone {
+pub trait ChannelKeys : Send+Clone + Writeable {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.

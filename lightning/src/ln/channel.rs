@@ -4055,7 +4055,7 @@ impl Readable for InboundHTLCRemovalReason {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable> Writeable for Channel<ChanSigner> {
+impl<ChanSigner: ChannelKeys> Writeable for Channel<ChanSigner> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called but include holding cell updates (and obviously we don't modify self).

@@ -286,7 +286,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
+impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;

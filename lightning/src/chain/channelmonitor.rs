@@ -755,7 +755,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// Writes this monitor into the given writer, suitable for writing to disk.
 	///
 	/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
