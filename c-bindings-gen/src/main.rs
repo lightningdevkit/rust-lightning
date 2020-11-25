@@ -92,15 +92,18 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 					if supertrait.paren_token.is_some() || supertrait.lifetimes.is_some() {
 						unimplemented!();
 					}
-					if let Some(ident) = supertrait.path.get_ident() {
+					// First try to resolve path to find in-crate traits, but if that doesn't work
+					// assume its a prelude trait (eg Clone, etc) and just use the single ident.
+					if let Some(path) = $types.maybe_resolve_path(&supertrait.path, None) {
+						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
+							$( $pat => $e, )*
+						}
+					} else if let Some(ident) = supertrait.path.get_ident() {
 						match (&format!("{}", ident) as &str, &ident) {
 							$( $pat => $e, )*
 						}
 					} else {
-						let path = $types.resolve_path(&supertrait.path, None);
-						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
-							$( $pat => $e, )*
-						}
+						panic!("Supertrait unresolvable and not single-ident");
 					}
 				},
 				syn::TypeParamBound::Lifetime(_) => unimplemented!(),
@@ -661,8 +664,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								writeln!(w, "\t\tclone: Some({}_clone_void),", ident).unwrap();
 							},
 							(s, t) => {
-								if s.starts_with("util::") {
-									let supertrait_obj = types.crate_types.traits.get(s).unwrap();
+								if let Some(supertrait_obj) = types.crate_types.traits.get(s) {
 									writeln!(w, "\t\t{}: crate::{} {{", t, s).unwrap();
 									writeln!(w, "\t\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
 									writeln!(w, "\t\t\tfree: None,").unwrap();
@@ -753,9 +755,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						}
 						walk_supertraits!(trait_obj, types, (
 							(s, t) => {
-								if s.starts_with("util::") {
+								if let Some(supertrait_obj) = types.crate_types.traits.get(s).cloned() {
 									writeln!(w, "use {}::{} as native{}Trait;", types.orig_crate, s, t).unwrap();
-									let supertrait_obj = *types.crate_types.traits.get(s).unwrap();
 									for item in supertrait_obj.items.iter() {
 										match item {
 											syn::TraitItem::Method(m) => {
