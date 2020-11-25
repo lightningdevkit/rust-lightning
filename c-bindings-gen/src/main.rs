@@ -42,6 +42,10 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
 				writeln!(w, "#[no_mangle]").unwrap();
+				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", struct_for).unwrap();
+				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", struct_for).unwrap();
+				writeln!(w, "}}").unwrap();
+				writeln!(w, "#[no_mangle]").unwrap();
 				writeln!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> {} {{", struct_for, struct_for).unwrap();
 				writeln!(w, "\tif let Ok(res) = crate::c_types::deserialize_obj(ser) {{").unwrap();
 				writeln!(w, "\t\t{} {{ inner: Box::into_raw(Box::new(res)), is_owned: true }}", struct_for).unwrap();
@@ -65,6 +69,10 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, for_obj).unwrap();
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
+				writeln!(w, "#[no_mangle]").unwrap();
+				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
+				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
+				writeln!(w, "}}").unwrap();
 			},
 			"util::ser::Readable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
@@ -80,6 +88,28 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 	}
 }
 
+/// Convert "TraitA : TraitB" to a single function name and return type.
+///
+/// This is (obviously) somewhat over-specialized and only useful for TraitB's that only require a
+/// single function (eg for serialization).
+fn convert_trait_impl_field(trait_path: &str) -> (String, &'static str) {
+	match trait_path {
+		"util::ser::Writeable" => ("write".to_owned(), "crate::c_types::derived::CVec_u8Z"),
+		_ => unimplemented!(),
+	}
+}
+
+/// Companion to convert_trait_impl_field, write an assignment for the function defined by it for
+/// `for_obj` which implements the the trait at `trait_path`.
+fn write_trait_impl_field_assign<W: std::io::Write>(w: &mut W, trait_path: &str, for_obj: &syn::Ident) {
+	match trait_path {
+		"util::ser::Writeable" => {
+			writeln!(w, "\t\twrite: {}_write_void,", for_obj).unwrap();
+		},
+		_ => unimplemented!(),
+	}
+}
+
 /// Write out the impl block for a defined trait struct which has a supertrait
 fn do_write_impl_trait<W: std::io::Write>(w: &mut W, trait_path: &str, trait_name: &syn::Ident, for_obj: &str) {
 	match trait_path {
@@ -87,6 +117,13 @@ fn do_write_impl_trait<W: std::io::Write>(w: &mut W, trait_path: &str, trait_nam
 			writeln!(w, "impl lightning::{} for {} {{", trait_path, for_obj).unwrap();
 			writeln!(w, "\tfn get_and_clear_pending_msg_events(&self) -> Vec<lightning::util::events::MessageSendEvent> {{").unwrap();
 			writeln!(w, "\t\t<crate::{} as lightning::{}>::get_and_clear_pending_msg_events(&self.{})", trait_path, trait_path, trait_name).unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
+		},
+		"util::ser::Writeable" => {
+			writeln!(w, "impl lightning::{} for {} {{", trait_path, for_obj).unwrap();
+			writeln!(w, "\tfn write<W: lightning::util::ser::Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {{").unwrap();
+			writeln!(w, "\t\tlet vec = (self.write)(self.this_arg);").unwrap();
+			writeln!(w, "\t\tw.write_all(vec.as_slice())").unwrap();
 			writeln!(w, "\t}}\n}}").unwrap();
 		},
 		_ => panic!(),
@@ -227,10 +264,15 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 		},
 		("Send", _) => {}, ("Sync", _) => {},
 		(s, i) => {
-			// For in-crate supertraits, just store a C-mapped copy of the supertrait as a member.
-			if types.crate_types.traits.get(s).is_none() { unimplemented!(); }
-			writeln!(w, "\tpub {}: crate::{},", i, s).unwrap();
-			generated_fields.push(format!("{}", i));
+			generated_fields.push(if types.crate_types.traits.get(s).is_none() {
+				let (name, ret) = convert_trait_impl_field(s);
+				writeln!(w, "\tpub {}: extern \"C\" fn (this_arg: *const c_void) -> {},", name, ret).unwrap();
+				name
+			} else {
+				// For in-crate supertraits, just store a C-mapped copy of the supertrait as a member.
+				writeln!(w, "\tpub {}: crate::{},", i, s).unwrap();
+				format!("{}", i)
+			});
 		}
 	) );
 	writeln!(w, "\tpub free: Option<extern \"C\" fn(this_arg: *mut c_void)>,").unwrap();
@@ -670,6 +712,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							("Clone", _) => {
 								writeln!(w, "\t\tclone: Some({}_clone_void),", ident).unwrap();
 							},
+							("Sync", _) => {}, ("Send", _) => {},
+							("std::marker::Sync", _) => {}, ("std::marker::Send", _) => {},
 							(s, t) => {
 								if let Some(supertrait_obj) = types.crate_types.traits.get(s) {
 									writeln!(w, "\t\t{}: crate::{} {{", t, s).unwrap();
@@ -684,6 +728,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 										}
 									}
 									write!(w, "\t\t}},\n").unwrap();
+								} else {
+									write_trait_impl_field_assign(w, s, ident);
 								}
 							}
 						) );
