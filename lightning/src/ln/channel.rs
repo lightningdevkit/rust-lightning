@@ -4472,7 +4472,7 @@ mod tests {
 	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
-	use ln::msgs::{OptionalField, DataLossProtect};
+	use ln::msgs::{OptionalField, DataLossProtect, DecodeError};
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -4528,6 +4528,7 @@ mod tests {
 			self.chan_keys.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
+		fn read_chan_signer(&self, data: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

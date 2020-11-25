@@ -430,6 +430,10 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		}
 		self.backing.get_secure_random_bytes()
 	}
+
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
+		EnforcingChannelKeys::read(&mut std::io::Cursor::new(reader))
+	}
 }
 
 impl TestKeysInterface {
