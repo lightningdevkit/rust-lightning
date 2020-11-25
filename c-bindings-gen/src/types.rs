@@ -33,11 +33,6 @@ pub fn get_single_remaining_path_seg<'a, I: Iterator<Item=&'a syn::PathSegment>>
 	} else { None }
 }
 
-pub fn assert_single_path_seg<'a>(p: &'a syn::Path) -> &'a syn::Ident {
-	if p.leading_colon.is_some() { unimplemented!(); }
-	get_single_remaining_path_seg(&mut p.segments.iter()).unwrap()
-}
-
 pub fn single_ident_generic_path_to_ident(p: &syn::Path) -> Option<&syn::Ident> {
 	if p.segments.len() == 1 {
 		Some(&p.segments.iter().next().unwrap().ident)
@@ -134,6 +129,7 @@ impl<'a> GenericTypes<'a> {
 
 	/// Learn the generics in generics in the current context, given a TypeResolver.
 	pub fn learn_generics<'b, 'c>(&mut self, generics: &'a syn::Generics, types: &'b TypeResolver<'a, 'c>) -> bool {
+		// First learn simple generics...
 		for generic in generics.params.iter() {
 			match generic {
 				syn::GenericParam::Type(type_param) => {
@@ -161,6 +157,7 @@ impl<'a> GenericTypes<'a> {
 				_ => {},
 			}
 		}
+		// Then find generics where we are required to pass a Deref<Target=X> and pretend its just X.
 		if let Some(wh) = &generics.where_clause {
 			for pred in wh.predicates.iter() {
 				if let syn::WherePredicate::Type(t) = pred {
@@ -193,6 +190,38 @@ impl<'a> GenericTypes<'a> {
 		true
 	}
 
+	/// Learn the associated types from the trait in the current context.
+	pub fn learn_associated_types<'b, 'c>(&mut self, t: &'a syn::ItemTrait, types: &'b TypeResolver<'a, 'c>) {
+		for item in t.items.iter() {
+			match item {
+				&syn::TraitItem::Type(ref t) => {
+					if t.default.is_some() || t.generics.lt_token.is_some() { unimplemented!(); }
+					let mut bounds_iter = t.bounds.iter();
+					match bounds_iter.next().unwrap() {
+						syn::TypeParamBound::Trait(tr) => {
+							assert_simple_bound(&tr);
+							if let Some(mut path) = types.maybe_resolve_path(&tr.path, None) {
+								if types.skip_path(&path) { continue; }
+								// In general we handle Deref<Target=X> as if it were just X (and
+								// implement Deref<Target=Self> for relevant types). We don't
+								// bother to implement it for associated types, however, so we just
+								// ignore such bounds.
+								let new_ident = if path != "std::ops::Deref" {
+									path = "crate::".to_string() + &path;
+									Some(&tr.path)
+								} else { None };
+								self.typed_generics.last_mut().unwrap().insert(&t.ident, (path, new_ident));
+							} else { unimplemented!(); }
+						},
+						_ => unimplemented!(),
+					}
+					if bounds_iter.next().is_some() { unimplemented!(); }
+				},
+				_ => {},
+			}
+		}
+	}
+
 	/// Attempt to resolve an Ident as a generic parameter and return the full path.
 	pub fn maybe_resolve_ident<'b>(&'b self, ident: &syn::Ident) -> Option<&'b String> {
 		for gen in self.typed_generics.iter().rev() {
@@ -209,6 +238,18 @@ impl<'a> GenericTypes<'a> {
 			for gen in self.typed_generics.iter().rev() {
 				if let Some(res) = gen.get(ident).map(|(a, b)| (a, b.unwrap())) {
 					return Some(res);
+				}
+			}
+		} else {
+			// Associated types are usually specified as "Self::Generic", so we check for that
+			// explicitly here.
+			let mut it = path.segments.iter();
+			if path.segments.len() == 2 && format!("{}", it.next().unwrap().ident) == "Self" {
+				let ident = &it.next().unwrap().ident;
+				for gen in self.typed_generics.iter().rev() {
+					if let Some(res) = gen.get(ident).map(|(a, b)| (a, b.unwrap())) {
+						return Some(res);
+					}
 				}
 			}
 		}

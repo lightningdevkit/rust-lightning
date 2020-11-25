@@ -109,31 +109,6 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 	}
 } } }
 
-/// Gets a HashMap from name idents to the bounding trait for associated types.
-/// eg if a native trait has a "type T = TraitA", this will return a HashMap containing a mapping
-/// from "T" to "TraitA".
-fn learn_associated_types<'a>(t: &'a syn::ItemTrait) -> HashMap<&'a syn::Ident, &'a syn::Ident> {
-	let mut associated_types = HashMap::new();
-	for item in t.items.iter() {
-		match item {
-			&syn::TraitItem::Type(ref t) => {
-				if t.default.is_some() || t.generics.lt_token.is_some() { unimplemented!(); }
-				let mut bounds_iter = t.bounds.iter();
-				match bounds_iter.next().unwrap() {
-					syn::TypeParamBound::Trait(tr) => {
-						assert_simple_bound(&tr);
-						associated_types.insert(&t.ident, assert_single_path_seg(&tr.path));
-					},
-					_ => unimplemented!(),
-				}
-				if bounds_iter.next().is_some() { unimplemented!(); }
-			},
-			_ => {},
-		}
-	}
-	associated_types
-}
-
 /// Prints a C-mapped trait object containing a void pointer and a jump table for each function in
 /// the original trait.
 /// Implements the native Rust trait and relevant parent traits for the new C-mapped trait.
@@ -150,10 +125,10 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 
 	let mut gen_types = GenericTypes::new();
 	assert!(gen_types.learn_generics(&t.generics, types));
+	gen_types.learn_associated_types(&t, types);
 
 	writeln!(w, "#[repr(C)]\npub struct {} {{", trait_name).unwrap();
 	writeln!(w, "\tpub this_arg: *mut c_void,").unwrap();
-	let associated_types = learn_associated_types(t);
 	let mut generated_fields = Vec::new(); // Every field's name except this_arg, used in Clone generation
 	for item in t.items.iter() {
 		match item {
@@ -210,7 +185,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 
 				write!(w, "\tpub {}: extern \"C\" fn (", m.sig.ident).unwrap();
 				generated_fields.push(format!("{}", m.sig.ident));
-				write_method_params(w, &m.sig, &associated_types, "c_void", types, Some(&gen_types), true, false);
+				write_method_params(w, &m.sig, "c_void", types, Some(&gen_types), true, false);
 				writeln!(w, ",").unwrap();
 
 				gen_types.pop_ctx();
@@ -363,7 +338,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				}
 				write_method_var_decl_body(w, &m.sig, "\t", types, Some(&gen_types), true);
 				write!(w, "(self.{})(", m.sig.ident).unwrap();
-				write_method_call_params(w, &m.sig, &associated_types, "\t", types, Some(&gen_types), "", true);
+				write_method_call_params(w, &m.sig, "\t", types, Some(&gen_types), "", true);
 
 				writeln!(w, "\n\t}}").unwrap();
 				gen_types.pop_ctx();
@@ -605,7 +580,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						// That's great, except that they are unresolved idents, so if we learn
 						// mappings from a trai defined in a different file, we may mis-resolve or
 						// fail to resolve the mapped types.
-						let trait_associated_types = learn_associated_types(trait_obj);
+						gen_types.learn_associated_types(trait_obj, types);
 						let mut impl_associated_types = HashMap::new();
 						for item in i.items.iter() {
 							match item {
@@ -706,7 +681,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								write!(w, "extern \"C\" fn {}_{}_{}(", ident, trait_obj.ident, $m.sig.ident).unwrap();
 								gen_types.push_ctx();
 								assert!(gen_types.learn_generics(&$m.sig.generics, types));
-								write_method_params(w, &$m.sig, &trait_associated_types, "c_void", types, Some(&gen_types), true, true);
+								write_method_params(w, &$m.sig, "c_void", types, Some(&gen_types), true, true);
 								write!(w, " {{\n\t").unwrap();
 								write_method_var_decl_body(w, &$m.sig, "", types, Some(&gen_types), false);
 								let mut takes_self = false;
@@ -732,7 +707,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									},
 									_ => {},
 								}
-								write_method_call_params(w, &$m.sig, &trait_associated_types, "", types, Some(&gen_types), &real_type, false);
+								write_method_call_params(w, &$m.sig, "", types, Some(&gen_types), &real_type, false);
 								gen_types.pop_ctx();
 								write!(w, "\n}}\n").unwrap();
 								if let syn::ReturnType::Type(_, rtype) = &$m.sig.output {
@@ -819,7 +794,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									};
 									gen_types.push_ctx();
 									assert!(gen_types.learn_generics(&m.sig.generics, types));
-									write_method_params(w, &m.sig, &HashMap::new(), &ret_type, types, Some(&gen_types), false, true);
+									write_method_params(w, &m.sig, &ret_type, types, Some(&gen_types), false, true);
 									write!(w, " {{\n\t").unwrap();
 									write_method_var_decl_body(w, &m.sig, "", types, Some(&gen_types), false);
 									let mut takes_self = false;
@@ -837,7 +812,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									} else {
 										write!(w, "{}::{}::{}(", types.orig_crate, resolved_path, m.sig.ident).unwrap();
 									}
-									write_method_call_params(w, &m.sig, &HashMap::new(), "", types, Some(&gen_types), &ret_type, false);
+									write_method_call_params(w, &m.sig, "", types, Some(&gen_types), &ret_type, false);
 									gen_types.pop_ctx();
 									writeln!(w, "\n}}\n").unwrap();
 								}
@@ -1018,11 +993,11 @@ fn writeln_fn<'a, 'b, W: std::io::Write>(w: &mut W, f: &'a syn::ItemFn, types: &
 	if !gen_types.learn_generics(&f.sig.generics, types) { return; }
 
 	write!(w, "#[no_mangle]\npub extern \"C\" fn {}(", f.sig.ident).unwrap();
-	write_method_params(w, &f.sig, &HashMap::new(), "", types, Some(&gen_types), false, true);
+	write_method_params(w, &f.sig, "", types, Some(&gen_types), false, true);
 	write!(w, " {{\n\t").unwrap();
 	write_method_var_decl_body(w, &f.sig, "", types, Some(&gen_types), false);
 	write!(w, "{}::{}::{}(", types.orig_crate, types.module_path, f.sig.ident).unwrap();
-	write_method_call_params(w, &f.sig, &HashMap::new(), "", types, Some(&gen_types), "", false);
+	write_method_call_params(w, &f.sig, "", types, Some(&gen_types), "", false);
 	writeln!(w, "\n}}\n").unwrap();
 }
 
