@@ -29,7 +29,7 @@
 
 extern crate bitcoin;
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
-#[cfg(any(test, feature = "_test_utils"))] extern crate regex;
+#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))] extern crate regex;
 
 #[macro_use]
 pub mod util;
