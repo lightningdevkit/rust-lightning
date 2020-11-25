@@ -798,8 +798,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match full_path {
 			"Result" if !is_ref => {
 				Some(("match ",
-						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw({}.contents.result.take_ptr()) }})", var_name)),
-						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw({}.contents.err.take_ptr()) }})", var_name))],
+						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.result)) }})", var_name)),
+						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.err)) }})", var_name))],
 						")}"))
 			},
 			"Vec"|"Slice" if !is_ref => {
