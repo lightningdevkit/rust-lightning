@@ -80,6 +80,19 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 	}
 }
 
+/// Write out the impl block for a defined trait struct which has a supertrait
+fn do_write_impl_trait<W: std::io::Write>(w: &mut W, trait_path: &str, trait_name: &syn::Ident, for_obj: &str) {
+	match trait_path {
+		"util::events::MessageSendEventsProvider" => {
+			writeln!(w, "impl lightning::{} for {} {{", trait_path, for_obj).unwrap();
+			writeln!(w, "\tfn get_and_clear_pending_msg_events(&self) -> Vec<lightning::util::events::MessageSendEvent> {{").unwrap();
+			writeln!(w, "\t\t<crate::{} as lightning::{}>::get_and_clear_pending_msg_events(&self.{})", trait_path, trait_path, trait_name).unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
+		},
+		_ => panic!(),
+	}
+}
+
 // *******************************
 // *** Per-Type Printing Logic ***
 // *******************************
@@ -251,13 +264,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 			writeln!(w, "\t}}\n}}").unwrap();
 		},
 		(s, i) => {
-			if s != "util::events::MessageSendEventsProvider" { unimplemented!(); }
-			// XXX: We straight-up cheat here - instead of bothering to get the trait object we
-			// just print what we need since this is only used in one place.
-			writeln!(w, "impl lightning::{} for {} {{", s, trait_name).unwrap();
-			writeln!(w, "\tfn get_and_clear_pending_msg_events(&self) -> Vec<lightning::util::events::MessageSendEvent> {{").unwrap();
-			writeln!(w, "\t\t<crate::{} as lightning::{}>::get_and_clear_pending_msg_events(&self.{})", s, s, i).unwrap();
-			writeln!(w, "\t}}\n}}").unwrap();
+			do_write_impl_trait(w, s, i, &trait_name);
 		}
 	) );
 
