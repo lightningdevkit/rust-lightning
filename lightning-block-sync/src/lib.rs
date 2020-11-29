@@ -152,6 +152,16 @@ fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeader
 	Ok(())
 }
 
+async fn look_up_prev_header<'a, 'b>(block_source: &'a mut dyn BlockSource, header: &BlockHeaderData, head_blocks: &'b [BlockHeaderData], mainnet: bool) -> BlockSourceResult<(BlockHeaderData, &'b [BlockHeaderData])> {
+	if !head_blocks.is_empty() {
+		return Ok((*head_blocks.last().unwrap(), &head_blocks[..head_blocks.len() - 1]));
+	}
+
+	let prev_header = block_source.get_header(&header.header.prev_blockhash, Some(header.height - 1)).await?;
+	check_builds_on(&header, &prev_header, mainnet)?;
+	Ok((prev_header, head_blocks))
+}
+
 enum ForkStep {
 	ForkPoint(BlockHeaderData),
 	DisconnectBlock(BlockHeaderData),
@@ -161,60 +171,37 @@ fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHead
 	Box::pin(async move {
 		if prev_header.header.prev_blockhash == current_header.header.prev_blockhash {
 			// Found the fork, get the fork point header and we're done!
-			steps_tx.push(ForkStep::DisconnectBlock(prev_header.clone()));
+			let (fork_point, _) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
+			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
 			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			if !head_blocks.is_empty() {
-				let new_prev_header = head_blocks.last().unwrap();
-				steps_tx.push(ForkStep::ForkPoint(new_prev_header.clone()));
-			} else {
-				let new_prev_header = block_source.get_header(&prev_header.header.prev_blockhash, Some(prev_header.height - 1)).await?;
-				check_builds_on(&prev_header, &new_prev_header, mainnet)?;
-				steps_tx.push(ForkStep::ForkPoint(new_prev_header.clone()));
-			}
+			steps_tx.push(ForkStep::ForkPoint(fork_point));
 		} else if current_header.height == 0 {
 			// We're connect through genesis, we must be on a different chain!
 			return Err(BlockSourceError::Persistent);
 		} else if prev_header.height < current_header.height {
+			steps_tx.push(ForkStep::ConnectBlock(current_header));
 			if prev_header.height + 1 == current_header.height &&
 					prev_header.header.block_hash() == current_header.header.prev_blockhash {
 				// Current header is the one above prev_header, we're done!
-				steps_tx.push(ForkStep::ConnectBlock(current_header));
 			} else {
 				// Current is higher than the prev, walk current down by listing blocks we need to
 				// connect
-				let new_cur_header = block_source.get_header(&current_header.header.prev_blockhash, Some(current_header.height - 1)).await?;
-				check_builds_on(&current_header, &new_cur_header, mainnet)?;
-				steps_tx.push(ForkStep::ConnectBlock(current_header));
-				find_fork_step(steps_tx, new_cur_header, prev_header, block_source, head_blocks, mainnet).await?;
+				let (current_header, _) = look_up_prev_header(block_source, &current_header, &[], mainnet).await?;
+				find_fork_step(steps_tx, current_header, prev_header, block_source, head_blocks, mainnet).await?;
 			}
 		} else if prev_header.height > current_header.height {
 			// Previous is higher, walk it back and recurse
-			steps_tx.push(ForkStep::DisconnectBlock(prev_header.clone()));
-			if !head_blocks.is_empty() {
-				let new_prev_header = head_blocks.last().unwrap();
-				let new_head_blocks = &head_blocks[..head_blocks.len() - 1];
-				find_fork_step(steps_tx, current_header, new_prev_header, block_source, new_head_blocks, mainnet).await?;
-			} else {
-				let new_prev_header = block_source.get_header(&prev_header.header.prev_blockhash, Some(prev_header.height - 1)).await?;
-				check_builds_on(&prev_header, &new_prev_header, mainnet)?;
-				find_fork_step(steps_tx, current_header, &new_prev_header, block_source, head_blocks, mainnet).await?;
-			}
+			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
+			let (prev_header, head_blocks) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
+			find_fork_step(steps_tx, current_header, &prev_header, block_source, head_blocks, mainnet).await?;
 		} else {
 			// Target and current are at the same height, but we're not at fork yet, walk
 			// both back and recurse
-			let new_cur_header = block_source.get_header(&current_header.header.prev_blockhash, Some(current_header.height - 1)).await?;
-			check_builds_on(&current_header, &new_cur_header, mainnet)?;
 			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			steps_tx.push(ForkStep::DisconnectBlock(prev_header.clone()));
-			if !head_blocks.is_empty() {
-				let new_prev_header = head_blocks.last().unwrap();
-				let new_head_blocks = &head_blocks[..head_blocks.len() - 1];
-				find_fork_step(steps_tx, new_cur_header, new_prev_header, block_source, new_head_blocks, mainnet).await?;
-			} else {
-				let new_prev_header = block_source.get_header(&prev_header.header.prev_blockhash, Some(prev_header.height - 1)).await?;
-				check_builds_on(&prev_header, &new_prev_header, mainnet)?;
-				find_fork_step(steps_tx, new_cur_header, &new_prev_header, block_source, head_blocks, mainnet).await?;
-			}
+			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
+			let (current_header, _) = look_up_prev_header(block_source, &current_header, &[], mainnet).await?;
+			let (prev_header, head_blocks) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
+			find_fork_step(steps_tx, current_header, &prev_header, block_source, head_blocks, mainnet).await?;
 		}
 		Ok(())
 	})
