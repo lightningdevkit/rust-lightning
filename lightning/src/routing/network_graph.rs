@@ -55,6 +55,7 @@ const MAX_REPLY_CHANNEL_RANGE_PER_QUERY: usize = 250;
 /// Represents the network as nodes and channels between them
 #[derive(PartialEq)]
 pub struct NetworkGraph {
+	genesis_hash: BlockHash,
 	channels: BTreeMap<u64, ChannelInfo>,
 	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
@@ -87,13 +88,10 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	/// Chain monitor is used to make sure announced channels exist on-chain,
 	/// channel data is correct, and that the announcement is signed with
 	/// channel owners' keys.
-	pub fn new(chain_access: Option<C>, logger: L) -> Self {
+	pub fn new(genesis_hash: BlockHash, chain_access: Option<C>, logger: L) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph: RwLock::new(NetworkGraph {
-				channels: BTreeMap::new(),
-				nodes: BTreeMap::new(),
-			}),
+			network_graph: RwLock::new(NetworkGraph::new(genesis_hash)),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
 			pending_events: Mutex::new(vec![]),
@@ -903,6 +901,7 @@ impl Readable for NodeInfo {
 
 impl Writeable for NetworkGraph {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.genesis_hash.write(writer)?;
 		(self.channels.len() as u64).write(writer)?;
 		for (ref chan_id, ref chan_info) in self.channels.iter() {
 			(*chan_id).write(writer)?;
@@ -919,6 +918,7 @@ impl Writeable for NetworkGraph {
 
 impl Readable for NetworkGraph {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = BTreeMap::new();
 		for _ in 0..channels_count {
@@ -934,6 +934,7 @@ impl Readable for NetworkGraph {
 			nodes.insert(node_id, node_info);
 		}
 		Ok(NetworkGraph {
+			genesis_hash,
 			channels,
 			nodes,
 		})
@@ -979,8 +980,9 @@ impl NetworkGraph {
 	}
 
 	/// Creates a new, empty, network graph.
-	pub fn new() -> NetworkGraph {
+	pub fn new(genesis_hash: BlockHash) -> NetworkGraph {
 		Self {
+			genesis_hash,
 			channels: BTreeMap::new(),
 			nodes: BTreeMap::new(),
 		}
@@ -1365,7 +1367,8 @@ mod tests {
 	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_hash, None, Arc::clone(&logger));
 		(secp_ctx, net_graph_msg_handler)
 	}
 
@@ -1526,7 +1529,7 @@ mod tests {
 		};
 
 		// Test if the UTXO lookups were not supported
-		let mut net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
+		let mut net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
@@ -1550,7 +1553,7 @@ mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
+		net_graph_msg_handler = NetGraphMsgHandler::new(chain_source.clone().genesis_hash, Some(chain_source.clone()), Arc::clone(&logger));
 		unsigned_announcement.short_channel_id += 1;
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
@@ -1674,7 +1677,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();

@@ -19,6 +19,7 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::constants::Network;
+use bitcoin::blockdata::constants::genesis_block;
 
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::HashEngine as TraitImportEngine;
@@ -343,7 +344,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 	let channelmanager = Arc::new(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0));
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
-	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(None, Arc::clone(&logger)));
+	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(genesis_block(Network::Bitcoin).header.block_hash(), None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
@@ -609,7 +610,7 @@ mod tests {
 		// What each byte represents is broken down below, and then everything is concatenated into
 		// one large test at the end (you want %s/ -.*//g %s/\n\| \|\t\|\///g).
 
-		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length + 
+		// Following BOLT 8, lightning message on the wire are: 2-byte encrypted message length +
 		// 16-byte MAC of the encrypted message length + encrypted Lightning message + 16-byte MAC
 		// of the Lightning message
 		// I.e 2nd inbound read, len 18 : 0006 (encrypted message length) + 03000000000000000000000000000000 (MAC of the encrypted message length)

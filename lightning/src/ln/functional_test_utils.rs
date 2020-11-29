@@ -1171,7 +1171,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let payment_count = Rc::new(RefCell::new(0));
 
 	for i in 0..node_count {
-		let net_graph_msg_handler = NetGraphMsgHandler::new(None, cfgs[i].logger);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_source.genesis_hash, None, cfgs[i].logger);
 		nodes.push(Node{ chain_source: cfgs[i].chain_source,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
