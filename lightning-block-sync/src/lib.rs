@@ -18,6 +18,9 @@ pub mod http_endpoint;
 
 pub mod poller;
 
+#[cfg(test)]
+mod test_utils;
+
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 mod utils;
 
