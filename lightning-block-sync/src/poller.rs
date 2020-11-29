@@ -123,16 +123,23 @@ mod tests {
 	}
 
 	impl Blockchain {
-		fn with_height(height: usize) -> Self {
-			let mut blocks = Vec::with_capacity(height + 1);
-			blocks.push(genesis_block(Network::Bitcoin));
+		fn default() -> Self {
+			Blockchain::with_network(Network::Bitcoin)
+		}
 
+		fn with_network(network: Network) -> Self {
+			let blocks = vec![genesis_block(network)];
+			Self { blocks, ..Default::default() }
+		}
+
+		fn with_height(mut self, height: usize) -> Self {
+			self.blocks.reserve_exact(height);
 			let bits = BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0xff; 32]));
 			for i in 1..=height {
-				let prev_block = &blocks[i - 1];
+				let prev_block = &self.blocks[i - 1];
 				let prev_blockhash = prev_block.block_hash();
 				let time = prev_block.header.time + height as u32;
-				blocks.push(Block {
+				self.blocks.push(Block {
 					header: BlockHeader {
 						version: 0,
 						prev_blockhash,
@@ -144,8 +151,7 @@ mod tests {
 					txdata: vec![],
 				});
 			}
-
-			Self { blocks, ..Default::default() }
+			self
 		}
 
 		fn without_headers(self) -> Self {
@@ -223,7 +229,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_empty_chain() {
-		let mut chain = Blockchain::with_height(0);
+		let mut chain = Blockchain::default().with_height(0);
 		let best_chain_tip = chain.tip();
 		chain.disconnect_tip();
 
@@ -236,7 +242,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_without_headers() {
-		let mut chain = Blockchain::with_height(1).without_headers();
+		let mut chain = Blockchain::default().with_height(1).without_headers();
 		let best_chain_tip = chain.at_height(0);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
@@ -248,7 +254,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_invalid_pow() {
-		let mut chain = Blockchain::with_height(1);
+		let mut chain = Blockchain::default().with_height(1);
 		let best_chain_tip = chain.at_height(0);
 
 		// Invalidate the tip by changing its target.
@@ -264,7 +270,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_malformed_headers() {
-		let mut chain = Blockchain::with_height(1).malformed_headers();
+		let mut chain = Blockchain::default().with_height(1).malformed_headers();
 		let best_chain_tip = chain.at_height(0);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
@@ -276,7 +282,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_common_tip() {
-		let mut chain = Blockchain::with_height(0);
+		let mut chain = Blockchain::default().with_height(0);
 		let best_chain_tip = chain.tip();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
@@ -288,7 +294,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_uncommon_tip_but_equal_chainwork() {
-		let mut chain = Blockchain::with_height(1);
+		let mut chain = Blockchain::default().with_height(1);
 		let best_chain_tip = chain.tip();
 
 		// Change the nonce to get a different block hash with the same chainwork.
@@ -307,7 +313,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_worse_tip() {
-		let mut chain = Blockchain::with_height(1);
+		let mut chain = Blockchain::default().with_height(1);
 		let best_chain_tip = chain.tip();
 		chain.disconnect_tip();
 
@@ -323,7 +329,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn poll_chain_with_better_tip() {
-		let mut chain = Blockchain::with_height(1);
+		let mut chain = Blockchain::default().with_height(1);
 		let worse_chain_tip = chain.at_height(0);
 
 		let best_chain_tip = chain.tip();
