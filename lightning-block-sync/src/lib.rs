@@ -172,15 +172,15 @@ enum ForkStep {
 }
 fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, head_blocks: &'a [BlockHeaderData], mainnet: bool) -> AsyncBlockSourceResult<'a, ()> {
 	Box::pin(async move {
-		if prev_header.header.prev_blockhash == current_header.header.prev_blockhash {
+		if current_header.height == 0 {
+			// We're connect through genesis, we must be on a different chain!
+			return Err(BlockSourceError::Persistent);
+		} else if prev_header.header.prev_blockhash == current_header.header.prev_blockhash {
 			// Found the fork, get the fork point header and we're done!
 			let (fork_point, _) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
 			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
 			steps_tx.push(ForkStep::ConnectBlock(current_header));
 			steps_tx.push(ForkStep::ForkPoint(fork_point));
-		} else if current_header.height == 0 {
-			// We're connect through genesis, we must be on a different chain!
-			return Err(BlockSourceError::Persistent);
 		} else if prev_header.height < current_header.height {
 			steps_tx.push(ForkStep::ConnectBlock(current_header));
 			if prev_header.height + 1 == current_header.height &&
