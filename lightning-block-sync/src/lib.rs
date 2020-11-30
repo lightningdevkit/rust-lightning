@@ -329,7 +329,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 /// to bring each ChannelMonitor, as well as the overall ChannelManager, into sync with each other.
 ///
 /// Once you have them all at the same block, you should switch to using MicroSPVClient.
-pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, mut chain_notifier: CL) {
+pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, chain_notifier: &mut CL) {
 	if &old_block[..] == &[0; 32] { return; }
 
 	let new_header = block_source.get_header(&new_block, None).await.unwrap();
@@ -338,7 +338,7 @@ pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(
 	let old_header = block_source.get_header(&old_block, None).await.unwrap();
 	assert_eq!(old_header.header.block_hash(), old_block);
 	stateless_check_header(&old_header.header).unwrap();
-	sync_chain_monitor(new_header, &old_header, block_source, &mut chain_notifier, &mut Vec::new(), false).await.unwrap();
+	sync_chain_monitor(new_header, &old_header, block_source, chain_notifier, &mut Vec::new(), false).await.unwrap();
 }
 
 /// Keep the chain that a chain listener knows about up-to-date with the best chain from any of the
@@ -445,6 +445,100 @@ where P: Poll<'a, B>,
 				debug_assert!(header.chainwork <= self.chain_tip.1.chainwork);
 				false
 			},
+		}
+	}
+}
+
+#[cfg(test)]
+mod sync_tests {
+	use crate::test_utils::{Blockchain, MockChainListener};
+	use super::*;
+
+	use bitcoin::network::constants::Network;
+
+	#[tokio::test]
+	async fn sync_from_same_chain() {
+		let mut chain = Blockchain::default().with_height(3);
+
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+		let mut listener = MockChainListener::new()
+			.expect_block_connected(chain.at_height(2))
+			.expect_block_connected(new_tip);
+		let mut cache = (0..=1).map(|i| chain.at_height(i)).collect();
+		match sync_chain_monitor(new_tip, &old_tip, &mut chain, &mut listener, &mut cache, false).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_different_chains() {
+		let mut test_chain = Blockchain::with_network(Network::Testnet).with_height(1);
+		let main_chain = Blockchain::with_network(Network::Bitcoin).with_height(1);
+
+		let new_tip = test_chain.tip();
+		let old_tip = main_chain.tip();
+		let mut listener = MockChainListener::new();
+		let mut cache = (0..=1).map(|i| main_chain.at_height(i)).collect();
+		match sync_chain_monitor(new_tip, &old_tip, &mut test_chain, &mut listener, &mut cache, false).await {
+			Err((e, _)) => assert_eq!(e, BlockSourceError::Persistent),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_equal_length_fork() {
+		let main_chain = Blockchain::default().with_height(2);
+		let mut fork_chain = main_chain.fork_at_height(1);
+
+		let new_tip = fork_chain.tip();
+		let old_tip = main_chain.tip();
+		let mut listener = MockChainListener::new()
+			.expect_block_disconnected(old_tip)
+			.expect_block_connected(new_tip);
+		let mut cache = (0..=2).map(|i| main_chain.at_height(i)).collect();
+		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_shorter_fork() {
+		let main_chain = Blockchain::default().with_height(3);
+		let mut fork_chain = main_chain.fork_at_height(1);
+		fork_chain.disconnect_tip();
+
+		let new_tip = fork_chain.tip();
+		let old_tip = main_chain.tip();
+		let mut listener = MockChainListener::new()
+			.expect_block_disconnected(old_tip)
+			.expect_block_disconnected(main_chain.at_height(2))
+			.expect_block_connected(new_tip);
+		let mut cache = (0..=3).map(|i| main_chain.at_height(i)).collect();
+		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_longer_fork() {
+		let mut main_chain = Blockchain::default().with_height(3);
+		let mut fork_chain = main_chain.fork_at_height(1);
+		main_chain.disconnect_tip();
+
+		let new_tip = fork_chain.tip();
+		let old_tip = main_chain.tip();
+		let mut listener = MockChainListener::new()
+			.expect_block_disconnected(old_tip)
+			.expect_block_connected(fork_chain.at_height(2))
+			.expect_block_connected(new_tip);
+		let mut cache = (0..=2).map(|i| main_chain.at_height(i)).collect();
+		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
 		}
 	}
 }
