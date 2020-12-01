@@ -155,14 +155,16 @@ fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeader
 	Ok(())
 }
 
-async fn look_up_prev_header<'a, 'b>(block_source: &'a mut dyn BlockSource, header: &BlockHeaderData, head_blocks: &'b [BlockHeaderData], mainnet: bool) -> BlockSourceResult<(BlockHeaderData, &'b [BlockHeaderData])> {
-	if !head_blocks.is_empty() {
-		return Ok((*head_blocks.last().unwrap(), &head_blocks[..head_blocks.len() - 1]));
+async fn look_up_prev_header<'a, 'b>(block_source: &'a mut dyn BlockSource, header: &BlockHeaderData, cache: &mut &'b [BlockHeaderData], mainnet: bool) -> BlockSourceResult<BlockHeaderData> {
+	if !cache.is_empty() {
+		let prev_header = *cache.last().unwrap();
+		*cache = &cache[..cache.len() - 1];
+		return Ok(prev_header);
 	}
 
 	let prev_header = block_source.get_header(&header.header.prev_blockhash, Some(header.height - 1)).await?;
 	check_builds_on(&header, &prev_header, mainnet)?;
-	Ok((prev_header, head_blocks))
+	Ok(prev_header)
 }
 
 enum ForkStep {
@@ -170,43 +172,48 @@ enum ForkStep {
 	DisconnectBlock(BlockHeaderData),
 	ConnectBlock(BlockHeaderData),
 }
-fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, head_blocks: &'a [BlockHeaderData], mainnet: bool) -> AsyncBlockSourceResult<'a, ()> {
-	Box::pin(async move {
-		if current_header.height == 0 {
-			// Found a different chain
-			Err(BlockSourceError::Persistent)
-		} else if current_header.height - 1 == prev_header.height &&
-				current_header.header.prev_blockhash == prev_header.header.block_hash() {
-			// Found parent without a chain fork
-			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			Ok(())
-		} else if current_header.header.prev_blockhash == prev_header.header.prev_blockhash {
-			// Found parent with a chain fork
-			let (fork_point, _) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
-			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
-			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			steps_tx.push(ForkStep::ForkPoint(fork_point));
-			Ok(())
-		} else if current_header.height < prev_header.height {
-			// Shorter current chain
-			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
-			let (prev_header, head_blocks) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
-			find_fork_step(steps_tx, current_header, &prev_header, block_source, head_blocks, mainnet).await
-		} else if current_header.height > prev_header.height {
-			// Longer current chain
-			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			let (current_header, _) = look_up_prev_header(block_source, &current_header, &[], mainnet).await?;
-			find_fork_step(steps_tx, current_header, prev_header, block_source, head_blocks, mainnet).await
-		} else {
-			// Equal length chains
-			steps_tx.push(ForkStep::ConnectBlock(current_header));
-			steps_tx.push(ForkStep::DisconnectBlock(*prev_header));
-			let (current_header, _) = look_up_prev_header(block_source, &current_header, &[], mainnet).await?;
-			let (prev_header, head_blocks) = look_up_prev_header(block_source, prev_header, head_blocks, mainnet).await?;
-			find_fork_step(steps_tx, current_header, &prev_header, block_source, head_blocks, mainnet).await
+
+async fn find_fork_step<'a>(steps_tx: &'a mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &'a BlockHeaderData, block_source: &'a mut dyn BlockSource, head_blocks: &'a [BlockHeaderData], mainnet: bool) -> BlockSourceResult<()> {
+	let mut current = current_header;
+	let mut previous = *prev_header;
+	let mut cache = &head_blocks[..];
+	loop {
+		// Found a different genesis block.
+		if current.height == 0 {
+			return Err(BlockSourceError::Persistent);
 		}
-	})
+
+		// Found the parent block.
+		if current.height - 1 == previous.height &&
+				current.header.prev_blockhash == previous.header.block_hash() {
+			steps_tx.push(ForkStep::ConnectBlock(current));
+			return Ok(());
+		}
+
+		// Found a chain fork.
+		if current.header.prev_blockhash == previous.header.prev_blockhash {
+			let fork_point = look_up_prev_header(block_source, &previous, &mut cache, mainnet).await?;
+			steps_tx.push(ForkStep::DisconnectBlock(previous));
+			steps_tx.push(ForkStep::ConnectBlock(current));
+			steps_tx.push(ForkStep::ForkPoint(fork_point));
+			return Ok(());
+		}
+
+		// Walk back the chain, finding blocks needed to connect and disconnect. Only walk back the
+		// header with the greater height, or both if equal heights.
+		let current_height = current.height;
+		let previous_height = previous.height;
+		if current_height <= previous_height {
+			steps_tx.push(ForkStep::DisconnectBlock(previous));
+			previous = look_up_prev_header(block_source, &previous, &mut cache, mainnet).await?;
+		}
+		if current_height >= previous_height {
+			steps_tx.push(ForkStep::ConnectBlock(current));
+			current = look_up_prev_header(block_source, &current, &mut &[][..], mainnet).await?;
+		}
+	}
 }
+
 /// Walks backwards from current_header and prev_header finding the fork and sending ForkStep events
 /// into the steps_tx Sender. There is no ordering guarantee between different ForkStep types, but
 /// DisconnectBlock and ConnectBlock events are each in reverse, height-descending order.
