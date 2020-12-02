@@ -39,6 +39,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
 use std::collections::{HashMap, HashSet};
+use chain::keysinterface::InMemoryChannelKeys;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -79,17 +80,19 @@ pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingChannelKeys>>,
+	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
 	// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingChannelKeys>) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingChannelKeys>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			keys_manager,
 			update_ret: Mutex::new(None),
 			next_update_ret: Mutex::new(None),
 		}
@@ -104,7 +107,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-			&mut ::std::io::Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
@@ -137,7 +140,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
-			&mut ::std::io::Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap().1;
+			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 

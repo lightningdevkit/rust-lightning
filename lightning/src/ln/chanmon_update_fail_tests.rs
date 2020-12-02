@@ -109,7 +109,7 @@ fn test_monitor_and_persister_update_fail() {
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister);
+		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert!(chain_mon.watch_channel(outpoint, new_monitor).is_ok());
 		chain_mon
 	};
