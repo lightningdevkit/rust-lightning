@@ -834,18 +834,22 @@ pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvide
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
-	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: &ReplyChannelRange) -> Result<(), LightningError>;
+	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError>;
 	/// Handles the reply of a query we initiated asking for routing gossip
 	/// messages for a list of channels. We should receive this message when
 	/// a node has completed its best effort to send us the pertaining routing
 	/// gossip messages.
-	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: &ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
+	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send a list of short_channel_ids
-	/// for the requested range of blocks.
-	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: &QueryChannelRange) -> Result<(), LightningError>;
+	/// for the requested range of blocks. There are potential DoS vectors when
+	/// handling inbound queries. Handling requests with first_blocknum very far
+	/// away may trigger repeated disk I/O if the NetworkGraph is not fully in-memory.
+	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send routing gossip messages for a
-	/// list of short_channel_ids.
-	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: &QueryShortChannelIds) -> Result<(), LightningError>;
+	/// list of short_channel_ids. There are potential DoS vectors when handling
+	/// inbound queries. Handling requests with first_blocknum very far away may
+	/// trigger repeated disk I/O if the NetworkGraph is not fully in-memory.
+	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
 mod fuzzy_internal_msgs {

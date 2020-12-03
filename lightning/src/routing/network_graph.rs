@@ -246,10 +246,8 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	/// stateless, it does not validate the sequencing of replies for multi-
 	/// reply ranges. It does not validate whether the reply(ies) cover the
 	/// queried range. It also does not filter SCIDs to only those in the
-	/// original query range. In the event of a failure, we may have received
-	/// some channel information. Before trying with another peer, the
-	/// caller should update its set of SCIDs that need to be queried.
-	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: &ReplyChannelRange) -> Result<(), LightningError> {
+	/// original query range.
+	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError> {
 		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, full_information={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.full_information, msg.short_channel_ids.len(),);
 
 		// Validate that the remote node maintains up-to-date channel
@@ -263,20 +261,13 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			});
 		}
 
-		// Copy the SCIDs into a new vector to be sent in the SCID query
-		let scid_size = msg.short_channel_ids.len();
-		let mut short_channel_ids: Vec<u64> = Vec::with_capacity(scid_size);
-		for scid in msg.short_channel_ids.iter() {
-			short_channel_ids.push(scid.clone());
-		}
-
-		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), scid_size);
+		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), msg.short_channel_ids.len());
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::MessageSendEvent::SendShortIdsQuery {
 			node_id: their_node_id.clone(),
 			msg: QueryShortChannelIds {
-				chain_hash: msg.chain_hash.clone(),
-				short_channel_ids,
+				chain_hash: msg.chain_hash,
+				short_channel_ids: msg.short_channel_ids,
 			}
 		});
 
@@ -287,7 +278,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	/// gossip messages. In the event of a failure, we may have received
 	/// some channel information. Before trying with another peer, the
 	/// caller should update its set of SCIDs that need to be queried.
-	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: &ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
+	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
 		log_debug!(self.logger, "Handling reply_short_channel_ids_end peer={}, full_information={}", log_pubkey!(their_node_id), msg.full_information);
 
 		// If the remote node does not have up-to-date information for the
@@ -303,10 +294,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		Ok(())
 	}
 
-	/// There are potential DoS vectors when handling inbound queries.
-	/// Handling requests with first_blocknum very far away may trigger repeated
-	/// disk I/O if the NetworkGraph is not fully in-memory.
-	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: &QueryChannelRange) -> Result<(), LightningError> {
+	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: QueryChannelRange) -> Result<(), LightningError> {
 		// TODO
 		Err(LightningError {
 			err: String::from("Not implemented"),
@@ -314,10 +302,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		})
 	}
 
-	/// There are potential DoS vectors when handling inbound queries.
-	/// Handling requests with first_blocknum very far away may trigger repeated
-	/// disk I/O if the NetworkGraph is not fully in-memory.
-	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: &QueryShortChannelIds) -> Result<(), LightningError> {
+	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: QueryShortChannelIds) -> Result<(), LightningError> {
 		// TODO
 		Err(LightningError {
 			err: String::from("Not implemented"),
@@ -1982,7 +1967,7 @@ mod tests {
 		// matching the SCIDs in the reply
 		{
 			// Handle a single successful reply that encompasses the queried channel range
-			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, &ReplyChannelRange {
+			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
 				chain_hash,
 				full_information: true,
 				first_blocknum: 0,
@@ -2023,7 +2008,7 @@ mod tests {
 		// full_information=false and short_channel_ids=[] as the signal.
 		{
 			// Handle the reply indicating the peer was unable to fulfill our request.
-			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, &ReplyChannelRange {
+			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
 				chain_hash,
 				full_information: false,
 				first_blocknum: 1000,
@@ -2045,7 +2030,7 @@ mod tests {
 
 		// Test receipt of a successful reply
 		{
-			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, &ReplyShortChannelIdsEnd {
+			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
 				chain_hash,
 				full_information: true,
 			});
@@ -2055,7 +2040,7 @@ mod tests {
 		// Test receipt of a reply that indicates the peer does not maintain up-to-date information
 		// for the chain_hash requested in the query.
 		{
-			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, &ReplyShortChannelIdsEnd {
+			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
 				chain_hash,
 				full_information: false,
 			});
@@ -2072,7 +2057,7 @@ mod tests {
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
-		let result = net_graph_msg_handler.handle_query_channel_range(&node_id, &QueryChannelRange {
+		let result = net_graph_msg_handler.handle_query_channel_range(&node_id, QueryChannelRange {
 			chain_hash,
 			first_blocknum: 0,
 			number_of_blocks: 0xffff_ffff,
@@ -2088,7 +2073,7 @@ mod tests {
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
-		let result = net_graph_msg_handler.handle_query_short_channel_ids(&node_id, &QueryShortChannelIds {
+		let result = net_graph_msg_handler.handle_query_short_channel_ids(&node_id, QueryShortChannelIds {
 			chain_hash,
 			short_channel_ids: vec![0x0003e8_000000_0000],
 		});

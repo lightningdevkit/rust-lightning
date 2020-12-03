@@ -842,16 +842,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 			},
 			wire::Message::QueryShortChannelIds(msg) => {
-				self.message_handler.route_handler.handle_query_short_channel_ids(&peer.their_node_id.unwrap(), &msg)?;
+				self.message_handler.route_handler.handle_query_short_channel_ids(&peer.their_node_id.unwrap(), msg)?;
 			},
 			wire::Message::ReplyShortChannelIdsEnd(msg) => {
-				self.message_handler.route_handler.handle_reply_short_channel_ids_end(&peer.their_node_id.unwrap(), &msg)?;
+				self.message_handler.route_handler.handle_reply_short_channel_ids_end(&peer.their_node_id.unwrap(), msg)?;
 			},
 			wire::Message::QueryChannelRange(msg) => {
-				self.message_handler.route_handler.handle_query_channel_range(&peer.their_node_id.unwrap(), &msg)?;
+				self.message_handler.route_handler.handle_query_channel_range(&peer.their_node_id.unwrap(), msg)?;
 			},
 			wire::Message::ReplyChannelRange(msg) => {
-				self.message_handler.route_handler.handle_reply_channel_range(&peer.their_node_id.unwrap(), &msg)?;
+				self.message_handler.route_handler.handle_reply_channel_range(&peer.their_node_id.unwrap(), msg)?;
 			},
 			wire::Message::GossipTimestampFilter(_msg) => {
 				// TODO: handle message
