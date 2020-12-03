@@ -484,6 +484,7 @@ impl<T: sealed::GossipQueries> Features<T> {
 	pub(crate) fn supports_gossip_queries(&self) -> bool {
 		<T as sealed::GossipQueries>::supports_feature(&self.flags)
 	}
+	#[cfg(test)]
 	pub(crate) fn clear_gossip_queries(mut self) -> Self {
 		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
 		self
@@ -514,6 +515,10 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
 	}
+	// We are no longer setting initial_routing_sync now that gossip_queries
+	// is enabled. This feature is ignored by a peer when gossip_queries has 
+	// been negotiated.
+	#[cfg(test)]
 	pub(crate) fn clear_initial_routing_sync(&mut self) {
 		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
 	}

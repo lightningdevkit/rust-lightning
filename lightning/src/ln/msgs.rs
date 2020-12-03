@@ -804,6 +804,12 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 }
 
 /// A trait to describe an object which can receive routing messages.
+///
+/// # Implementor DoS Warnings
+///
+/// For `gossip_queries` messages there are potential DoS vectors when handling
+/// inbound queries. Implementors using an on-disk network graph should be aware of
+/// repeated disk I/O for queries accessing different parts of the network graph.
 pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvider {
 	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
@@ -841,14 +847,10 @@ pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvide
 	/// gossip messages.
 	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send a list of short_channel_ids
-	/// for the requested range of blocks. There are potential DoS vectors when
-	/// handling inbound queries. Handling requests with first_blocknum very far
-	/// away may trigger repeated disk I/O if the NetworkGraph is not fully in-memory.
+	/// for the requested range of blocks.
 	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send routing gossip messages for a
-	/// list of short_channel_ids. There are potential DoS vectors when handling
-	/// inbound queries. Handling requests with first_blocknum very far away may
-	/// trigger repeated disk I/O if the NetworkGraph is not fully in-memory.
+	/// list of short_channel_ids.
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 

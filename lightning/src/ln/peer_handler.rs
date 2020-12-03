@@ -584,11 +584,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = InitFeatures::known().clear_gossip_queries();
-									if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-										features.clear_initial_routing_sync();
-									}
-
+									let features = InitFeatures::known();
 									let resp = msgs::Init { features };
 									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 								},
@@ -713,14 +709,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 
 				if !peer.outbound {
-					let mut features = InitFeatures::known().clear_gossip_queries();
-					if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-						features.clear_initial_routing_sync();
-					}
-
+					let features = InitFeatures::known();
 					let resp = msgs::Init { features };
 					self.enqueue_message(peers_needing_send, peer, peer_descriptor.clone(), &resp);
 				}
+
+				self.message_handler.route_handler.sync_routing_table(&peer.their_node_id.unwrap(), &msg);
 
 				self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 				peer.their_features = Some(msg.features);
@@ -1329,13 +1323,6 @@ mod tests {
 		(fd_a.clone(), fd_b.clone())
 	}
 
-	fn establish_connection_and_read_events<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>) -> (FileDescriptor, FileDescriptor) {
-		let (mut fd_a, mut fd_b) = establish_connection(peer_a, peer_b);
-		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
-		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
-		(fd_a.clone(), fd_b.clone())
-	}
-
 	#[test]
 	fn test_disconnect_peer() {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
@@ -1403,42 +1390,5 @@ mod tests {
 		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
 		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
 		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
-	}
-
-	#[test]
-	fn limit_initial_routing_sync_requests() {
-		// Inbound peer 0 requests initial_routing_sync, but outbound peer 1 does not.
-		{
-			let cfgs = create_peermgr_cfgs(2);
-			cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
-			let peers = create_network(2, &cfgs);
-			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
-
-			let peer_0 = peers[0].peers.lock().unwrap();
-			let peer_1 = peers[1].peers.lock().unwrap();
-
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
-
-			assert!(peer_0_features.unwrap().initial_routing_sync());
-			assert!(!peer_1_features.unwrap().initial_routing_sync());
-		}
-
-		// Outbound peer 1 requests initial_routing_sync, but inbound peer 0 does not.
-		{
-			let cfgs = create_peermgr_cfgs(2);
-			cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
-			let peers = create_network(2, &cfgs);
-			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
-
-			let peer_0 = peers[0].peers.lock().unwrap();
-			let peer_1 = peers[1].peers.lock().unwrap();
-
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
-
-			assert!(!peer_0_features.unwrap().initial_routing_sync());
-			assert!(peer_1_features.unwrap().initial_routing_sync());
-		}
 	}
 }

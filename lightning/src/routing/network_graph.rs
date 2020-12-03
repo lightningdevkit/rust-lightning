@@ -219,17 +219,26 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
-	/// by calling query_channel_range. The default strategy used by this
-	/// implementation is to sync for the full block range with several peers.
+	/// using gossip_queries. The default strategy used by this implementation
+	/// is to sync the full block range with several peers.
+	///
 	/// We should expect one or more reply_channel_range messages in response
-	/// to our query. Each reply will enqueue a query_scid message to request
-	/// gossip messages for each channel. The sync is considered complete when
-	/// the final reply_scids_end message is received, though we are not
+	/// to our query_channel_range. Each reply will enqueue a query_scid message
+	/// to request gossip messages for each channel. The sync is considered complete
+	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
 	fn sync_routing_table(&self, their_node_id: &PublicKey, init_msg: &Init) {
+
+		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
 			return ();
 		}
+
+		// Check if we need to perform a full synchronization with this peer
+		if !self.should_request_full_sync(their_node_id) {
+			return ();
+		}
+
 		let first_blocknum = 0;
 		let number_of_blocks = 0xffffffff;
 		log_debug!(self.logger, "Sending query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), first_blocknum, number_of_blocks);
@@ -249,7 +258,10 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	/// stateless, it does not validate the sequencing of replies for multi-
 	/// reply ranges. It does not validate whether the reply(ies) cover the
 	/// queried range. It also does not filter SCIDs to only those in the
-	/// original query range.
+	/// original query range. We also do not validate that the chain_hash
+	/// matches the chain_hash of the NetworkGraph. Any chan_ann message that
+	/// does not match our chain_hash will be rejected when the announcement is
+	/// processed.
 	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError> {
 		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, full_information={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.full_information, msg.short_channel_ids.len(),);
 
@@ -1967,6 +1979,26 @@ mod tests {
 				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
 			};
 		}
+
+		// It should not enqueue a query when should_request_full_sync return false.
+		// The initial implementation allows syncing with the first 5 peers after
+		// which should_request_full_sync will return false
+		{
+			let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+			let init_msg = Init { features: InitFeatures::known() };
+			for n in 1..7 {
+				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
+				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+				net_graph_msg_handler.sync_routing_table(&node_id, &init_msg);
+				let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+				if n <= 5 {
+					assert_eq!(events.len(), 1);
+				} else {
+					assert_eq!(events.len(), 0);
+				}
+
+			}
+		}
 	}
 
 	#[test]
@@ -1980,7 +2012,6 @@ mod tests {
 		// Test receipt of a single reply that should enqueue an SCID query
 		// matching the SCIDs in the reply
 		{
-			// Handle a single successful reply that encompasses the queried channel range
 			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
 				chain_hash,
 				full_information: true,
