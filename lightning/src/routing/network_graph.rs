@@ -23,7 +23,7 @@ use bitcoin::hash_types::BlockHash;
 use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
@@ -226,7 +226,10 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	/// gossip messages for each channel. The sync is considered complete when
 	/// the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn sync_routing_table(&self, their_node_id: &PublicKey) {
+	fn sync_routing_table(&self, their_node_id: &PublicKey, init_msg: &Init) {
+		if !init_msg.features.supports_gossip_queries() {
+			return ();
+		}
 		let first_blocknum = 0;
 		let number_of_blocks = 0xffffffff;
 		log_debug!(self.logger, "Sending query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), first_blocknum, number_of_blocks);
@@ -996,9 +999,9 @@ impl NetworkGraph {
 #[cfg(test)]
 mod tests {
 	use chain;
-	use ln::features::{ChannelFeatures, NodeFeatures};
+	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
 		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
@@ -1939,20 +1942,31 @@ mod tests {
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let first_blocknum = 0;
 		let number_of_blocks = 0xffff_ffff;
-		net_graph_msg_handler.sync_routing_table(&node_id_1);
+
+		// It should ignore if gossip_queries feature is not enabled
+		{
+			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 0);
+		}
 
 		// It should send a query_channel_message with the correct information
-		let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match &events[0] {
-			MessageSendEvent::SendChannelRangeQuery{ node_id, msg } => {
-				assert_eq!(node_id, &node_id_1);
-				assert_eq!(msg.chain_hash, chain_hash);
-				assert_eq!(msg.first_blocknum, first_blocknum);
-				assert_eq!(msg.number_of_blocks, number_of_blocks);
-			},
-			_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
-		};
+		{
+			let init_msg = Init { features: InitFeatures::known() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			match &events[0] {
+				MessageSendEvent::SendChannelRangeQuery{ node_id, msg } => {
+					assert_eq!(node_id, &node_id_1);
+					assert_eq!(msg.chain_hash, chain_hash);
+					assert_eq!(msg.first_blocknum, first_blocknum);
+					assert_eq!(msg.number_of_blocks, number_of_blocks);
+				},
+				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
+			};
+		}
 	}
 
 	#[test]

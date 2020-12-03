@@ -830,7 +830,7 @@ pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvide
 	/// Initiates routing gossip sync by querying a peer to discover channels
 	/// and their associated routing gossip messages. This method will use a
 	/// sync strategy defined by the implementor.
-	fn sync_routing_table(&self, their_node_id: &PublicKey);
+	fn sync_routing_table(&self, their_node_id: &PublicKey, init: &Init);
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.

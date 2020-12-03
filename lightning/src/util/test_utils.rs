@@ -320,7 +320,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.request_full_sync.load(Ordering::Acquire)
 	}
 
-	fn sync_routing_table(&self, _their_node_id: &PublicKey) {}
+	fn sync_routing_table(&self, _their_node_id: &PublicKey, _init_msg: &msgs::Init) {}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
 		Ok(())
