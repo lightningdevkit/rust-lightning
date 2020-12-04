@@ -585,8 +585,8 @@ mod tests {
 		}
 
 		fn endpoint(&self) -> HttpEndpoint {
-			let uri = format!("http://{}:{}", self.address.ip(), self.address.port());
-			HttpEndpoint::new(&uri).unwrap()
+			HttpEndpoint::insecure_host(self.address.ip().to_string())
+				.with_port(self.address.port())
 		}
 	}
 

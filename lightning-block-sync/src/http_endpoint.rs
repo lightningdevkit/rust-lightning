@@ -1,49 +1,63 @@
-use http;
-use http::uri::{Scheme, Uri};
-
 /// Endpoint for interacting with an HTTP-based API.
 #[derive(Debug)]
 pub struct HttpEndpoint {
-	uri: Uri,
+	scheme: Scheme,
+	host: String,
+	port: Option<u16>,
+	path: String,
 }
 
-/// Error when creating an `HttpEndpoint`.
+/// URI scheme compatible with an HTTP endpoint.
 #[derive(Debug)]
-pub enum HttpEndpointError {
-	InvalidUri(http::uri::InvalidUri),
-	RelativeUri,
-	InvalidScheme(http::uri::Scheme),
+pub enum Scheme {
+	HTTP,
+	HTTPS,
 }
 
 impl HttpEndpoint {
-	/// Creates a new endpoint from the given URI.
-	pub fn new(uri: &str) -> Result<HttpEndpoint, HttpEndpointError> {
-		let uri = uri.parse::<Uri>()?;
-		match uri.scheme() {
-			None => Err(HttpEndpointError::RelativeUri),
-			Some(scheme) => {
-				if scheme != &Scheme::HTTP && scheme != &Scheme::HTTPS {
-					Err(HttpEndpointError::InvalidScheme(scheme.clone()))
-				} else {
-					Ok(Self { uri })
-				}
-			},
+	/// Creates an endpoint using the HTTP scheme.
+	pub fn insecure_host(host: String) -> Self {
+		Self {
+			scheme: Scheme::HTTP,
+			host,
+			port: None,
+			path: String::from("/"),
 		}
+	}
+
+	/// Creates an endpoint using the HTTPS scheme.
+	pub fn secure_host(host: String) -> Self {
+		Self {
+			scheme: Scheme::HTTPS,
+			host,
+			port: None,
+			path: String::from("/"),
+		}
+	}
+
+	/// Specifies a port to use with the endpoint.
+	pub fn with_port(mut self, port: u16) -> Self {
+		self.port = Some(port);
+		self
+	}
+
+	/// Specifies a path to use with the endpoint.
+	pub fn with_path(mut self, path: String) -> Self {
+		self.path = path;
+		self
 	}
 
 	/// Returns the endpoint host.
 	pub fn host(&self) -> &str {
-		self.uri.host().unwrap()
+		&self.host
 	}
 
 	/// Returns the endpoint port.
 	pub fn port(&self) -> u16 {
-		match self.uri.port_u16() {
-			None => {
-				let scheme = self.uri.scheme().unwrap();
-				if scheme == &Scheme::HTTP { 80 }
-				else if scheme == &Scheme::HTTPS { 443 }
-				else { unreachable!() }
+		match self.port {
+			None => match self.scheme {
+				Scheme::HTTP => 80,
+				Scheme::HTTPS => 443,
 			},
 			Some(port) => port,
 		}
@@ -51,7 +65,7 @@ impl HttpEndpoint {
 
 	/// Returns the endpoint path.
 	pub fn path(&self) -> &str {
-		self.uri.path()
+		&self.path
 	}
 }
 
@@ -63,101 +77,48 @@ impl<'a> std::net::ToSocketAddrs for &'a HttpEndpoint {
 	}
 }
 
-impl From<http::uri::InvalidUri> for HttpEndpointError {
-	fn from(error: http::uri::InvalidUri) -> Self {
-		HttpEndpointError::InvalidUri(error)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 
 	#[test]
-	fn parse_invalid_uri() {
-		match HttpEndpoint::new("::") {
-			Err(HttpEndpointError::InvalidUri(_)) => (),
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => panic!("Expected error; found endpoint: {:?}", endpoint),
-		}
+	fn to_insecure_host() {
+		let endpoint = HttpEndpoint::insecure_host("foo.com".into());
+		assert_eq!(endpoint.host(), "foo.com");
+		assert_eq!(endpoint.port(), 80);
 	}
 
 	#[test]
-	fn parse_relative_uri() {
-		match HttpEndpoint::new("path") {
-			Err(HttpEndpointError::RelativeUri) => (),
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => panic!("Expected error; found endpoint: {:?}", endpoint),
-		}
+	fn to_secure_host() {
+		let endpoint = HttpEndpoint::secure_host("foo.com".into());
+		assert_eq!(endpoint.host(), "foo.com");
+		assert_eq!(endpoint.port(), 443);
 	}
 
 	#[test]
-	fn parse_invalid_scheme() {
-		match HttpEndpoint::new("ftp://foo.com") {
-			Err(HttpEndpointError::InvalidScheme(_)) => (),
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => panic!("Expected error; found endpoint: {:?}", endpoint),
-		}
+	fn with_custom_port() {
+		let endpoint = HttpEndpoint::insecure_host("foo.com".into()).with_port(8080);
+		assert_eq!(endpoint.host(), "foo.com");
+		assert_eq!(endpoint.port(), 8080);
 	}
 
 	#[test]
-	fn parse_insecure_uri() {
-		match HttpEndpoint::new("http://foo.com") {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => {
-				assert_eq!(endpoint.host(), "foo.com");
-				assert_eq!(endpoint.port(), 80);
-			},
-		}
+	fn with_uri_path() {
+		let endpoint = HttpEndpoint::insecure_host("foo.com".into()).with_path("/path".into());
+		assert_eq!(endpoint.host(), "foo.com");
+		assert_eq!(endpoint.path(), "/path");
 	}
 
 	#[test]
-	fn parse_secure_uri() {
-		match HttpEndpoint::new("https://foo.com") {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => {
-				assert_eq!(endpoint.host(), "foo.com");
-				assert_eq!(endpoint.port(), 443);
-			},
-		}
-	}
-
-	#[test]
-	fn parse_uri_with_port() {
-		match HttpEndpoint::new("http://foo.com:8080") {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => {
-				assert_eq!(endpoint.host(), "foo.com");
-				assert_eq!(endpoint.port(), 8080);
-			},
-		}
-	}
-
-	#[test]
-	fn parse_uri_with_path() {
-		match HttpEndpoint::new("http://foo.com/path") {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => {
-				assert_eq!(endpoint.host(), "foo.com");
-				assert_eq!(endpoint.path(), "/path");
-			},
-		}
-	}
-
-	#[test]
-	fn parse_uri_without_path() {
-		match HttpEndpoint::new("http://foo.com") {
-			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(endpoint) => {
-				assert_eq!(endpoint.host(), "foo.com");
-				assert_eq!(endpoint.path(), "/");
-			},
-		}
+	fn without_uri_path() {
+		let endpoint = HttpEndpoint::insecure_host("foo.com".into());
+		assert_eq!(endpoint.host(), "foo.com");
+		assert_eq!(endpoint.path(), "/");
 	}
 
 	#[test]
 	fn convert_to_socket_addrs() {
-		let endpoint = HttpEndpoint::new("http://foo.com").unwrap();
+		let endpoint = HttpEndpoint::insecure_host("foo.com".into());
 		let host = endpoint.host();
 		let port = endpoint.port();
 
