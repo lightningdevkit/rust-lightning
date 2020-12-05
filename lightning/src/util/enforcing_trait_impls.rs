@@ -34,8 +34,8 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 #[derive(Clone)]
 pub struct EnforcingChannelKeys {
 	pub inner: InMemoryChannelKeys,
-	pub(crate) last_commitment_number: Arc<Mutex<Option<u64>>>,
-	pub(crate) revoked_commitment: Arc<Mutex<u64>>,
+	pub last_commitment_number: Arc<Mutex<Option<u64>>>,
+	pub revoked_commitment: Arc<Mutex<u64>>,
 }
 
 impl EnforcingChannelKeys {
