@@ -536,6 +536,7 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::io::Write;
 
 	/// Server for handling HTTP client requests with a stock response.
 	struct HttpServer {
@@ -589,8 +590,8 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn connect_with_valid_endpoint() {
+	#[tokio::test]
+	async fn connect_with_valid_endpoint() {
 		let server = HttpServer::responding_with(
 			"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string());
 
