@@ -15,6 +15,7 @@ use std::cmp;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::future::Future;
+#[cfg(not(feature = "tokio"))]
 use std::io::Write;
 use std::net::ToSocketAddrs;
 use std::pin::Pin;
@@ -27,6 +28,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "tokio")]
 use tokio::io::AsyncReadExt;
+#[cfg(feature = "tokio")]
+use tokio::io::AsyncWriteExt;
 #[cfg(feature = "tokio")]
 use tokio::net::TcpStream;
 
@@ -65,13 +68,17 @@ impl HttpClient {
 	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
 	async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
-		write!(self.stream,
+		let request = format!(
 			"GET {} HTTP/1.1\r\n\
 			 Host: {}\r\n\
 			 Connection: keep-alive\r\n\
-			 \r\n", uri, host)?;
+			 \r\n", uri, host);
+		#[cfg(feature = "tokio")]
+		self.stream.write_all(request.as_bytes()).await?;
+		#[cfg(not(feature = "tokio"))]
+		self.stream.write_all(request.as_bytes())?;
 
-		match read_http_resp(&self.stream, MAX_HTTP_RESPONSE_LEN).await {
+		match read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await {
 			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
 			Some(bytes) => F::try_from(bytes),
 		}
@@ -85,7 +92,7 @@ impl HttpClient {
 	async fn post<F>(&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
 		let content = content.to_string();
-		write!(self.stream,
+		let request = format!(
 			"POST {} HTTP/1.1\r\n\
 			 Host: {}\r\n\
 			 Authorization: {}\r\n\
@@ -93,16 +100,20 @@ impl HttpClient {
 			 Content-Type: application/json\r\n\
 			 Content-Length: {}\r\n\
 			 \r\n\
-			 {}", uri, host, auth, content.len(), content)?;
+			 {}", uri, host, auth, content.len(), content);
+		#[cfg(feature = "tokio")]
+		self.stream.write_all(request.as_bytes()).await?;
+		#[cfg(not(feature = "tokio"))]
+		self.stream.write_all(request.as_bytes())?;
 
-		match read_http_resp(&self.stream, MAX_HTTP_RESPONSE_LEN).await {
+		match read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await {
 			None => return Err(std::io::Error::new(std::io::ErrorKind::Other, "read error")),
 			Some(bytes) => F::try_from(bytes),
 		}
 	}
 }
 
-async fn read_http_resp(mut socket: &TcpStream, max_resp: usize) -> Option<Vec<u8>> {
+async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> Option<Vec<u8>> {
 	let mut resp = Vec::new();
 	let mut bytes_read = 0;
 	macro_rules! read_socket { () => { {
