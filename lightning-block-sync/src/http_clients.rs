@@ -177,9 +177,10 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> std::io::Res
 			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
 		}
 		resp.resize(actual_len, 0);
-		while bytes_read < actual_len {
-			bytes_read += read_socket!();
-		}
+		#[cfg(feature = "tokio")]
+		socket.read_exact(&mut resp[bytes_read..]).await?;
+		#[cfg(not(feature = "tokio"))]
+		socket.read_exact(&mut resp[bytes_read..])?;
 		Ok(resp)
 	} else {
 		#[cfg(feature = "tokio")]
