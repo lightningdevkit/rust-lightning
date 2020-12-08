@@ -7,11 +7,12 @@ use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::hex::{ToHex, FromHex};
 
+use chunked_transfer;
+
 use serde_derive::Deserialize;
 
 use serde_json;
 
-use std::cmp;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 #[cfg(not(feature = "tokio"))]
@@ -31,7 +32,6 @@ use tokio::io::AsyncWriteExt;
 #[cfg(feature = "tokio")]
 use tokio::net::TcpStream;
 
-#[cfg(not(feature = "tokio"))]
 use std::io::Read;
 #[cfg(not(feature = "tokio"))]
 use std::net::TcpStream;
@@ -182,82 +182,30 @@ async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> std::io::Res
 		}
 		Ok(resp)
 	} else {
-		actual_len = 0;
-		let mut chunk_remaining = 0;
-		'read_bytes: loop {
-			if chunk_remaining == 0 {
-				let mut bytes_skipped = 0;
-				let mut finished_read = false;
-				let mut lineiter = resp[actual_len..bytes_read].split(|c| *c == '\n' as u8 || *c == '\r' as u8).peekable();
-				loop {
-					let line = match lineiter.next() { Some(line) => line, None => break };
-					if lineiter.peek().is_none() { // We haven't yet read to the end of this line
-						if line.len() > 8 {
-							// No reason to ever have a chunk length line longer than 4 chars
-							return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
-						}
-						break;
-					}
-					bytes_skipped += line.len() + 1;
-					if line.len() == 0 { continue; } // Probably between the \r and \n
-					match usize::from_str_radix(&match std::str::from_utf8(line) {
-						Ok(s) => s, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-					}, 16) {
-						Ok(chunklen) => {
-							if chunklen == 0 { finished_read = true; }
-							chunk_remaining = chunklen;
-							match lineiter.next() {
-								Some(l) if l.is_empty() => {
-									// Drop \r after \n
-									bytes_skipped += 1;
-									if actual_len + bytes_skipped > bytes_read {
-										// Go back and get more bytes so we can skip trailing \n
-										chunk_remaining = 0;
-									}
-								},
-								Some(_) => {},
-								None => {
-									// Go back and get more bytes so we can skip trailing \n
-									chunk_remaining = 0;
-								},
-							}
-							break;
-						},
-						Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-					}
-				}
-				if chunk_remaining != 0 {
-					bytes_read -= bytes_skipped;
-					resp.drain(actual_len..actual_len + bytes_skipped);
-					if actual_len + chunk_remaining > max_resp {
-						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
-					}
-					let already_in_chunk = cmp::min(bytes_read - actual_len, chunk_remaining);
-					actual_len += already_in_chunk;
-					chunk_remaining -= already_in_chunk;
-					continue 'read_bytes;
-				} else {
-					if finished_read {
-						// Note that we may leave some extra \r\ns to be read, but that's OK,
-						// we'll ignore then when parsing headers for the next request.
-						resp.resize(actual_len, 0);
-						return Ok(resp);
-					} else {
-						// Need to read more bytes to figure out chunk length
-					}
-				}
-			}
-			resp.resize(bytes_read + cmp::max(10, chunk_remaining), 0);
-			let avail = read_socket!();
-			bytes_read += avail;
-			if chunk_remaining != 0 {
-				let chunk_read = cmp::min(chunk_remaining, avail);
-				chunk_remaining -= chunk_read;
-				actual_len += chunk_read;
-			}
-		}
+		#[cfg(feature = "tokio")]
+		let byte_stream = std::io::Read::chain(&resp[..], ReadAdapter(socket));
+		#[cfg(not(feature = "tokio"))]
+		let byte_stream = resp.chain(socket);
+
+		let mut decoder = chunked_transfer::Decoder::new(byte_stream.take(max_resp as u64));
+		let mut decoded = Vec::new();
+		decoder.read_to_end(&mut decoded)?;
+		Ok(decoded)
 	}
 }
+
+#[cfg(feature = "tokio")]
+struct ReadAdapter<'a, R: tokio::io::AsyncRead + std::marker::Unpin>(&'a mut R);
+
+#[cfg(feature = "tokio")]
+impl<'a, R: tokio::io::AsyncRead + std::marker::Unpin> std::io::Read for ReadAdapter<'a, R> {
+	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+		#[cfg(test)]
+		std::thread::yield_now();
+		futures::executor::block_on(self.0.read(buf))
+	}
+}
+
 
 #[cfg(feature = "rest-client")]
 pub struct RESTClient {
@@ -542,6 +490,7 @@ impl From<std::io::Error> for BlockSourceError {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::io::BufRead;
 	use std::io::Write;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::consensus::encode;
@@ -553,14 +502,39 @@ mod tests {
 		_handler: std::thread::JoinHandle<()>,
 	}
 
+	/// Body of HTTP response messages.
+	enum MessageBody<T: ToString> {
+		Empty,
+		Content(T),
+		ChunkedContent(T),
+	}
+
 	impl HttpServer {
-		fn responding_with_ok<T: ToString>(body: Option<T>) -> Self {
-			let body = body.map(|s| s.to_string()).unwrap_or_default();
-			let response = format!(
-				"HTTP/1.1 200 OK\r\n\
-				 Content-Length: {}\r\n\
-				 \r\n\
-				 {}", body.len(), body);
+		fn responding_with_ok<T: ToString>(body: MessageBody<T>) -> Self {
+			let response = match body {
+				MessageBody::Empty => "HTTP/1.1 200 OK\r\n\r\n".to_string(),
+				MessageBody::Content(body) => {
+					let body = body.to_string();
+					format!(
+						"HTTP/1.1 200 OK\r\n\
+						 Content-Length: {}\r\n\
+						 \r\n\
+						 {}", body.len(), body)
+				},
+				MessageBody::ChunkedContent(body) => {
+					let mut chuncked_body = Vec::new();
+					{
+						use chunked_transfer::Encoder;
+						let mut encoder = Encoder::with_chunks_size(&mut chuncked_body, 8);
+						encoder.write_all(body.to_string().as_bytes()).unwrap();
+					}
+					format!(
+						"HTTP/1.1 200 OK\r\n\
+						 Transfer-Encoding: chunked\r\n\
+						 \r\n\
+						 {}", String::from_utf8(chuncked_body).unwrap())
+				},
+			};
 			HttpServer::responding_with(response)
 		}
 
@@ -573,11 +547,17 @@ mod tests {
 			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 			let address = listener.local_addr().unwrap();
 			let _handler = std::thread::spawn(move || {
-				for stream in listener.incoming() {
-					match stream {
-						Err(_) => panic!(),
-						Ok(mut stream) => stream.write(response.as_bytes()).unwrap(),
-					};
+				let (mut stream, _) = listener.accept().unwrap();
+				let lines_read = std::io::BufReader::new(&stream)
+					.lines()
+					.take_while(|line| !line.as_ref().unwrap().is_empty())
+					.count();
+				if lines_read == 0 { return; }
+
+				for chunk in response.as_bytes().chunks(16) {
+					stream.write(chunk).unwrap();
+					stream.flush().unwrap();
+					std::thread::yield_now();
 				}
 			});
 
@@ -660,11 +640,24 @@ mod tests {
 
 	#[tokio::test]
 	async fn connect_with_valid_endpoint() {
-		let server = HttpServer::responding_with_ok::<String>(None);
+		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
 
 		match HttpClient::connect(&server.endpoint()) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
+		}
+	}
+
+	#[tokio::test]
+	async fn get_chunked_content() {
+		let body = "foo bar baz qux".repeat(20);
+		let chunked_content = MessageBody::ChunkedContent(body.clone());
+		let server = HttpServer::responding_with_ok::<String>(chunked_content);
+
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
 		}
 	}
 
@@ -681,7 +674,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn request_malformed_resource() {
-		let server = HttpServer::responding_with_ok(Some("foo"));
+		let server = HttpServer::responding_with_ok(MessageBody::Content("foo"));
 		let client = RESTClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
@@ -692,7 +685,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn request_valid_resource() {
-		let server = HttpServer::responding_with_ok(Some(42));
+		let server = HttpServer::responding_with_ok(MessageBody::Content(42));
 		let client = RESTClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
@@ -715,7 +708,7 @@ mod tests {
 	#[tokio::test]
 	async fn call_method_returning_malfomred_response() {
 		let response = serde_json::json!("foo");
-		let server = HttpServer::responding_with_ok(Some(response));
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RPCClient::new("credentials", server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
@@ -732,7 +725,7 @@ mod tests {
 		let response = serde_json::json!({
 			"error": { "code": -8, "message": "invalid parameter" },
 		});
-		let server = HttpServer::responding_with_ok(Some(response));
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RPCClient::new("credentials", server.endpoint());
 
 		let invalid_block_hash = serde_json::json!("foo");
@@ -748,7 +741,7 @@ mod tests {
 	#[tokio::test]
 	async fn call_method_returning_missing_result() {
 		let response = serde_json::json!({ "result": null });
-		let server = HttpServer::responding_with_ok(Some(response));
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RPCClient::new("credentials", server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
@@ -763,7 +756,7 @@ mod tests {
 	#[tokio::test]
 	async fn call_method_returning_valid_result() {
 		let response = serde_json::json!({ "result": 654470 });
-		let server = HttpServer::responding_with_ok(Some(response));
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RPCClient::new("credentials", server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
