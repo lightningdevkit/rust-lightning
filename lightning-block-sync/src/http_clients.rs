@@ -67,7 +67,7 @@ impl HttpClient {
 	}
 
 	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
-	async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
+	async fn get<F>(mut self, uri: &str, host: &str) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
 		let request = format!(
 			"GET {} HTTP/1.1\r\n\
@@ -79,7 +79,7 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		let bytes = read_http_resp(&mut self.stream).await?;
+		let bytes = self.read_response().await?;
 		F::try_from(bytes)
 	}
 
@@ -88,7 +88,7 @@ impl HttpClient {
 	///
 	/// The request body consists of the provided JSON `content`. Returns the response body in `F`
 	/// format.
-	async fn post<F>(&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
+	async fn post<F>(mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
 		let content = content.to_string();
 		let request = format!(
@@ -105,102 +105,103 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		let bytes = read_http_resp(&mut self.stream).await?;
+		let bytes = self.read_response().await?;
 		F::try_from(bytes)
 	}
-}
 
-async fn read_http_resp(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-	let read_limit = MAX_HTTP_MESSAGE_HEADER_SIZE + MAX_HTTP_MESSAGE_BODY_SIZE;
-	#[cfg(feature = "tokio")]
-	let mut reader = tokio::io::BufReader::new(stream.take(read_limit as u64));
-	#[cfg(not(feature = "tokio"))]
-	let mut reader = std::io::BufReader::new(stream.take(read_limit as u64));
-
-	let mut total_bytes_read = 0;
-	macro_rules! read_line { () => { {
-		let mut line = String::new();
+	/// Reads an HTTP response message.
+	async fn read_response(self) -> std::io::Result<Vec<u8>> {
+		let read_limit = MAX_HTTP_MESSAGE_HEADER_SIZE + MAX_HTTP_MESSAGE_BODY_SIZE;
 		#[cfg(feature = "tokio")]
-		let bytes_read = reader.read_line(&mut line).await?;
+		let mut reader = tokio::io::BufReader::new(self.stream.take(read_limit as u64));
 		#[cfg(not(feature = "tokio"))]
-		let bytes_read = reader.read_line(&mut line)?;
+		let mut reader = std::io::BufReader::new(self.stream.take(read_limit as u64));
 
-		total_bytes_read += bytes_read;
-		if total_bytes_read > MAX_HTTP_MESSAGE_HEADER_SIZE {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-					"headers too large"));
+		let mut total_bytes_read = 0;
+		macro_rules! read_line { () => { {
+			let mut line = String::new();
+			#[cfg(feature = "tokio")]
+			let bytes_read = reader.read_line(&mut line).await?;
+			#[cfg(not(feature = "tokio"))]
+			let bytes_read = reader.read_line(&mut line)?;
+
+			total_bytes_read += bytes_read;
+			if total_bytes_read > MAX_HTTP_MESSAGE_HEADER_SIZE {
+				return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+						"headers too large"));
+			}
+
+			match bytes_read {
+				0 => None,
+				_ => {
+					// Remove trailing CRLF
+					if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
+					Some(line)
+				},
+			}
+		} } }
+
+		// Read and parse status line
+		let status_line = read_line!()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no status line"))?;
+		let status = HttpStatus::parse(&status_line)?;
+
+		// Read and parse relevant headers
+		let mut message_length = HttpMessageLength::Empty;
+		loop {
+			let line = read_line!()
+				.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected eof"))?;
+			if line.is_empty() { break; }
+
+			let header = HttpHeader::parse(&line)?;
+			if header.has_name("Content-Length") {
+				let length = header.value.parse()
+					.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+				if let HttpMessageLength::Empty = message_length {
+					message_length = HttpMessageLength::ContentLength(length);
+				}
+				continue;
+			}
+
+			if header.has_name("Transfer-Encoding") {
+				message_length = HttpMessageLength::TransferEncoding(header.value.into());
+				continue;
+			}
 		}
 
-		match bytes_read {
-			0 => None,
-			_ => {
-				// Remove trailing CRLF
-				if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
-				Some(line)
+		if !status.is_ok() {
+			return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+		}
+
+		// Read message body
+		match message_length {
+			HttpMessageLength::Empty => { Ok(Vec::new()) },
+			HttpMessageLength::ContentLength(length) => {
+				if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
+					Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
+				} else {
+					let mut content = vec![0; length];
+					#[cfg(feature = "tokio")]
+					reader.read_exact(&mut content[..]).await?;
+					#[cfg(not(feature = "tokio"))]
+					reader.read_exact(&mut content[..])?;
+					Ok(content)
+				}
+			},
+			HttpMessageLength::TransferEncoding(coding) => {
+				if !coding.eq_ignore_ascii_case("chunked") {
+					Err(std::io::Error::new(
+							std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
+				} else {
+					#[cfg(feature = "tokio")]
+					let reader = ReadAdapter(&mut reader);
+					let mut decoder = chunked_transfer::Decoder::new(reader);
+					let mut content = Vec::new();
+					decoder.read_to_end(&mut content)?;
+					Ok(content)
+				}
 			},
 		}
-	} } }
-
-	// Read and parse status line
-	let status_line = read_line!()
-		.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no status line"))?;
-	let status = HttpStatus::parse(&status_line)?;
-
-	// Read and parse relevant headers
-	let mut message_length = HttpMessageLength::Empty;
-	loop {
-		let line = read_line!()
-			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected eof"))?;
-		if line.is_empty() { break; }
-
-		let header = HttpHeader::parse(&line)?;
-		if header.has_name("Content-Length") {
-			let length = header.value.parse()
-				.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-			if let HttpMessageLength::Empty = message_length {
-				message_length = HttpMessageLength::ContentLength(length);
-			}
-			continue;
-		}
-
-		if header.has_name("Transfer-Encoding") {
-			message_length = HttpMessageLength::TransferEncoding(header.value.into());
-			continue;
-		}
-	}
-
-	if !status.is_ok() {
-		return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
-	}
-
-	// Read message body
-	match message_length {
-		HttpMessageLength::Empty => { Ok(Vec::new()) },
-		HttpMessageLength::ContentLength(length) => {
-			if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
-				Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
-			} else {
-				let mut content = vec![0; length];
-				#[cfg(feature = "tokio")]
-				reader.read_exact(&mut content[..]).await?;
-				#[cfg(not(feature = "tokio"))]
-				reader.read_exact(&mut content[..])?;
-				Ok(content)
-			}
-		},
-		HttpMessageLength::TransferEncoding(coding) => {
-			if !coding.eq_ignore_ascii_case("chunked") {
-				Err(std::io::Error::new(
-						std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
-			} else {
-				#[cfg(feature = "tokio")]
-				let reader = ReadAdapter(&mut reader);
-				let mut decoder = chunked_transfer::Decoder::new(reader);
-				let mut content = Vec::new();
-				decoder.read_to_end(&mut content)?;
-				Ok(content)
-			}
-		},
 	}
 }
 
@@ -310,7 +311,7 @@ impl RESTClient {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
 
-		let mut client = HttpClient::connect(&self.endpoint)?;
+		let client = HttpClient::connect(&self.endpoint)?;
 		client.get::<F>(&uri, &host).await?.try_into()
 	}
 }
@@ -342,7 +343,7 @@ impl RPCClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut client = HttpClient::connect(&self.endpoint)?;
+		let client = HttpClient::connect(&self.endpoint)?;
 		let mut response = client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await?.0;
 		if !response.is_object() {
 			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
@@ -741,7 +742,7 @@ mod tests {
 		let chunked_content = MessageBody::ChunkedContent(body.clone());
 		let server = HttpServer::responding_with_ok::<String>(chunked_content);
 
-		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
