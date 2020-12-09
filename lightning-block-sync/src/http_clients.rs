@@ -26,18 +26,21 @@ use base64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "tokio")]
-use tokio::io::AsyncReadExt;
-#[cfg(feature = "tokio")]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "tokio")]
 use tokio::net::TcpStream;
 
+#[cfg(not(feature = "tokio"))]
+use std::io::BufRead;
 use std::io::Read;
 #[cfg(not(feature = "tokio"))]
 use std::net::TcpStream;
 
-/// Maximum HTTP response size in bytes.
-const MAX_HTTP_RESPONSE_LEN: usize = 4_000_000;
+/// Maximum HTTP message header size in bytes.
+const MAX_HTTP_MESSAGE_HEADER_SIZE: usize = 8192;
+
+/// Maximum HTTP message body size in bytes.
+const MAX_HTTP_MESSAGE_BODY_SIZE: usize = 4_000_000;
 
 /// Client for making HTTP requests.
 struct HttpClient {
@@ -76,7 +79,7 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		let bytes = read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await?;
+		let bytes = read_http_resp(&mut self.stream).await?;
 		F::try_from(bytes)
 	}
 
@@ -102,99 +105,183 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		self.stream.write_all(request.as_bytes())?;
 
-		let bytes = read_http_resp(&mut self.stream, MAX_HTTP_RESPONSE_LEN).await?;
+		let bytes = read_http_resp(&mut self.stream).await?;
 		F::try_from(bytes)
 	}
 }
 
-async fn read_http_resp(socket: &mut TcpStream, max_resp: usize) -> std::io::Result<Vec<u8>> {
-	let mut resp = Vec::new();
-	let mut bytes_read = 0;
-	macro_rules! read_socket { () => { {
+async fn read_http_resp(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+	let read_limit = MAX_HTTP_MESSAGE_HEADER_SIZE + MAX_HTTP_MESSAGE_BODY_SIZE;
+	#[cfg(feature = "tokio")]
+	let mut reader = tokio::io::BufReader::new(stream.take(read_limit as u64));
+	#[cfg(not(feature = "tokio"))]
+	let mut reader = std::io::BufReader::new(stream.take(read_limit as u64));
+
+	let mut total_bytes_read = 0;
+	macro_rules! read_line { () => { {
+		let mut line = String::new();
 		#[cfg(feature = "tokio")]
-		let bytes_read = socket.read(&mut resp[bytes_read..]).await?;
+		let bytes_read = reader.read_line(&mut line).await?;
 		#[cfg(not(feature = "tokio"))]
-		let bytes_read = socket.read(&mut resp[bytes_read..])?;
-		if bytes_read == 0 {
-			return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "zero bytes read"));
-		} else {
-			bytes_read
+		let bytes_read = reader.read_line(&mut line)?;
+
+		total_bytes_read += bytes_read;
+		if total_bytes_read > MAX_HTTP_MESSAGE_HEADER_SIZE {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+					"headers too large"));
+		}
+
+		match bytes_read {
+			0 => None,
+			_ => {
+				// Remove trailing CRLF
+				if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
+				Some(line)
+			},
 		}
 	} } }
 
-	let mut actual_len = 0;
-	let mut ok_found = false;
-	let mut chunked = false;
-	// We expect the HTTP headers to fit in 8KB, and use resp as a temporary buffer for headers
-	// until we know our real length.
-	resp.extend_from_slice(&[0; 8192]);
-	'read_headers: loop {
-		if bytes_read >= 8192 {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "headers too large"));
+	// Read and parse status line
+	let status_line = read_line!()
+		.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no status line"))?;
+	let status = HttpStatus::parse(&status_line)?;
+
+	// Read and parse relevant headers
+	let mut message_length = HttpMessageLength::Empty;
+	loop {
+		let line = read_line!()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected eof"))?;
+		if line.is_empty() { break; }
+
+		let header = HttpHeader::parse(&line)?;
+		if header.has_name("Content-Length") {
+			let length = header.value.parse()
+				.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+			if let HttpMessageLength::Empty = message_length {
+				message_length = HttpMessageLength::ContentLength(length);
+			}
+			continue;
 		}
-		bytes_read += read_socket!();
-		for line in resp[..bytes_read].split(|c| *c == '\n' as u8 || *c == '\r' as u8) {
-			let content_header = b"Content-Length: ";
-			if line.len() > content_header.len() && line[..content_header.len()].eq_ignore_ascii_case(content_header) {
-				actual_len = match match std::str::from_utf8(&line[content_header.len()..]){
-					Ok(s) => s, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-				}.parse() {
-					Ok(len) => len, Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-				};
-			}
-			let http_resp_1 = b"HTTP/1.1 200 ";
-			let http_resp_0 = b"HTTP/1.0 200 ";
-			if line.len() > http_resp_1.len() && (line[..http_resp_1.len()].eq_ignore_ascii_case(http_resp_1) ||
-				                                  line[..http_resp_0.len()].eq_ignore_ascii_case(http_resp_0)) {
-				ok_found = true;
-			}
-			let transfer_encoding = b"Transfer-Encoding: ";
-			if line.len() > transfer_encoding.len() && line[..transfer_encoding.len()].eq_ignore_ascii_case(transfer_encoding) {
-				match &*String::from_utf8_lossy(&line[transfer_encoding.len()..]).to_ascii_lowercase() {
-					"chunked" => chunked = true,
-					_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsupported transfer encoding")),
-				}
-			}
-		}
-		for (idx, window) in resp[..bytes_read].windows(4).enumerate() {
-			if window[0..2] == *b"\n\n" || window[0..2] == *b"\r\r" {
-				resp = resp.split_off(idx + 2);
-				resp.resize(bytes_read - idx - 2, 0);
-				break 'read_headers;
-			} else if window[0..4] == *b"\r\n\r\n" {
-				resp = resp.split_off(idx + 4);
-				resp.resize(bytes_read - idx - 4, 0);
-				break 'read_headers;
-			}
+
+		if header.has_name("Transfer-Encoding") {
+			message_length = HttpMessageLength::TransferEncoding(header.value.into());
+			continue;
 		}
 	}
-	if !ok_found {
+
+	if !status.is_ok() {
 		return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
 	}
-	bytes_read = resp.len();
-	if !chunked {
-		if actual_len == 0 || actual_len > max_resp {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"));
-		}
-		resp.resize(actual_len, 0);
-		#[cfg(feature = "tokio")]
-		socket.read_exact(&mut resp[bytes_read..]).await?;
-		#[cfg(not(feature = "tokio"))]
-		socket.read_exact(&mut resp[bytes_read..])?;
-		Ok(resp)
-	} else {
-		#[cfg(feature = "tokio")]
-		let byte_stream = std::io::Read::chain(&resp[..], ReadAdapter(socket));
-		#[cfg(not(feature = "tokio"))]
-		let byte_stream = resp.chain(socket);
 
-		let mut decoder = chunked_transfer::Decoder::new(byte_stream.take(max_resp as u64));
-		let mut decoded = Vec::new();
-		decoder.read_to_end(&mut decoded)?;
-		Ok(decoded)
+	// Read message body
+	match message_length {
+		HttpMessageLength::Empty => { Ok(Vec::new()) },
+		HttpMessageLength::ContentLength(length) => {
+			if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
+				Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
+			} else {
+				let mut content = vec![0; length];
+				#[cfg(feature = "tokio")]
+				reader.read_exact(&mut content[..]).await?;
+				#[cfg(not(feature = "tokio"))]
+				reader.read_exact(&mut content[..])?;
+				Ok(content)
+			}
+		},
+		HttpMessageLength::TransferEncoding(coding) => {
+			if !coding.eq_ignore_ascii_case("chunked") {
+				Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
+			} else {
+				#[cfg(feature = "tokio")]
+				let reader = ReadAdapter(&mut reader);
+				let mut decoder = chunked_transfer::Decoder::new(reader);
+				let mut content = Vec::new();
+				decoder.read_to_end(&mut content)?;
+				Ok(content)
+			}
+		},
 	}
 }
 
+/// HTTP response status code as defined by [RFC 7231].
+///
+/// [RFC 7231]: https://tools.ietf.org/html/rfc7231#section-6
+struct HttpStatus<'a> {
+	code: &'a str,
+}
+
+impl<'a> HttpStatus<'a> {
+	/// Parses an HTTP status line as defined by [RFC 7230].
+	///
+	/// [RFC 7230]: https://tools.ietf.org/html/rfc7230#section-3.1.2
+	fn parse(line: &'a String) -> std::io::Result<HttpStatus<'a>> {
+		let mut tokens = line.splitn(3, ' ');
+
+		let http_version = tokens.next()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no HTTP-Version"))?;
+		if !http_version.eq_ignore_ascii_case("HTTP/1.1") &&
+			!http_version.eq_ignore_ascii_case("HTTP/1.0") {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid HTTP-Version"));
+		}
+
+		let code = tokens.next()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no Status-Code"))?;
+		if code.len() != 3 || !code.chars().all(|c| c.is_ascii_digit()) {
+			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid Status-Code"));
+		}
+
+		let _reason = tokens.next()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no Reason-Phrase"))?;
+
+		Ok(Self { code })
+	}
+
+	/// Returns whether the status is successful (i.e., 2xx status class).
+	fn is_ok(&self) -> bool {
+		self.code.starts_with('2')
+	}
+}
+
+/// HTTP response header as defined by [RFC 7231].
+///
+/// [RFC 7231]: https://tools.ietf.org/html/rfc7231#section-7
+struct HttpHeader<'a> {
+	name: &'a str,
+	value: &'a str,
+}
+
+impl<'a> HttpHeader<'a> {
+	/// Parses an HTTP header field as defined by [RFC 7230].
+	///
+	/// [RFC 7230]: https://tools.ietf.org/html/rfc7230#section-3.2
+	fn parse(line: &'a String) -> std::io::Result<HttpHeader<'a>> {
+		let mut tokens = line.splitn(2, ':');
+		let name = tokens.next()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no header name"))?;
+		let value = tokens.next()
+			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no header value"))?
+			.trim_start();
+		Ok(Self { name, value })
+	}
+
+	/// Returns whether or the header field has the given name.
+	fn has_name(&self, name: &str) -> bool {
+		self.name.eq_ignore_ascii_case(name)
+	}
+}
+
+/// HTTP message body length as defined by [RFC 7230].
+///
+/// [RFC 7230]: https://tools.ietf.org/html/rfc7230#section-3.3.3
+enum HttpMessageLength {
+	Empty,
+	ContentLength(usize),
+	TransferEncoding(String),
+}
+
+/// An adaptor work making `tokio::io::AsyncRead` compatible with interfaces expecting
+/// `std::io::Read`. This effectively makes the adapted object synchronous.
 #[cfg(feature = "tokio")]
 struct ReadAdapter<'a, R: tokio::io::AsyncRead + std::marker::Unpin>(&'a mut R);
 
@@ -206,7 +293,6 @@ impl<'a, R: tokio::io::AsyncRead + std::marker::Unpin> std::io::Read for ReadAda
 		futures::executor::block_on(self.0.read(buf))
 	}
 }
-
 
 #[cfg(feature = "rest-client")]
 pub struct RESTClient {
