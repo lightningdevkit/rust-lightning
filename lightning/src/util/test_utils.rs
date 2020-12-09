@@ -316,10 +316,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Vec::new()
 	}
 
-	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		self.request_full_sync.load(Ordering::Acquire)
-	}
-
 	fn sync_routing_table(&self, _their_node_id: &PublicKey, _init_msg: &msgs::Init) {}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {

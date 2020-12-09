@@ -105,6 +105,18 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	pub fn read_locked_graph<'a>(&'a self) -> LockedNetworkGraph<'a> {
 		LockedNetworkGraph(self.network_graph.read().unwrap())
 	}
+
+	/// Returns true when a full routing table sync should be performed with a peer.
+	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+		//TODO: Determine whether to request a full sync based on the network map.
+		const FULL_SYNCS_TO_REQUEST: usize = 5;
+		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
+			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
+			true
+		} else {
+			false
+		}
+	}
 }
 
 impl<'a> LockedNetworkGraph<'a> {
@@ -205,17 +217,6 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 			}
 		}
 		result
-	}
-
-	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		//TODO: Determine whether to request a full sync based on the network map.
-		const FULL_SYNCS_TO_REQUEST: usize = 5;
-		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
-			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
-			true
-		} else {
-			false
-		}
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
