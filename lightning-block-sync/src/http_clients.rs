@@ -737,8 +737,114 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn get_chunked_content() {
-		let body = "foo bar baz qux".repeat(20);
+	async fn read_empty_message() {
+		let server = HttpServer::responding_with("".to_string());
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		drop(server);
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "no status line");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_incomplete_message() {
+		let server = HttpServer::responding_with("HTTP/1.1 200 OK".to_string());
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		drop(server);
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "unexpected eof");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_too_large_message_headers() {
+		let response = format!(
+			"HTTP/1.1 302 Found\r\n\
+			 Location: {}\r\n\
+			 \r\n", "Z".repeat(MAX_HTTP_MESSAGE_HEADER_SIZE));
+		let server = HttpServer::responding_with(response);
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "headers too large");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_too_large_message_body() {
+		let body = "Z".repeat(MAX_HTTP_MESSAGE_BODY_SIZE + 1);
+		let server = HttpServer::responding_with_ok::<String>(MessageBody::Content(body));
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "out of range");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_message_with_unsupported_transfer_coding() {
+		let response = String::from(
+			"HTTP/1.1 200 OK\r\n\
+			 Transfer-Encoding: gzip\r\n\
+			 \r\n\
+			 foobar");
+		let server = HttpServer::responding_with(response);
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+				assert_eq!(e.get_ref().unwrap().to_string(), "unsupported transfer coding");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_empty_message_body() {
+		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(bytes) => assert_eq!(bytes.0, Vec::<u8>::new()),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_message_body_with_length() {
+		let body = "foo bar baz qux".repeat(32);
+		let content = MessageBody::Content(body.clone());
+		let server = HttpServer::responding_with_ok::<String>(content);
+
+		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<BinaryResponse>("/foo", "foo.com").await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_chunked_message_body() {
+		let body = "foo bar baz qux".repeat(32);
 		let chunked_content = MessageBody::ChunkedContent(body.clone());
 		let server = HttpServer::responding_with_ok::<String>(chunked_content);
 
