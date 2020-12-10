@@ -111,25 +111,18 @@ impl HttpClient {
 
 	/// Reads an HTTP response message.
 	async fn read_response(self) -> std::io::Result<Vec<u8>> {
-		let read_limit = MAX_HTTP_MESSAGE_HEADER_SIZE + MAX_HTTP_MESSAGE_BODY_SIZE;
+		let limited_stream = self.stream.take(MAX_HTTP_MESSAGE_HEADER_SIZE as u64);
 		#[cfg(feature = "tokio")]
-		let mut reader = tokio::io::BufReader::new(self.stream.take(read_limit as u64));
+		let mut reader = tokio::io::BufReader::new(limited_stream);
 		#[cfg(not(feature = "tokio"))]
-		let mut reader = std::io::BufReader::new(self.stream.take(read_limit as u64));
+		let mut reader = std::io::BufReader::new(limited_stream);
 
-		let mut total_bytes_read = 0;
 		macro_rules! read_line { () => { {
 			let mut line = String::new();
 			#[cfg(feature = "tokio")]
 			let bytes_read = reader.read_line(&mut line).await?;
 			#[cfg(not(feature = "tokio"))]
 			let bytes_read = reader.read_line(&mut line)?;
-
-			total_bytes_read += bytes_read;
-			if total_bytes_read > MAX_HTTP_MESSAGE_HEADER_SIZE {
-				return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-						"headers too large"));
-			}
 
 			match bytes_read {
 				0 => None,
@@ -174,6 +167,8 @@ impl HttpClient {
 		}
 
 		// Read message body
+		let read_limit = MAX_HTTP_MESSAGE_BODY_SIZE - reader.buffer().len();
+		reader.get_mut().set_limit(read_limit as u64);
 		match message_length {
 			HttpMessageLength::Empty => { Ok(Vec::new()) },
 			HttpMessageLength::ContentLength(length) => {
@@ -778,7 +773,7 @@ mod tests {
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "headers too large");
+				assert_eq!(e.get_ref().unwrap().to_string(), "unexpected eof");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
