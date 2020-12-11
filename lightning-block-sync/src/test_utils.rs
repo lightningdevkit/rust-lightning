@@ -1,4 +1,4 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainListener};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainListener, HeaderCache};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
@@ -82,6 +82,16 @@ impl Blockchain {
 
 	pub fn disconnect_tip(&mut self) -> Option<Block> {
 		self.blocks.pop()
+	}
+
+	pub fn header_cache(&self, heights: std::ops::RangeInclusive<usize>) -> HeaderCache {
+		let mut cache = HeaderCache::new();
+		for i in heights {
+			let value = self.at_height(i);
+			let key = value.header.block_hash();
+			assert!(cache.insert(key, value).is_none());
+		}
+		cache
 	}
 }
 
