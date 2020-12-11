@@ -22,7 +22,7 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 				Err(e) => Err(e),
 				Ok((block_hash, height)) => {
 					if block_hash == best_chain_tip.header.block_hash() {
-						return Ok((ChainTip::Common(true), &mut *self.block_source));
+						return Ok((ChainTip::Common, &mut *self.block_source));
 					}
 
 					match self.block_source.get_header(&block_hash, height).await {
@@ -66,8 +66,6 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 		Box::pin(async move {
 			let mut heaviest_chain_tip = best_chain_tip;
 			let mut best_result = Err(BlockSourceError::Persistent);
-			let mut common = 0;
-			let num_pollers = self.pollers.len();
 			for (poller, error) in self.pollers.iter_mut() {
 				if let BlockSourceError::Persistent = error {
 					continue;
@@ -83,11 +81,9 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 							best_result = result;
 						}
 					},
-					Ok((ChainTip::Common(_), source)) => {
-						common += 1;
+					Ok((ChainTip::Common, source)) => {
 						if let Ok((ChainTip::Better(_, _), _)) = best_result {} else {
-							let all_common = common == num_pollers;
-							best_result = Ok((ChainTip::Common(all_common), source));
+							best_result = Ok((ChainTip::Common, source));
 						}
 					},
 					Ok((ChainTip::Better(_, header), _)) => {
@@ -174,7 +170,7 @@ mod tests {
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
 		match poller.poll_chain_tip(best_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok((tip, _)) => assert_eq!(tip, ChainTip::Common(true)),
+			Ok((tip, _)) => assert_eq!(tip, ChainTip::Common),
 		}
 	}
 

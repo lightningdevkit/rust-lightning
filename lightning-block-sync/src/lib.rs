@@ -108,9 +108,8 @@ pub trait Poll<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Sen
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChainTip {
-	/// A chain tip with the same hash as another chain's tip. The boolean indicates whether every
-	/// block source polled returned the same tip.
-	Common(bool),
+	/// A chain tip with the same hash as another chain's tip.
+	Common,
 
 	/// A chain tip with more chainwork than another chain's tip.
 	Better(BlockHash, BlockHeaderData),
@@ -350,6 +349,7 @@ pub(crate) type HeaderCache = std::collections::HashMap<BlockHash, BlockHeaderDa
 /// difficulty transitions only happen every two weeks and never shift difficulty more than 4x in
 /// either direction, which is sufficient to prevent most minority hashrate attacks.
 ///
+/// TODO: Update comment as headers are removed from cache when blocks are disconnected.
 /// We cache any headers which we connect until every block source is in agreement on the best tip.
 /// This prevents one block source from being able to orphan us on a fork of its own creation by
 /// not responding to requests for old headers on that fork. However, if one block source is
@@ -419,12 +419,7 @@ where P: Poll<'a, B>,
 		match self.chain_poller.poll_chain_tip(self.chain_tip.1).await {
 			Err(BlockSourceError::Persistent) => false,
 			Err(BlockSourceError::Transient) => false,
-			Ok((ChainTip::Common(all_common), _)) => {
-				if all_common {
-					self.header_cache.clear();
-				}
-				false
-			},
+			Ok((ChainTip::Common, _)) => false,
 			Ok((ChainTip::Better(new_hash, new_header), block_source)) => {
 				debug_assert_ne!(new_hash, self.chain_tip.0);
 				debug_assert!(new_header.chainwork > self.chain_tip.1.chainwork);
@@ -838,15 +833,15 @@ mod tests {
 		chain_notifier.blocks_connected.lock().unwrap().clear();
 		chain_notifier.blocks_disconnected.lock().unwrap().clear();
 
-		// Test that after chain_one and header_chain consider 3a as their tip that we'll wipe our
-		// block header cache:
+		// Test that after chain_one and header_chain consider 3a as their tip that we won't wipe
+		// the block header cache.
 		*chain_one.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 		*header_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 		assert!(!client.poll_best_tip().await);
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
 
-		assert!(client.header_cache.is_empty());
+		assert_eq!(client.header_cache.len(), 3);
 
 		// Test that setting the header chain to 4a does...almost nothing (though backup_chain
 		// should now be queried) since we can't get the blocks from anywhere.
@@ -859,7 +854,7 @@ mod tests {
 		assert!(!client.poll_best_tip().await);
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
-		assert!(client.header_cache.is_empty());
+		assert_eq!(client.header_cache.len(), 3);
 
 		// But if backup_chain *also* has 4a, we'll fetch it from there:
 		backup_chain.blocks.lock().unwrap().insert(block_4a_hash, block_4a);
@@ -868,7 +863,7 @@ mod tests {
 		assert!(client.poll_best_tip().await);
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_4a_hash, 4)][..]);
-		assert_eq!(client.header_cache.len(), 1);
+		assert_eq!(client.header_cache.len(), 4);
 		assert!(client.header_cache.contains_key(&block_4a_hash));
 
 		chain_notifier.blocks_connected.lock().unwrap().clear();
