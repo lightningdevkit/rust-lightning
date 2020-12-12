@@ -176,7 +176,7 @@ enum ForkStep {
 /// `prev_header` as its tip. There is no ordering guarantee between different ForkStep types, but
 /// `DisconnectBlock` and `ConnectBlock` are each returned in height-descending order.
 async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderData, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
-	let mut steps_tx = Vec::new();
+	let mut steps = Vec::new();
 	let mut current = current_header;
 	let mut previous = *prev_header;
 	loop {
@@ -188,16 +188,16 @@ async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderDat
 		// Found the parent block.
 		if current.height - 1 == previous.height &&
 				current.header.prev_blockhash == previous.header.block_hash() {
-			steps_tx.push(ForkStep::ConnectBlock(current));
+			steps.push(ForkStep::ConnectBlock(current));
 			break;
 		}
 
 		// Found a chain fork.
 		if current.header.prev_blockhash == previous.header.prev_blockhash {
 			let fork_point = look_up_prev_header(block_source, &previous, cache, mainnet).await?;
-			steps_tx.push(ForkStep::DisconnectBlock(previous));
-			steps_tx.push(ForkStep::ConnectBlock(current));
-			steps_tx.push(ForkStep::ForkPoint(fork_point));
+			steps.push(ForkStep::DisconnectBlock(previous));
+			steps.push(ForkStep::ConnectBlock(current));
+			steps.push(ForkStep::ForkPoint(fork_point));
 			break;
 		}
 
@@ -206,16 +206,16 @@ async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderDat
 		let current_height = current.height;
 		let previous_height = previous.height;
 		if current_height <= previous_height {
-			steps_tx.push(ForkStep::DisconnectBlock(previous));
+			steps.push(ForkStep::DisconnectBlock(previous));
 			previous = look_up_prev_header(block_source, &previous, cache, mainnet).await?;
 		}
 		if current_height >= previous_height {
-			steps_tx.push(ForkStep::ConnectBlock(current));
+			steps.push(ForkStep::ConnectBlock(current));
 			current = look_up_prev_header(block_source, &current, cache, mainnet).await?;
 		}
 	}
 
-	Ok(steps_tx)
+	Ok(steps)
 }
 
 /// Adaptor used for notifying when blocks have been connected or disconnected from the chain.
