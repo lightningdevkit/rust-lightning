@@ -595,7 +595,8 @@ mod tests {
 	/// Server for handling HTTP client requests with a stock response.
 	struct HttpServer {
 		address: std::net::SocketAddr,
-		_handler: std::thread::JoinHandle<()>,
+		handler: std::thread::JoinHandle<()>,
+		shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	}
 
 	/// Body of HTTP response messages.
@@ -643,8 +644,12 @@ mod tests {
 			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 			let address = listener.local_addr().unwrap();
 
-			let _handler = std::thread::spawn(move || {
+			let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+			let shutdown_signaled = std::sync::Arc::clone(&shutdown);
+			let handler = std::thread::spawn(move || {
 				let (mut stream, _) = listener.accept().unwrap();
+				stream.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+
 				let lines_read = std::io::BufReader::new(&stream)
 					.lines()
 					.take_while(|line| !line.as_ref().unwrap().is_empty())
@@ -652,17 +657,21 @@ mod tests {
 				if lines_read == 0 { return; }
 
 				for chunk in response.as_bytes().chunks(16) {
-					match stream.take_error().unwrap() {
-						None => {
-							stream.write(chunk).unwrap();
-							stream.flush().unwrap();
-						},
-						Some(_) => break,
+					if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
+						break;
+					} else {
+						stream.write(chunk).unwrap();
+						stream.flush().unwrap();
 					}
 				}
 			});
 
-			Self { address, _handler }
+			Self { address, handler, shutdown }
+		}
+
+		fn shutdown(self) {
+			self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+			self.handler.join().unwrap();
 		}
 
 		fn endpoint(&self) -> HttpEndpoint {
@@ -810,6 +819,7 @@ mod tests {
 			},
 			Ok(_) => panic!("Expected error"),
 		}
+		server.shutdown();
 	}
 
 	#[tokio::test]
