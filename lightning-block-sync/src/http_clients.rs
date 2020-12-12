@@ -74,11 +74,7 @@ impl HttpClient {
 			 Host: {}\r\n\
 			 Connection: keep-alive\r\n\
 			 \r\n", uri, host);
-		#[cfg(feature = "tokio")]
-		self.stream.write_all(request.as_bytes()).await?;
-		#[cfg(not(feature = "tokio"))]
-		self.stream.write_all(request.as_bytes())?;
-
+		self.write_request(request).await?;
 		let bytes = self.read_response().await?;
 		F::try_from(bytes)
 	}
@@ -100,13 +96,23 @@ impl HttpClient {
 			 Content-Length: {}\r\n\
 			 \r\n\
 			 {}", uri, host, auth, content.len(), content);
-		#[cfg(feature = "tokio")]
-		self.stream.write_all(request.as_bytes()).await?;
-		#[cfg(not(feature = "tokio"))]
-		self.stream.write_all(request.as_bytes())?;
-
+		self.write_request(request).await?;
 		let bytes = self.read_response().await?;
 		F::try_from(bytes)
+	}
+
+	/// Writes an HTTP request message.
+	async fn write_request(&mut self, request: String) -> std::io::Result<()> {
+		#[cfg(feature = "tokio")]
+		{
+			self.stream.write_all(request.as_bytes()).await?;
+			self.stream.flush().await
+		}
+		#[cfg(not(feature = "tokio"))]
+		{
+			self.stream.write_all(request.as_bytes())?;
+			self.stream.flush()
+		}
 	}
 
 	/// Reads an HTTP response message.
