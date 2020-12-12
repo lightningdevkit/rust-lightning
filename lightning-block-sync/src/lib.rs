@@ -171,7 +171,12 @@ enum ForkStep {
 	ConnectBlock(BlockHeaderData),
 }
 
-async fn find_fork_step(steps_tx: &mut Vec<ForkStep>, current_header: BlockHeaderData, prev_header: &BlockHeaderData, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<()> {
+/// Walks backwards from `current_header` and `prev_header`, finding the common ancestor. Returns
+/// the steps needed to produce the chain with `current_header` as its tip from the chain with
+/// `prev_header` as its tip. There is no ordering guarantee between different ForkStep types, but
+/// `DisconnectBlock` and `ConnectBlock` are each returned in height-descending order.
+async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderData, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
+	let mut steps_tx = Vec::new();
 	let mut current = current_header;
 	let mut previous = *prev_header;
 	loop {
@@ -184,7 +189,7 @@ async fn find_fork_step(steps_tx: &mut Vec<ForkStep>, current_header: BlockHeade
 		if current.height - 1 == previous.height &&
 				current.header.prev_blockhash == previous.header.block_hash() {
 			steps_tx.push(ForkStep::ConnectBlock(current));
-			return Ok(());
+			break;
 		}
 
 		// Found a chain fork.
@@ -193,7 +198,7 @@ async fn find_fork_step(steps_tx: &mut Vec<ForkStep>, current_header: BlockHeade
 			steps_tx.push(ForkStep::DisconnectBlock(previous));
 			steps_tx.push(ForkStep::ConnectBlock(current));
 			steps_tx.push(ForkStep::ForkPoint(fork_point));
-			return Ok(());
+			break;
 		}
 
 		// Walk back the chain, finding blocks needed to connect and disconnect. Only walk back the
@@ -209,16 +214,7 @@ async fn find_fork_step(steps_tx: &mut Vec<ForkStep>, current_header: BlockHeade
 			current = look_up_prev_header(block_source, &current, cache, mainnet).await?;
 		}
 	}
-}
 
-/// Walks backwards from current_header and prev_header finding the fork and sending ForkStep events
-/// into the steps_tx Sender. There is no ordering guarantee between different ForkStep types, but
-/// DisconnectBlock and ConnectBlock events are each in reverse, height-descending order.
-async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderData, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
-	let mut steps_tx = Vec::new();
-	if current_header.header == prev_header.header { return Ok(steps_tx); }
-
-	find_fork_step(&mut steps_tx, current_header, &prev_header, block_source, cache, mainnet).await?;
 	Ok(steps_tx)
 }
 
@@ -325,6 +321,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 /// Once you have them all at the same block, you should switch to using MicroSPVClient.
 pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, chain_notifier: &mut CL) {
 	if &old_block[..] == &[0; 32] { return; }
+	if old_block == new_block { return; }
 
 	let new_header = block_source.get_header(&new_block, None).await.unwrap();
 	assert_eq!(new_header.header.block_hash(), new_block);
