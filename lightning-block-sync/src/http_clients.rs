@@ -638,9 +638,14 @@ mod tests {
 				if lines_read == 0 { return; }
 
 				for chunk in response.as_bytes().chunks(16) {
-					stream.write(chunk).unwrap();
-					stream.flush().unwrap();
-					std::thread::yield_now();
+					match stream.take_error().unwrap() {
+						None => {
+							stream.write(chunk).unwrap();
+							stream.flush().unwrap();
+							std::thread::yield_now();
+						},
+						Some(_) => break,
+					}
 				}
 			});
 
