@@ -61,7 +61,10 @@ impl HttpClient {
 		stream.set_write_timeout(Some(Duration::from_secs(1)))?;
 
 		#[cfg(feature = "tokio")]
-		let stream = TcpStream::from_std(stream)?;
+		let stream = {
+			stream.set_nonblocking(true)?;
+			TcpStream::from_std(stream)?
+		};
 
 		Ok(Self { stream })
 	}
@@ -296,8 +299,6 @@ struct ReadAdapter<'a, R: tokio::io::AsyncRead + std::marker::Unpin>(&'a mut R);
 #[cfg(feature = "tokio")]
 impl<'a, R: tokio::io::AsyncRead + std::marker::Unpin> std::io::Read for ReadAdapter<'a, R> {
 	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-		#[cfg(test)]
-		std::thread::yield_now();
 		futures::executor::block_on(self.0.read(buf))
 	}
 }
@@ -655,7 +656,6 @@ mod tests {
 						None => {
 							stream.write(chunk).unwrap();
 							stream.flush().unwrap();
-							std::thread::yield_now();
 						},
 						Some(_) => break,
 					}
