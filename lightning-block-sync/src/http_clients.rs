@@ -67,7 +67,7 @@ impl HttpClient {
 	}
 
 	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
-	async fn get<F>(mut self, uri: &str, host: &str) -> std::io::Result<F>
+	async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
 		let request = format!(
 			"GET {} HTTP/1.1\r\n\
@@ -88,7 +88,7 @@ impl HttpClient {
 	///
 	/// The request body consists of the provided JSON `content`. Returns the response body in `F`
 	/// format.
-	async fn post<F>(mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
+	async fn post<F>(&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
 		let content = content.to_string();
 		let request = format!(
@@ -110,8 +110,14 @@ impl HttpClient {
 	}
 
 	/// Reads an HTTP response message.
-	async fn read_response(self) -> std::io::Result<Vec<u8>> {
-		let limited_stream = self.stream.take(MAX_HTTP_MESSAGE_HEADER_SIZE as u64);
+	async fn read_response(&mut self) -> std::io::Result<Vec<u8>> {
+		#[cfg(feature = "tokio")]
+		let stream = self.stream.split().0;
+		#[cfg(not(feature = "tokio"))]
+		let stream = std::io::Read::by_ref(&mut self.stream);
+
+		let limited_stream = stream.take(MAX_HTTP_MESSAGE_HEADER_SIZE as u64);
+
 		#[cfg(feature = "tokio")]
 		let mut reader = tokio::io::BufReader::new(limited_stream);
 		#[cfg(not(feature = "tokio"))]
@@ -306,7 +312,7 @@ impl RESTClient {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
 
-		let client = HttpClient::connect(&self.endpoint)?;
+		let mut client = HttpClient::connect(&self.endpoint)?;
 		client.get::<F>(&uri, &host).await?.try_into()
 	}
 }
@@ -338,7 +344,7 @@ impl RPCClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let client = HttpClient::connect(&self.endpoint)?;
+		let mut client = HttpClient::connect(&self.endpoint)?;
 		let mut response = client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await?.0;
 		if !response.is_object() {
 			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
@@ -629,6 +635,7 @@ mod tests {
 		fn responding_with(response: String) -> Self {
 			let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 			let address = listener.local_addr().unwrap();
+
 			let _handler = std::thread::spawn(move || {
 				let (mut stream, _) = listener.accept().unwrap();
 				let lines_read = std::io::BufReader::new(&stream)
@@ -740,7 +747,7 @@ mod tests {
 	async fn read_empty_message() {
 		let server = HttpServer::responding_with("".to_string());
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		drop(server);
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
@@ -755,7 +762,7 @@ mod tests {
 	async fn read_incomplete_message() {
 		let server = HttpServer::responding_with("HTTP/1.1 200 OK".to_string());
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		drop(server);
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
@@ -774,7 +781,7 @@ mod tests {
 			 \r\n", "Z".repeat(MAX_HTTP_MESSAGE_HEADER_SIZE));
 		let server = HttpServer::responding_with(response);
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
@@ -789,7 +796,7 @@ mod tests {
 		let body = "Z".repeat(MAX_HTTP_MESSAGE_BODY_SIZE + 1);
 		let server = HttpServer::responding_with_ok::<String>(MessageBody::Content(body));
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
@@ -808,7 +815,7 @@ mod tests {
 			 foobar");
 		let server = HttpServer::responding_with(response);
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
@@ -822,7 +829,7 @@ mod tests {
 	async fn read_empty_message_body() {
 		let server = HttpServer::responding_with_ok::<String>(MessageBody::Empty);
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, Vec::<u8>::new()),
@@ -835,7 +842,7 @@ mod tests {
 		let content = MessageBody::Content(body.clone());
 		let server = HttpServer::responding_with_ok::<String>(content);
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
@@ -848,7 +855,7 @@ mod tests {
 		let chunked_content = MessageBody::ChunkedContent(body.clone());
 		let server = HttpServer::responding_with_ok::<String>(chunked_content);
 
-		let client = HttpClient::connect(&server.endpoint()).unwrap();
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(bytes) => assert_eq!(bytes.0, body.as_bytes()),
