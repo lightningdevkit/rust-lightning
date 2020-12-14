@@ -145,29 +145,9 @@ impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Po
 					continue;
 				}
 
-				let result = match block_source.get_best_block().await {
-					Err(e) => Err(e),
-					Ok((block_hash, height)) => {
-						if block_hash == heaviest_chain_tip.header.block_hash() {
-							Ok(ChainTip::Common)
-						} else {
-							match block_source.get_header(&block_hash, height).await {
-								Err(e) => Err(e),
-								Ok(chain_tip) => {
-									crate::stateless_check_header(&chain_tip.header)?;
-									if chain_tip.header.block_hash() != block_hash {
-										Err(BlockSourceError::Persistent)
-									} else if chain_tip.chainwork <= heaviest_chain_tip.chainwork {
-										Ok(ChainTip::Worse(block_hash, chain_tip))
-									} else {
-										Ok(ChainTip::Better(block_hash, chain_tip))
-									}
-								},
-							}
-						}
-					},
-				};
-
+				let mut poller = ChainPoller::new(&mut **block_source as &mut dyn BlockSource);
+				let result = poller.poll_chain_tip(heaviest_chain_tip).await
+					.map(|(chain_tip, _)| chain_tip);
 				match result {
 					Err(BlockSourceError::Persistent) => {
 						*error = BlockSourceError::Persistent;
