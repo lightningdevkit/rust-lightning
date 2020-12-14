@@ -47,62 +47,6 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 	}
 }
 
-pub struct MultipleChainPoller<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> {
-	pollers: Vec<(ChainPoller<'a, B>, BlockSourceError)>,
-}
-
-impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> MultipleChainPoller<'a, B> {
-	pub fn new(mut block_sources: Vec<B>) -> Self {
-		let pollers = block_sources.drain(..).map(|block_source| {
-			(ChainPoller::new(block_source), BlockSourceError::Transient)
-		}).collect();
-		Self { pollers }
-	}
-}
-
-impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for MultipleChainPoller<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
-		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
-	where 'b: 'a {
-		Box::pin(async move {
-			let mut heaviest_chain_tip = best_chain_tip;
-			let mut best_result = Err(BlockSourceError::Persistent);
-			for (poller, error) in self.pollers.iter_mut() {
-				if let BlockSourceError::Persistent = error {
-					continue;
-				}
-
-				let result = poller.poll_chain_tip(heaviest_chain_tip).await;
-				match result {
-					Err(BlockSourceError::Persistent) => {
-						*error = BlockSourceError::Persistent;
-					},
-					Err(BlockSourceError::Transient) => {
-						if best_result.is_err() {
-							best_result = result;
-						}
-					},
-					Ok((ChainTip::Common, source)) => {
-						if let Ok((ChainTip::Better(_, _), _)) = best_result {} else {
-							best_result = Ok((ChainTip::Common, source));
-						}
-					},
-					Ok((ChainTip::Better(_, header), _)) => {
-						best_result = result;
-						heaviest_chain_tip = header;
-					},
-					Ok((ChainTip::Worse(_, _), _)) => {
-						if best_result.is_err() {
-							best_result = result;
-						}
-					},
-				}
-			}
-			best_result
-		})
-	}
-}
-
 pub struct ChainMultiplexer<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
 	block_sources: Vec<(B, BlockSourceError)>,
 	backup_block_sources: Vec<(B, BlockSourceError)>,
