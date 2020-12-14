@@ -357,10 +357,10 @@ where P: Poll<'a, B>,
 	  CL: ChainListener + Sized {
 	chain_tip: (BlockHash, BlockHeaderData),
 	chain_poller: P,
-	backup_block_sources: Vec<B>,
 	header_cache: HeaderCache,
 	chain_notifier: CL,
-	mainnet: bool
+	mainnet: bool,
+	marker: std::marker::PhantomData<B>,
 }
 
 impl<'a, P, B, CL> MicroSPVClient<'a, P, B, CL>
@@ -380,11 +380,12 @@ where P: Poll<'a, B>,
 	/// useful when you have a block source which is more censorship-resistant than others but
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
-	pub fn init(chain_tip: BlockHeaderData, chain_poller: P, backup_block_sources: Vec<B>, chain_notifier: CL, mainnet: bool) -> Self {
+	pub fn init(chain_tip: BlockHeaderData, chain_poller: P, chain_notifier: CL, mainnet: bool) -> Self {
 		let header_cache = HeaderCache::new();
 		Self {
 			chain_tip: (chain_tip.header.block_hash(), chain_tip),
-			chain_poller, backup_block_sources, header_cache, chain_notifier, mainnet
+			chain_poller, header_cache, chain_notifier, mainnet,
+			marker: std::marker::PhantomData
 		}
 	}
 
@@ -420,15 +421,7 @@ where P: Poll<'a, B>,
 			Ok((ChainTip::Better(new_hash, new_header), block_source)) => {
 				debug_assert_ne!(new_hash, self.chain_tip.0);
 				debug_assert!(new_header.chainwork > self.chain_tip.1.chainwork);
-				let mut blocks_connected = false;
-				let backup_block_sources = self.backup_block_sources.iter_mut().map(|s| &mut **s);
-				for source in std::iter::once(block_source).chain(backup_block_sources) {
-					blocks_connected |= sync_chain_monitor!(new_hash, new_header, source);
-					if self.chain_tip.0 == new_hash {
-						break;
-					}
-				}
-				blocks_connected
+				sync_chain_monitor!(new_hash, new_header, block_source)
 			},
 			Ok((ChainTip::Worse(hash, header), _)) => {
 				debug_assert_ne!(hash, self.chain_tip.0);
@@ -786,8 +779,9 @@ mod tests {
 		let mut source_three = &header_chain;
 		let mut source_four = &backup_chain;
 		let mut client = MicroSPVClient::init((&chain_one).get_header(&block_1a_hash, Some(1)).await.unwrap(),
-			poller::MultipleChainPoller::new(vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource]),
-			vec![&mut source_four as &mut dyn BlockSource],
+			poller::ChainMultiplexer::new(
+				vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource],
+				vec![&mut source_four as &mut dyn BlockSource]),
 			Arc::clone(&chain_notifier), true);
 
 		// Test that we will reorg onto 2b because chain_one knows about 1b + 2b

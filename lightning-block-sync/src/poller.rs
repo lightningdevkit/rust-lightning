@@ -1,5 +1,8 @@
 use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll};
 
+use bitcoin::blockdata::block::Block;
+use bitcoin::hash_types::BlockHash;
+
 use std::ops::DerefMut;
 
 pub struct ChainPoller<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> {
@@ -13,7 +16,6 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> ChainPo
 }
 
 impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for ChainPoller<'b, B> {
-
 	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
 		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
 	where 'b: 'a {
@@ -59,7 +61,6 @@ impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> Multipl
 }
 
 impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for MultipleChainPoller<'b, B> {
-
 	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
 		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
 	where 'b: 'a {
@@ -98,6 +99,144 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 				}
 			}
 			best_result
+		})
+	}
+}
+
+pub struct ChainMultiplexer<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
+	block_sources: Vec<(B, BlockSourceError)>,
+	backup_block_sources: Vec<(B, BlockSourceError)>,
+	best_block_source: usize,
+}
+
+impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainMultiplexer<'b, B> {
+	pub fn new(mut block_sources: Vec<B>, mut backup_block_sources: Vec<B>) -> Self {
+		assert!(!block_sources.is_empty());
+		let block_sources = block_sources.drain(..).map(|block_source| {
+			(block_source, BlockSourceError::Transient)
+		}).collect();
+
+		let backup_block_sources = backup_block_sources.drain(..).map(|block_source| {
+			(block_source, BlockSourceError::Transient)
+		}).collect();
+
+		Self { block_sources, backup_block_sources, best_block_source: 0 }
+	}
+
+	fn best_and_backup_block_sources(&mut self) -> Vec<&mut (B, BlockSourceError)> {
+		let best_block_source = self.block_sources.get_mut(self.best_block_source).unwrap();
+		let backup_block_sources = self.backup_block_sources.iter_mut();
+		std::iter::once(best_block_source)
+			.chain(backup_block_sources)
+			.filter(|(_, e)| e == &BlockSourceError::Transient)
+			.collect()
+	}
+}
+
+impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for ChainMultiplexer<'b, B> {
+	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
+		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
+	where 'b: 'a {
+		Box::pin(async move {
+			let mut heaviest_chain_tip = best_chain_tip;
+			let mut best_result = Err(BlockSourceError::Persistent);
+			for (i, (block_source, error)) in self.block_sources.iter_mut().enumerate() {
+				if let BlockSourceError::Persistent = error {
+					continue;
+				}
+
+				let result = match block_source.get_best_block().await {
+					Err(e) => Err(e),
+					Ok((block_hash, height)) => {
+						if block_hash == heaviest_chain_tip.header.block_hash() {
+							Ok(ChainTip::Common)
+						} else {
+							match block_source.get_header(&block_hash, height).await {
+								Err(e) => Err(e),
+								Ok(chain_tip) => {
+									crate::stateless_check_header(&chain_tip.header)?;
+									if chain_tip.header.block_hash() != block_hash {
+										Err(BlockSourceError::Persistent)
+									} else if chain_tip.chainwork <= heaviest_chain_tip.chainwork {
+										Ok(ChainTip::Worse(block_hash, chain_tip))
+									} else {
+										Ok(ChainTip::Better(block_hash, chain_tip))
+									}
+								},
+							}
+						}
+					},
+				};
+
+				match result {
+					Err(BlockSourceError::Persistent) => {
+						*error = BlockSourceError::Persistent;
+					},
+					Err(BlockSourceError::Transient) => {
+						if best_result.is_err() {
+							best_result = result;
+						}
+					},
+					Ok(ChainTip::Common) => {
+						if let Ok(ChainTip::Better(_, _)) = best_result {} else {
+							best_result = result;
+						}
+					},
+					Ok(ChainTip::Better(_, header)) => {
+						self.best_block_source = i;
+						best_result = result;
+						heaviest_chain_tip = header;
+					},
+					Ok(ChainTip::Worse(_, _)) => {
+						if best_result.is_err() {
+							best_result = result;
+						}
+					},
+				}
+			}
+
+			best_result.map(move |chain_tip| (chain_tip, self as &mut dyn BlockSource))
+		})
+	}
+}
+
+impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> BlockSource for ChainMultiplexer<'b, B> {
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+		Box::pin(async move {
+			for (block_source, error) in self.best_and_backup_block_sources() {
+				let result = block_source.get_header(header_hash, height).await;
+				match result {
+					Err(e) => *error = e,
+					Ok(_) => return result,
+				}
+			}
+			Err(BlockSourceError::Persistent)
+		})
+	}
+
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+		Box::pin(async move {
+			for (block_source, error) in self.best_and_backup_block_sources() {
+				let result = block_source.get_block(header_hash).await;
+				match result {
+					Err(e) => *error = e,
+					Ok(_) => return result,
+				}
+			}
+			Err(BlockSourceError::Persistent)
+		})
+	}
+
+	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
+		Box::pin(async move {
+			for (block_source, error) in self.best_and_backup_block_sources() {
+				let result = block_source.get_best_block().await;
+				match result {
+					Err(e) => *error = e,
+					Ok(_) => return result,
+				}
+			}
+			Err(BlockSourceError::Persistent)
 		})
 	}
 }
