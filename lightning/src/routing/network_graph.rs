@@ -18,19 +18,23 @@ use bitcoin::hashes::Hash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::blockdata::opcodes;
+use bitcoin::hash_types::BlockHash;
 
 use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
+use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
+use util::events;
 
 use std::{cmp, fmt};
 use std::sync::{RwLock, RwLockReadGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
@@ -39,6 +43,7 @@ use bitcoin::hashes::hex::ToHex;
 /// Represents the network as nodes and channels between them
 #[derive(PartialEq)]
 pub struct NetworkGraph {
+	genesis_hash: BlockHash,
 	channels: BTreeMap<u64, ChannelInfo>,
 	nodes: BTreeMap<PublicKey, NodeInfo>,
 }
@@ -59,6 +64,7 @@ pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access
 	pub network_graph: RwLock<NetworkGraph>,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
+	pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	logger: L,
 }
 
@@ -68,15 +74,13 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	/// Chain monitor is used to make sure announced channels exist on-chain,
 	/// channel data is correct, and that the announcement is signed with
 	/// channel owners' keys.
-	pub fn new(chain_access: Option<C>, logger: L) -> Self {
+	pub fn new(genesis_hash: BlockHash, chain_access: Option<C>, logger: L) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph: RwLock::new(NetworkGraph {
-				channels: BTreeMap::new(),
-				nodes: BTreeMap::new(),
-			}),
+			network_graph: RwLock::new(NetworkGraph::new(genesis_hash)),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
+			pending_events: Mutex::new(vec![]),
 			logger,
 		}
 	}
@@ -89,6 +93,7 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 			network_graph: RwLock::new(network_graph),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
+			pending_events: Mutex::new(vec![]),
 			logger,
 		}
 	}
@@ -99,6 +104,18 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	/// yourself.
 	pub fn read_locked_graph<'a>(&'a self) -> LockedNetworkGraph<'a> {
 		LockedNetworkGraph(self.network_graph.read().unwrap())
+	}
+
+	/// Returns true when a full routing table sync should be performed with a peer.
+	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
+		//TODO: Determine whether to request a full sync based on the network map.
+		const FULL_SYNCS_TO_REQUEST: usize = 5;
+		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
+			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
+			true
+		} else {
+			false
+		}
 	}
 }
 
@@ -202,15 +219,124 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		result
 	}
 
-	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		//TODO: Determine whether to request a full sync based on the network map.
-		const FULL_SYNCS_TO_REQUEST: usize = 5;
-		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
-			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
-			true
-		} else {
-			false
+	/// Initiates a stateless sync of routing gossip information with a peer
+	/// using gossip_queries. The default strategy used by this implementation
+	/// is to sync the full block range with several peers.
+	///
+	/// We should expect one or more reply_channel_range messages in response
+	/// to our query_channel_range. Each reply will enqueue a query_scid message
+	/// to request gossip messages for each channel. The sync is considered complete
+	/// when the final reply_scids_end message is received, though we are not
+	/// tracking this directly.
+	fn sync_routing_table(&self, their_node_id: &PublicKey, init_msg: &Init) {
+
+		// We will only perform a sync with peers that support gossip_queries.
+		if !init_msg.features.supports_gossip_queries() {
+			return ();
 		}
+
+		// Check if we need to perform a full synchronization with this peer
+		if !self.should_request_full_sync(their_node_id) {
+			return ();
+		}
+
+		let first_blocknum = 0;
+		let number_of_blocks = 0xffffffff;
+		log_debug!(self.logger, "Sending query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), first_blocknum, number_of_blocks);
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::MessageSendEvent::SendChannelRangeQuery {
+			node_id: their_node_id.clone(),
+			msg: QueryChannelRange {
+				chain_hash: self.network_graph.read().unwrap().genesis_hash,
+				first_blocknum,
+				number_of_blocks,
+			},
+		});
+	}
+
+	/// Statelessly processes a reply to a channel range query by immediately
+	/// sending an SCID query with SCIDs in the reply. To keep this handler
+	/// stateless, it does not validate the sequencing of replies for multi-
+	/// reply ranges. It does not validate whether the reply(ies) cover the
+	/// queried range. It also does not filter SCIDs to only those in the
+	/// original query range. We also do not validate that the chain_hash
+	/// matches the chain_hash of the NetworkGraph. Any chan_ann message that
+	/// does not match our chain_hash will be rejected when the announcement is
+	/// processed.
+	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError> {
+		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, full_information={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.full_information, msg.short_channel_ids.len(),);
+
+		// Validate that the remote node maintains up-to-date channel
+		// information for chain_hash. Some nodes use the full_information
+		// flag to indicate multi-part messages so we must check whether
+		// we received SCIDs as well.
+		if !msg.full_information && msg.short_channel_ids.len() == 0 {
+			return Err(LightningError {
+				err: String::from("Received reply_channel_range with no information available"),
+				action: ErrorAction::IgnoreError,
+			});
+		}
+
+		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), msg.short_channel_ids.len());
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::MessageSendEvent::SendShortIdsQuery {
+			node_id: their_node_id.clone(),
+			msg: QueryShortChannelIds {
+				chain_hash: msg.chain_hash,
+				short_channel_ids: msg.short_channel_ids,
+			}
+		});
+
+		Ok(())
+	}
+
+	/// When an SCID query is initiated the remote peer will begin streaming
+	/// gossip messages. In the event of a failure, we may have received
+	/// some channel information. Before trying with another peer, the
+	/// caller should update its set of SCIDs that need to be queried.
+	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
+		log_debug!(self.logger, "Handling reply_short_channel_ids_end peer={}, full_information={}", log_pubkey!(their_node_id), msg.full_information);
+
+		// If the remote node does not have up-to-date information for the
+		// chain_hash they will set full_information=false. We can fail
+		// the result and try again with a different peer.
+		if !msg.full_information {
+			return Err(LightningError {
+				err: String::from("Received reply_short_channel_ids_end with no information"),
+				action: ErrorAction::IgnoreError
+			});
+		}
+
+		Ok(())
+	}
+
+	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: QueryChannelRange) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+
+	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: QueryShortChannelIds) -> Result<(), LightningError> {
+		// TODO
+		Err(LightningError {
+			err: String::from("Not implemented"),
+			action: ErrorAction::IgnoreError,
+		})
+	}
+}
+
+impl<C: Deref, L: Deref> events::MessageSendEventsProvider for NetGraphMsgHandler<C, L>
+where
+	C::Target: chain::Access,
+	L::Target: Logger,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+		let mut ret = Vec::new();
+		let mut pending_events = self.pending_events.lock().unwrap();
+		std::mem::swap(&mut ret, &mut pending_events);
+		ret
 	}
 }
 
@@ -448,6 +574,7 @@ impl Readable for NodeInfo {
 
 impl Writeable for NetworkGraph {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.genesis_hash.write(writer)?;
 		(self.channels.len() as u64).write(writer)?;
 		for (ref chan_id, ref chan_info) in self.channels.iter() {
 			(*chan_id).write(writer)?;
@@ -464,6 +591,7 @@ impl Writeable for NetworkGraph {
 
 impl Readable for NetworkGraph {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = BTreeMap::new();
 		for _ in 0..channels_count {
@@ -479,6 +607,7 @@ impl Readable for NetworkGraph {
 			nodes.insert(node_id, node_info);
 		}
 		Ok(NetworkGraph {
+			genesis_hash,
 			channels,
 			nodes,
 		})
@@ -524,8 +653,9 @@ impl NetworkGraph {
 	}
 
 	/// Creates a new, empty, network graph.
-	pub fn new() -> NetworkGraph {
+	pub fn new(genesis_hash: BlockHash) -> NetworkGraph {
 		Self {
+			genesis_hash,
 			channels: BTreeMap::new(),
 			nodes: BTreeMap::new(),
 		}
@@ -882,14 +1012,15 @@ impl NetworkGraph {
 #[cfg(test)]
 mod tests {
 	use chain;
-	use ln::features::{ChannelFeatures, NodeFeatures};
+	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-	use ln::msgs::{OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
-		MAX_VALUE_MSAT};
+		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
+	use util::events::{MessageSendEvent, MessageSendEventsProvider};
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
@@ -909,7 +1040,8 @@ mod tests {
 	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_hash, None, Arc::clone(&logger));
 		(secp_ctx, net_graph_msg_handler)
 	}
 
@@ -1070,7 +1202,7 @@ mod tests {
 		};
 
 		// Test if the UTXO lookups were not supported
-		let mut net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
+		let mut net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
@@ -1094,7 +1226,7 @@ mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
+		net_graph_msg_handler = NetGraphMsgHandler::new(chain_source.clone().genesis_hash, Some(chain_source.clone()), Arc::clone(&logger));
 		unsigned_announcement.short_channel_id += 1;
 
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
@@ -1218,7 +1350,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let net_graph_msg_handler = NetGraphMsgHandler::new(Some(chain_source.clone()), Arc::clone(&logger));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -1812,5 +1944,185 @@ mod tests {
 		assert!(!network.get_channels().is_empty());
 		network.write(&mut w).unwrap();
 		assert!(<NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
+	}
+
+	#[test]
+	fn calling_sync_routing_table() {
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
+
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+		let first_blocknum = 0;
+		let number_of_blocks = 0xffff_ffff;
+
+		// It should ignore if gossip_queries feature is not enabled
+		{
+			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 0);
+		}
+
+		// It should send a query_channel_message with the correct information
+		{
+			let init_msg = Init { features: InitFeatures::known() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			match &events[0] {
+				MessageSendEvent::SendChannelRangeQuery{ node_id, msg } => {
+					assert_eq!(node_id, &node_id_1);
+					assert_eq!(msg.chain_hash, chain_hash);
+					assert_eq!(msg.first_blocknum, first_blocknum);
+					assert_eq!(msg.number_of_blocks, number_of_blocks);
+				},
+				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
+			};
+		}
+
+		// It should not enqueue a query when should_request_full_sync return false.
+		// The initial implementation allows syncing with the first 5 peers after
+		// which should_request_full_sync will return false
+		{
+			let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+			let init_msg = Init { features: InitFeatures::known() };
+			for n in 1..7 {
+				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
+				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+				net_graph_msg_handler.sync_routing_table(&node_id, &init_msg);
+				let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+				if n <= 5 {
+					assert_eq!(events.len(), 1);
+				} else {
+					assert_eq!(events.len(), 0);
+				}
+
+			}
+		}
+	}
+
+	#[test]
+	fn handling_reply_channel_range() {
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
+
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+
+		// Test receipt of a single reply that should enqueue an SCID query
+		// matching the SCIDs in the reply
+		{
+			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
+				chain_hash,
+				full_information: true,
+				first_blocknum: 0,
+				number_of_blocks: 2000,
+				short_channel_ids: vec![
+					0x0003e0_000000_0000, // 992x0x0
+					0x0003e8_000000_0000, // 1000x0x0
+					0x0003e9_000000_0000, // 1001x0x0
+					0x0003f0_000000_0000, // 1008x0x0
+					0x00044c_000000_0000, // 1100x0x0
+					0x0006e0_000000_0000, // 1760x0x0
+				],
+			});
+			assert!(result.is_ok());
+
+			// We expect to emit a query_short_channel_ids message with the received scids
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			match &events[0] {
+				MessageSendEvent::SendShortIdsQuery { node_id, msg } => {
+					assert_eq!(node_id, &node_id_1);
+					assert_eq!(msg.chain_hash, chain_hash);
+					assert_eq!(msg.short_channel_ids, vec![
+						0x0003e0_000000_0000, // 992x0x0
+						0x0003e8_000000_0000, // 1000x0x0
+						0x0003e9_000000_0000, // 1001x0x0
+						0x0003f0_000000_0000, // 1008x0x0
+						0x00044c_000000_0000, // 1100x0x0
+						0x0006e0_000000_0000, // 1760x0x0
+					]);
+				},
+				_ => panic!("expected MessageSendEvent::SendShortIdsQuery"),
+			}
+		}
+
+		// Test receipt of a reply that indicates the remote node does not maintain up-to-date
+		// information for the chain_hash. Because of discrepancies in implementation we use
+		// full_information=false and short_channel_ids=[] as the signal.
+		{
+			// Handle the reply indicating the peer was unable to fulfill our request.
+			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
+				chain_hash,
+				full_information: false,
+				first_blocknum: 1000,
+				number_of_blocks: 100,
+				short_channel_ids: vec![],
+			});
+			assert!(result.is_err());
+			assert_eq!(result.err().unwrap().err, "Received reply_channel_range with no information available");
+		}
+	}
+
+	#[test]
+	fn handling_reply_short_channel_ids() {
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+
+		// Test receipt of a successful reply
+		{
+			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
+				chain_hash,
+				full_information: true,
+			});
+			assert!(result.is_ok());
+		}
+
+		// Test receipt of a reply that indicates the peer does not maintain up-to-date information
+		// for the chain_hash requested in the query.
+		{
+			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
+				chain_hash,
+				full_information: false,
+			});
+			assert!(result.is_err());
+			assert_eq!(result.err().unwrap().err, "Received reply_short_channel_ids_end with no information");
+		}
+	}
+
+	#[test]
+	fn handling_query_channel_range() {
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+
+		let result = net_graph_msg_handler.handle_query_channel_range(&node_id, QueryChannelRange {
+			chain_hash,
+			first_blocknum: 0,
+			number_of_blocks: 0xffff_ffff,
+		});
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn handling_query_short_channel_ids() {
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
+		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+
+		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
+
+		let result = net_graph_msg_handler.handle_query_short_channel_ids(&node_id, QueryShortChannelIds {
+			chain_hash,
+			short_channel_ids: vec![0x0003e8_000000_0000],
+		});
+		assert!(result.is_err());
 	}
 }

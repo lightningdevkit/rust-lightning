@@ -346,7 +346,22 @@ pub enum MessageSendEvent {
 	PaymentFailureNetworkUpdate {
 		/// The channel/node update which should be sent to NetGraphMsgHandler
 		update: msgs::HTLCFailChannelUpdate,
-	}
+	},
+	/// Query a peer for channels with funding transaction UTXOs in a block range.
+	SendChannelRangeQuery {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The query_channel_range which should be sent.
+		msg: msgs::QueryChannelRange,
+	},
+	/// Request routing gossip messages from a peer for a list of channels identified by
+	/// their short_channel_ids.
+	SendShortIdsQuery {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The query_short_channel_ids which should be sent.
+		msg: msgs::QueryShortChannelIds,
+	},
 }
 
 /// A trait indicating an object may generate message send events

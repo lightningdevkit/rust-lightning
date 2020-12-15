@@ -104,7 +104,7 @@ mod sealed {
 		],
 		optional_features: [
 			// Byte 0
-			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript,
+			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
@@ -122,7 +122,7 @@ mod sealed {
 		],
 		optional_features: [
 			// Byte 0
-			DataLossProtect | UpfrontShutdownScript,
+			DataLossProtect | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
@@ -243,6 +243,8 @@ mod sealed {
 		"Feature flags for `initial_routing_sync`.");
 	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
 		"Feature flags for `option_upfront_shutdown_script`.");
+	define_feature!(7, GossipQueries, [InitContext, NodeContext],
+		"Feature flags for `gossip_queries`.");
 	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext],
 		"Feature flags for `var_onion_optin`.");
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext],
@@ -473,6 +475,22 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	}
 }
 
+
+impl<T: sealed::GossipQueries> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn requires_gossip_queries(&self) -> bool {
+		<T as sealed::GossipQueries>::requires_feature(&self.flags)
+	}
+	pub(crate) fn supports_gossip_queries(&self) -> bool {
+		<T as sealed::GossipQueries>::supports_feature(&self.flags)
+	}
+	#[cfg(test)]
+	pub(crate) fn clear_gossip_queries(mut self) -> Self {
+		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
 impl<T: sealed::VariableLengthOnion> Features<T> {
 	#[cfg(test)]
 	pub(crate) fn requires_variable_length_onion(&self) -> bool {
@@ -497,6 +515,10 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	pub(crate) fn initial_routing_sync(&self) -> bool {
 		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
 	}
+	// We are no longer setting initial_routing_sync now that gossip_queries
+	// is enabled. This feature is ignored by a peer when gossip_queries has 
+	// been negotiated.
+	#[cfg(test)]
 	pub(crate) fn clear_initial_routing_sync(&mut self) {
 		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
 	}
@@ -568,6 +590,11 @@ mod tests {
 		assert!(!InitFeatures::known().requires_upfront_shutdown_script());
 		assert!(!NodeFeatures::known().requires_upfront_shutdown_script());
 
+		assert!(InitFeatures::known().supports_gossip_queries());
+		assert!(NodeFeatures::known().supports_gossip_queries());
+		assert!(!InitFeatures::known().requires_gossip_queries());
+		assert!(!NodeFeatures::known().requires_gossip_queries());
+
 		assert!(InitFeatures::known().supports_data_loss_protect());
 		assert!(NodeFeatures::known().supports_data_loss_protect());
 		assert!(!InitFeatures::known().requires_data_loss_protect());
@@ -620,9 +647,10 @@ mod tests {
 
 	#[test]
 	fn convert_to_context_with_relevant_flags() {
-		let init_features = InitFeatures::known().clear_upfront_shutdown_script();
+		let init_features = InitFeatures::known().clear_upfront_shutdown_script().clear_gossip_queries();
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
+		assert!(!init_features.supports_gossip_queries());
 
 		let node_features: NodeFeatures = init_features.to_context();
 		{
@@ -639,8 +667,10 @@ mod tests {
 		// Check that cleared flags are kept blank when converting back:
 		// - initial_routing_sync was not applicable to NodeContext
 		// - upfront_shutdown_script was cleared before converting
+		// - gossip_queries was cleared before converting
 		let features: InitFeatures = node_features.to_context_internal();
 		assert!(!features.initial_routing_sync());
 		assert!(!features.supports_upfront_shutdown_script());
+		assert!(!init_features.supports_gossip_queries());
 	}
 }

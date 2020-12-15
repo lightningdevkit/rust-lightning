@@ -538,7 +538,7 @@ mod tests {
 	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<std::sync::Arc<crate::util::test_utils::TestChainSource>, std::sync::Arc<crate::util::test_utils::TestLogger>>, std::sync::Arc<test_utils::TestLogger>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(None, Arc::clone(&logger));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
 		// Build network from our_id to node7:
 		//
 		//        -1(1)2-  node0  -1(3)2-
@@ -1258,7 +1258,7 @@ mod tests {
 			inbound_capacity_msat: 100000,
 			is_live: true,
 		}];
-		let route = get_route(&source_node_id, &NetworkGraph::new(), &target_node_id, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
+		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
 
 		assert_eq!(route.paths[0].len(), 2);
 

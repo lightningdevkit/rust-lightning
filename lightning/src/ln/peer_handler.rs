@@ -584,11 +584,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
-									let mut features = InitFeatures::known();
-									if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-										features.clear_initial_routing_sync();
-									}
-
+									let features = InitFeatures::known();
 									let resp = msgs::Init { features };
 									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 								},
@@ -694,10 +690,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 
 				log_info!(
-					self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, static_remote_key: {}, unknown flags (local and global): {}",
+					self.logger, "Received peer Init message: data_loss_protect: {}, initial_routing_sync: {}, upfront_shutdown_script: {}, gossip_queries: {}, static_remote_key: {}, unknown flags (local and global): {}",
 					if msg.features.supports_data_loss_protect() { "supported" } else { "not supported"},
 					if msg.features.initial_routing_sync() { "requested" } else { "not requested" },
 					if msg.features.supports_upfront_shutdown_script() { "supported" } else { "not supported"},
+					if msg.features.supports_gossip_queries() { "supported" } else { "not supported" },
 					if msg.features.supports_static_remote_key() { "supported" } else { "not supported"},
 					if msg.features.supports_unknown_bits() { "present" } else { "none" }
 				);
@@ -712,14 +709,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 
 				if !peer.outbound {
-					let mut features = InitFeatures::known();
-					if !self.message_handler.route_handler.should_request_full_sync(&peer.their_node_id.unwrap()) {
-						features.clear_initial_routing_sync();
-					}
-
+					let features = InitFeatures::known();
 					let resp = msgs::Init { features };
 					self.enqueue_message(peers_needing_send, peer, peer_descriptor.clone(), &resp);
 				}
+
+				self.message_handler.route_handler.sync_routing_table(&peer.their_node_id.unwrap(), &msg);
 
 				self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 				peer.their_features = Some(msg.features);
@@ -840,6 +835,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					// TODO: forward msg along to all our other peers!
 				}
 			},
+			wire::Message::QueryShortChannelIds(msg) => {
+				self.message_handler.route_handler.handle_query_short_channel_ids(&peer.their_node_id.unwrap(), msg)?;
+			},
+			wire::Message::ReplyShortChannelIdsEnd(msg) => {
+				self.message_handler.route_handler.handle_reply_short_channel_ids_end(&peer.their_node_id.unwrap(), msg)?;
+			},
+			wire::Message::QueryChannelRange(msg) => {
+				self.message_handler.route_handler.handle_query_channel_range(&peer.their_node_id.unwrap(), msg)?;
+			},
+			wire::Message::ReplyChannelRange(msg) => {
+				self.message_handler.route_handler.handle_reply_channel_range(&peer.their_node_id.unwrap(), msg)?;
+			},
+			wire::Message::GossipTimestampFilter(_msg) => {
+				// TODO: handle message
+			},
 
 			// Unknown messages:
 			wire::Message::Unknown(msg_type) if msg_type.is_even() => {
@@ -864,6 +874,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			// drop optional-ish messages when send buffers get full!
 
 			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
+			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
 			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = &mut *peers_lock;
 			for event in events_generated.drain(..) {
@@ -1115,6 +1126,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								self.do_attempt_write_data(&mut descriptor, peer);
 							},
 						}
+					},
+					MessageSendEvent::SendChannelRangeQuery { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+						self.do_attempt_write_data(&mut descriptor, peer);
+					},
+					MessageSendEvent::SendShortIdsQuery { ref node_id, ref msg } => {
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+						self.do_attempt_write_data(&mut descriptor, peer);
 					}
 				}
 			}
@@ -1302,13 +1323,6 @@ mod tests {
 		(fd_a.clone(), fd_b.clone())
 	}
 
-	fn establish_connection_and_read_events<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger>) -> (FileDescriptor, FileDescriptor) {
-		let (mut fd_a, mut fd_b) = establish_connection(peer_a, peer_b);
-		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
-		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
-		(fd_a.clone(), fd_b.clone())
-	}
-
 	#[test]
 	fn test_disconnect_peer() {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
@@ -1376,42 +1390,5 @@ mod tests {
 		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
 		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
 		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
-	}
-
-	#[test]
-	fn limit_initial_routing_sync_requests() {
-		// Inbound peer 0 requests initial_routing_sync, but outbound peer 1 does not.
-		{
-			let cfgs = create_peermgr_cfgs(2);
-			cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
-			let peers = create_network(2, &cfgs);
-			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
-
-			let peer_0 = peers[0].peers.lock().unwrap();
-			let peer_1 = peers[1].peers.lock().unwrap();
-
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
-
-			assert!(peer_0_features.unwrap().initial_routing_sync());
-			assert!(!peer_1_features.unwrap().initial_routing_sync());
-		}
-
-		// Outbound peer 1 requests initial_routing_sync, but inbound peer 0 does not.
-		{
-			let cfgs = create_peermgr_cfgs(2);
-			cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
-			let peers = create_network(2, &cfgs);
-			let (fd_0_to_1, fd_1_to_0) = establish_connection_and_read_events(&peers[0], &peers[1]);
-
-			let peer_0 = peers[0].peers.lock().unwrap();
-			let peer_1 = peers[1].peers.lock().unwrap();
-
-			let peer_0_features = peer_1.peers.get(&fd_1_to_0).unwrap().their_features.as_ref();
-			let peer_1_features = peer_0.peers.get(&fd_0_to_1).unwrap().their_features.as_ref();
-
-			assert!(!peer_0_features.unwrap().initial_routing_sync());
-			assert!(peer_1_features.unwrap().initial_routing_sync());
-		}
 	}
 }
