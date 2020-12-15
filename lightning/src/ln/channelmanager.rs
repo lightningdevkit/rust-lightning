@@ -888,22 +888,20 @@ macro_rules! maybe_break_monitor_err {
 macro_rules! handle_chan_restoration_locked {
 	($self: expr, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
 	 $raa: expr, $commitment_update: expr, $order: expr,
-	 $pending_forwards: expr, $pending_failures: expr, $funding_broadcastable: expr, $funding_locked: expr) => { {
-		let mut htlc_forwards = Vec::new();
-		let mut htlc_failures = Vec::new();
-		let mut pending_events = Vec::new();
+	 $pending_forwards: expr, $funding_broadcastable: expr, $funding_locked: expr) => { {
+		let mut htlc_forwards = None;
+		let counterparty_node_id = $channel_entry.get().get_counterparty_node_id();
 
 		{
 			if !$pending_forwards.is_empty() {
-				htlc_forwards.push(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
+				htlc_forwards = Some(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
 					$channel_entry.get().get_funding_txo().unwrap(), $pending_forwards));
 			}
-			htlc_failures.append(&mut $pending_failures);
 
 			macro_rules! handle_cs { () => {
 				if let Some(update) = $commitment_update {
 					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: $channel_entry.get().get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						updates: update,
 					});
 				}
@@ -911,7 +909,7 @@ macro_rules! handle_chan_restoration_locked {
 			macro_rules! handle_raa { () => {
 				if let Some(revoke_and_ack) = $raa {
 					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-						node_id: $channel_entry.get().get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						msg: revoke_and_ack,
 					});
 				}
@@ -932,31 +930,29 @@ macro_rules! handle_chan_restoration_locked {
 			}
 			if let Some(msg) = $funding_locked {
 				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: $channel_entry.get().get_counterparty_node_id(),
+					node_id: counterparty_node_id,
 					msg,
 				});
 				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
 					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: $channel_entry.get().get_counterparty_node_id(),
+						node_id: counterparty_node_id,
 						msg: announcement_sigs,
 					});
 				}
 				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), $channel_entry.get().channel_id());
 			}
 		}
-		(htlc_forwards, htlc_failures, pending_events)
+		htlc_forwards
 	} }
 }
 
 macro_rules! post_handle_chan_restoration {
 	($self: expr, $locked_res: expr) => { {
-		let (mut htlc_forwards, mut htlc_failures, mut pending_events) = $locked_res;
-		$self.pending_events.lock().unwrap().append(&mut pending_events);
+		let htlc_forwards = $locked_res;
 
-		for failure in htlc_failures.drain(..) {
-			$self.fail_htlc_backwards_internal($self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		if let Some(forwards) = htlc_forwards {
+			$self.forward_htlcs(&mut [forwards][..]);
 		}
-		$self.forward_htlcs(&mut htlc_forwards[..]);
 	} }
 }
 
@@ -2668,7 +2664,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let chan_restoration_res = {
+		let (mut pending_failures, chan_restoration_res) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
@@ -2679,10 +2675,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return;
 			}
 
-			let (raa, commitment_update, order, pending_forwards, mut pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
-			handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked)
+			let (raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
+			(pending_failures, handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, pending_forwards, funding_broadcastable, funding_locked))
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
+		for failure in pending_failures.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+		}
 	}
 
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
