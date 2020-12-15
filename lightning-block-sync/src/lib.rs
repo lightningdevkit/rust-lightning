@@ -391,7 +391,7 @@ where P: Poll<'a, B>,
 
 	/// Check each source for a new best tip and update the chain listener accordingly.
 	/// Returns true if some blocks were [dis]connected, false otherwise.
-	pub async fn poll_best_tip(&mut self) -> bool {
+	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
 		macro_rules! sync_chain_monitor {
 			($new_hash: expr, $new_header: expr, $source: expr) => { {
 				let mut blocks_connected = false;
@@ -414,21 +414,21 @@ where P: Poll<'a, B>,
 			} }
 		}
 
-		match self.chain_poller.poll_chain_tip(self.chain_tip.1).await {
-			Err(BlockSourceError::Persistent) => false,
-			Err(BlockSourceError::Transient) => false,
-			Ok((ChainTip::Common, _)) => false,
-			Ok((ChainTip::Better(new_hash, new_header), block_source)) => {
+		let (chain_tip, block_source) = self.chain_poller.poll_chain_tip(self.chain_tip.1).await?;
+		let blocks_connected = match chain_tip {
+			ChainTip::Common => false,
+			ChainTip::Better(new_hash, new_header) => {
 				debug_assert_ne!(new_hash, self.chain_tip.0);
 				debug_assert!(new_header.chainwork > self.chain_tip.1.chainwork);
 				sync_chain_monitor!(new_hash, new_header, block_source)
 			},
-			Ok((ChainTip::Worse(hash, header), _)) => {
+			ChainTip::Worse(hash, header) => {
 				debug_assert_ne!(hash, self.chain_tip.0);
 				debug_assert!(header.chainwork <= self.chain_tip.1.chainwork);
 				false
 			},
-		}
+		};
+		Ok((chain_tip, blocks_connected))
 	}
 }
 
@@ -785,7 +785,13 @@ mod tests {
 			Arc::clone(&chain_notifier), true);
 
 		// Test that we will reorg onto 2b because chain_one knows about 1b + 2b
-		assert!(client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
+				assert_eq!(block_hash, block_2b_hash);
+				assert!(blocks_connected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert_eq!(&chain_notifier.blocks_disconnected.lock().unwrap()[..], &[(block_1a_hash, 1)][..]);
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_1b_hash, 1), (block_2b_hash, 2)][..]);
 		assert_eq!(client.header_cache.len(), 2);
@@ -801,7 +807,12 @@ mod tests {
 		chain_notifier.blocks_disconnected.lock().unwrap().clear();
 
 		// First test that nothing happens if nothing changes:
-		assert!(!client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Common, blocks_connected)) => {
+				assert!(!blocks_connected);
+			},
+			_ => panic!("Expected common chain tip"),
+		}
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
 
@@ -810,7 +821,13 @@ mod tests {
 		chain_two.blocks.lock().unwrap().insert(block_3a_hash, block_3a.clone());
 		*chain_two.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
-		assert!(client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
+				assert_eq!(block_hash, block_3a_hash);
+				assert!(blocks_connected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert_eq!(&chain_notifier.blocks_disconnected.lock().unwrap()[..], &[(block_2b_hash, 2), (block_1b_hash, 1)][..]);
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_1a_hash, 1), (block_2a_hash, 2), (block_3a_hash, 3)][..]);
 
@@ -828,7 +845,12 @@ mod tests {
 		// the block header cache.
 		*chain_one.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 		*header_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
-		assert!(!client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Common, blocks_connected)) => {
+				assert!(!blocks_connected);
+			},
+			_ => panic!("Expected common chain tip"),
+		}
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
 
@@ -842,7 +864,13 @@ mod tests {
 		*header_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		*backup_chain.disallowed.lock().unwrap() = false;
 
-		assert!(!client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
+				assert_eq!(block_hash, block_4a_hash);
+				assert!(!blocks_connected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
 		assert_eq!(client.header_cache.len(), 3);
@@ -851,7 +879,13 @@ mod tests {
 		backup_chain.blocks.lock().unwrap().insert(block_4a_hash, block_4a);
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 
-		assert!(client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
+				assert_eq!(block_hash, block_4a_hash);
+				assert!(blocks_connected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_4a_hash, 4)][..]);
 		assert_eq!(client.header_cache.len(), 4);
@@ -873,7 +907,13 @@ mod tests {
 		// We'll check the backup chain last, so don't give it 4a, as otherwise we'll connect it:
 		*backup_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
-		assert!(client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_disconnected)) => {
+				assert_eq!(block_hash, block_5c_hash);
+				assert!(blocks_disconnected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert_eq!(&chain_notifier.blocks_disconnected.lock().unwrap()[..], &[(block_4a_hash, 4)][..]);
 		assert!(chain_notifier.blocks_connected.lock().unwrap().is_empty());
 
@@ -882,7 +922,13 @@ mod tests {
 		// Now reset the headers chain to 4a and test that we end up back there.
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		*header_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
-		assert!(client.poll_best_tip().await);
+		match client.poll_best_tip().await {
+			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
+				assert_eq!(block_hash, block_4a_hash);
+				assert!(blocks_connected);
+			},
+			_ => panic!("Expected better chain tip"),
+		}
 		assert!(chain_notifier.blocks_disconnected.lock().unwrap().is_empty());
 		assert_eq!(&chain_notifier.blocks_connected.lock().unwrap()[..], &[(block_4a_hash, 4)][..]);
 	}
