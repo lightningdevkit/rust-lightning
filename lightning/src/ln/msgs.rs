@@ -831,9 +831,9 @@ pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvide
 	/// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
 	/// If None is provided for starting_point, we start at the first node.
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
-	/// Initiates routing gossip sync by querying a peer to discover channels
-	/// and their associated routing gossip messages. This method will use a
-	/// sync strategy defined by the implementor.
+	/// Called when a connection is established with a peer. This can be used to
+	/// perform routing table synchronization using a strategy defined by the
+	/// implementor.
 	fn sync_routing_table(&self, their_node_id: &PublicKey, init: &Init);
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
