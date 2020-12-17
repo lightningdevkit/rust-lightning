@@ -209,14 +209,9 @@ async fn find_fork<P: Poll>(current_header: ValidatedBlockHeader, prev_header: &
 	let mut current = current_header;
 	let mut previous = *prev_header;
 	loop {
-		// Found a different genesis block.
-		if current.height == 0 {
-			return Err(BlockSourceError::Persistent);
-		}
-
 		// Found the parent block.
-		if current.height - 1 == previous.height &&
-				current.header.prev_blockhash == previous.header.block_hash() {
+		if current.height == previous.height + 1 &&
+				current.header.prev_blockhash == previous.block_hash {
 			steps.push(ForkStep::ConnectBlock(current));
 			break;
 		}

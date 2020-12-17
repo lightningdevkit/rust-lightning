@@ -46,12 +46,17 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll fo
 		AsyncBlockSourceResult<'a, ValidatedBlockHeader>
 	{
 		Box::pin(async move {
+			if header.height == 0 {
+				return Err(BlockSourceError::Persistent);
+			}
+
 			let previous_hash = &header.header.prev_blockhash;
 			let height = header.height - 1;
 			let previous_header = self.block_source
 				.get_header(previous_hash, Some(height)).await?
 				.validate(*previous_hash)?;
 			header.check_builds_on(&previous_header, self.network)?;
+
 			Ok(previous_header)
 		})
 	}
