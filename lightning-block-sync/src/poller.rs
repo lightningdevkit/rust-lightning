@@ -1,4 +1,4 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll, ValidatedBlockHeader};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll, Validate, ValidatedBlock, ValidatedBlockHeader};
 
 use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
@@ -62,10 +62,12 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll fo
 	}
 
 	fn fetch_block<'a>(&'a mut self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, Block>
+		AsyncBlockSourceResult<'a, ValidatedBlock>
 	{
 		Box::pin(async move {
-			self.block_source.get_block(&header.block_hash).await
+			self.block_source
+				.get_block(&header.block_hash).await?
+				.validate(header.block_hash)
 		})
 	}
 }
@@ -158,10 +160,11 @@ impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Po
 	}
 
 	fn fetch_block<'a>(&'a mut self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, Block>
+		AsyncBlockSourceResult<'a, ValidatedBlock>
 	{
 		Box::pin(async move {
-			self.get_block(&header.block_hash).await
+			self.get_block(&header.block_hash).await?
+				.validate(header.block_hash)
 		})
 	}
 }

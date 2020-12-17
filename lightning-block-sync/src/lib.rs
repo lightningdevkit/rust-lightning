@@ -109,7 +109,7 @@ pub trait Poll {
 
 	/// Returns the block associated with the given header.
 	fn fetch_block<'a>(&'a mut self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, Block>;
+		AsyncBlockSourceResult<'a, ValidatedBlock>;
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
@@ -126,8 +126,20 @@ pub enum ChainTip {
 	Worse(ValidatedBlockHeader),
 }
 
-impl BlockHeaderData {
-	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<ValidatedBlockHeader> {
+/// The `Validate` trait defines behavior for validating chain data.
+trait Validate {
+	/// The validated data wrapper which can be dereferenced to obtain the validated data.
+	type T: std::ops::Deref<Target = Self>;
+
+	/// Validates the chain data against the given block hash and any criteria needed to ensure that
+	/// it is internally consistent.
+	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T>;
+}
+
+impl Validate for BlockHeaderData {
+	type T = ValidatedBlockHeader;
+
+	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
 		self.header
 			.validate_pow(&self.header.target())
 			.or(Err(BlockSourceError::Persistent))?;
@@ -137,6 +149,22 @@ impl BlockHeaderData {
 		}
 
 		Ok(ValidatedBlockHeader { block_hash, inner: self })
+	}
+}
+
+impl Validate for Block {
+	type T = ValidatedBlock;
+
+	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
+		if self.block_hash() != block_hash {
+			return Err(BlockSourceError::Persistent);
+		}
+
+		if !self.check_merkle_root() || !self.check_witness_commitment() {
+			return Err(BlockSourceError::Persistent);
+		}
+
+		Ok(ValidatedBlock { block_hash, inner: self })
 	}
 }
 
@@ -184,6 +212,20 @@ impl ValidatedBlockHeader {
 		}
 
 		Ok(())
+	}
+}
+
+/// A block with validated data against its transaction list and corresponding block hash.
+pub struct ValidatedBlock {
+	block_hash: BlockHash,
+	inner: Block,
+}
+
+impl std::ops::Deref for ValidatedBlock {
+	type Target = Block;
+
+	fn deref(&self) -> &Self::Target {
+		&self.inner
 	}
 }
 
@@ -325,9 +367,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized, P: Poll>(new_header: Vali
 				Err(e) => return Err((e, new_tip)),
 				Ok(b) => b,
 			};
-			if block.header != header.header || !block.check_merkle_root() || !block.check_witness_commitment() {
-				return Err((BlockSourceError::Persistent, new_tip));
-			}
+			debug_assert_eq!(block.block_hash, header.block_hash);
 			println!("Connecting block {}", header.block_hash.to_hex());
 			chain_notifier.block_connected(&block, header.height);
 			header_cache.insert(header.block_hash, header);
