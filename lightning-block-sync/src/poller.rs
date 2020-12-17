@@ -1,22 +1,22 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll, ValidatedBlockHeader};
 
 use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 
 use std::ops::DerefMut;
 
-pub struct ChainPoller<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> {
+pub struct ChainPoller<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
 	block_source: B,
 }
 
-impl<'a, B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send> ChainPoller<'a, B> {
+impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainPoller<'b, B> {
 	pub fn new(block_source: B) -> Self {
 		Self { block_source }
 	}
 }
 
 impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for ChainPoller<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
 	where 'b: 'a {
 		Box::pin(async move {
@@ -27,20 +27,14 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b
 						return Ok((ChainTip::Common, &mut *self.block_source));
 					}
 
-					match self.block_source.get_header(&block_hash, height).await {
-						Err(e) => Err(e),
-						Ok(chain_tip) => {
-							crate::stateless_check_header(&chain_tip.header)?;
-							if chain_tip.header.block_hash() != block_hash {
-								Err(BlockSourceError::Persistent)
-							} else if chain_tip.chainwork <= best_chain_tip.chainwork {
-								Ok((ChainTip::Worse(block_hash, chain_tip), &mut *self.block_source))
-							} else {
-								Ok((ChainTip::Better(block_hash, chain_tip), &mut *self.block_source))
-							}
-						},
+					let chain_tip = self.block_source
+						.get_header(&block_hash, height).await?
+						.validate(block_hash)?;
+					if chain_tip.chainwork > best_chain_tip.chainwork {
+						Ok((ChainTip::Better(chain_tip), &mut *self.block_source))
+					} else {
+						Ok((ChainTip::Worse(chain_tip), &mut *self.block_source))
 					}
-
 				},
 			}
 		})
@@ -78,7 +72,7 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainMu
 }
 
 impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll<'b, B> for ChainMultiplexer<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
 	where 'b: 'a {
 		Box::pin(async move {
@@ -102,16 +96,16 @@ impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Po
 						}
 					},
 					Ok(ChainTip::Common) => {
-						if let Ok(ChainTip::Better(_, _)) = best_result {} else {
+						if let Ok(ChainTip::Better(_)) = best_result {} else {
 							best_result = result;
 						}
 					},
-					Ok(ChainTip::Better(_, header)) => {
+					Ok(ChainTip::Better(ref chain_tip)) => {
 						self.best_block_source = i;
+						heaviest_chain_tip = *chain_tip;
 						best_result = result;
-						heaviest_chain_tip = header;
 					},
-					Ok(ChainTip::Worse(_, _)) => {
+					Ok(ChainTip::Worse(_)) => {
 						if best_result.is_err() {
 							best_result = result;
 						}
@@ -247,12 +241,13 @@ mod tests {
 
 		let worse_chain_tip = chain.tip();
 		let worse_chain_tip_hash = worse_chain_tip.header.block_hash();
+		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
 		assert_eq!(best_chain_tip.chainwork, worse_chain_tip.chainwork);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
 		match poller.poll_chain_tip(best_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok((tip, _)) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip_hash, worse_chain_tip)),
+			Ok((tip, _)) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
 		}
 	}
 
@@ -264,11 +259,12 @@ mod tests {
 
 		let worse_chain_tip = chain.tip();
 		let worse_chain_tip_hash = worse_chain_tip.header.block_hash();
+		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
 		match poller.poll_chain_tip(best_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok((tip, _)) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip_hash, worse_chain_tip)),
+			Ok((tip, _)) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
 		}
 	}
 
@@ -279,11 +275,12 @@ mod tests {
 
 		let best_chain_tip = chain.tip();
 		let best_chain_tip_hash = best_chain_tip.header.block_hash();
+		let best_chain_tip = best_chain_tip.validate(best_chain_tip_hash).unwrap();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource);
 		match poller.poll_chain_tip(worse_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok((tip, _)) => assert_eq!(tip, ChainTip::Better(best_chain_tip_hash, best_chain_tip)),
+			Ok((tip, _)) => assert_eq!(tip, ChainTip::Better(best_chain_tip)),
 		}
 	}
 }

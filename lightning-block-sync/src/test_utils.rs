@@ -1,4 +1,4 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainListener, HeaderCache};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainListener, HeaderCache, ValidatedBlockHeader};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
@@ -65,7 +65,13 @@ impl Blockchain {
 		Self { blocks, ..*self }
 	}
 
-	pub fn at_height(&self, height: usize) -> BlockHeaderData {
+	pub fn at_height(&self, height: usize) -> ValidatedBlockHeader {
+		let block_header = self.at_height_unvalidated(height);
+		let block_hash = self.blocks[height].block_hash();
+		block_header.validate(block_hash).unwrap()
+	}
+
+	fn at_height_unvalidated(&self, height: usize) -> BlockHeaderData {
 		assert!(!self.blocks.is_empty());
 		assert!(height < self.blocks.len());
 		BlockHeaderData {
@@ -75,7 +81,7 @@ impl Blockchain {
 		}
 	}
 
-	pub fn tip(&self) -> BlockHeaderData {
+	pub fn tip(&self) -> ValidatedBlockHeader {
 		assert!(!self.blocks.is_empty());
 		self.at_height(self.blocks.len() - 1)
 	}
@@ -104,7 +110,7 @@ impl BlockSource for Blockchain {
 
 			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
-					let mut header_data = self.at_height(height);
+					let mut header_data = self.at_height_unvalidated(height);
 					if self.malformed_headers {
 						header_data.header.time += 1;
 					}

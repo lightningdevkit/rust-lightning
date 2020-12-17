@@ -100,7 +100,7 @@ pub trait BlockSource : Sync + Send {
 pub trait Poll<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
 	/// Returns a chain tip relative to the provided chain tip along with the block source from
 	/// which it originated.
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: BlockHeaderData) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, (ChainTip, &'a mut B::Target)>
 	where 'b: 'a;
 }
@@ -112,30 +112,49 @@ pub enum ChainTip {
 	Common,
 
 	/// A chain tip with more chainwork than another chain's tip.
-	Better(BlockHash, BlockHeaderData),
+	Better(ValidatedBlockHeader),
 
 	/// A chain tip with less or equal chainwork than another chain's tip. In either case, the
 	/// hashes of each tip will be different.
-	Worse(BlockHash, BlockHeaderData),
+	Worse(ValidatedBlockHeader),
 }
 
-/// Stateless header checks on a given header.
-#[inline]
-fn stateless_check_header(header: &BlockHeader) -> BlockSourceResult<()> {
-	if header.validate_pow(&header.target()).is_err() {
-		Err(BlockSourceError::Persistent)
-	} else { Ok(()) }
+impl BlockHeaderData {
+	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<ValidatedBlockHeader> {
+		self.header
+			.validate_pow(&self.header.target())
+			.or(Err(BlockSourceError::Persistent))?;
+
+		if self.header.block_hash() != block_hash {
+			return Err(BlockSourceError::Persistent);
+		}
+
+		Ok(ValidatedBlockHeader { block_hash, inner: self })
+	}
+}
+
+/// A block header with validated proof of work and corresponding block hash.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ValidatedBlockHeader {
+	block_hash: BlockHash,
+	inner: BlockHeaderData,
+}
+
+impl std::ops::Deref for ValidatedBlockHeader {
+	type Target = BlockHeaderData;
+
+	fn deref(&self) -> &Self::Target {
+		&self.inner
+	}
 }
 
 /// Check that child_header correctly builds on previous_header - the claimed work differential
 /// matches the actual PoW in child_header and the difficulty transition is possible, ie within 4x.
-/// Includes stateless header checks on previous_header.
 fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeaderData, mainnet: bool) -> BlockSourceResult<()> {
 	if child_header.header.prev_blockhash != previous_header.header.block_hash() {
 		return Err(BlockSourceError::Persistent);
 	}
 
-	stateless_check_header(&previous_header.header)?;
 	let new_work = child_header.header.work();
 	if previous_header.height != child_header.height - 1 ||
 			previous_header.chainwork + new_work != child_header.chainwork {
@@ -154,28 +173,28 @@ fn check_builds_on(child_header: &BlockHeaderData, previous_header: &BlockHeader
 	Ok(())
 }
 
-async fn look_up_prev_header(block_source: &mut dyn BlockSource, header: &BlockHeaderData, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<BlockHeaderData> {
+async fn look_up_prev_header(block_source: &mut dyn BlockSource, header: &BlockHeaderData, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<ValidatedBlockHeader> {
 	match cache.get(&header.header.prev_blockhash) {
 		Some(prev_header) => Ok(*prev_header),
 		None => {
 			let prev_header = block_source.get_header(&header.header.prev_blockhash, Some(header.height - 1)).await?;
 			check_builds_on(&header, &prev_header, mainnet)?;
-			Ok(prev_header)
+			Ok(prev_header.validate(header.header.prev_blockhash)?)
 		},
 	}
 }
 
 enum ForkStep {
-	ForkPoint(BlockHeaderData),
-	DisconnectBlock(BlockHeaderData),
-	ConnectBlock(BlockHeaderData),
+	ForkPoint(ValidatedBlockHeader),
+	DisconnectBlock(ValidatedBlockHeader),
+	ConnectBlock(ValidatedBlockHeader),
 }
 
 /// Walks backwards from `current_header` and `prev_header`, finding the common ancestor. Returns
 /// the steps needed to produce the chain with `current_header` as its tip from the chain with
 /// `prev_header` as its tip. There is no ordering guarantee between different ForkStep types, but
 /// `DisconnectBlock` and `ConnectBlock` are each returned in height-descending order.
-async fn find_fork(current_header: BlockHeaderData, prev_header: &BlockHeaderData, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
+async fn find_fork(current_header: ValidatedBlockHeader, prev_header: &ValidatedBlockHeader, block_source: &mut dyn BlockSource, cache: &HeaderCache, mainnet: bool) -> BlockSourceResult<Vec<ForkStep>> {
 	let mut steps = Vec::new();
 	let mut current = current_header;
 	let mut previous = *prev_header;
@@ -260,8 +279,8 @@ impl<CS, B, F, L> ChainListener for (&mut ChannelMonitor<CS>, &B, &F, &L)
 /// disconnected to the fork point. Thus, we may return an Err() that includes where our tip ended
 /// up which may not be new_header. Note that iff the returned Err has a BlockHeaderData, the
 /// header transition from old_header to new_header is valid.
-async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderData, old_header: &BlockHeaderData, block_source: &mut dyn BlockSource, chain_notifier: &mut CL, header_cache: &mut HeaderCache, mainnet: bool)
-		-> Result<(), (BlockSourceError, Option<BlockHeaderData>)> {
+async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: ValidatedBlockHeader, old_header: &ValidatedBlockHeader, block_source: &mut dyn BlockSource, chain_notifier: &mut CL, header_cache: &mut HeaderCache, mainnet: bool)
+		-> Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)> {
 	let mut events = find_fork(new_header, old_header, block_source, header_cache, mainnet).await.map_err(|e| (e, None))?;
 
 	let mut last_disconnect_tip = None;
@@ -278,7 +297,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 				last_disconnect_tip = Some(header.header.prev_blockhash);
 			},
 			&ForkStep::ForkPoint(ref header) => {
-				new_tip = Some(header.clone());
+				new_tip = Some(*header);
 			},
 			_ => {},
 		}
@@ -292,7 +311,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 	} else {
 		// Set new_tip to indicate that we got a valid header chain we wanted to connect to, but
 		// failed
-		new_tip = Some(old_header.clone());
+		new_tip = Some(*old_header);
 	}
 
 	for event in events.drain(..).rev() {
@@ -307,7 +326,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized>(new_header: BlockHeaderDa
 			}
 			println!("Connecting block {}", block_hash.to_hex());
 			chain_notifier.block_connected(&block, header_data.height);
-			header_cache.insert(block_hash, header_data.clone());
+			header_cache.insert(block_hash, header_data);
 			new_tip = Some(header_data);
 		}
 	}
@@ -323,17 +342,17 @@ pub async fn init_sync_chain_monitor<CL: ChainListener + Sized, B: BlockSource>(
 	if &old_block[..] == &[0; 32] { return; }
 	if old_block == new_block { return; }
 
-	let new_header = block_source.get_header(&new_block, None).await.unwrap();
-	assert_eq!(new_header.header.block_hash(), new_block);
-	stateless_check_header(&new_header.header).unwrap();
-	let old_header = block_source.get_header(&old_block, None).await.unwrap();
-	assert_eq!(old_header.header.block_hash(), old_block);
-	stateless_check_header(&old_header.header).unwrap();
+	let new_header = block_source
+		.get_header(&new_block, None).await.unwrap()
+		.validate(new_block).unwrap();
+	let old_header = block_source
+		.get_header(&old_block, None).await.unwrap()
+		.validate(old_block).unwrap();
 	sync_chain_monitor(new_header, &old_header, block_source, chain_notifier, &mut HeaderCache::new(), false).await.unwrap();
 }
 
 /// Unbounded cache of header data keyed by block hash.
-pub(crate) type HeaderCache = std::collections::HashMap<BlockHash, BlockHeaderData>;
+pub(crate) type HeaderCache = std::collections::HashMap<BlockHash, ValidatedBlockHeader>;
 
 /// Keep the chain that a chain listener knows about up-to-date with the best chain from any of the
 /// given block_sources.
@@ -355,7 +374,7 @@ pub struct MicroSPVClient<'a, P, B, CL>
 where P: Poll<'a, B>,
 	  B: DerefMut<Target=dyn BlockSource + 'a> + Sized + Sync + Send,
 	  CL: ChainListener + Sized {
-	chain_tip: (BlockHash, BlockHeaderData),
+	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
 	header_cache: HeaderCache,
 	chain_notifier: CL,
@@ -380,10 +399,10 @@ where P: Poll<'a, B>,
 	/// useful when you have a block source which is more censorship-resistant than others but
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
-	pub fn init(chain_tip: BlockHeaderData, chain_poller: P, chain_notifier: CL, mainnet: bool) -> Self {
+	pub fn init(chain_tip: ValidatedBlockHeader, chain_poller: P, chain_notifier: CL, mainnet: bool) -> Self {
 		let header_cache = HeaderCache::new();
 		Self {
-			chain_tip: (chain_tip.header.block_hash(), chain_tip),
+			chain_tip,
 			chain_poller, header_cache, chain_notifier, mainnet,
 			marker: std::marker::PhantomData
 		}
@@ -393,20 +412,20 @@ where P: Poll<'a, B>,
 	/// Returns true if some blocks were [dis]connected, false otherwise.
 	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
 		macro_rules! sync_chain_monitor {
-			($new_hash: expr, $new_header: expr, $source: expr) => { {
+			($new_header: expr, $source: expr) => { {
 				let mut blocks_connected = false;
-				match sync_chain_monitor($new_header, &self.chain_tip.1, $source, &mut self.chain_notifier, &mut self.header_cache, self.mainnet).await {
+				match sync_chain_monitor(*$new_header, &self.chain_tip, $source, &mut self.chain_notifier, &mut self.header_cache, self.mainnet).await {
 					Err((_, latest_tip)) => {
 						if let Some(latest_tip) = latest_tip {
 							let latest_tip_hash = latest_tip.header.block_hash();
-							if latest_tip_hash != self.chain_tip.0 {
-								self.chain_tip = (latest_tip_hash, latest_tip);
+							if latest_tip_hash != self.chain_tip.block_hash {
+								self.chain_tip = latest_tip;
 								blocks_connected = true;
 							}
 						}
 					},
 					Ok(_) => {
-						self.chain_tip = ($new_hash, $new_header);
+						self.chain_tip = *$new_header;
 						blocks_connected = true;
 					},
 				}
@@ -414,17 +433,17 @@ where P: Poll<'a, B>,
 			} }
 		}
 
-		let (chain_tip, block_source) = self.chain_poller.poll_chain_tip(self.chain_tip.1).await?;
-		let blocks_connected = match chain_tip {
+		let (chain_tip, block_source) = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
+		let blocks_connected = match &chain_tip {
 			ChainTip::Common => false,
-			ChainTip::Better(new_hash, new_header) => {
-				debug_assert_ne!(new_hash, self.chain_tip.0);
-				debug_assert!(new_header.chainwork > self.chain_tip.1.chainwork);
-				sync_chain_monitor!(new_hash, new_header, block_source)
+			ChainTip::Better(chain_tip) => {
+				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
+				debug_assert!(chain_tip.chainwork > self.chain_tip.chainwork);
+				sync_chain_monitor!(chain_tip, block_source)
 			},
-			ChainTip::Worse(hash, header) => {
-				debug_assert_ne!(hash, self.chain_tip.0);
-				debug_assert!(header.chainwork <= self.chain_tip.1.chainwork);
+			ChainTip::Worse(chain_tip) => {
+				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
+				debug_assert!(chain_tip.chainwork <= self.chain_tip.chainwork);
 				false
 			},
 		};
@@ -446,8 +465,8 @@ mod sync_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new()
-			.expect_block_connected(chain.at_height(2))
-			.expect_block_connected(new_tip);
+			.expect_block_connected(*chain.at_height(2))
+			.expect_block_connected(*new_tip);
 		let mut cache = chain.header_cache(0..=1);
 		match sync_chain_monitor(new_tip, &old_tip, &mut chain, &mut listener, &mut cache, false).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -478,8 +497,8 @@ mod sync_tests {
 		let new_tip = fork_chain.tip();
 		let old_tip = main_chain.tip();
 		let mut listener = MockChainListener::new()
-			.expect_block_disconnected(old_tip)
-			.expect_block_connected(new_tip);
+			.expect_block_disconnected(*old_tip)
+			.expect_block_connected(*new_tip);
 		let mut cache = main_chain.header_cache(0..=2);
 		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -496,9 +515,9 @@ mod sync_tests {
 		let new_tip = fork_chain.tip();
 		let old_tip = main_chain.tip();
 		let mut listener = MockChainListener::new()
-			.expect_block_disconnected(old_tip)
-			.expect_block_disconnected(main_chain.at_height(2))
-			.expect_block_connected(new_tip);
+			.expect_block_disconnected(*old_tip)
+			.expect_block_disconnected(*main_chain.at_height(2))
+			.expect_block_connected(*new_tip);
 		let mut cache = main_chain.header_cache(0..=3);
 		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -515,9 +534,9 @@ mod sync_tests {
 		let new_tip = fork_chain.tip();
 		let old_tip = main_chain.tip();
 		let mut listener = MockChainListener::new()
-			.expect_block_disconnected(old_tip)
-			.expect_block_connected(fork_chain.at_height(2))
-			.expect_block_connected(new_tip);
+			.expect_block_disconnected(*old_tip)
+			.expect_block_connected(*fork_chain.at_height(2))
+			.expect_block_connected(*new_tip);
 		let mut cache = main_chain.header_cache(0..=2);
 		match sync_chain_monitor(new_tip, &old_tip, &mut fork_chain, &mut listener, &mut cache, false).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
@@ -778,7 +797,8 @@ mod tests {
 		let mut source_two = &chain_two;
 		let mut source_three = &header_chain;
 		let mut source_four = &backup_chain;
-		let mut client = MicroSPVClient::init((&chain_one).get_header(&block_1a_hash, Some(1)).await.unwrap(),
+		let mut client = MicroSPVClient::init(
+			(&chain_one).get_header(&block_1a_hash, Some(1)).await.unwrap().validate(block_1a_hash).unwrap(),
 			poller::ChainMultiplexer::new(
 				vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource],
 				vec![&mut source_four as &mut dyn BlockSource]),
@@ -786,8 +806,8 @@ mod tests {
 
 		// Test that we will reorg onto 2b because chain_one knows about 1b + 2b
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
-				assert_eq!(block_hash, block_2b_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
+				assert_eq!(chain_tip.block_hash, block_2b_hash);
 				assert!(blocks_connected);
 			},
 			_ => panic!("Expected better chain tip"),
@@ -822,8 +842,8 @@ mod tests {
 		*chain_two.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
-				assert_eq!(block_hash, block_3a_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
+				assert_eq!(chain_tip.block_hash, block_3a_hash);
 				assert!(blocks_connected);
 			},
 			_ => panic!("Expected better chain tip"),
@@ -865,8 +885,8 @@ mod tests {
 		*backup_chain.disallowed.lock().unwrap() = false;
 
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
-				assert_eq!(block_hash, block_4a_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
+				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(!blocks_connected);
 			},
 			_ => panic!("Expected better chain tip"),
@@ -880,8 +900,8 @@ mod tests {
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
-				assert_eq!(block_hash, block_4a_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
+				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(blocks_connected);
 			},
 			_ => panic!("Expected better chain tip"),
@@ -908,8 +928,8 @@ mod tests {
 		*backup_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_disconnected)) => {
-				assert_eq!(block_hash, block_5c_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_disconnected)) => {
+				assert_eq!(chain_tip.block_hash, block_5c_hash);
 				assert!(blocks_disconnected);
 			},
 			_ => panic!("Expected better chain tip"),
@@ -923,8 +943,8 @@ mod tests {
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		*header_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		match client.poll_best_tip().await {
-			Ok((ChainTip::Better(block_hash, _), blocks_connected)) => {
-				assert_eq!(block_hash, block_4a_hash);
+			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
+				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(blocks_connected);
 			},
 			_ => panic!("Expected better chain tip"),
