@@ -20,22 +20,18 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll fo
 		AsyncBlockSourceResult<'a, ChainTip>
 	{
 		Box::pin(async move {
-			match self.block_source.get_best_block().await {
-				Err(e) => Err(e),
-				Ok((block_hash, height)) => {
-					if block_hash == best_chain_tip.header.block_hash() {
-						return Ok(ChainTip::Common);
-					}
+			let (block_hash, height) = self.block_source.get_best_block().await?;
+			if block_hash == best_chain_tip.header.block_hash() {
+				return Ok(ChainTip::Common);
+			}
 
-					let chain_tip = self.block_source
-						.get_header(&block_hash, height).await?
-						.validate(block_hash)?;
-					if chain_tip.chainwork > best_chain_tip.chainwork {
-						Ok(ChainTip::Better(chain_tip))
-					} else {
-						Ok(ChainTip::Worse(chain_tip))
-					}
-				},
+			let chain_tip = self.block_source
+				.get_header(&block_hash, height).await?
+				.validate(block_hash)?;
+			if chain_tip.chainwork > best_chain_tip.chainwork {
+				Ok(ChainTip::Better(chain_tip))
+			} else {
+				Ok(ChainTip::Worse(chain_tip))
 			}
 		})
 	}

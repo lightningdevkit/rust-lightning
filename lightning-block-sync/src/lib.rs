@@ -363,10 +363,9 @@ async fn sync_chain_monitor<CL: ChainListener + Sized, P: Poll>(new_header: Vali
 
 	for event in events.drain(..).rev() {
 		if let ForkStep::ConnectBlock(header) = event {
-			let block = match chain_poller.fetch_block(&header).await {
-				Err(e) => return Err((e, new_tip)),
-				Ok(b) => b,
-			};
+			let block = chain_poller
+				.fetch_block(&header).await
+				.or_else(|e| Err((e, new_tip)))?;
 			debug_assert_eq!(block.block_hash, header.block_hash);
 			println!("Connecting block {}", header.block_hash.to_hex());
 			chain_notifier.block_connected(&block, header.height);
