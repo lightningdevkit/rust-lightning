@@ -367,6 +367,7 @@ async fn sync_chain_monitor<CL: ChainListener + Sized, P: Poll>(new_header: Vali
 				.fetch_block(&header).await
 				.or_else(|e| Err((e, new_tip)))?;
 			debug_assert_eq!(block.block_hash, header.block_hash);
+
 			println!("Connecting block {}", header.block_hash.to_hex());
 			chain_notifier.block_connected(&block, header.height);
 			header_cache.insert(header.block_hash, header);
@@ -448,35 +449,13 @@ where P: Poll,
 	/// Check each source for a new best tip and update the chain listener accordingly.
 	/// Returns true if some blocks were [dis]connected, false otherwise.
 	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
-		macro_rules! sync_chain_monitor {
-			($new_header: expr) => { {
-				let mut blocks_connected = false;
-				match sync_chain_monitor(*$new_header, &self.chain_tip, &mut self.chain_poller, &mut self.chain_notifier, &mut self.header_cache).await {
-					Err((_, latest_tip)) => {
-						if let Some(latest_tip) = latest_tip {
-							let latest_tip_hash = latest_tip.header.block_hash();
-							if latest_tip_hash != self.chain_tip.block_hash {
-								self.chain_tip = latest_tip;
-								blocks_connected = true;
-							}
-						}
-					},
-					Ok(_) => {
-						self.chain_tip = *$new_header;
-						blocks_connected = true;
-					},
-				}
-				blocks_connected
-			} }
-		}
-
 		let chain_tip = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
-		let blocks_connected = match &chain_tip {
+		let blocks_connected = match chain_tip {
 			ChainTip::Common => false,
 			ChainTip::Better(chain_tip) => {
 				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
 				debug_assert!(chain_tip.chainwork > self.chain_tip.chainwork);
-				sync_chain_monitor!(chain_tip)
+				self.update_chain_tip(chain_tip).await
 			},
 			ChainTip::Worse(chain_tip) => {
 				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
@@ -485,6 +464,22 @@ where P: Poll,
 			},
 		};
 		Ok((chain_tip, blocks_connected))
+	}
+
+	/// Updates the chain tip, syncing the chain listener with any connected or disconnected
+	/// blocks. Returns whether there were any such blocks.
+	async fn update_chain_tip(&mut self, best_chain_tip: ValidatedBlockHeader) -> bool {
+		match sync_chain_monitor(best_chain_tip, &self.chain_tip, &mut self.chain_poller, &mut self.chain_notifier, &mut self.header_cache).await {
+			Ok(_) => {
+				self.chain_tip = best_chain_tip;
+				true
+			},
+			Err((_, Some(chain_tip))) if chain_tip.block_hash != self.chain_tip.block_hash => {
+				self.chain_tip = chain_tip;
+				true
+			},
+			Err(_) => false,
+		}
 	}
 }
 
