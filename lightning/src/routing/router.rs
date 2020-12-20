@@ -368,7 +368,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			} else if chan.remote_network_id == *our_node_id {
 				return Err(LightningError{err: "First hop cannot have our_node_id as a destination.".to_owned(), action: ErrorAction::IgnoreError});
 			}
-			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone()));
+			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone(), chan.outbound_capacity_msat));
 		}
 		if first_hop_targets.is_empty() {
 			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
@@ -378,8 +378,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
 	// This map allows paths to be aware of the channel use by other paths in the same call.
 	// This would help to make a better path finding decisions and not "overbook" channels.
-	// It is unaware of the directions.
-	// TODO: we could let a caller specify this. Definitely useful when considering our own channels.
+	// It is unaware of the directions (except for `outbound_capacity_msat` in `first_hops`).
 	let mut bookkeeped_channels_liquidity_available_msat = HashMap::new();
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
@@ -576,8 +575,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr ) => {
 			if first_hops.is_some() {
-				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&$node_id) {
-					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, None::<u64>, features.to_context(), $fee_to_target_msat, $next_hops_value_contribution);
+				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat)) = first_hop_targets.get(&$node_id) {
+					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features.to_context(), $fee_to_target_msat, $next_hops_value_contribution);
 				}
 			}
 
@@ -646,7 +645,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// it matters only if the fees are exactly the same.
 		for hop in last_hops.iter() {
 			let have_hop_src_in_graph =
-				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&hop.src_node_id) {
+				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat)) = first_hop_targets.get(&hop.src_node_id) {
 					// If this hop connects to a node with which we have a direct channel, ignore
 					// the network graph and add both the hop and our direct channel to
 					// the candidate set.
@@ -655,7 +654,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// bit lazy here. In the future, we should pull them out via our
 					// ChannelManager, but there's no reason to waste the space until we
 					// need them.
-					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, None::<u64>, features.to_context(), 0, recommended_value_msat);
+					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features.to_context(), 0, recommended_value_msat);
 					true
 				} else {
 					// In any other case, only add the hop if the source is in the regular network
@@ -701,7 +700,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				let mut ordered_hops = vec!(new_entry.clone());
 
 				'path_walk: loop {
-					if let Some(&(_, ref features)) = first_hop_targets.get(&ordered_hops.last().unwrap().route_hop.pubkey) {
+					if let Some(&(_, ref features, _)) = first_hop_targets.get(&ordered_hops.last().unwrap().route_hop.pubkey) {
 						ordered_hops.last_mut().unwrap().route_hop.node_features = features.to_context();
 					} else if let Some(node) = network.get_nodes().get(&ordered_hops.last().unwrap().route_hop.pubkey) {
 						if let Some(node_info) = node.announcement_info.as_ref() {
@@ -1572,7 +1571,7 @@ mod tests {
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
-			outbound_capacity_msat: 0,
+			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
@@ -1619,7 +1618,7 @@ mod tests {
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
-			outbound_capacity_msat: 0,
+			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
@@ -1683,7 +1682,7 @@ mod tests {
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
-			outbound_capacity_msat: 0,
+			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
@@ -1819,7 +1818,7 @@ mod tests {
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 0,
 			user_id: 0,
-			outbound_capacity_msat: 0,
+			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
 		}];
@@ -2052,6 +2051,66 @@ mod tests {
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
 			assert_eq!(path.last().unwrap().fee_msat, 250_000_000);
 		}
+
+		// Check that setting outbound_capacity_msat in first_hops limits the channels.
+		// Disable channel #1 and use another first hop.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 3,
+			flags: 2,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(1_000_000_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		// Now, limit the first_hop by the outbound_capacity_msat of 200_000 sats.
+		let our_chans = vec![channelmanager::ChannelDetails {
+			channel_id: [0; 32],
+			short_channel_id: Some(42),
+			remote_network_id: nodes[0].clone(),
+			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
+			channel_value_satoshis: 0,
+			user_id: 0,
+			outbound_capacity_msat: 200_000_000,
+			inbound_capacity_msat: 0,
+			is_live: true,
+		}];
+
+		{
+			// Attempt to route more than available results in a failure.
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 200_000_001, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Now, attempt to route an exact amount we have should be fine.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 200_000_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			let path = route.paths.last().unwrap();
+			assert_eq!(path.len(), 2);
+			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
+			assert_eq!(path.last().unwrap().fee_msat, 200_000_000);
+		}
+
+		// Enable channel #1 back.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 4,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(1_000_000_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
 
 		// Now let's see if routing works if we know only htlc_maximum_msat.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
