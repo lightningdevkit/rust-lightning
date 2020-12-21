@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 #[derive(Default)]
 pub struct Blockchain {
 	pub blocks: Vec<Block>,
+	without_blocks: Option<std::ops::RangeFrom<usize>>,
 	without_headers: bool,
 	malformed_headers: bool,
 }
@@ -45,6 +46,10 @@ impl Blockchain {
 		self
 	}
 
+	pub fn without_blocks(self, range: std::ops::RangeFrom<usize>) -> Self {
+		Self { without_blocks: Some(range), ..self }
+	}
+
 	pub fn without_headers(self) -> Self {
 		Self { without_headers: true, ..self }
 	}
@@ -62,7 +67,7 @@ impl Blockchain {
 			block.header.nonce += 1;
 			prev_blockhash = block.block_hash();
 		}
-		Self { blocks, ..*self }
+		Self { blocks, without_blocks: None, ..*self }
 	}
 
 	pub fn at_height(&self, height: usize) -> ValidatedBlockHeader {
@@ -124,8 +129,14 @@ impl BlockSource for Blockchain {
 
 	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
 		Box::pin(async move {
-			for block in self.blocks.iter() {
+			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
+					if let Some(without_blocks) = &self.without_blocks {
+						if without_blocks.contains(&height) {
+							return Err(BlockSourceError::Persistent);
+						}
+					}
+
 					return Ok(block.clone());
 				}
 			}

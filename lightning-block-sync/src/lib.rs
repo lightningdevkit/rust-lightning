@@ -589,6 +589,52 @@ mod chain_notifier_tests {
 			Ok(_) => {},
 		}
 	}
+
+	#[tokio::test]
+	async fn sync_from_chain_without_headers() {
+		let mut chain = Blockchain::default().with_height(3).without_headers();
+
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+		let mut listener = MockChainListener::new();
+		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=1) };
+		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
+			Err((_, tip)) => assert_eq!(tip, None),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_chain_without_any_new_blocks() {
+		let mut chain = Blockchain::default().with_height(3).without_blocks(2..);
+
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+		let mut listener = MockChainListener::new();
+		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
+		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
+			Err((_, tip)) => assert_eq!(tip, Some(old_tip)),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_chain_without_some_new_blocks() {
+		let mut chain = Blockchain::default().with_height(3).without_blocks(3..);
+
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+		let mut listener = MockChainListener::new()
+			.expect_block_connected(*chain.at_height(2));
+		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
+		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
+			Err((_, tip)) => assert_eq!(tip, Some(chain.at_height(2))),
+			Ok(_) => panic!("Expected error"),
+		}
+	}
 }
 
 #[cfg(test)]
