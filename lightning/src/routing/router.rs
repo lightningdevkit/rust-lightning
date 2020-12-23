@@ -124,7 +124,9 @@ pub struct RouteHint {
 	/// The difference in CLTV values between this node and the next node.
 	pub cltv_expiry_delta: u16,
 	/// The minimum value, in msat, which must be relayed to the next hop.
-	pub htlc_minimum_msat: u64,
+	pub htlc_minimum_msat: Option<u64>,
+	/// The maximum value in msat available for routing with a single HTLC.
+	pub htlc_maximum_msat: Option<u64>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -150,6 +152,7 @@ impl cmp::PartialOrd for RouteGraphNode {
 struct DummyDirectionalChannelInfo {
 	cltv_expiry_delta: u32,
 	htlc_minimum_msat: u64,
+	htlc_maximum_msat: Option<u64>,
 	fees: RoutingFees,
 }
 
@@ -191,6 +194,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 	let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
+		htlc_maximum_msat: None,
 		fees: RoutingFees {
 			base_msat: 0,
 			proportional_millionths: 0,
@@ -227,7 +231,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		// Adds entry which goes from $src_node_id to $dest_node_id
 		// over the channel with id $chan_id with fees described in
 		// $directional_info.
-		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
+		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $starting_fee_msat: expr ) => {
 			//TODO: Explore simply adding fee to hit htlc_minimum_msat
 			if $starting_fee_msat as u64 + final_value_msat >= $directional_info.htlc_minimum_msat {
 				let proportional_fee_millions = ($starting_fee_msat + final_value_msat).checked_mul($directional_info.fees.proportional_millionths as u64);
@@ -235,6 +239,16 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 						($directional_info.fees.base_msat as u64).checked_add(part / 1000000) })
 				{
 					let mut total_fee = $starting_fee_msat as u64;
+
+					let mut available_msat = $capacity_sats;
+					if let Some(htlc_maximum_msat) = $directional_info.htlc_maximum_msat {
+						if let Some(capacity_sats) = $capacity_sats {
+							available_msat = Some(cmp::min(capacity_sats * 1000, htlc_maximum_msat));
+						} else {
+							available_msat = Some(htlc_maximum_msat);
+						}
+					}
+
 					let hm_entry = dist.entry(&$src_node_id);
 					let old_entry = hm_entry.or_insert_with(|| {
 						let mut fee_base_msat = u32::max_value();
@@ -254,6 +268,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 								fee_msat: 0,
 								cltv_expiry_delta: 0,
 							},
+							None,
 						)
 					});
 					if $src_node_id != *our_node_id {
@@ -282,7 +297,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 							channel_features: $chan_features.clone(),
 							fee_msat: new_fee, // This field is ignored on the last-hop anyway
 							cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
-						}
+						};
+						old_entry.4 = available_msat;
 					}
 				}
 			}
@@ -293,7 +309,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr ) => {
 			if first_hops.is_some() {
 				if let Some(&(ref first_hop, ref features)) = first_hop_targets.get(&$node_id) {
-					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, features.to_context(), $fee_to_target_msat);
+					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, None::<u64>, features.to_context(), $fee_to_target_msat);
 				}
 			}
 
@@ -313,7 +329,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 							if first_hops.is_none() || chan.node_two != *our_node_id {
 								if let Some(two_to_one) = chan.two_to_one.as_ref() {
 									if two_to_one.enabled {
-										add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.features, $fee_to_target_msat);
+										add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, chan.features, $fee_to_target_msat);
 									}
 								}
 							}
@@ -321,7 +337,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 							if first_hops.is_none() || chan.node_one != *our_node_id {
 								if let Some(one_to_two) = chan.one_to_two.as_ref() {
 									if one_to_two.enabled {
-										add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.features, $fee_to_target_msat);
+										add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, chan.features, $fee_to_target_msat);
 									}
 								}
 
@@ -350,7 +366,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 				// bit lazy here. In the future, we should pull them out via our
 				// ChannelManager, but there's no reason to waste the space until we
 				// need them.
-				add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, features.to_context(), 0);
+				add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, None::<u64>, features.to_context(), 0);
 				true
 			} else {
 				// In any other case, only add the hop if the source is in the regular network
@@ -360,7 +376,17 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, targ
 		if have_hop_src_in_graph {
 			// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
 			// really sucks, cause we're gonna need that eventually.
-			add_entry!(hop.short_channel_id, hop.src_node_id, target, hop, ChannelFeatures::empty(), 0);
+			let last_hop_htlc_minimum_msat: u64 = match hop.htlc_minimum_msat {
+				Some(htlc_minimum_msat) => htlc_minimum_msat,
+				None => 0
+			};
+			let directional_info = DummyDirectionalChannelInfo {
+				cltv_expiry_delta: hop.cltv_expiry_delta as u32,
+				htlc_minimum_msat: last_hop_htlc_minimum_msat,
+				htlc_maximum_msat: hop.htlc_maximum_msat,
+				fees: hop.fees,
+			};
+			add_entry!(hop.short_channel_id, hop.src_node_id, target, directional_info, None::<u64>, ChannelFeatures::empty(), 0);
 		}
 	}
 
@@ -1048,7 +1074,8 @@ mod tests {
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
-			htlc_minimum_msat: 0,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		}, RouteHint {
 			src_node_id: nodes[4].clone(),
 			short_channel_id: 9,
@@ -1057,13 +1084,15 @@ mod tests {
 				proportional_millionths: 0,
 			},
 			cltv_expiry_delta: (9 << 8) | 1,
-			htlc_minimum_msat: 0,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		}, RouteHint {
 			src_node_id: nodes[5].clone(),
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
-			htlc_minimum_msat: 0,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		})
 	}
 
@@ -1245,7 +1274,8 @@ mod tests {
 				proportional_millionths: 0,
 			},
 			cltv_expiry_delta: (8 << 8) | 1,
-			htlc_minimum_msat: 0,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		}];
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
