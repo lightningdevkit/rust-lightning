@@ -248,7 +248,7 @@ impl ChainNotifier {
 	/// disconnected to the fork point. Thus, this may return an Err() that includes where the tip
 	/// ended up which may not be new_header. Note that iff the returned Err has a BlockHeaderData,
 	/// the header transition from old_header to new_header is valid.
-	async fn sync_listener<CL: ChainListener + Sized, P: Poll>(&mut self, new_header: ValidatedBlockHeader, old_header: &ValidatedBlockHeader, chain_poller: &mut P, chain_listener: &mut CL) ->
+	async fn sync_listener<CL: ChainListener, P: Poll>(&mut self, new_header: ValidatedBlockHeader, old_header: &ValidatedBlockHeader, chain_poller: &mut P, chain_listener: &mut CL) ->
 		Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)>
 	{
 		let mut events = self.find_fork(new_header, old_header, chain_poller).await.map_err(|e| (e, None))?;
@@ -392,7 +392,7 @@ impl<CS, B, F, L> ChainListener for (&mut ChannelMonitor<CS>, &B, &F, &L)
 /// to bring each ChannelMonitor, as well as the overall ChannelManager, into sync with each other.
 ///
 /// Once you have them all at the same block, you should switch to using MicroSPVClient.
-pub async fn init_sync_listener<CL: ChainListener + Sized, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, network: Network, chain_listener: &mut CL) {
+pub async fn init_sync_listener<CL: ChainListener, B: BlockSource>(new_block: BlockHash, old_block: BlockHash, block_source: &mut B, network: Network, chain_listener: &mut CL) {
 	if &old_block[..] == &[0; 32] { return; }
 	if old_block == new_block { return; }
 
@@ -455,7 +455,7 @@ impl<P: Poll> MicroSPVClient<P> {
 
 	/// Check each source for a new best tip and update the chain listener accordingly.
 	/// Returns true if some blocks were [dis]connected, false otherwise.
-	pub async fn poll_best_tip<CL: ChainListener + Sized>(&mut self, chain_listener: &mut CL) ->
+	pub async fn poll_best_tip<CL: ChainListener>(&mut self, chain_listener: &mut CL) ->
 		BlockSourceResult<(ChainTip, bool)>
 	{
 		let chain_tip = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
@@ -477,7 +477,7 @@ impl<P: Poll> MicroSPVClient<P> {
 
 	/// Updates the chain tip, syncing the chain listener with any connected or disconnected
 	/// blocks. Returns whether there were any such blocks.
-	async fn update_chain_tip<CL: ChainListener + Sized>(&mut self, best_chain_tip: ValidatedBlockHeader, chain_listener: &mut CL) -> bool {
+	async fn update_chain_tip<CL: ChainListener>(&mut self, best_chain_tip: ValidatedBlockHeader, chain_listener: &mut CL) -> bool {
 		match self.chain_notifier.sync_listener(best_chain_tip, &self.chain_tip, &mut self.chain_poller, chain_listener).await {
 			Ok(_) => {
 				self.chain_tip = best_chain_tip;
