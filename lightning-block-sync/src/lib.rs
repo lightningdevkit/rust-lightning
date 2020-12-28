@@ -427,14 +427,14 @@ pub(crate) type HeaderCache = std::collections::HashMap<BlockHash, ValidatedBloc
 /// This prevents one block source from being able to orphan us on a fork of its own creation by
 /// not responding to requests for old headers on that fork. However, if one block source is
 /// unreachable this may result in our memory usage growing in accordance with the chain.
-pub struct MicroSPVClient<P: Poll> {
+pub struct MicroSPVClient<P: Poll, CL: ChainListener> {
 	chain_tip: ValidatedBlockHeader,
 	chain_poller: P,
 	chain_notifier: ChainNotifier,
+	chain_listener: CL,
 }
 
-impl<P: Poll> MicroSPVClient<P> {
-
+impl<P: Poll, CL: ChainListener> MicroSPVClient<P, CL> {
 	/// Creates a new `MicroSPVClient` with a chain poller for polling one or more block sources and
 	/// a chain listener for receiving updates of the new chain tip.
 	///
@@ -447,24 +447,22 @@ impl<P: Poll> MicroSPVClient<P> {
 	/// useful when you have a block source which is more censorship-resistant than others but
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
-	pub fn init(chain_tip: ValidatedBlockHeader, chain_poller: P) -> Self {
+	pub fn init(chain_tip: ValidatedBlockHeader, chain_poller: P, chain_listener: CL) -> Self {
 		let header_cache = HeaderCache::new();
 		let chain_notifier = ChainNotifier { header_cache };
-		Self { chain_tip, chain_poller, chain_notifier }
+		Self { chain_tip, chain_poller, chain_notifier, chain_listener }
 	}
 
 	/// Check each source for a new best tip and update the chain listener accordingly.
 	/// Returns true if some blocks were [dis]connected, false otherwise.
-	pub async fn poll_best_tip<CL: ChainListener>(&mut self, chain_listener: &mut CL) ->
-		BlockSourceResult<(ChainTip, bool)>
-	{
+	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
 		let chain_tip = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
 		let blocks_connected = match chain_tip {
 			ChainTip::Common => false,
 			ChainTip::Better(chain_tip) => {
 				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
 				debug_assert!(chain_tip.chainwork > self.chain_tip.chainwork);
-				self.update_chain_tip(chain_tip, chain_listener).await
+				self.update_chain_tip(chain_tip).await
 			},
 			ChainTip::Worse(chain_tip) => {
 				debug_assert_ne!(chain_tip.block_hash, self.chain_tip.block_hash);
@@ -477,8 +475,8 @@ impl<P: Poll> MicroSPVClient<P> {
 
 	/// Updates the chain tip, syncing the chain listener with any connected or disconnected
 	/// blocks. Returns whether there were any such blocks.
-	async fn update_chain_tip<CL: ChainListener>(&mut self, best_chain_tip: ValidatedBlockHeader, chain_listener: &mut CL) -> bool {
-		match self.chain_notifier.sync_listener(best_chain_tip, &self.chain_tip, &mut self.chain_poller, chain_listener).await {
+	async fn update_chain_tip(&mut self, best_chain_tip: ValidatedBlockHeader) -> bool {
+		match self.chain_notifier.sync_listener(best_chain_tip, &self.chain_tip, &mut self.chain_poller, &mut self.chain_listener).await {
 			Ok(_) => {
 				self.chain_tip = best_chain_tip;
 				true
@@ -643,13 +641,13 @@ mod tests {
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::util::uint::Uint256;
 	use std::collections::HashMap;
-	use std::sync::Mutex;
+	use std::sync::{Arc, Mutex};
 
 	struct TestChainListener {
 		blocks_connected: Mutex<Vec<(BlockHash, u32)>>,
 		blocks_disconnected: Mutex<Vec<(BlockHash, u32)>>,
 	}
-	impl ChainListener for TestChainListener {
+	impl ChainListener for Arc<TestChainListener> {
 		fn block_connected(&mut self, block: &Block, height: u32) {
 			self.blocks_connected.lock().unwrap().push((block.header.block_hash(), height));
 		}
@@ -882,9 +880,9 @@ mod tests {
 		};
 
 		// Stand up a client at block_1a with all four sources:
-		let mut chain_listener = TestChainListener {
+		let chain_listener = Arc::new(TestChainListener {
 			blocks_connected: Mutex::new(Vec::new()), blocks_disconnected: Mutex::new(Vec::new())
-		};
+		});
 		let mut source_one = &chain_one;
 		let mut source_two = &chain_two;
 		let mut source_three = &header_chain;
@@ -894,10 +892,11 @@ mod tests {
 			poller::ChainMultiplexer::new(
 				vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource],
 				vec![&mut source_four as &mut dyn BlockSource],
-				Network::Bitcoin));
+				Network::Bitcoin),
+			Arc::clone(&chain_listener));
 
 		// Test that we will reorg onto 2b because chain_one knows about 1b + 2b
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
 				assert_eq!(chain_tip.block_hash, block_2b_hash);
 				assert!(blocks_connected);
@@ -919,7 +918,7 @@ mod tests {
 		chain_listener.blocks_disconnected.lock().unwrap().clear();
 
 		// First test that nothing happens if nothing changes:
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Common, blocks_connected)) => {
 				assert!(!blocks_connected);
 			},
@@ -933,7 +932,7 @@ mod tests {
 		chain_two.blocks.lock().unwrap().insert(block_3a_hash, block_3a.clone());
 		*chain_two.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
 				assert_eq!(chain_tip.block_hash, block_3a_hash);
 				assert!(blocks_connected);
@@ -957,7 +956,7 @@ mod tests {
 		// the block header cache.
 		*chain_one.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 		*header_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Common, blocks_connected)) => {
 				assert!(!blocks_connected);
 			},
@@ -976,7 +975,7 @@ mod tests {
 		*header_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		*backup_chain.disallowed.lock().unwrap() = false;
 
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
 				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(!blocks_connected);
@@ -991,7 +990,7 @@ mod tests {
 		backup_chain.blocks.lock().unwrap().insert(block_4a_hash, block_4a);
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
 				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(blocks_connected);
@@ -1019,7 +1018,7 @@ mod tests {
 		// We'll check the backup chain last, so don't give it 4a, as otherwise we'll connect it:
 		*backup_chain.best_block.lock().unwrap() = (block_3a_hash, Some(3));
 
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_disconnected)) => {
 				assert_eq!(chain_tip.block_hash, block_5c_hash);
 				assert!(blocks_disconnected);
@@ -1034,7 +1033,7 @@ mod tests {
 		// Now reset the headers chain to 4a and test that we end up back there.
 		*backup_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
 		*header_chain.best_block.lock().unwrap() = (block_4a_hash, Some(4));
-		match client.poll_best_tip(&mut chain_listener).await {
+		match client.poll_best_tip().await {
 			Ok((ChainTip::Better(chain_tip), blocks_connected)) => {
 				assert_eq!(chain_tip.block_hash, block_4a_hash);
 				assert!(blocks_connected);
