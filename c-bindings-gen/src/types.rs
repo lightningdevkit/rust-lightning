@@ -1855,7 +1855,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 			let mut created_container: Vec<u8> = Vec::new();
 
-			write!(&mut created_container, "#[no_mangle]\npub type {} = ", mangled_container).unwrap();
+			write!(&mut created_container, "pub type {} = ", mangled_container).unwrap();
 			write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
 			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
