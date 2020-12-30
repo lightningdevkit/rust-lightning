@@ -58,15 +58,27 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 	}
 }
 
-/// Convert "impl trait_path for for_obj { .. }" for manually-mapped types (ie (de)serialization)
-fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_obj: &syn::Ident, types: &TypeResolver) {
+/// Convert "impl trait_path for for_ty { .. }" for manually-mapped types (ie (de)serialization)
+fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_ty: &syn::Type, types: &mut TypeResolver) {
 	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
-		let s = types.maybe_resolve_ident(for_obj).unwrap();
-		if !types.crate_types.opaques.get(&s).is_some() { return; }
+		let for_obj;
+		let full_obj_path;
+		if let syn::Type::Path(ref p) = for_ty {
+			if let Some(ident) = p.path.get_ident() {
+				let s = types.maybe_resolve_ident(ident).unwrap();
+				if !types.crate_types.opaques.get(&s).is_some() { return; }
+
+				for_obj = format!("{}", ident);
+				full_obj_path = for_obj.clone();
+			} else { return; }
+		} else {
+			return;
+		}
+
 		match &t as &str {
 			"util::ser::Writeable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, for_obj).unwrap();
+				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, full_obj_path).unwrap();
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
 				writeln!(w, "#[no_mangle]").unwrap();
@@ -75,13 +87,41 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 				writeln!(w, "}}").unwrap();
 			},
 			"util::ser::Readable" => {
+				// Create the Result<Object, DecodeError> syn::Type
+				let mut err_segs = syn::punctuated::Punctuated::new();
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("ln", Span::call_site()), arguments: syn::PathArguments::None });
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("msgs", Span::call_site()), arguments: syn::PathArguments::None });
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("DecodeError", Span::call_site()), arguments: syn::PathArguments::None });
+				let mut args = syn::punctuated::Punctuated::new();
+				args.push(syn::GenericArgument::Type(for_ty.clone()));
+				args.push(syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+					qself: None, path: syn::Path {
+						leading_colon: Some(syn::Token![::](Span::call_site())), segments: err_segs,
+					}
+				})));
+				let mut res_segs = syn::punctuated::Punctuated::new();
+				res_segs.push(syn::PathSegment {
+					ident: syn::Ident::new("Result", Span::call_site()),
+					arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+						colon2_token: None, lt_token: syn::Token![<](Span::call_site()), args, gt_token: syn::Token![>](Span::call_site()),
+					})
+				});
+				let res_ty = syn::Type::Path(syn::TypePath { qself: None, path: syn::Path {
+					leading_colon: None, segments: res_segs } });
+
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> {} {{", for_obj, for_obj).unwrap();
-				writeln!(w, "\tif let Ok(res) = crate::c_types::deserialize_obj(ser) {{").unwrap();
-				writeln!(w, "\t\t{} {{ inner: Box::into_raw(Box::new(res)), is_owned: true }}", for_obj).unwrap();
-				writeln!(w, "\t}} else {{").unwrap();
-				writeln!(w, "\t\t{} {{ inner: std::ptr::null_mut(), is_owned: true }}", for_obj).unwrap();
-				writeln!(w, "\t}}\n}}").unwrap();
+				write!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> ", for_obj).unwrap();
+				types.write_c_type(w, &res_ty, None, false);
+				writeln!(w, " {{").unwrap();
+				writeln!(w, "\tlet res = crate::c_types::deserialize_obj(ser);").unwrap();
+				write!(w, "\t").unwrap();
+				if types.write_to_c_conversion_new_var(w, &syn::Ident::new("res", Span::call_site()), &res_ty, None, false) {
+					write!(w, "\n\t").unwrap();
+				}
+				types.write_to_c_conversion_inline_prefix(w, &res_ty, None, false);
+				write!(w, "res").unwrap();
+				types.write_to_c_conversion_inline_suffix(w, &res_ty, None, false);
+				writeln!(w, "\n}}").unwrap();
 			},
 			_ => {},
 		}
@@ -838,12 +878,12 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							},
 							"PartialEq" => {},
 							// If we have no generics, try a manual implementation:
-							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &ident, types),
+							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types),
 							_ => {},
 						}
 					} else if p.path.get_ident().is_some() {
 						// If we have no generics, try a manual implementation:
-						maybe_convert_trait_impl(w, &trait_path.1, &ident, types);
+						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types);
 					}
 				} else {
 					let declared_type = (*types.get_declared_type(&ident).unwrap()).clone();
