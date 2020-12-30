@@ -727,7 +727,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 	/// Returns the module path in the generated mapping crate to the containers which we generate
 	/// when writing to CrateTypes::template_file.
-	fn generated_container_path() -> &'static str {
+	pub fn generated_container_path() -> &'static str {
 		"crate::c_types::derived"
 	}
 	/// Returns the module path in the generated mapping crate to the container templates, which
@@ -914,7 +914,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		self.declared.get(ident)
 	}
 	/// Returns true if the object at the given path is mapped as X { inner: *mut origX, .. }.
-	fn c_type_has_inner_from_path(&self, full_path: &str) -> bool{
+	pub fn c_type_has_inner_from_path(&self, full_path: &str) -> bool{
 		self.crate_types.opaques.get(full_path).is_some()
 	}
 

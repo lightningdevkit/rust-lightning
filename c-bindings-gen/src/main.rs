@@ -63,28 +63,46 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
 		let for_obj;
 		let full_obj_path;
+		let mut has_inner = false;
 		if let syn::Type::Path(ref p) = for_ty {
 			if let Some(ident) = p.path.get_ident() {
-				let s = types.maybe_resolve_ident(ident).unwrap();
-				if !types.crate_types.opaques.get(&s).is_some() { return; }
-
 				for_obj = format!("{}", ident);
 				full_obj_path = for_obj.clone();
+				has_inner = types.c_type_has_inner_from_path(&types.resolve_path(&p.path, None));
 			} else { return; }
 		} else {
-			return;
+			// We assume that anything that isn't a Path is somehow a generic that ends up in our
+			// derived-types module.
+			let mut for_obj_vec = Vec::new();
+			types.write_c_type(&mut for_obj_vec, for_ty, None, false);
+			full_obj_path = String::from_utf8(for_obj_vec).unwrap();
+			assert!(full_obj_path.starts_with(TypeResolver::generated_container_path()));
+			for_obj = full_obj_path[TypeResolver::generated_container_path().len() + 2..].into();
 		}
 
 		match &t as &str {
 			"util::ser::Writeable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
 				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, full_obj_path).unwrap();
-				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
+
+				let ref_type = syn::Type::Reference(syn::TypeReference {
+					and_token: syn::Token!(&)(Span::call_site()), lifetime: None, mutability: None,
+					elem: Box::new(for_ty.clone()) });
+				assert!(!types.write_from_c_conversion_new_var(w, &syn::Ident::new("obj", Span::call_site()), &ref_type, None));
+
+				write!(w, "\tcrate::c_types::serialize_obj(").unwrap();
+				types.write_from_c_conversion_prefix(w, &ref_type, None);
+				write!(w, "unsafe {{ &*obj }}").unwrap();
+				types.write_from_c_conversion_suffix(w, &ref_type, None);
+				writeln!(w, ")").unwrap();
+
 				writeln!(w, "}}").unwrap();
-				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
-				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
-				writeln!(w, "}}").unwrap();
+				if has_inner {
+					writeln!(w, "#[no_mangle]").unwrap();
+					writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
+					writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
+					writeln!(w, "}}").unwrap();
+				}
 			},
 			"util::ser::Readable" => {
 				// Create the Result<Object, DecodeError> syn::Type
