@@ -262,8 +262,7 @@ int main() {
 	LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
 	LDKSecretKey node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
 
-	LDK::UserConfig config1 = UserConfig_default();
-	LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), config1, 0);
+	LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), UserConfig_default(), 0);
 
 	LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
 	assert(channels->datalen == 0);
@@ -273,7 +272,7 @@ int main() {
 	LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
 
 	LDKThirtyTwoBytes random_bytes = keys_source1->get_secure_random_bytes(keys_source1->this_arg);
-	LDK::PeerManager net1 = PeerManager_new(msg_handler1, node_secret1, &random_bytes.data, logger1);
+	LDK::PeerManager net1 = PeerManager_new(std::move(msg_handler1), node_secret1, &random_bytes.data, logger1);
 
 	// Demo getting a channel key and check that its returning real pubkeys:
 	LDK::ChannelKeys chan_keys1 = keys_source1->get_channel_keys(keys_source1->this_arg, false, 42);
@@ -307,9 +306,9 @@ int main() {
 	LDK::ChannelHandshakeConfig handshake_config2 = ChannelHandshakeConfig_default();
 	ChannelHandshakeConfig_set_minimum_depth(&handshake_config2, 2);
 	LDK::UserConfig config2 = UserConfig_default();
-	UserConfig_set_own_channel_config(&config2, handshake_config2);
+	UserConfig_set_own_channel_config(&config2, std::move(handshake_config2));
 
-	LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), config2, 0);
+	LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), std::move(config2), 0);
 
 	LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
 	assert(channels2->datalen == 0);
@@ -320,10 +319,10 @@ int main() {
 	LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
 	assert(ann_res->result_ok);
 
-	LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), net_msgs2);
+	LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), std::move(net_msgs2));
 
 	LDKThirtyTwoBytes random_bytes2 = keys_source2->get_secure_random_bytes(keys_source2->this_arg);
-	LDK::PeerManager net2 = PeerManager_new(msg_handler2, node_secret2, &random_bytes2.data, logger2);
+	LDK::PeerManager net2 = PeerManager_new(std::move(msg_handler2), node_secret2, &random_bytes2.data, logger2);
 
 	// Open a connection!
 	int pipefds_1_to_2[2];
@@ -372,7 +371,7 @@ int main() {
 	}
 
 	// Note that we have to bind the result to a C++ class to make sure it gets free'd
-	LDK::CResult_NoneAPIErrorZ res = ChannelManager_create_channel(&cm1, ChannelManager_get_our_node_id(&cm2), 40000, 1000, 42, config1);
+	LDK::CResult_NoneAPIErrorZ res = ChannelManager_create_channel(&cm1, ChannelManager_get_our_node_id(&cm2), 40000, 1000, 42, UserConfig_default());
 	assert(res->result_ok);
 	PeerManager_process_events(&net1);
 
@@ -404,7 +403,7 @@ int main() {
 			LDKThirtyTwoBytes txid;
 			for (int i = 0; i < 32; i++) { txid.data[i] = channel_open_txid[31-i]; }
 			LDK::OutPoint outp = OutPoint_new(txid, 0);
-			ChannelManager_funding_transaction_generated(&cm1, &events->data[0].funding_generation_ready.temporary_channel_id.data, outp);
+			ChannelManager_funding_transaction_generated(&cm1, &events->data[0].funding_generation_ready.temporary_channel_id.data, std::move(outp));
 			break;
 		}
 		std::this_thread::yield();
