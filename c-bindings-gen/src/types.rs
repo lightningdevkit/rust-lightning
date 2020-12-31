@@ -1061,7 +1061,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn write_rust_type<W: std::io::Write>(&self, w: &mut W, generics: Option<&GenericTypes>, t: &syn::Type) {
 		match t {
 			syn::Type::Path(p) => {
-				if p.qself.is_some() || p.path.leading_colon.is_some() {
+				if p.qself.is_some() {
 					unimplemented!();
 				}
 				self.write_rust_path(w, generics, &p.path);
