@@ -38,7 +38,7 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 			if let Some(s) = types.maybe_resolve_ident(&struct_for) {
 				if !types.crate_types.opaques.get(&s).is_some() { return; }
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", struct_for, struct_for).unwrap();
+				writeln!(w, "pub extern \"C\" fn {}_write(obj: &{}) -> crate::c_types::derived::CVec_u8Z {{", struct_for, struct_for).unwrap();
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
 				writeln!(w, "#[no_mangle]").unwrap();
@@ -83,7 +83,7 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 		match &t as &str {
 			"util::ser::Writeable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, full_obj_path).unwrap();
+				writeln!(w, "pub extern \"C\" fn {}_write(obj: &{}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, full_obj_path).unwrap();
 
 				let ref_type = syn::Type::Reference(syn::TypeReference {
 					and_token: syn::Token!(&)(Span::call_site()), lifetime: None, mutability: None,
@@ -791,7 +791,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						writeln!(w, "\t\tret.free = Some({}_free_void);", ident).unwrap();
 						writeln!(w, "\t\tret\n\t}}\n}}").unwrap();
 
-						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: *const {}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
+						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: &{}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
 						writeln!(w, "\tcrate::{} {{", full_trait_path).unwrap();
 						writeln!(w, "\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
 						writeln!(w, "\t\tfree: None,").unwrap();
