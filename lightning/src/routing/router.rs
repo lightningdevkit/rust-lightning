@@ -45,6 +45,7 @@ pub struct RouteHop {
 	pub cltv_expiry_delta: u32,
 }
 
+/// (C-not exported)
 impl Writeable for Vec<RouteHop> {
 	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		(self.len() as u8).write(writer)?;
@@ -60,6 +61,7 @@ impl Writeable for Vec<RouteHop> {
 	}
 }
 
+/// (C-not exported)
 impl Readable for Vec<RouteHop> {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Vec<RouteHop>, DecodeError> {
 		let hops_count: u8 = Readable::read(reader)?;

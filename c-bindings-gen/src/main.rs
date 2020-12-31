@@ -65,7 +65,7 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 		let full_obj_path;
 		let mut has_inner = false;
 		if let syn::Type::Path(ref p) = for_ty {
-			if let Some(ident) = p.path.get_ident() {
+			if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
 				for_obj = format!("{}", ident);
 				full_obj_path = for_obj.clone();
 				has_inner = types.c_type_has_inner_from_path(&types.resolve_path(&p.path, Some(generics)));
@@ -706,6 +706,11 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 ///
 /// A few non-crate Traits are hard-coded including Default.
 fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut TypeResolver) {
+	match export_status(&i.attrs) {
+		ExportStatus::Export => {},
+		ExportStatus::NoExport|ExportStatus::TestOnly => return,
+	}
+
 	if let syn::Type::Tuple(_) = &*i.self_ty {
 		if types.understood_c_type(&*i.self_ty, None) {
 			let mut gen_types = GenericTypes::new();
@@ -952,10 +957,9 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							},
 							"PartialEq" => {},
 							// If we have no generics, try a manual implementation:
-							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types),
-							_ => {},
+							_ => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types),
 						}
-					} else if p.path.get_ident().is_some() {
+					} else {
 						// If we have no generics, try a manual implementation:
 						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
 					}

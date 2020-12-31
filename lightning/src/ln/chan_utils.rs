@@ -843,6 +843,7 @@ impl PartialEq for CommitmentTransaction {
 	}
 }
 
+/// (C-not exported) as users never need to call this directly
 impl Writeable for Vec<HTLCOutputInCommitment> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
@@ -854,6 +855,7 @@ impl Writeable for Vec<HTLCOutputInCommitment> {
 	}
 }
 
+/// (C-not exported) as users never need to call this directly
 impl Readable for Vec<HTLCOutputInCommitment> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
