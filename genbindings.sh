@@ -60,9 +60,11 @@ else
 	echo "WARNING: Please install valgrind for more testing"
 fi
 
+CLANGOPTS="-Wall -Wno-nullability-completeness -pthread"
+
 # Test a statically-linked C++ version, tracking the resulting binary size and runtime
 # across debug, LTO, and cross-language LTO builds (using the same compiler each time).
-clang++ -std=c++11 -Wall -pthread demo.cpp target/debug/libldk.a -ldl
+clang++ $CLANGOPTS demo.cpp target/debug/libldk.a -ldl
 strip ./a.out
 echo " C++ Bin size and runtime w/o optimization:"
 ls -lha a.out
@@ -83,11 +85,11 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" ]; then
 			set +e
 
 			# First the C demo app...
-			clang-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.c target/debug/libldk.a -ldl
+			clang-$LLVM_V $CLANGOPTS -fsanitize=memory -fsanitize-memory-track-origins -g demo.c target/debug/libldk.a -ldl
 			./a.out
 
 			# ...then the C++ demo app
-			clang++-$LLVM_V -std=c++11 -fsanitize=memory -fsanitize-memory-track-origins -Wall -g -pthread demo.cpp target/debug/libldk.a -ldl
+			clang++-$LLVM_V -std=c++11 $CLANGOPTS -fsanitize=memory -fsanitize-memory-track-origins -g demo.cpp target/debug/libldk.a -ldl
 			./a.out >/dev/null
 
 			# restore exit-on-failure
@@ -153,11 +155,11 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" -o "$HOST_PLATFORM" = "
 		mv Cargo.toml.bk Cargo.toml
 
 		# First the C demo app...
-		$CLANG -fsanitize=address -Wall -g -pthread demo.c target/debug/libldk.a -ldl
+		$CLANG $CLANGOPTS -fsanitize=address -g demo.c target/debug/libldk.a -ldl
 		ASAN_OPTIONS='detect_leaks=1 detect_invalid_pointer_pairs=1 detect_stack_use_after_return=1' ./a.out
 
 		# ...then the C++ demo app
-		$CLANGPP -std=c++11 -fsanitize=address -Wall -g -pthread demo.cpp target/debug/libldk.a -ldl
+		$CLANGPP $CLANGOPTS -std=c++11 -fsanitize=address -g demo.cpp target/debug/libldk.a -ldl
 		ASAN_OPTIONS='detect_leaks=1 detect_invalid_pointer_pairs=1 detect_stack_use_after_return=1' ./a.out >/dev/null
 	else
 		echo "WARNING: Please install clang-$RUSTC_LLVM_V and clang++-$RUSTC_LLVM_V to build with address sanitizer"
@@ -168,7 +170,7 @@ fi
 
 # Now build with LTO on on both C++ and rust, but without cross-language LTO:
 CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C lto
-clang++ -std=c++11 -Wall -flto -O2 -pthread demo.cpp target/release/libldk.a -ldl
+clang++ $CLANGOPTS -std=c++11 -flto -O2 demo.cpp target/release/libldk.a -ldl
 strip ./a.out
 echo "C++ Bin size and runtime with only RL (LTO) optimized:"
 ls -lha a.out
@@ -181,7 +183,7 @@ if [ "$HOST_PLATFORM" != "host: x86_64-apple-darwin" -a "$CLANGPP" != "" ]; then
 	# packaging than simply shipping the rustup binaries (eg Debian should Just Work
 	# here).
 	CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C linker-plugin-lto -C lto -C link-arg=-fuse-ld=lld
-	$CLANGPP -Wall -std=c++11 -flto -fuse-ld=lld -O2 -pthread demo.cpp target/release/libldk.a -ldl
+	$CLANGPP $CLANGOPTS -flto -fuse-ld=lld -O2 demo.cpp target/release/libldk.a -ldl
 	strip ./a.out
 	echo "C++ Bin size and runtime with cross-language LTO:"
 	ls -lha a.out

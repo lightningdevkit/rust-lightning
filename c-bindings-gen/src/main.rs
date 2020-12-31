@@ -1556,10 +1556,18 @@ fn main() {
 	let mut cpp_header_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
 		.open(&args[6]).expect("Unable to open new header file");
 
-	writeln!(header_file, "#if defined(__GNUC__)\n#define MUST_USE_STRUCT __attribute__((warn_unused))").unwrap();
-	writeln!(header_file, "#else\n#define MUST_USE_STRUCT\n#endif").unwrap();
-	writeln!(header_file, "#if defined(__GNUC__)\n#define MUST_USE_RES __attribute__((warn_unused_result))").unwrap();
-	writeln!(header_file, "#else\n#define MUST_USE_RES\n#endif").unwrap();
+	writeln!(header_file, "#if defined(__GNUC__)").unwrap();
+	writeln!(header_file, "#define MUST_USE_STRUCT __attribute__((warn_unused))").unwrap();
+	writeln!(header_file, "#define MUST_USE_RES __attribute__((warn_unused_result))").unwrap();
+	writeln!(header_file, "#else").unwrap();
+	writeln!(header_file, "#define MUST_USE_STRUCT").unwrap();
+	writeln!(header_file, "#define MUST_USE_RES").unwrap();
+	writeln!(header_file, "#endif").unwrap();
+	writeln!(header_file, "#if defined(__clang__)").unwrap();
+	writeln!(header_file, "#define NONNULL_PTR _Nonnull").unwrap();
+	writeln!(header_file, "#else").unwrap();
+	writeln!(header_file, "#define NONNULL_PTR").unwrap();
+	writeln!(header_file, "#endif").unwrap();
 	writeln!(cpp_header_file, "#include <string.h>\nnamespace LDK {{").unwrap();
 
 	// First parse the full crate's ASTs, caching them so that we can hold references to the AST

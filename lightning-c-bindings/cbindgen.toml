@@ -550,3 +550,6 @@ default_features = true
 #
 # default: []
 features = ["cbindgen"]
+
+[ptr]
+non_null_attribute = "NONNULL_PTR"
