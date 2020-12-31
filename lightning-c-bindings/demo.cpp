@@ -9,6 +9,7 @@ extern "C" {
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <thread>
@@ -121,7 +122,7 @@ const LDKFeeEstimator fee_est {
 	.free = NULL,
 };
 
-static int num_txs_broadcasted = 0; // Technically a race, but ints are atomic on x86
+static std::atomic_int num_txs_broadcasted(0);
 void broadcast_tx(const void *this_arg, LDKTransaction tx) {
 	num_txs_broadcasted += 1;
 	//TODO
@@ -152,7 +153,7 @@ LDKCResult_NoneChannelMonitorUpdateErrZ add_channel_monitor(const void *this_arg
 	arg->mons.push_back(std::make_pair(std::move(funding_txo), std::move(mon)));
 	return CResult_NoneChannelMonitorUpdateErrZ_ok();
 }
-static int mons_updated = 0; // Technically a race, but ints are atomic on x86.
+static std::atomic_int mons_updated(0);
 LDKCResult_NoneChannelMonitorUpdateErrZ update_channel_monitor(const void *this_arg, LDKOutPoint funding_txo_arg, LDKChannelMonitorUpdate monitor_arg) {
 	// First bind the args to C++ objects so they auto-free
 	LDK::ChannelMonitorUpdate update(std::move(monitor_arg));
@@ -224,12 +225,73 @@ void sock_read_data_thread(int rdfd, LDKSocketDescriptor *peer_descriptor, LDKPe
 	PeerManager_socket_disconnected(&*pm, peer_descriptor);
 }
 
-int main() {
-	uint8_t node_seed[32];
-	memset(&node_seed, 0, 32);
+class PeersConnection {
+	int pipefds_1_to_2[2];
+	int pipefds_2_to_1[2];
+	std::thread t1, t2;
+	LDKSocketDescriptor sock1, sock2;
 
+public:
+	PeersConnection(LDK::ChannelManager& cm1, LDK::ChannelManager& cm2, LDK::PeerManager& net1, LDK::PeerManager& net2) {
+		assert(!pipe(pipefds_1_to_2));
+		assert(!pipe(pipefds_2_to_1));
+
+		sock1 = LDKSocketDescriptor {
+			.this_arg = (void*)(long)pipefds_1_to_2[1],
+			.send_data = sock_send_data,
+			.disconnect_socket = sock_disconnect_socket,
+			.eq = sock_eq,
+			.hash = sock_hash,
+			.clone = NULL,
+			.free = NULL,
+		};
+
+		sock2 = LDKSocketDescriptor {
+			.this_arg = (void*)(long)pipefds_2_to_1[1],
+			.send_data = sock_send_data,
+			.disconnect_socket = sock_disconnect_socket,
+			.eq = sock_eq,
+			.hash = sock_hash,
+			.clone = NULL,
+			.free = NULL,
+		};
+
+		t1 = std::thread(&sock_read_data_thread, pipefds_2_to_1[0], &sock1, &net1);
+		t2 = std::thread(&sock_read_data_thread, pipefds_1_to_2[0], &sock2, &net2);
+
+		// Note that we have to bind the result to a C++ class to make sure it gets free'd
+		LDK::CResult_CVec_u8ZPeerHandleErrorZ con_res = PeerManager_new_outbound_connection(&net1, ChannelManager_get_our_node_id(&cm2), sock1);
+		assert(con_res->result_ok);
+		LDK::CResult_NonePeerHandleErrorZ con_res2 = PeerManager_new_inbound_connection(&net2, sock2);
+		assert(con_res2->result_ok);
+
+		auto writelen = write(pipefds_1_to_2[1], con_res->contents.result->data, con_res->contents.result->datalen);
+		assert(writelen > 0 && uint64_t(writelen) == con_res->contents.result->datalen);
+
+		while (true) {
+			// Wait for the initial handshakes to complete...
+			LDK::CVec_PublicKeyZ peers_1 = PeerManager_get_peer_node_ids(&net1);
+			LDK::CVec_PublicKeyZ peers_2 = PeerManager_get_peer_node_ids(&net2);
+			if (peers_1->datalen == 1 && peers_2->datalen ==1) { break; }
+			std::this_thread::yield();
+		}
+	}
+
+	void stop() {
+		close(pipefds_1_to_2[0]);
+		close(pipefds_2_to_1[0]);
+		close(pipefds_1_to_2[1]);
+		close(pipefds_2_to_1[1]);
+		t1.join();
+		t2.join();
+	}
+};
+
+int main() {
 	LDKPublicKey null_pk;
 	memset(&null_pk, 0, sizeof(null_pk));
+
+	LDKThirtyTwoBytes random_bytes;
 
 	LDKNetwork network = LDKNetwork_Testnet;
 
@@ -240,8 +302,7 @@ int main() {
 		.free = NULL,
 	};
 
-	// Instantiate classes for node 1:
-
+	// Instantiate classes for the nodes that don't get reloaded on a ser-des reload
 	LDKLogger logger1 {
 		.this_arg = (void*)1,
 		.log = print_log,
@@ -258,29 +319,8 @@ int main() {
 		.free = NULL,
 	};
 
-	LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 0, 0);
-	LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
-	LDKSecretKey node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
-
-	LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), UserConfig_default(), 0);
-
-	LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
-	assert(channels->datalen == 0);
-
 	LDK::NetGraphMsgHandler net_graph1 = NetGraphMsgHandler_new(genesis_hash, NULL, logger1);
-
-	LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
-
-	LDKThirtyTwoBytes random_bytes = keys_source1->get_secure_random_bytes(keys_source1->this_arg);
-	LDK::PeerManager net1 = PeerManager_new(std::move(msg_handler1), node_secret1, &random_bytes.data, logger1);
-
-	// Demo getting a channel key and check that its returning real pubkeys:
-	LDK::ChannelKeys chan_keys1 = keys_source1->get_channel_keys(keys_source1->this_arg, false, 42);
-	chan_keys1->set_pubkeys(&chan_keys1); // Make sure pubkeys is defined
-	LDKPublicKey payment_point = ChannelPublicKeys_get_payment_point(&chan_keys1->pubkeys);
-	assert(memcmp(&payment_point, &null_pk, sizeof(null_pk)));
-
-	// Instantiate classes for node 2:
+	LDKSecretKey node_secret1;
 
 	LDKLogger logger2 {
 		.this_arg = (void*)2,
@@ -298,239 +338,283 @@ int main() {
 		.free = NULL,
 	};
 
-	memset(&node_seed, 1, 32);
-	LDK::KeysManager keys2 = KeysManager_new(&node_seed, network, 0, 0);
-	LDK::KeysInterface keys_source2 = KeysManager_as_KeysInterface(&keys2);
-	LDKSecretKey node_secret2 = keys_source2->get_node_secret(keys_source2->this_arg);
-
-	LDK::ChannelHandshakeConfig handshake_config2 = ChannelHandshakeConfig_default();
-	ChannelHandshakeConfig_set_minimum_depth(&handshake_config2, 2);
-	LDK::UserConfig config2 = UserConfig_default();
-	UserConfig_set_own_channel_config(&config2, std::move(handshake_config2));
-
-	LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), std::move(config2), 0);
-
-	LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
-	assert(channels2->datalen == 0);
-
 	LDK::NetGraphMsgHandler net_graph2 = NetGraphMsgHandler_new(genesis_hash, NULL, logger2);
-	LDK::RoutingMessageHandler net_msgs2 = NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2);
-	LDK::ChannelAnnouncement chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
-	LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
-	assert(ann_res->result_ok);
+	LDKSecretKey node_secret2;
 
-	LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), std::move(net_msgs2));
+	LDK::CVec_u8Z cm1_ser = LDKCVec_u8Z {}; // ChannelManager 1 serialization at the end of the ser-des scope
+	LDK::CVec_u8Z cm2_ser = LDKCVec_u8Z {}; // ChannelManager 2 serialization at the end of the ser-des scope
 
-	LDKThirtyTwoBytes random_bytes2 = keys_source2->get_secure_random_bytes(keys_source2->this_arg);
-	LDK::PeerManager net2 = PeerManager_new(std::move(msg_handler2), node_secret2, &random_bytes2.data, logger2);
+	{ // Scope for the ser-des reload
+		// Instantiate classes for node 1:
+		uint8_t node_seed[32];
+		memset(&node_seed, 0, 32);
+		LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 0, 0);
+		LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
+		node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
 
-	// Open a connection!
-	int pipefds_1_to_2[2];
-	int pipefds_2_to_1[2];
-	assert(!pipe(pipefds_1_to_2));
-	assert(!pipe(pipefds_2_to_1));
+		LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), UserConfig_default(), 0);
 
-	LDKSocketDescriptor sock1 {
-		.this_arg = (void*)(long)pipefds_1_to_2[1],
-		.send_data = sock_send_data,
-		.disconnect_socket = sock_disconnect_socket,
-		.eq = sock_eq,
-		.hash = sock_hash,
-		.clone = NULL,
-		.free = NULL,
-	};
+		LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
+		assert(channels->datalen == 0);
 
-	LDKSocketDescriptor sock2 {
-		.this_arg = (void*)(long)pipefds_2_to_1[1],
-		.send_data = sock_send_data,
-		.disconnect_socket = sock_disconnect_socket,
-		.eq = sock_eq,
-		.hash = sock_hash,
-		.clone = NULL,
-		.free = NULL,
-	};
+		LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
 
-	std::thread t1(&sock_read_data_thread, pipefds_2_to_1[0], &sock1, &net1);
-	std::thread t2(&sock_read_data_thread, pipefds_1_to_2[0], &sock2, &net2);
+		random_bytes = keys_source1->get_secure_random_bytes(keys_source1->this_arg);
+		LDK::PeerManager net1 = PeerManager_new(std::move(msg_handler1), node_secret1, &random_bytes.data, logger1);
 
-	// Note that we have to bind the result to a C++ class to make sure it gets free'd
-	LDK::CResult_CVec_u8ZPeerHandleErrorZ con_res = PeerManager_new_outbound_connection(&net1, ChannelManager_get_our_node_id(&cm2), sock1);
-	assert(con_res->result_ok);
-	LDK::CResult_NonePeerHandleErrorZ con_res2 = PeerManager_new_inbound_connection(&net2, sock2);
-	assert(con_res2->result_ok);
+		// Demo getting a channel key and check that its returning real pubkeys:
+		LDK::ChannelKeys chan_keys1 = keys_source1->get_channel_keys(keys_source1->this_arg, false, 42);
+		chan_keys1->set_pubkeys(&chan_keys1); // Make sure pubkeys is defined
+		LDKPublicKey payment_point = ChannelPublicKeys_get_payment_point(&chan_keys1->pubkeys);
+		assert(memcmp(&payment_point, &null_pk, sizeof(null_pk)));
 
-	auto writelen = write(pipefds_1_to_2[1], con_res->contents.result->data, con_res->contents.result->datalen);
-	assert(writelen > 0 && uint64_t(writelen) == con_res->contents.result->datalen);
+		// Instantiate classes for node 2:
+		memset(&node_seed, 1, 32);
+		LDK::KeysManager keys2 = KeysManager_new(&node_seed, network, 0, 0);
+		LDK::KeysInterface keys_source2 = KeysManager_as_KeysInterface(&keys2);
+		node_secret2 = keys_source2->get_node_secret(keys_source2->this_arg);
 
-	while (true) {
-		// Wait for the initial handshakes to complete...
-		LDK::CVec_PublicKeyZ peers_1 = PeerManager_get_peer_node_ids(&net1);
-		LDK::CVec_PublicKeyZ peers_2 = PeerManager_get_peer_node_ids(&net2);
-		if (peers_1->datalen == 1 && peers_2->datalen ==1) { break; }
-		std::this_thread::yield();
-	}
+		LDK::ChannelHandshakeConfig handshake_config2 = ChannelHandshakeConfig_default();
+		ChannelHandshakeConfig_set_minimum_depth(&handshake_config2, 2);
+		LDK::UserConfig config2 = UserConfig_default();
+		UserConfig_set_own_channel_config(&config2, std::move(handshake_config2));
 
-	// Note that we have to bind the result to a C++ class to make sure it gets free'd
-	LDK::CResult_NoneAPIErrorZ res = ChannelManager_create_channel(&cm1, ChannelManager_get_our_node_id(&cm2), 40000, 1000, 42, UserConfig_default());
-	assert(res->result_ok);
-	PeerManager_process_events(&net1);
+		LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), std::move(config2), 0);
 
-	LDK::CVec_ChannelDetailsZ new_channels = ChannelManager_list_channels(&cm1);
-	assert(new_channels->datalen == 1);
-	LDKPublicKey chan_open_pk = ChannelDetails_get_remote_network_id(&new_channels->data[0]);
-	assert(!memcmp(chan_open_pk.compressed_form, ChannelManager_get_our_node_id(&cm2).compressed_form, 33));
+		LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
+		assert(channels2->datalen == 0);
 
-	while (true) {
-		LDK::CVec_ChannelDetailsZ new_channels_2 = ChannelManager_list_channels(&cm2);
-		if (new_channels_2->datalen == 1) {
-			// Sample getting our counterparty's init features (which used to be hard to do without a memory leak):
-			const LDK::InitFeatures init_feats = ChannelDetails_get_counterparty_features(&new_channels_2->data[0]);
-			assert(init_feats->inner != NULL);
-			break;
+		LDK::RoutingMessageHandler net_msgs2 = NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2);
+		LDK::ChannelAnnouncement chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
+		LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
+		assert(ann_res->result_ok);
+
+		LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), std::move(net_msgs2));
+
+		random_bytes = keys_source2->get_secure_random_bytes(keys_source2->this_arg);
+		LDK::PeerManager net2 = PeerManager_new(std::move(msg_handler2), node_secret2, &random_bytes.data, logger2);
+
+		// Open a connection!
+		PeersConnection conn(cm1, cm2, net1, net2);
+
+		// Note that we have to bind the result to a C++ class to make sure it gets free'd
+		LDK::CResult_NoneAPIErrorZ res = ChannelManager_create_channel(&cm1, ChannelManager_get_our_node_id(&cm2), 40000, 1000, 42, UserConfig_default());
+		assert(res->result_ok);
+		PeerManager_process_events(&net1);
+
+		LDK::CVec_ChannelDetailsZ new_channels = ChannelManager_list_channels(&cm1);
+		assert(new_channels->datalen == 1);
+		LDKPublicKey chan_open_pk = ChannelDetails_get_remote_network_id(&new_channels->data[0]);
+		assert(!memcmp(chan_open_pk.compressed_form, ChannelManager_get_our_node_id(&cm2).compressed_form, 33));
+
+		while (true) {
+			LDK::CVec_ChannelDetailsZ new_channels_2 = ChannelManager_list_channels(&cm2);
+			if (new_channels_2->datalen == 1) {
+				// Sample getting our counterparty's init features (which used to be hard to do without a memory leak):
+				const LDK::InitFeatures init_feats = ChannelDetails_get_counterparty_features(&new_channels_2->data[0]);
+				assert(init_feats->inner != NULL);
+				break;
+			}
+			std::this_thread::yield();
 		}
-		std::this_thread::yield();
-	}
 
-	LDKEventsProvider ev1 = ChannelManager_as_EventsProvider(&cm1);
-	while (true) {
-		LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
-		if (events->datalen == 1) {
-			assert(events->data[0].tag == LDKEvent_FundingGenerationReady);
-			assert(events->data[0].funding_generation_ready.user_channel_id == 42);
-			assert(events->data[0].funding_generation_ready.channel_value_satoshis == 40000);
-			assert(events->data[0].funding_generation_ready.output_script.datalen == 34);
-			assert(!memcmp(events->data[0].funding_generation_ready.output_script.data, channel_open_tx + 58, 34));
-			LDKThirtyTwoBytes txid;
-			for (int i = 0; i < 32; i++) { txid.data[i] = channel_open_txid[31-i]; }
-			LDK::OutPoint outp = OutPoint_new(txid, 0);
-			ChannelManager_funding_transaction_generated(&cm1, &events->data[0].funding_generation_ready.temporary_channel_id.data, std::move(outp));
-			break;
+		LDKEventsProvider ev1 = ChannelManager_as_EventsProvider(&cm1);
+		while (true) {
+			LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
+			if (events->datalen == 1) {
+				assert(events->data[0].tag == LDKEvent_FundingGenerationReady);
+				assert(events->data[0].funding_generation_ready.user_channel_id == 42);
+				assert(events->data[0].funding_generation_ready.channel_value_satoshis == 40000);
+				assert(events->data[0].funding_generation_ready.output_script.datalen == 34);
+				assert(!memcmp(events->data[0].funding_generation_ready.output_script.data, channel_open_tx + 58, 34));
+				LDKThirtyTwoBytes txid;
+				for (int i = 0; i < 32; i++) { txid.data[i] = channel_open_txid[31-i]; }
+				LDK::OutPoint outp = OutPoint_new(txid, 0);
+				ChannelManager_funding_transaction_generated(&cm1, &events->data[0].funding_generation_ready.temporary_channel_id.data, std::move(outp));
+				break;
+			}
+			std::this_thread::yield();
 		}
-		std::this_thread::yield();
-	}
 
-	// We observe when the funding signed messages have been exchanged by
-	// waiting for two monitors to be registered.
-	PeerManager_process_events(&net1);
-	while (true) {
-		LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
-		if (events->datalen == 1) {
-			assert(events->data[0].tag == LDKEvent_FundingBroadcastSafe);
-			assert(events->data[0].funding_broadcast_safe.user_channel_id == 42);
-			break;
+		// We observe when the funding signed messages have been exchanged by
+		// waiting for two monitors to be registered.
+		PeerManager_process_events(&net1);
+		while (true) {
+			LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
+			if (events->datalen == 1) {
+				assert(events->data[0].tag == LDKEvent_FundingBroadcastSafe);
+				assert(events->data[0].funding_broadcast_safe.user_channel_id == 42);
+				break;
+			}
+			std::this_thread::yield();
 		}
-		std::this_thread::yield();
-	}
 
-	LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
-	ChannelManager_block_connected(&cm1, &channel_open_header, txdata, 1);
+		LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+		ChannelManager_block_connected(&cm1, &channel_open_header, txdata, 1);
 
-	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
-	ChannelManager_block_connected(&cm2, &channel_open_header, txdata, 1);
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+		ChannelManager_block_connected(&cm2, &channel_open_header, txdata, 1);
 
-	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
-	mons1.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+		mons1.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 
-	txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
-	*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
-	mons2.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
+		mons2.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 
-	ChannelManager_block_connected(&cm1, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
-	ChannelManager_block_connected(&cm2, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
-	mons1.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
-	mons2.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+		ChannelManager_block_connected(&cm1, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
+		ChannelManager_block_connected(&cm2, &header_1, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 2);
+		mons1.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+		mons2.ConnectBlock(&header_1, 2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
 
-	ChannelManager_block_connected(&cm1, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
-	ChannelManager_block_connected(&cm2, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
-	mons1.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
-	mons2.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+		ChannelManager_block_connected(&cm1, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
+		ChannelManager_block_connected(&cm2, &header_2, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, 3);
+		mons1.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
+		mons2.ConnectBlock(&header_2, 3, LDKCVec_C2Tuple_usizeTransactionZZ { .data = NULL, .datalen = 0 }, broadcast, fee_est);
 
-	PeerManager_process_events(&net1);
-	PeerManager_process_events(&net2);
+		PeerManager_process_events(&net1);
+		PeerManager_process_events(&net2);
 
-	// Now send funds from 1 to 2!
-	while (true) {
+		// Now send funds from 1 to 2!
+		while (true) {
+			LDK::CVec_ChannelDetailsZ outbound_channels = ChannelManager_list_usable_channels(&cm1);
+			if (outbound_channels->datalen == 1) {
+				const LDKChannelDetails *channel = &outbound_channels->data[0];
+				// Note that the channel ID is the same as the channel txid reversed as the output index is 0
+				uint8_t expected_chan_id[32];
+				for (int i = 0; i < 32; i++) { expected_chan_id[i] = channel_open_txid[31-i]; }
+				assert(!memcmp(ChannelDetails_get_channel_id(channel), expected_chan_id, 32));
+				assert(!memcmp(ChannelDetails_get_remote_network_id(channel).compressed_form,
+						ChannelManager_get_our_node_id(&cm2).compressed_form, 33));
+				assert(ChannelDetails_get_channel_value_satoshis(channel) == 40000);
+				// We opened the channel with 1000 push_msat:
+				assert(ChannelDetails_get_outbound_capacity_msat(channel) == 40000*1000 - 1000);
+				assert(ChannelDetails_get_inbound_capacity_msat(channel) == 1000);
+				assert(ChannelDetails_get_is_live(channel));
+				break;
+			}
+			std::this_thread::yield();
+		}
+
 		LDK::CVec_ChannelDetailsZ outbound_channels = ChannelManager_list_usable_channels(&cm1);
-		if (outbound_channels->datalen == 1) {
-			const LDKChannelDetails *channel = &outbound_channels->data[0];
-			// Note that the channel ID is the same as the channel txid reversed as the output index is 0
-			uint8_t expected_chan_id[32];
-			for (int i = 0; i < 32; i++) { expected_chan_id[i] = channel_open_txid[31-i]; }
-			assert(!memcmp(ChannelDetails_get_channel_id(channel), expected_chan_id, 32));
-			assert(!memcmp(ChannelDetails_get_remote_network_id(channel).compressed_form,
-					ChannelManager_get_our_node_id(&cm2).compressed_form, 33));
-			assert(ChannelDetails_get_channel_value_satoshis(channel) == 40000);
-			// We opened the channel with 1000 push_msat:
-			assert(ChannelDetails_get_outbound_capacity_msat(channel) == 40000*1000 - 1000);
-			assert(ChannelDetails_get_inbound_capacity_msat(channel) == 1000);
-			assert(ChannelDetails_get_is_live(channel));
-			break;
+		LDKThirtyTwoBytes payment_secret;
+		memset(payment_secret.data, 0x42, 32);
+		{
+			LDK::LockedNetworkGraph graph_2_locked = NetGraphMsgHandler_read_locked_graph(&net_graph2);
+			LDK::NetworkGraph graph_2_ref = LockedNetworkGraph_graph(&graph_2_locked);
+			LDK::CResult_RouteLightningErrorZ route = get_route(ChannelManager_get_our_node_id(&cm1), &graph_2_ref, ChannelManager_get_our_node_id(&cm2), &outbound_channels, LDKCVec_RouteHintZ {
+					.data = NULL, .datalen = 0
+				}, 5000, 10, logger1);
+			assert(route->result_ok);
+			LDK::CResult_NonePaymentSendFailureZ send_res = ChannelManager_send_payment(&cm1, route->contents.result, payment_hash_1, payment_secret);
+			assert(send_res->result_ok);
 		}
-		std::this_thread::yield();
-	}
 
-	LDK::CVec_ChannelDetailsZ outbound_channels = ChannelManager_list_usable_channels(&cm1);
-	LDKThirtyTwoBytes payment_secret;
-	memset(payment_secret.data, 0x42, 32);
-	{
-		LDK::LockedNetworkGraph graph_2_locked = NetGraphMsgHandler_read_locked_graph(&net_graph2);
-		LDK::NetworkGraph graph_2_ref = LockedNetworkGraph_graph(&graph_2_locked);
-		LDK::CResult_RouteLightningErrorZ route = get_route(ChannelManager_get_our_node_id(&cm1), &graph_2_ref, ChannelManager_get_our_node_id(&cm2), &outbound_channels, LDKCVec_RouteHintZ {
-				.data = NULL, .datalen = 0
-			}, 5000, 10, logger1);
-		assert(route->result_ok);
-		LDK::CResult_NonePaymentSendFailureZ send_res = ChannelManager_send_payment(&cm1, route->contents.result, payment_hash_1, payment_secret);
-		assert(send_res->result_ok);
-	}
-
-	mons_updated = 0;
-	PeerManager_process_events(&net1);
-	while (mons_updated != 4) {
-		std::this_thread::yield();
-	}
-
-	// Check that we received the payment!
-	LDKEventsProvider ev2 = ChannelManager_as_EventsProvider(&cm2);
-	while (true) {
-		LDK::CVec_EventZ events = ev2.get_and_clear_pending_events(ev2.this_arg);
-		if (events->datalen == 1) {
-			assert(events->data[0].tag == LDKEvent_PendingHTLCsForwardable);
-			break;
+		mons_updated = 0;
+		PeerManager_process_events(&net1);
+		while (mons_updated != 4) {
+			std::this_thread::yield();
 		}
-		std::this_thread::yield();
-	}
-	ChannelManager_process_pending_htlc_forwards(&cm2);
-	PeerManager_process_events(&net2);
 
-	mons_updated = 0;
-	{
-		LDK::CVec_EventZ events = ev2.get_and_clear_pending_events(ev2.this_arg);
-		assert(events->datalen == 1);
-		assert(events->data[0].tag == LDKEvent_PaymentReceived);
-		assert(!memcmp(events->data[0].payment_received.payment_hash.data, payment_hash_1.data, 32));
-		assert(!memcmp(events->data[0].payment_received.payment_secret.data, payment_secret.data, 32));
-		assert(events->data[0].payment_received.amt == 5000);
-		assert(ChannelManager_claim_funds(&cm2, payment_preimage_1, payment_secret, 5000));
-	}
-	PeerManager_process_events(&net2);
-	// Wait until we've passed through a full set of monitor updates (ie new preimage + CS/RAA messages)
-	while (mons_updated != 5) {
-		std::this_thread::yield();
-	}
-	{
-		LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
-		assert(events->datalen == 1);
-		assert(events->data[0].tag == LDKEvent_PaymentSent);
-		assert(!memcmp(events->data[0].payment_sent.payment_preimage.data, payment_preimage_1.data, 32));
+		// Check that we received the payment!
+		LDKEventsProvider ev2 = ChannelManager_as_EventsProvider(&cm2);
+		while (true) {
+			LDK::CVec_EventZ events = ev2.get_and_clear_pending_events(ev2.this_arg);
+			if (events->datalen == 1) {
+				assert(events->data[0].tag == LDKEvent_PendingHTLCsForwardable);
+				break;
+			}
+			std::this_thread::yield();
+		}
+		ChannelManager_process_pending_htlc_forwards(&cm2);
+		PeerManager_process_events(&net2);
+
+		mons_updated = 0;
+		{
+			LDK::CVec_EventZ events = ev2.get_and_clear_pending_events(ev2.this_arg);
+			assert(events->datalen == 1);
+			assert(events->data[0].tag == LDKEvent_PaymentReceived);
+			assert(!memcmp(events->data[0].payment_received.payment_hash.data, payment_hash_1.data, 32));
+			assert(!memcmp(events->data[0].payment_received.payment_secret.data, payment_secret.data, 32));
+			assert(events->data[0].payment_received.amt == 5000);
+			assert(ChannelManager_claim_funds(&cm2, payment_preimage_1, payment_secret, 5000));
+		}
+		PeerManager_process_events(&net2);
+		// Wait until we've passed through a full set of monitor updates (ie new preimage + CS/RAA messages)
+		while (mons_updated != 5) {
+			std::this_thread::yield();
+		}
+		{
+			LDK::CVec_EventZ events = ev1.get_and_clear_pending_events(ev1.this_arg);
+			assert(events->datalen == 1);
+			assert(events->data[0].tag == LDKEvent_PaymentSent);
+			assert(!memcmp(events->data[0].payment_sent.payment_preimage.data, payment_preimage_1.data, 32));
+		}
+
+		conn.stop();
+
+		cm1_ser = ChannelManager_write(&cm1);
+		cm2_ser = ChannelManager_write(&cm2);
 	}
 
-	// Close the channel.
+	LDK::CVec_ChannelMonitorZ mons_list1 = LDKCVec_ChannelMonitorZ { .data = (LDKChannelMonitor*)malloc(sizeof(LDKChannelMonitor)), .datalen = 1 };
+	assert(mons1.mons.size() == 1);
+	mons_list1->data[0] = *& std::get<1>(mons1.mons[0]); // Note that we need a reference, thus need a raw clone here, which *& does.
+	mons_list1->data[0].is_owned = false; // XXX: God this sucks
+	uint8_t node_seed[32];
+	memset(&node_seed, 0, 32);
+	LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 1, 0);
+	LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
+
+	LDK::ChannelManagerReadArgs cm1_args = ChannelManagerReadArgs_new(KeysManager_as_KeysInterface(&keys1), fee_est, mon1, broadcast, logger1, UserConfig_default(), std::move(mons_list1));
+	LDK::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ cm1_read =
+		C2Tuple_BlockHashChannelManagerZ_read(LDKu8slice { .data = cm1_ser->data, .datalen = cm1_ser -> datalen}, std::move(cm1_args));
+	assert(cm1_read->result_ok);
+	LDK::ChannelManager cm1(std::move(cm1_read->contents.result->b));
+
+	LDK::CVec_ChannelMonitorZ mons_list2 = LDKCVec_ChannelMonitorZ { .data = (LDKChannelMonitor*)malloc(sizeof(LDKChannelMonitor)), .datalen = 1 };
+	assert(mons2.mons.size() == 1);
+	mons_list2->data[0] = *& std::get<1>(mons2.mons[0]); // Note that we need a reference, thus need a raw clone here, which *& does.
+	mons_list2->data[0].is_owned = false; // XXX: God this sucks
+	memset(&node_seed, 1, 32);
+	LDK::KeysManager keys2 = KeysManager_new(&node_seed, network, 1, 0);
+
+	LDK::ChannelManagerReadArgs cm2_args = ChannelManagerReadArgs_new(KeysManager_as_KeysInterface(&keys2), fee_est, mon2, broadcast, logger2, UserConfig_default(), std::move(mons_list2));
+	LDK::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ cm2_read =
+		C2Tuple_BlockHashChannelManagerZ_read(LDKu8slice { .data = cm2_ser->data, .datalen = cm2_ser -> datalen}, std::move(cm2_args));
+	assert(cm2_read->result_ok);
+	LDK::ChannelManager cm2(std::move(cm2_read->contents.result->b));
+
+	// Attempt to close the channel...
 	uint8_t chan_id[32];
 	for (int i = 0; i < 32; i++) { chan_id[i] = channel_open_txid[31-i]; }
 	LDK::CResult_NoneAPIErrorZ close_res = ChannelManager_close_channel(&cm1, &chan_id);
+	assert(!close_res->result_ok); // Note that we can't close while disconnected!
+
+	// Open a connection!
+	LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
+	random_bytes = keys_source1->get_secure_random_bytes(keys_source1->this_arg);
+	LDK::PeerManager net1 = PeerManager_new(std::move(msg_handler1), node_secret1, &random_bytes.data, logger1);
+
+	LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2));
+	random_bytes = keys_source1->get_secure_random_bytes(keys_source1->this_arg);
+	LDK::PeerManager net2 = PeerManager_new(std::move(msg_handler2), node_secret2, &random_bytes.data, logger2);
+
+	PeersConnection conn(cm1, cm2, net1, net2);
+
+	while (true) {
+		// Wait for the channels to be considered up once the reestablish messages are processed
+		LDK::CVec_ChannelDetailsZ outbound_channels = ChannelManager_list_usable_channels(&cm1);
+		if (outbound_channels->datalen == 1) {
+			break;
+		}
+	}
+
+	// Actually close the channel
+	close_res = ChannelManager_close_channel(&cm1, &chan_id);
 	assert(close_res->result_ok);
 	PeerManager_process_events(&net1);
 	num_txs_broadcasted = 0;
@@ -542,12 +626,7 @@ int main() {
 	LDK::CVec_ChannelDetailsZ chans_after_close2 = ChannelManager_list_channels(&cm2);
 	assert(chans_after_close2->datalen == 0);
 
-	close(pipefds_1_to_2[0]);
-	close(pipefds_2_to_1[0]);
-	close(pipefds_1_to_2[1]);
-	close(pipefds_2_to_1[1]);
-	t1.join();
-	t2.join();
+	conn.stop();
 
 	// Few extra random tests:
 	LDKSecretKey sk;
