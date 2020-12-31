@@ -59,8 +59,8 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 }
 
 /// Convert "impl trait_path for for_ty { .. }" for manually-mapped types (ie (de)serialization)
-fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_ty: &syn::Type, types: &mut TypeResolver) {
-	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
+fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_ty: &syn::Type, types: &mut TypeResolver, generics: &GenericTypes) {
+	if let Some(t) = types.maybe_resolve_path(&trait_path, Some(generics)) {
 		let for_obj;
 		let full_obj_path;
 		let mut has_inner = false;
@@ -68,13 +68,13 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 			if let Some(ident) = p.path.get_ident() {
 				for_obj = format!("{}", ident);
 				full_obj_path = for_obj.clone();
-				has_inner = types.c_type_has_inner_from_path(&types.resolve_path(&p.path, None));
+				has_inner = types.c_type_has_inner_from_path(&types.resolve_path(&p.path, Some(generics)));
 			} else { return; }
 		} else {
 			// We assume that anything that isn't a Path is somehow a generic that ends up in our
 			// derived-types module.
 			let mut for_obj_vec = Vec::new();
-			types.write_c_type(&mut for_obj_vec, for_ty, None, false);
+			types.write_c_type(&mut for_obj_vec, for_ty, Some(generics), false);
 			full_obj_path = String::from_utf8(for_obj_vec).unwrap();
 			assert!(full_obj_path.starts_with(TypeResolver::generated_container_path()));
 			for_obj = full_obj_path[TypeResolver::generated_container_path().len() + 2..].into();
@@ -88,12 +88,12 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 				let ref_type = syn::Type::Reference(syn::TypeReference {
 					and_token: syn::Token!(&)(Span::call_site()), lifetime: None, mutability: None,
 					elem: Box::new(for_ty.clone()) });
-				assert!(!types.write_from_c_conversion_new_var(w, &syn::Ident::new("obj", Span::call_site()), &ref_type, None));
+				assert!(!types.write_from_c_conversion_new_var(w, &syn::Ident::new("obj", Span::call_site()), &ref_type, Some(generics)));
 
 				write!(w, "\tcrate::c_types::serialize_obj(").unwrap();
-				types.write_from_c_conversion_prefix(w, &ref_type, None);
+				types.write_from_c_conversion_prefix(w, &ref_type, Some(generics));
 				write!(w, "unsafe {{ &*obj }}").unwrap();
-				types.write_from_c_conversion_suffix(w, &ref_type, None);
+				types.write_from_c_conversion_suffix(w, &ref_type, Some(generics));
 				writeln!(w, ")").unwrap();
 
 				writeln!(w, "}}").unwrap();
@@ -104,7 +104,7 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 					writeln!(w, "}}").unwrap();
 				}
 			},
-			"util::ser::Readable" => {
+			"util::ser::Readable"|"util::ser::ReadableArgs" => {
 				// Create the Result<Object, DecodeError> syn::Type
 				let mut err_segs = syn::punctuated::Punctuated::new();
 				err_segs.push(syn::PathSegment { ident: syn::Ident::new("ln", Span::call_site()), arguments: syn::PathArguments::None });
@@ -128,17 +128,48 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 					leading_colon: None, segments: res_segs } });
 
 				writeln!(w, "#[no_mangle]").unwrap();
-				write!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> ", for_obj).unwrap();
-				types.write_c_type(w, &res_ty, None, false);
+				write!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice", for_obj).unwrap();
+
+				let mut arg_conv = Vec::new();
+				if t == "util::ser::ReadableArgs" {
+					write!(w, ", arg: ").unwrap();
+					assert!(trait_path.leading_colon.is_none());
+					let args_seg = trait_path.segments.iter().last().unwrap();
+					assert_eq!(format!("{}", args_seg.ident), "ReadableArgs");
+					if let syn::PathArguments::AngleBracketed(args) = &args_seg.arguments {
+						assert_eq!(args.args.len(), 1);
+						if let syn::GenericArgument::Type(args_ty) = args.args.iter().next().unwrap() {
+							types.write_c_type(w, args_ty, Some(generics), false);
+
+							assert!(!types.write_from_c_conversion_new_var(&mut arg_conv, &syn::Ident::new("arg", Span::call_site()), &args_ty, Some(generics)));
+
+							write!(&mut arg_conv, "\tlet arg_conv = ").unwrap();
+							types.write_from_c_conversion_prefix(&mut arg_conv, &args_ty, Some(generics));
+							write!(&mut arg_conv, "arg").unwrap();
+							types.write_from_c_conversion_suffix(&mut arg_conv, &args_ty, Some(generics));
+						} else { unreachable!(); }
+					} else { unreachable!(); }
+				}
+				write!(w, ") -> ").unwrap();
+				types.write_c_type(w, &res_ty, Some(generics), false);
 				writeln!(w, " {{").unwrap();
-				writeln!(w, "\tlet res = crate::c_types::deserialize_obj(ser);").unwrap();
+
+				if t == "util::ser::ReadableArgs" {
+					w.write(&arg_conv).unwrap();
+					write!(w, ";\n\tlet res: ").unwrap();
+					// At least in one case we need type annotations here, so provide them.
+					types.write_rust_type(w, Some(generics), &res_ty);
+					writeln!(w, " = crate::c_types::deserialize_obj_arg(ser, arg_conv);").unwrap();
+				} else {
+					writeln!(w, "\tlet res = crate::c_types::deserialize_obj(ser);").unwrap();
+				}
 				write!(w, "\t").unwrap();
-				if types.write_to_c_conversion_new_var(w, &syn::Ident::new("res", Span::call_site()), &res_ty, None, false) {
+				if types.write_to_c_conversion_new_var(w, &syn::Ident::new("res", Span::call_site()), &res_ty, Some(generics), false) {
 					write!(w, "\n\t").unwrap();
 				}
-				types.write_to_c_conversion_inline_prefix(w, &res_ty, None, false);
+				types.write_to_c_conversion_inline_prefix(w, &res_ty, Some(generics), false);
 				write!(w, "res").unwrap();
-				types.write_to_c_conversion_inline_suffix(w, &res_ty, None, false);
+				types.write_to_c_conversion_inline_suffix(w, &res_ty, Some(generics), false);
 				writeln!(w, "\n}}").unwrap();
 			},
 			_ => {},
@@ -675,6 +706,31 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 ///
 /// A few non-crate Traits are hard-coded including Default.
 fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut TypeResolver) {
+	if let syn::Type::Tuple(_) = &*i.self_ty {
+		if types.understood_c_type(&*i.self_ty, None) {
+			let mut gen_types = GenericTypes::new();
+			if !gen_types.learn_generics(&i.generics, types) {
+				eprintln!("Not implementing anything for `impl (..)` due to not understood generics");
+				return;
+			}
+
+			if i.defaultness.is_some() || i.unsafety.is_some() { unimplemented!(); }
+			if let Some(trait_path) = i.trait_.as_ref() {
+				if trait_path.0.is_some() { unimplemented!(); }
+				if types.understood_c_path(&trait_path.1) {
+					eprintln!("Not implementing anything for `impl Trait for (..)` - we only support manual defines");
+					return;
+				} else {
+					// Just do a manual implementation:
+					maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
+				}
+			} else {
+				eprintln!("Not implementing anything for plain `impl (..)` block - we only support `impl Trait for (..)` blocks");
+				return;
+			}
+		}
+		return;
+	}
 	if let &syn::Type::Path(ref p) = &*i.self_ty {
 		if p.qself.is_some() { unimplemented!(); }
 		if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
@@ -896,12 +952,12 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							},
 							"PartialEq" => {},
 							// If we have no generics, try a manual implementation:
-							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types),
+							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types),
 							_ => {},
 						}
 					} else if p.path.get_ident().is_some() {
 						// If we have no generics, try a manual implementation:
-						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types);
+						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
 					}
 				} else {
 					let declared_type = (*types.get_declared_type(&ident).unwrap()).clone();

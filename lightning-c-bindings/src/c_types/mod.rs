@@ -225,6 +225,9 @@ pub(crate) fn serialize_obj<I: lightning::util::ser::Writeable>(i: &I) -> derive
 pub(crate) fn deserialize_obj<I: lightning::util::ser::Readable>(s: u8slice) -> Result<I, lightning::ln::msgs::DecodeError> {
 	I::read(&mut s.to_slice())
 }
+pub(crate) fn deserialize_obj_arg<A, I: lightning::util::ser::ReadableArgs<A>>(s: u8slice, args: A) -> Result<I, lightning::ln::msgs::DecodeError> {
+	I::read(&mut s.to_slice(), args)
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
