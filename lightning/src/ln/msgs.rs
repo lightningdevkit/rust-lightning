@@ -35,7 +35,7 @@ use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use std::{cmp, fmt};
 use std::io::Read;
 
-use util::events;
+use util::events::MessageSendEventsProvider;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
 use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -746,7 +746,7 @@ pub enum OptionalField<T> {
 ///
 /// Messages MAY be called in parallel when they originate from different their_node_ids, however
 /// they MUST NOT be called in parallel when the two calls have the same their_node_id.
-pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Sync {
+pub trait ChannelMessageHandler : MessageSendEventsProvider + Send + Sync {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &OpenChannel);
@@ -810,7 +810,7 @@ pub trait ChannelMessageHandler : events::MessageSendEventsProvider + Send + Syn
 /// For `gossip_queries` messages there are potential DoS vectors when handling
 /// inbound queries. Implementors using an on-disk network graph should be aware of
 /// repeated disk I/O for queries accessing different parts of the network graph.
-pub trait RoutingMessageHandler : Send + Sync + events::MessageSendEventsProvider {
+pub trait RoutingMessageHandler : Send + Sync + MessageSendEventsProvider {
 	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
