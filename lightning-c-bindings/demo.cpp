@@ -98,6 +98,10 @@ const LDKThirtyTwoBytes payment_hash_1 = {
 	}
 };
 
+const LDKThirtyTwoBytes genesis_hash = { // We don't care particularly if this is "right"
+	.data = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1 }
+};
+
 void print_log(const void *this_arg, const char *record) {
 	printf("%p - %s\n", this_arg, record);
 }
@@ -264,7 +268,7 @@ int main() {
 	LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
 	assert(channels->datalen == 0);
 
-	LDK::NetGraphMsgHandler net_graph1 = NetGraphMsgHandler_new(NULL, logger1);
+	LDK::NetGraphMsgHandler net_graph1 = NetGraphMsgHandler_new(genesis_hash, NULL, logger1);
 
 	LDK::MessageHandler msg_handler1 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm1), NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph1));
 
@@ -310,7 +314,7 @@ int main() {
 	LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
 	assert(channels2->datalen == 0);
 
-	LDK::NetGraphMsgHandler net_graph2 = NetGraphMsgHandler_new(NULL, logger2);
+	LDK::NetGraphMsgHandler net_graph2 = NetGraphMsgHandler_new(genesis_hash, NULL, logger2);
 	LDK::RoutingMessageHandler net_msgs2 = NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2);
 	LDK::ChannelAnnouncement chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
 	LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
