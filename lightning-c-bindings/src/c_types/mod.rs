@@ -2,10 +2,13 @@ pub mod derived;
 
 use bitcoin::Script as BitcoinScript;
 use bitcoin::Transaction as BitcoinTransaction;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::key::PublicKey as SecpPublicKey;
 use bitcoin::secp256k1::key::SecretKey as SecpSecretKey;
 use bitcoin::secp256k1::Signature as SecpSignature;
 use bitcoin::secp256k1::Error as SecpError;
+
+use std::convert::TryInto; // Bindings need at least rustc 1.34
 
 #[derive(Clone)]
 #[repr(C)]
@@ -129,6 +132,10 @@ impl Drop for Transaction {
 }
 #[no_mangle]
 pub extern "C" fn Transaction_free(_res: Transaction) { }
+
+pub(crate) fn bitcoin_to_C_outpoint(outpoint: ::bitcoin::blockdata::transaction::OutPoint) -> crate::chain::transaction::OutPoint {
+	crate::chain::transaction::OutPoint_new(ThirtyTwoBytes { data: outpoint.txid.into_inner() }, outpoint.vout.try_into().unwrap())
+}
 
 #[repr(C)]
 #[derive(Clone)]
