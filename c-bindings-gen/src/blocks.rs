@@ -32,6 +32,146 @@ pub fn write_cpp_wrapper(cpp_header_file: &mut File, ty: &str, has_destructor: b
 	writeln!(cpp_header_file, "}};").unwrap();
 }
 
+/// Writes out a C-callable concrete Result<A, B> struct and utility methods
+pub fn write_result_block<W: std::io::Write>(w: &mut W, mangled_container: &str, ok_type: &str, err_type: &str, clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub union {}Ptr {{", mangled_container).unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\tpub result: *mut {},", ok_type).unwrap();
+	} else {
+		writeln!(w, "\t/// Note that this value is always NULL, as there are no contents in the OK variant").unwrap();
+		writeln!(w, "\tpub result: *mut std::ffi::c_void,").unwrap();
+	}
+	if err_type != "()" {
+		writeln!(w, "\tpub err: *mut {},", err_type).unwrap();
+	} else {
+		writeln!(w, "\t/// Note that this value is always NULL, as there are no contents in the Err variant").unwrap();
+		writeln!(w, "\tpub err: *mut std::ffi::c_void,").unwrap();
+	}
+	writeln!(w, "}}").unwrap();
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	writeln!(w, "\tpub contents: {}Ptr,", mangled_container).unwrap();
+	writeln!(w, "\tpub result_ok: bool,").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "pub extern \"C\" fn {}_ok(o: {}) -> {} {{", mangled_container, ok_type, mangled_container).unwrap();
+	} else {
+		writeln!(w, "pub extern \"C\" fn {}_ok() -> {} {{", mangled_container, mangled_container).unwrap();
+	}
+	writeln!(w, "\t{} {{", mangled_container).unwrap();
+	writeln!(w, "\t\tcontents: {}Ptr {{", mangled_container).unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tresult: Box::into_raw(Box::new(o)),").unwrap();
+	} else {
+		writeln!(w, "\t\t\tresult: std::ptr::null_mut(),").unwrap();
+	}
+	writeln!(w, "\t\t}},").unwrap();
+	writeln!(w, "\t\tresult_ok: true,").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	if err_type != "()" {
+		writeln!(w, "pub extern \"C\" fn {}_err(e: {}) -> {} {{", mangled_container, err_type, mangled_container).unwrap();
+	} else {
+		writeln!(w, "pub extern \"C\" fn {}_err() -> {} {{", mangled_container, mangled_container).unwrap();
+	}
+	writeln!(w, "\t{} {{", mangled_container).unwrap();
+	writeln!(w, "\t\tcontents: {}Ptr {{", mangled_container).unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\terr: Box::into_raw(Box::new(e)),").unwrap();
+	} else {
+		writeln!(w, "\t\t\terr: std::ptr::null_mut(),").unwrap();
+	}
+	writeln!(w, "\t\t}},").unwrap();
+	writeln!(w, "\t\tresult_ok: false,").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+	writeln!(w, "impl Drop for {} {{", mangled_container).unwrap();
+	writeln!(w, "\tfn drop(&mut self) {{").unwrap();
+	writeln!(w, "\t\tif self.result_ok {{").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tif unsafe {{ !(self.contents.result as *mut ()).is_null() }} {{").unwrap();
+		writeln!(w, "\t\t\t\tlet _ = unsafe {{ Box::from_raw(self.contents.result) }};").unwrap();
+		writeln!(w, "\t\t\t}}").unwrap();
+	}
+	writeln!(w, "\t\t}} else {{").unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\tif unsafe {{ !(self.contents.err as *mut ()).is_null() }} {{").unwrap();
+		writeln!(w, "\t\t\t\tlet _ = unsafe {{ Box::from_raw(self.contents.err) }};").unwrap();
+		writeln!(w, "\t\t\t}}").unwrap();
+	}
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	// TODO: Templates should use () now that they can, too
+	let templ_ok_type = if ok_type != "()" { ok_type } else { "u8" };
+	let templ_err_type = if err_type != "()" { err_type } else { "u8" };
+
+	writeln!(w, "impl From<crate::c_types::CResultTempl<{}, {}>> for {} {{", templ_ok_type, templ_err_type, mangled_container).unwrap();
+	writeln!(w, "\tfn from(mut o: crate::c_types::CResultTempl<{}, {}>) -> Self {{", templ_ok_type, templ_err_type).unwrap();
+	writeln!(w, "\t\tlet contents = if o.result_ok {{").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tlet result = unsafe {{ o.contents.result }};").unwrap();
+		writeln!(w, "\t\t\tunsafe {{ o.contents.result = std::ptr::null_mut() }};").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ result }}", mangled_container).unwrap();
+	} else {
+		writeln!(w, "\t\t\tlet _ = unsafe {{ Box::from_raw(o.contents.result) }};").unwrap();
+		writeln!(w, "\t\t\to.contents.result = std::ptr::null_mut();").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ result: std::ptr::null_mut() }}", mangled_container).unwrap();
+	}
+	writeln!(w, "\t\t}} else {{").unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\tlet err = unsafe {{ o.contents.err }};").unwrap();
+		writeln!(w, "\t\t\tunsafe {{ o.contents.err = std::ptr::null_mut(); }}").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ err }}", mangled_container).unwrap();
+	} else {
+		writeln!(w, "\t\t\tlet _ = unsafe {{ Box::from_raw(o.contents.err) }};").unwrap();
+		writeln!(w, "\t\t\to.contents.err = std::ptr::null_mut();").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ err: std::ptr::null_mut() }}", mangled_container).unwrap();
+	}
+	writeln!(w, "\t\t}};").unwrap();
+	writeln!(w, "\t\tSelf {{").unwrap();
+	writeln!(w, "\t\t\tcontents,").unwrap();
+	writeln!(w, "\t\t\tresult_ok: o.result_ok,").unwrap();
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tif self.result_ok {{").unwrap();
+		writeln!(w, "\t\t\tSelf {{ result_ok: true, contents: {}Ptr {{", mangled_container).unwrap();
+		if ok_type != "()" {
+			writeln!(w, "\t\t\t\tresult: Box::into_raw(Box::new(<{}>::clone(unsafe {{ &*self.contents.result }})))", ok_type).unwrap();
+		} else {
+			writeln!(w, "\t\t\t\tresult: std::ptr::null_mut()").unwrap();
+		}
+		writeln!(w, "\t\t\t}} }}").unwrap();
+		writeln!(w, "\t\t}} else {{").unwrap();
+		writeln!(w, "\t\t\tSelf {{ result_ok: false, contents: {}Ptr {{", mangled_container).unwrap();
+		if err_type != "()" {
+			writeln!(w, "\t\t\t\terr: Box::into_raw(Box::new(<{}>::clone(unsafe {{ &*self.contents.err }})))", err_type).unwrap();
+		} else {
+			writeln!(w, "\t\t\t\terr: std::ptr::null_mut()").unwrap();
+		}
+		writeln!(w, "\t\t\t}} }}").unwrap();
+		writeln!(w, "\t\t}}").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+		writeln!(w, "#[no_mangle]").unwrap();
+		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{ orig.clone() }}", mangled_container, mangled_container, mangled_container).unwrap();
+	}
+}
+
 /// Prints the docs from a given attribute list unless its tagged no export
 pub fn writeln_docs<W: std::io::Write>(w: &mut W, attrs: &[syn::Attribute], prefix: &str) {
 	for attr in attrs.iter() {

@@ -259,14 +259,14 @@ impl Into<&'static str> for Str {
 // everywhere in the containers.
 
 #[repr(C)]
-pub union CResultPtr<O, E> {
-	pub result: *mut O,
-	pub err: *mut E,
+pub(crate) union CResultPtr<O, E> {
+	pub(crate) result: *mut O,
+	pub(crate) err: *mut E,
 }
 #[repr(C)]
-pub struct CResultTempl<O, E> {
-	pub contents: CResultPtr<O, E>,
-	pub result_ok: bool,
+pub(crate) struct CResultTempl<O, E> {
+	pub(crate) contents: CResultPtr<O, E>,
+	pub(crate) result_ok: bool,
 }
 impl<O, E> CResultTempl<O, E> {
 	pub(crate) extern "C" fn ok(o: O) -> Self {
@@ -286,7 +286,6 @@ impl<O, E> CResultTempl<O, E> {
 		}
 	}
 }
-pub extern "C" fn CResultTempl_free<O, E>(_res: CResultTempl<O, E>) { }
 impl<O, E> Drop for CResultTempl<O, E> {
 	fn drop(&mut self) {
 		if self.result_ok {

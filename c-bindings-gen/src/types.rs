@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::Write;
 use std::hash;
 
+use crate::blocks::*;
+
 use proc_macro2::{TokenTree, Span};
 
 // The following utils are used purely to build our known types maps - they break down all the
@@ -789,8 +791,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"Result" if !is_ref => {
 				Some(("match ",
 						vec![(" { Ok(mut o) => crate::c_types::CResultTempl::ok(".to_string(), "o".to_string()),
-							("), Err(mut e) => crate::c_types::CResultTempl::err(".to_string(), "e".to_string())],
-						") }"))
+							(").into(), Err(mut e) => crate::c_types::CResultTempl::err(".to_string(), "e".to_string())],
+						").into() }"))
 			},
 			"Vec" if !is_ref => {
 				Some(("Vec::new(); for item in ", vec![(format!(".drain(..) {{ local_{}.push(", var_name), "item".to_string())], "); }"))
@@ -1757,43 +1759,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// ******************************************************
 
 	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) -> bool {
-		if container_type == "Result" {
-			assert_eq!(args.len(), 2);
-			macro_rules! write_fn {
-				($call: expr) => { {
-					writeln!(w, "#[no_mangle]\npub extern \"C\" fn {}_{}() -> {} {{", mangled_container, $call, mangled_container).unwrap();
-					writeln!(w, "\t{}::CResultTempl::{}(0)\n}}\n", Self::container_templ_path(), $call).unwrap();
-				} }
-			}
-			macro_rules! write_alias {
-				($call: expr, $item: expr) => { {
-					write!(w, "#[no_mangle]\npub static {}_{}: extern \"C\" fn (", mangled_container, $call).unwrap();
-					if let syn::Type::Path(syn::TypePath { path, .. }) = $item {
-						let resolved = self.resolve_path(path, generics);
-						if self.is_known_container(&resolved, is_ref) || self.is_transparent_container(&resolved, is_ref) {
-							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path), generics,
-								&format!("{}", single_ident_generic_path_to_ident(path).unwrap()), is_ref, false, false, false);
-						} else {
-							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), generics, is_ref, true);
-						}
-					} else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = $item {
-						self.write_c_mangled_container_path_intern(w, elems.iter().collect(), generics,
-							&format!("{}Tuple", elems.len()), is_ref, false, false, false);
-					} else { unimplemented!(); }
-					write!(w, ") -> {} =\n\t{}::CResultTempl::<", mangled_container, Self::container_templ_path()).unwrap();
-					self.write_template_generics(w, &mut args.iter().map(|t| *t), generics, is_ref, true);
-					writeln!(w, ">::{};\n", $call).unwrap();
-				} }
-			}
-			match args[0] {
-				syn::Type::Tuple(t) if t.elems.is_empty() => write_fn!("ok"),
-				_ => write_alias!("ok", args[0]),
-			}
-			match args[1] {
-				syn::Type::Tuple(t) if t.elems.is_empty() => write_fn!("err"),
-				_ => write_alias!("err", args[1]),
-			}
-		} else if container_type.ends_with("Tuple") {
+		if container_type.ends_with("Tuple") {
 			write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
 			for (idx, gen) in args.iter().enumerate() {
 				write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
@@ -1811,7 +1777,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		true
 	}
 
-	fn write_template_generics<'b, W: std::io::Write>(&self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool, in_crate: bool) {
+	fn write_template_generics<'b, W: std::io::Write>(&mut self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool, in_crate: bool) {
 		for (idx, t) in args.enumerate() {
 			if idx != 0 {
 				write!(w, ", ").unwrap();
@@ -1830,14 +1796,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(w, "{}", resolved_generic).unwrap();
 				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
 					if self.is_known_container(&resolved_generic, is_ref) {
+						if resolved_generic == "Result" {
+							let mut inner_args = Vec::new();
+							if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
+								for arg in args.args.iter() {
+									if let syn::GenericArgument::Type(t) = arg { inner_args.push(t) } else { unimplemented!() };
+								}
+							} else { unimplemented!(); }
+							self.write_c_mangled_container_path(w, inner_args, generics, &resolved_generic, is_ref, false, false);
+						} else {
 							write!(w, "{}::C{}Templ<", Self::container_templ_path(), single_ident_generic_path_to_ident(&p_arg.path).unwrap()).unwrap();
-						assert_eq!(p_arg.path.segments.len(), 1);
-						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
-							self.write_template_generics(w, &mut args.args.iter().map(|gen|
-								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								generics, is_ref, in_crate);
-						} else { unimplemented!(); }
-						write!(w, ">").unwrap();
+							assert_eq!(p_arg.path.segments.len(), 1);
+							if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
+								self.write_template_generics(w, &mut args.args.iter().map(|gen|
+									if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
+									generics, is_ref, in_crate);
+							} else { unimplemented!(); }
+							write!(w, ">").unwrap();
+						}
 					} else if resolved_generic == "Option" {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
@@ -1891,18 +1867,50 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		if !self.crate_types.templates_defined.get(&mangled_container).is_some() {
 			let mut created_container: Vec<u8> = Vec::new();
 
-			write!(&mut created_container, "pub type {} = ", mangled_container).unwrap();
-			write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
-			writeln!(&mut created_container, ">;").unwrap();
+			if container_type == "Result" {
+				let mut a_ty: Vec<u8> = Vec::new();
+				if let syn::Type::Tuple(tup) = args.iter().next().unwrap() {
+					if tup.elems.is_empty() {
+						write!(&mut a_ty, "()").unwrap();
+					} else {
+						self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref, true);
+					}
+				} else {
+					self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref, true);
+				}
 
-			write!(&mut created_container, "#[no_mangle]\npub static {}_free: extern \"C\" fn({}) = ", mangled_container, mangled_container).unwrap();
-			write!(&mut created_container, "{}::C{}Templ_free::<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
-			writeln!(&mut created_container, ">;").unwrap();
+				let mut b_ty: Vec<u8> = Vec::new();
+				if let syn::Type::Tuple(tup) = args.iter().skip(1).next().unwrap() {
+					if tup.elems.is_empty() {
+						write!(&mut b_ty, "()").unwrap();
+					} else {
+						self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref, true);
+					}
+				} else {
+					self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref, true);
+				}
 
-			if !self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref) {
-				return false;
+				let ok_str = String::from_utf8(a_ty).unwrap();
+				let err_str = String::from_utf8(b_ty).unwrap();
+				let is_clonable = self.is_clonable(&ok_str) && self.is_clonable(&err_str);
+				write_result_block(&mut created_container, &mangled_container, &ok_str, &err_str, is_clonable);
+				if is_clonable {
+					self.crate_types.clonable_types.insert(Self::generated_container_path().to_owned() + "::" + &mangled_container);
+				}
+			} else {
+				write!(&mut created_container, "pub type {} = ", mangled_container).unwrap();
+				write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
+				self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
+				writeln!(&mut created_container, ">;").unwrap();
+
+				write!(&mut created_container, "#[no_mangle]\npub static {}_free: extern \"C\" fn({}) = ", mangled_container, mangled_container).unwrap();
+				write!(&mut created_container, "{}::C{}Templ_free::<", Self::container_templ_path(), container_type).unwrap();
+				self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
+				writeln!(&mut created_container, ">;").unwrap();
+
+				if !self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref) {
+					return false;
+				}
 			}
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 
