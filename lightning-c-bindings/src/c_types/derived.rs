@@ -38,6 +38,17 @@ pub type CVec_MonitorEventZ = crate::c_types::CVecTempl<crate::chain::channelmon
 #[no_mangle]
 pub static CVec_MonitorEventZ_free: extern "C" fn(CVec_MonitorEventZ) = crate::c_types::CVecTempl_free::<crate::chain::channelmonitor::MonitorEvent>;
 
+pub type CResult_ChannelMonitorUpdateDecodeErrorZ = crate::c_types::CResultTempl<crate::chain::channelmonitor::ChannelMonitorUpdate, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ChannelMonitorUpdateDecodeErrorZ_free: extern "C" fn(CResult_ChannelMonitorUpdateDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::chain::channelmonitor::ChannelMonitorUpdate, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ChannelMonitorUpdateDecodeErrorZ_ok: extern "C" fn (crate::chain::channelmonitor::ChannelMonitorUpdate) -> CResult_ChannelMonitorUpdateDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::channelmonitor::ChannelMonitorUpdate, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_ChannelMonitorUpdateDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ChannelMonitorUpdateDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::channelmonitor::ChannelMonitorUpdate, crate::ln::msgs::DecodeError>::err;
+
 pub type CResult_NoneMonitorUpdateErrorZ = crate::c_types::CResultTempl<u8, crate::chain::channelmonitor::MonitorUpdateError>;
 #[no_mangle]
 pub static CResult_NoneMonitorUpdateErrorZ_free: extern "C" fn(CResult_NoneMonitorUpdateErrorZ) = crate::c_types::CResultTempl_free::<u8, crate::chain::channelmonitor::MonitorUpdateError>;
@@ -86,6 +97,25 @@ pub type CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ = crate::c_types::CVecTempl<
 #[no_mangle]
 pub static CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ_free: extern "C" fn(CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ) = crate::c_types::CVecTempl_free::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::c_types::CVecTempl<crate::c_types::C2TupleTempl<u32, crate::c_types::TxOut>>>>;
 
+pub type C2Tuple_BlockHashChannelMonitorZ = crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>;
+#[no_mangle]
+pub static C2Tuple_BlockHashChannelMonitorZ_free: extern "C" fn(C2Tuple_BlockHashChannelMonitorZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>;
+#[no_mangle]
+pub extern "C" fn C2Tuple_BlockHashChannelMonitorZ_new(a: crate::c_types::ThirtyTwoBytes, b: crate::chain::channelmonitor::ChannelMonitor) -> C2Tuple_BlockHashChannelMonitorZ {
+	C2Tuple_BlockHashChannelMonitorZ { a, b, }
+}
+
+pub type CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ = crate::c_types::CResultTempl<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ_free: extern "C" fn(CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ_ok: extern "C" fn (C2Tuple_BlockHashChannelMonitorZ) -> CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::chain::channelmonitor::ChannelMonitor>, crate::ln::msgs::DecodeError>::err;
+
 pub type C2Tuple_u64u64Z = crate::c_types::C2TupleTempl<u64, u64>;
 #[no_mangle]
 pub static C2Tuple_u64u64Z_free: extern "C" fn(C2Tuple_u64u64Z) = crate::c_types::C2TupleTempl_free::<u64, u64>;
@@ -93,6 +123,17 @@ pub static C2Tuple_u64u64Z_free: extern "C" fn(C2Tuple_u64u64Z) = crate::c_types
 pub extern "C" fn C2Tuple_u64u64Z_new(a: u64, b: u64) -> C2Tuple_u64u64Z {
 	C2Tuple_u64u64Z { a, b, }
 }
+
+pub type CResult_SpendableOutputDescriptorDecodeErrorZ = crate::c_types::CResultTempl<crate::chain::keysinterface::SpendableOutputDescriptor, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_SpendableOutputDescriptorDecodeErrorZ_free: extern "C" fn(CResult_SpendableOutputDescriptorDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::chain::keysinterface::SpendableOutputDescriptor, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_SpendableOutputDescriptorDecodeErrorZ_ok: extern "C" fn (crate::chain::keysinterface::SpendableOutputDescriptor) -> CResult_SpendableOutputDescriptorDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::keysinterface::SpendableOutputDescriptor, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_SpendableOutputDescriptorDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_SpendableOutputDescriptorDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::keysinterface::SpendableOutputDescriptor, crate::ln::msgs::DecodeError>::err;
 
 pub type CVec_SignatureZ = crate::c_types::CVecTempl<crate::c_types::Signature>;
 #[no_mangle]
@@ -141,6 +182,17 @@ pub static CResult_ChanKeySignerDecodeErrorZ_ok: extern "C" fn (crate::chain::ke
 pub static CResult_ChanKeySignerDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ChanKeySignerDecodeErrorZ =
 	crate::c_types::CResultTempl::<crate::chain::keysinterface::ChannelKeys, crate::ln::msgs::DecodeError>::err;
 
+pub type CResult_InMemoryChannelKeysDecodeErrorZ = crate::c_types::CResultTempl<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_InMemoryChannelKeysDecodeErrorZ_free: extern "C" fn(CResult_InMemoryChannelKeysDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_InMemoryChannelKeysDecodeErrorZ_ok: extern "C" fn (crate::chain::keysinterface::InMemoryChannelKeys) -> CResult_InMemoryChannelKeysDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_InMemoryChannelKeysDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_InMemoryChannelKeysDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>::err;
+
 pub type CResult_TxOutAccessErrorZ = crate::c_types::CResultTempl<crate::c_types::TxOut, crate::chain::AccessError>;
 #[no_mangle]
 pub static CResult_TxOutAccessErrorZ_free: extern "C" fn(CResult_TxOutAccessErrorZ) = crate::c_types::CResultTempl_free::<crate::c_types::TxOut, crate::chain::AccessError>;
@@ -187,6 +239,47 @@ pub static CVec_NetAddressZ_free: extern "C" fn(CVec_NetAddressZ) = crate::c_typ
 pub type CVec_ChannelMonitorZ = crate::c_types::CVecTempl<crate::chain::channelmonitor::ChannelMonitor>;
 #[no_mangle]
 pub static CVec_ChannelMonitorZ_free: extern "C" fn(CVec_ChannelMonitorZ) = crate::c_types::CVecTempl_free::<crate::chain::channelmonitor::ChannelMonitor>;
+
+pub type C2Tuple_BlockHashChannelManagerZ = crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>;
+#[no_mangle]
+pub static C2Tuple_BlockHashChannelManagerZ_free: extern "C" fn(C2Tuple_BlockHashChannelManagerZ) = crate::c_types::C2TupleTempl_free::<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>;
+#[no_mangle]
+pub extern "C" fn C2Tuple_BlockHashChannelManagerZ_new(a: crate::c_types::ThirtyTwoBytes, b: crate::ln::channelmanager::ChannelManager) -> C2Tuple_BlockHashChannelManagerZ {
+	C2Tuple_BlockHashChannelManagerZ { a, b, }
+}
+
+pub type CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ = crate::c_types::CResultTempl<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ_free: extern "C" fn(CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ_ok: extern "C" fn (C2Tuple_BlockHashChannelManagerZ) -> CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::C2TupleTempl<crate::c_types::ThirtyTwoBytes, crate::ln::channelmanager::ChannelManager>, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_NetAddressu8Z = crate::c_types::CResultTempl<crate::ln::msgs::NetAddress, u8>;
+#[no_mangle]
+pub static CResult_NetAddressu8Z_free: extern "C" fn(CResult_NetAddressu8Z) = crate::c_types::CResultTempl_free::<crate::ln::msgs::NetAddress, u8>;
+#[no_mangle]
+pub static CResult_NetAddressu8Z_ok: extern "C" fn (crate::ln::msgs::NetAddress) -> CResult_NetAddressu8Z =
+	crate::c_types::CResultTempl::<crate::ln::msgs::NetAddress, u8>::ok;
+
+#[no_mangle]
+pub static CResult_NetAddressu8Z_err: extern "C" fn (u8) -> CResult_NetAddressu8Z =
+	crate::c_types::CResultTempl::<crate::ln::msgs::NetAddress, u8>::err;
+
+pub type CResult_CResult_NetAddressu8ZDecodeErrorZ = crate::c_types::CResultTempl<crate::c_types::CResultTempl<crate::ln::msgs::NetAddress, u8>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_CResult_NetAddressu8ZDecodeErrorZ_free: extern "C" fn(CResult_CResult_NetAddressu8ZDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::c_types::CResultTempl<crate::ln::msgs::NetAddress, u8>, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_CResult_NetAddressu8ZDecodeErrorZ_ok: extern "C" fn (CResult_NetAddressu8Z) -> CResult_CResult_NetAddressu8ZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::CResultTempl<crate::ln::msgs::NetAddress, u8>, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_CResult_NetAddressu8ZDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_CResult_NetAddressu8ZDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::c_types::CResultTempl<crate::ln::msgs::NetAddress, u8>, crate::ln::msgs::DecodeError>::err;
 
 pub type CVec_u64Z = crate::c_types::CVecTempl<u64>;
 #[no_mangle]
@@ -246,6 +339,149 @@ pub extern "C" fn CResult_NoneLightningErrorZ_ok() -> CResult_NoneLightningError
 #[no_mangle]
 pub static CResult_NoneLightningErrorZ_err: extern "C" fn (crate::ln::msgs::LightningError) -> CResult_NoneLightningErrorZ =
 	crate::c_types::CResultTempl::<u8, crate::ln::msgs::LightningError>::err;
+
+pub type CResult_ChannelReestablishDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::ChannelReestablish, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ChannelReestablishDecodeErrorZ_free: extern "C" fn(CResult_ChannelReestablishDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::ChannelReestablish, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ChannelReestablishDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::ChannelReestablish) -> CResult_ChannelReestablishDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ChannelReestablish, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_ChannelReestablishDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ChannelReestablishDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ChannelReestablish, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_InitDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::Init, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_InitDecodeErrorZ_free: extern "C" fn(CResult_InitDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::Init, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_InitDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::Init) -> CResult_InitDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Init, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_InitDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_InitDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Init, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_PingDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::Ping, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_PingDecodeErrorZ_free: extern "C" fn(CResult_PingDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::Ping, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_PingDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::Ping) -> CResult_PingDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Ping, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_PingDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_PingDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Ping, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_PongDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::Pong, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_PongDecodeErrorZ_free: extern "C" fn(CResult_PongDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::Pong, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_PongDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::Pong) -> CResult_PongDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Pong, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_PongDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_PongDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::Pong, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_UnsignedChannelAnnouncementDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::UnsignedChannelAnnouncement, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedChannelAnnouncementDecodeErrorZ_free: extern "C" fn(CResult_UnsignedChannelAnnouncementDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::UnsignedChannelAnnouncement, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedChannelAnnouncementDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::UnsignedChannelAnnouncement) -> CResult_UnsignedChannelAnnouncementDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedChannelAnnouncement, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_UnsignedChannelAnnouncementDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_UnsignedChannelAnnouncementDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedChannelAnnouncement, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_UnsignedChannelUpdateDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::UnsignedChannelUpdate, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedChannelUpdateDecodeErrorZ_free: extern "C" fn(CResult_UnsignedChannelUpdateDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::UnsignedChannelUpdate, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedChannelUpdateDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::UnsignedChannelUpdate) -> CResult_UnsignedChannelUpdateDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedChannelUpdate, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_UnsignedChannelUpdateDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_UnsignedChannelUpdateDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedChannelUpdate, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_ErrorMessageDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::ErrorMessage, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ErrorMessageDecodeErrorZ_free: extern "C" fn(CResult_ErrorMessageDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::ErrorMessage, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ErrorMessageDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::ErrorMessage) -> CResult_ErrorMessageDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ErrorMessage, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_ErrorMessageDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ErrorMessageDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ErrorMessage, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_UnsignedNodeAnnouncementDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::UnsignedNodeAnnouncement, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedNodeAnnouncementDecodeErrorZ_free: extern "C" fn(CResult_UnsignedNodeAnnouncementDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::UnsignedNodeAnnouncement, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_UnsignedNodeAnnouncementDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::UnsignedNodeAnnouncement) -> CResult_UnsignedNodeAnnouncementDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedNodeAnnouncement, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_UnsignedNodeAnnouncementDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_UnsignedNodeAnnouncementDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::UnsignedNodeAnnouncement, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_QueryShortChannelIdsDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::QueryShortChannelIds, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_QueryShortChannelIdsDecodeErrorZ_free: extern "C" fn(CResult_QueryShortChannelIdsDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::QueryShortChannelIds, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_QueryShortChannelIdsDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::QueryShortChannelIds) -> CResult_QueryShortChannelIdsDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::QueryShortChannelIds, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_QueryShortChannelIdsDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_QueryShortChannelIdsDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::QueryShortChannelIds, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_ReplyShortChannelIdsEndDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::ReplyShortChannelIdsEnd, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ReplyShortChannelIdsEndDecodeErrorZ_free: extern "C" fn(CResult_ReplyShortChannelIdsEndDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::ReplyShortChannelIdsEnd, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ReplyShortChannelIdsEndDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::ReplyShortChannelIdsEnd) -> CResult_ReplyShortChannelIdsEndDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ReplyShortChannelIdsEnd, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_ReplyShortChannelIdsEndDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ReplyShortChannelIdsEndDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ReplyShortChannelIdsEnd, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_QueryChannelRangeDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::QueryChannelRange, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_QueryChannelRangeDecodeErrorZ_free: extern "C" fn(CResult_QueryChannelRangeDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::QueryChannelRange, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_QueryChannelRangeDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::QueryChannelRange) -> CResult_QueryChannelRangeDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::QueryChannelRange, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_QueryChannelRangeDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_QueryChannelRangeDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::QueryChannelRange, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_ReplyChannelRangeDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::ReplyChannelRange, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ReplyChannelRangeDecodeErrorZ_free: extern "C" fn(CResult_ReplyChannelRangeDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::ReplyChannelRange, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_ReplyChannelRangeDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::ReplyChannelRange) -> CResult_ReplyChannelRangeDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ReplyChannelRange, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_ReplyChannelRangeDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_ReplyChannelRangeDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::ReplyChannelRange, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_GossipTimestampFilterDecodeErrorZ = crate::c_types::CResultTempl<crate::ln::msgs::GossipTimestampFilter, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_GossipTimestampFilterDecodeErrorZ_free: extern "C" fn(CResult_GossipTimestampFilterDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::ln::msgs::GossipTimestampFilter, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_GossipTimestampFilterDecodeErrorZ_ok: extern "C" fn (crate::ln::msgs::GossipTimestampFilter) -> CResult_GossipTimestampFilterDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::GossipTimestampFilter, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_GossipTimestampFilterDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_GossipTimestampFilterDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::ln::msgs::GossipTimestampFilter, crate::ln::msgs::DecodeError>::err;
 
 pub type CVec_PublicKeyZ = crate::c_types::CVecTempl<crate::c_types::PublicKey>;
 #[no_mangle]
@@ -354,6 +590,17 @@ pub type CVec_CVec_RouteHopZZ = crate::c_types::CVecTempl<crate::c_types::CVecTe
 #[no_mangle]
 pub static CVec_CVec_RouteHopZZ_free: extern "C" fn(CVec_CVec_RouteHopZZ) = crate::c_types::CVecTempl_free::<crate::c_types::CVecTempl<crate::routing::router::RouteHop>>;
 
+pub type CResult_RouteDecodeErrorZ = crate::c_types::CResultTempl<crate::routing::router::Route, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_RouteDecodeErrorZ_free: extern "C" fn(CResult_RouteDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::routing::router::Route, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_RouteDecodeErrorZ_ok: extern "C" fn (crate::routing::router::Route) -> CResult_RouteDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::router::Route, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_RouteDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_RouteDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::router::Route, crate::ln::msgs::DecodeError>::err;
+
 pub type CVec_RouteHintZ = crate::c_types::CVecTempl<crate::routing::router::RouteHint>;
 #[no_mangle]
 pub static CVec_RouteHintZ_free: extern "C" fn(CVec_RouteHintZ) = crate::c_types::CVecTempl_free::<crate::routing::router::RouteHint>;
@@ -368,4 +615,48 @@ pub static CResult_RouteLightningErrorZ_ok: extern "C" fn (crate::routing::route
 #[no_mangle]
 pub static CResult_RouteLightningErrorZ_err: extern "C" fn (crate::ln::msgs::LightningError) -> CResult_RouteLightningErrorZ =
 	crate::c_types::CResultTempl::<crate::routing::router::Route, crate::ln::msgs::LightningError>::err;
+
+pub type CResult_RoutingFeesDecodeErrorZ = crate::c_types::CResultTempl<crate::routing::network_graph::RoutingFees, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_RoutingFeesDecodeErrorZ_free: extern "C" fn(CResult_RoutingFeesDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::routing::network_graph::RoutingFees, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_RoutingFeesDecodeErrorZ_ok: extern "C" fn (crate::routing::network_graph::RoutingFees) -> CResult_RoutingFeesDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::RoutingFees, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_RoutingFeesDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_RoutingFeesDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::RoutingFees, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_NodeAnnouncementInfoDecodeErrorZ = crate::c_types::CResultTempl<crate::routing::network_graph::NodeAnnouncementInfo, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NodeAnnouncementInfoDecodeErrorZ_free: extern "C" fn(CResult_NodeAnnouncementInfoDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::routing::network_graph::NodeAnnouncementInfo, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NodeAnnouncementInfoDecodeErrorZ_ok: extern "C" fn (crate::routing::network_graph::NodeAnnouncementInfo) -> CResult_NodeAnnouncementInfoDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NodeAnnouncementInfo, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_NodeAnnouncementInfoDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_NodeAnnouncementInfoDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NodeAnnouncementInfo, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_NodeInfoDecodeErrorZ = crate::c_types::CResultTempl<crate::routing::network_graph::NodeInfo, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NodeInfoDecodeErrorZ_free: extern "C" fn(CResult_NodeInfoDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::routing::network_graph::NodeInfo, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NodeInfoDecodeErrorZ_ok: extern "C" fn (crate::routing::network_graph::NodeInfo) -> CResult_NodeInfoDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NodeInfo, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_NodeInfoDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_NodeInfoDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NodeInfo, crate::ln::msgs::DecodeError>::err;
+
+pub type CResult_NetworkGraphDecodeErrorZ = crate::c_types::CResultTempl<crate::routing::network_graph::NetworkGraph, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NetworkGraphDecodeErrorZ_free: extern "C" fn(CResult_NetworkGraphDecodeErrorZ) = crate::c_types::CResultTempl_free::<crate::routing::network_graph::NetworkGraph, crate::ln::msgs::DecodeError>;
+#[no_mangle]
+pub static CResult_NetworkGraphDecodeErrorZ_ok: extern "C" fn (crate::routing::network_graph::NetworkGraph) -> CResult_NetworkGraphDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NetworkGraph, crate::ln::msgs::DecodeError>::ok;
+
+#[no_mangle]
+pub static CResult_NetworkGraphDecodeErrorZ_err: extern "C" fn (crate::ln::msgs::DecodeError) -> CResult_NetworkGraphDecodeErrorZ =
+	crate::c_types::CResultTempl::<crate::routing::network_graph::NetworkGraph, crate::ln::msgs::DecodeError>::err;
 

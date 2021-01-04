@@ -570,7 +570,7 @@ impl From<nativeChannelManager> for crate::util::events::MessageSendEventsProvid
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChannelManager_as_MessageSendEventsProvider(this_arg: *const ChannelManager) -> crate::util::events::MessageSendEventsProvider {
+pub extern "C" fn ChannelManager_as_MessageSendEventsProvider(this_arg: &ChannelManager) -> crate::util::events::MessageSendEventsProvider {
 	crate::util::events::MessageSendEventsProvider {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -596,7 +596,7 @@ impl From<nativeChannelManager> for crate::util::events::EventsProvider {
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChannelManager_as_EventsProvider(this_arg: *const ChannelManager) -> crate::util::events::EventsProvider {
+pub extern "C" fn ChannelManager_as_EventsProvider(this_arg: &ChannelManager) -> crate::util::events::EventsProvider {
 	crate::util::events::EventsProvider {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -638,7 +638,7 @@ impl From<nativeChannelManager> for crate::ln::msgs::ChannelMessageHandler {
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChannelManager_as_ChannelMessageHandler(this_arg: *const ChannelManager) -> crate::ln::msgs::ChannelMessageHandler {
+pub extern "C" fn ChannelManager_as_ChannelMessageHandler(this_arg: &ChannelManager) -> crate::ln::msgs::ChannelMessageHandler {
 	crate::ln::msgs::ChannelMessageHandler {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -734,6 +734,14 @@ extern "C" fn ChannelManager_ChannelMessageHandler_get_and_clear_pending_msg_eve
 	local_ret.into()
 }
 
+#[no_mangle]
+pub extern "C" fn ChannelManager_write(obj: &ChannelManager) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
+}
+#[no_mangle]
+pub(crate) extern "C" fn ChannelManager_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelManager) })
+}
 
 use lightning::ln::channelmanager::ChannelManagerReadArgs as nativeChannelManagerReadArgsImport;
 type nativeChannelManagerReadArgs = nativeChannelManagerReadArgsImport<'static, crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
@@ -886,3 +894,10 @@ pub extern "C" fn ChannelManagerReadArgs_new(mut keys_manager: crate::chain::key
 	ChannelManagerReadArgs { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
+#[no_mangle]
+pub extern "C" fn C2Tuple_BlockHashChannelManagerZ_read(ser: crate::c_types::u8slice, arg: crate::ln::channelmanager::ChannelManagerReadArgs) -> crate::c_types::derived::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ {
+	let arg_conv = *unsafe { Box::from_raw(arg.take_inner()) };
+	let res: Result<(bitcoin::hash_types::BlockHash, lightning::ln::channelmanager::ChannelManager<crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>), lightning::ln::msgs::DecodeError> = crate::c_types::deserialize_obj_arg(ser, arg_conv);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_res_0_0, mut orig_res_0_1) = o; let mut local_res_0 = (crate::c_types::ThirtyTwoBytes { data: orig_res_0_0.into_inner() }, crate::ln::channelmanager::ChannelManager { inner: Box::into_raw(Box::new(orig_res_0_1)), is_owned: true }).into(); local_res_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
+}

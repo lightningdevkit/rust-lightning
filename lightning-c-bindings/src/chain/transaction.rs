@@ -101,7 +101,7 @@ pub extern "C" fn OutPoint_to_channel_id(this_arg: &OutPoint) -> crate::c_types:
 }
 
 #[no_mangle]
-pub extern "C" fn OutPoint_write(obj: *const OutPoint) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn OutPoint_write(obj: &OutPoint) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]

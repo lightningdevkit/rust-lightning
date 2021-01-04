@@ -585,7 +585,7 @@ pub extern "C" fn ChannelConfig_default() -> ChannelConfig {
 	ChannelConfig { inner: Box::into_raw(Box::new(Default::default())), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn ChannelConfig_write(obj: *const ChannelConfig) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelConfig_write(obj: &ChannelConfig) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]

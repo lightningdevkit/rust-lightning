@@ -2407,6 +2407,16 @@ pub extern "C" fn NetAddress_free(this_ptr: NetAddress) { }
 pub extern "C" fn NetAddress_clone(orig: &NetAddress) -> NetAddress {
 	orig.clone()
 }
+#[no_mangle]
+pub extern "C" fn NetAddress_write(obj: &NetAddress) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(&unsafe { &*obj }.to_native())
+}
+#[no_mangle]
+pub extern "C" fn Result_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_CResult_NetAddressu8ZDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_res_0 = match o { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::NetAddress::native_into(o) }), Err(mut e) => crate::c_types::CResultTempl::err( { e }) }; local_res_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
+}
 
 use lightning::ln::msgs::UnsignedNodeAnnouncement as nativeUnsignedNodeAnnouncementImport;
 type nativeUnsignedNodeAnnouncement = nativeUnsignedNodeAnnouncementImport;
@@ -4292,7 +4302,7 @@ impl Drop for RoutingMessageHandler {
 	}
 }
 #[no_mangle]
-pub extern "C" fn AcceptChannel_write(obj: *const AcceptChannel) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn AcceptChannel_write(obj: &AcceptChannel) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4308,7 +4318,7 @@ pub extern "C" fn AcceptChannel_read(ser: crate::c_types::u8slice) -> AcceptChan
 	}
 }
 #[no_mangle]
-pub extern "C" fn AnnouncementSignatures_write(obj: *const AnnouncementSignatures) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn AnnouncementSignatures_write(obj: &AnnouncementSignatures) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4324,23 +4334,21 @@ pub extern "C" fn AnnouncementSignatures_read(ser: crate::c_types::u8slice) -> A
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChannelReestablish_write(obj: *const ChannelReestablish) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn ChannelReestablish_write(obj: &ChannelReestablish) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelReestablish_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelReestablish) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelReestablish_read(ser: crate::c_types::u8slice) -> ChannelReestablish {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelReestablish { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelReestablish { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelReestablish_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelReestablishDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ChannelReestablish { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn ClosingSigned_write(obj: *const ClosingSigned) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ClosingSigned_write(obj: &ClosingSigned) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4356,7 +4364,7 @@ pub extern "C" fn ClosingSigned_read(ser: crate::c_types::u8slice) -> ClosingSig
 	}
 }
 #[no_mangle]
-pub extern "C" fn CommitmentSigned_write(obj: *const CommitmentSigned) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn CommitmentSigned_write(obj: &CommitmentSigned) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4372,7 +4380,7 @@ pub extern "C" fn CommitmentSigned_read(ser: crate::c_types::u8slice) -> Commitm
 	}
 }
 #[no_mangle]
-pub extern "C" fn FundingCreated_write(obj: *const FundingCreated) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn FundingCreated_write(obj: &FundingCreated) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4388,7 +4396,7 @@ pub extern "C" fn FundingCreated_read(ser: crate::c_types::u8slice) -> FundingCr
 	}
 }
 #[no_mangle]
-pub extern "C" fn FundingSigned_write(obj: *const FundingSigned) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn FundingSigned_write(obj: &FundingSigned) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4404,7 +4412,7 @@ pub extern "C" fn FundingSigned_read(ser: crate::c_types::u8slice) -> FundingSig
 	}
 }
 #[no_mangle]
-pub extern "C" fn FundingLocked_write(obj: *const FundingLocked) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn FundingLocked_write(obj: &FundingLocked) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4420,23 +4428,21 @@ pub extern "C" fn FundingLocked_read(ser: crate::c_types::u8slice) -> FundingLoc
 	}
 }
 #[no_mangle]
-pub extern "C" fn Init_write(obj: *const Init) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn Init_write(obj: &Init) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn Init_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeInit) })
 }
 #[no_mangle]
-pub extern "C" fn Init_read(ser: crate::c_types::u8slice) -> Init {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		Init { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		Init { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn Init_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_InitDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Init { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn OpenChannel_write(obj: *const OpenChannel) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn OpenChannel_write(obj: &OpenChannel) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4452,7 +4458,7 @@ pub extern "C" fn OpenChannel_read(ser: crate::c_types::u8slice) -> OpenChannel 
 	}
 }
 #[no_mangle]
-pub extern "C" fn RevokeAndACK_write(obj: *const RevokeAndACK) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn RevokeAndACK_write(obj: &RevokeAndACK) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4468,7 +4474,7 @@ pub extern "C" fn RevokeAndACK_read(ser: crate::c_types::u8slice) -> RevokeAndAC
 	}
 }
 #[no_mangle]
-pub extern "C" fn Shutdown_write(obj: *const Shutdown) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn Shutdown_write(obj: &Shutdown) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4484,7 +4490,7 @@ pub extern "C" fn Shutdown_read(ser: crate::c_types::u8slice) -> Shutdown {
 	}
 }
 #[no_mangle]
-pub extern "C" fn UpdateFailHTLC_write(obj: *const UpdateFailHTLC) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn UpdateFailHTLC_write(obj: &UpdateFailHTLC) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4500,7 +4506,7 @@ pub extern "C" fn UpdateFailHTLC_read(ser: crate::c_types::u8slice) -> UpdateFai
 	}
 }
 #[no_mangle]
-pub extern "C" fn UpdateFailMalformedHTLC_write(obj: *const UpdateFailMalformedHTLC) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn UpdateFailMalformedHTLC_write(obj: &UpdateFailMalformedHTLC) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4516,7 +4522,7 @@ pub extern "C" fn UpdateFailMalformedHTLC_read(ser: crate::c_types::u8slice) -> 
 	}
 }
 #[no_mangle]
-pub extern "C" fn UpdateFee_write(obj: *const UpdateFee) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn UpdateFee_write(obj: &UpdateFee) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4532,7 +4538,7 @@ pub extern "C" fn UpdateFee_read(ser: crate::c_types::u8slice) -> UpdateFee {
 	}
 }
 #[no_mangle]
-pub extern "C" fn UpdateFulfillHTLC_write(obj: *const UpdateFulfillHTLC) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn UpdateFulfillHTLC_write(obj: &UpdateFulfillHTLC) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4548,7 +4554,7 @@ pub extern "C" fn UpdateFulfillHTLC_read(ser: crate::c_types::u8slice) -> Update
 	}
 }
 #[no_mangle]
-pub extern "C" fn UpdateAddHTLC_write(obj: *const UpdateAddHTLC) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn UpdateAddHTLC_write(obj: &UpdateAddHTLC) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4564,55 +4570,49 @@ pub extern "C" fn UpdateAddHTLC_read(ser: crate::c_types::u8slice) -> UpdateAddH
 	}
 }
 #[no_mangle]
-pub extern "C" fn Ping_write(obj: *const Ping) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn Ping_write(obj: &Ping) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn Ping_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativePing) })
 }
 #[no_mangle]
-pub extern "C" fn Ping_read(ser: crate::c_types::u8slice) -> Ping {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		Ping { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		Ping { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn Ping_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_PingDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Ping { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn Pong_write(obj: *const Pong) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn Pong_write(obj: &Pong) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn Pong_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativePong) })
 }
 #[no_mangle]
-pub extern "C" fn Pong_read(ser: crate::c_types::u8slice) -> Pong {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		Pong { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		Pong { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn Pong_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_PongDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Pong { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn UnsignedChannelAnnouncement_write(obj: *const UnsignedChannelAnnouncement) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn UnsignedChannelAnnouncement_write(obj: &UnsignedChannelAnnouncement) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UnsignedChannelAnnouncement_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUnsignedChannelAnnouncement) })
 }
 #[no_mangle]
-pub extern "C" fn UnsignedChannelAnnouncement_read(ser: crate::c_types::u8slice) -> UnsignedChannelAnnouncement {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UnsignedChannelAnnouncement { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UnsignedChannelAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedChannelAnnouncementDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn ChannelAnnouncement_write(obj: *const ChannelAnnouncement) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelAnnouncement_write(obj: &ChannelAnnouncement) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4628,23 +4628,21 @@ pub extern "C" fn ChannelAnnouncement_read(ser: crate::c_types::u8slice) -> Chan
 	}
 }
 #[no_mangle]
-pub extern "C" fn UnsignedChannelUpdate_write(obj: *const UnsignedChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn UnsignedChannelUpdate_write(obj: &UnsignedChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UnsignedChannelUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUnsignedChannelUpdate) })
 }
 #[no_mangle]
-pub extern "C" fn UnsignedChannelUpdate_read(ser: crate::c_types::u8slice) -> UnsignedChannelUpdate {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UnsignedChannelUpdate { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UnsignedChannelUpdate { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UnsignedChannelUpdate_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedChannelUpdateDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn ChannelUpdate_write(obj: *const ChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelUpdate_write(obj: &ChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4660,39 +4658,35 @@ pub extern "C" fn ChannelUpdate_read(ser: crate::c_types::u8slice) -> ChannelUpd
 	}
 }
 #[no_mangle]
-pub extern "C" fn ErrorMessage_write(obj: *const ErrorMessage) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn ErrorMessage_write(obj: &ErrorMessage) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ErrorMessage_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeErrorMessage) })
 }
 #[no_mangle]
-pub extern "C" fn ErrorMessage_read(ser: crate::c_types::u8slice) -> ErrorMessage {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ErrorMessage { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ErrorMessage { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ErrorMessage_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ErrorMessageDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ErrorMessage { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn UnsignedNodeAnnouncement_write(obj: *const UnsignedNodeAnnouncement) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn UnsignedNodeAnnouncement_write(obj: &UnsignedNodeAnnouncement) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UnsignedNodeAnnouncement_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUnsignedNodeAnnouncement) })
 }
 #[no_mangle]
-pub extern "C" fn UnsignedNodeAnnouncement_read(ser: crate::c_types::u8slice) -> UnsignedNodeAnnouncement {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UnsignedNodeAnnouncement { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UnsignedNodeAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedNodeAnnouncementDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn NodeAnnouncement_write(obj: *const NodeAnnouncement) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn NodeAnnouncement_write(obj: &NodeAnnouncement) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -4708,80 +4702,70 @@ pub extern "C" fn NodeAnnouncement_read(ser: crate::c_types::u8slice) -> NodeAnn
 	}
 }
 #[no_mangle]
-pub extern "C" fn QueryShortChannelIds_read(ser: crate::c_types::u8slice) -> QueryShortChannelIds {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		QueryShortChannelIds { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		QueryShortChannelIds { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn QueryShortChannelIds_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_QueryShortChannelIdsDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryShortChannelIds { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn QueryShortChannelIds_write(obj: *const QueryShortChannelIds) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn QueryShortChannelIds_write(obj: &QueryShortChannelIds) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn QueryShortChannelIds_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeQueryShortChannelIds) })
 }
 #[no_mangle]
-pub extern "C" fn ReplyShortChannelIdsEnd_read(ser: crate::c_types::u8slice) -> ReplyShortChannelIdsEnd {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ReplyShortChannelIdsEnd { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ReplyShortChannelIdsEnd_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ReplyShortChannelIdsEndDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn ReplyShortChannelIdsEnd_write(obj: *const ReplyShortChannelIdsEnd) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn ReplyShortChannelIdsEnd_write(obj: &ReplyShortChannelIdsEnd) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ReplyShortChannelIdsEnd_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeReplyShortChannelIdsEnd) })
 }
 #[no_mangle]
-pub extern "C" fn QueryChannelRange_read(ser: crate::c_types::u8slice) -> QueryChannelRange {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		QueryChannelRange { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		QueryChannelRange { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn QueryChannelRange_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_QueryChannelRangeDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn QueryChannelRange_write(obj: *const QueryChannelRange) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn QueryChannelRange_write(obj: &QueryChannelRange) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn QueryChannelRange_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeQueryChannelRange) })
 }
 #[no_mangle]
-pub extern "C" fn ReplyChannelRange_read(ser: crate::c_types::u8slice) -> ReplyChannelRange {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ReplyChannelRange { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ReplyChannelRange { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ReplyChannelRange_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ReplyChannelRangeDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn ReplyChannelRange_write(obj: *const ReplyChannelRange) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn ReplyChannelRange_write(obj: &ReplyChannelRange) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ReplyChannelRange_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeReplyChannelRange) })
 }
 #[no_mangle]
-pub extern "C" fn GossipTimestampFilter_read(ser: crate::c_types::u8slice) -> GossipTimestampFilter {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		GossipTimestampFilter { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		GossipTimestampFilter { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn GossipTimestampFilter_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_GossipTimestampFilterDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::GossipTimestampFilter { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn GossipTimestampFilter_write(obj: *const GossipTimestampFilter) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn GossipTimestampFilter_write(obj: &GossipTimestampFilter) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn GossipTimestampFilter_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {

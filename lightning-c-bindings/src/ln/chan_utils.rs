@@ -208,7 +208,7 @@ pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_type
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_write(obj: *const TxCreationKeys) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn TxCreationKeys_write(obj: &TxCreationKeys) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -363,7 +363,7 @@ pub extern "C" fn ChannelPublicKeys_new(mut funding_pubkey_arg: crate::c_types::
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn ChannelPublicKeys_write(obj: *const ChannelPublicKeys) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelPublicKeys_write(obj: &ChannelPublicKeys) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -515,7 +515,7 @@ pub extern "C" fn HTLCOutputInCommitment_set_payment_hash(this_ptr: &mut HTLCOut
 	unsafe { &mut *this_ptr.inner }.payment_hash = ::lightning::ln::channelmanager::PaymentHash(val.data);
 }
 #[no_mangle]
-pub extern "C" fn HTLCOutputInCommitment_write(obj: *const HTLCOutputInCommitment) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HTLCOutputInCommitment_write(obj: &HTLCOutputInCommitment) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -805,7 +805,7 @@ pub extern "C" fn ChannelTransactionParameters_as_counterparty_broadcastable(thi
 }
 
 #[no_mangle]
-pub extern "C" fn CounterpartyChannelTransactionParameters_write(obj: *const CounterpartyChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn CounterpartyChannelTransactionParameters_write(obj: &CounterpartyChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -821,7 +821,7 @@ pub extern "C" fn CounterpartyChannelTransactionParameters_read(ser: crate::c_ty
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChannelTransactionParameters_write(obj: *const ChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelTransactionParameters_write(obj: &ChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -997,7 +997,7 @@ pub extern "C" fn HolderCommitmentTransaction_set_counterparty_htlc_sigs(this_pt
 	unsafe { &mut *this_ptr.inner }.counterparty_htlc_sigs = local_val;
 }
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_write(obj: *const HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HolderCommitmentTransaction_write(obj: &HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -1115,7 +1115,7 @@ pub extern "C" fn BuiltCommitmentTransaction_new(mut transaction_arg: crate::c_t
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn BuiltCommitmentTransaction_write(obj: *const BuiltCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn BuiltCommitmentTransaction_write(obj: &BuiltCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -1210,7 +1210,7 @@ pub extern "C" fn CommitmentTransaction_clone(orig: &CommitmentTransaction) -> C
 	CommitmentTransaction { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn CommitmentTransaction_write(obj: *const CommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn CommitmentTransaction_write(obj: &CommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]

@@ -1,12 +1,14 @@
 #if defined(__GNUC__)
 #define MUST_USE_STRUCT __attribute__((warn_unused))
-#else
-#define MUST_USE_STRUCT
-#endif
-#if defined(__GNUC__)
 #define MUST_USE_RES __attribute__((warn_unused_result))
 #else
+#define MUST_USE_STRUCT
 #define MUST_USE_RES
+#endif
+#if defined(__clang__)
+#define NONNULL_PTR _Nonnull
+#else
+#define NONNULL_PTR
 #endif
 struct nativeChannelHandshakeConfigOpaque;
 typedef struct nativeChannelHandshakeConfigOpaque LDKnativeChannelHandshakeConfig;

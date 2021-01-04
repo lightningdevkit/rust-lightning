@@ -128,7 +128,7 @@ impl From<nativeChainMonitor> for crate::chain::Watch {
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChainMonitor_as_Watch(this_arg: *const ChainMonitor) -> crate::chain::Watch {
+pub extern "C" fn ChainMonitor_as_Watch(this_arg: &ChainMonitor) -> crate::chain::Watch {
 	crate::chain::Watch {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -168,7 +168,7 @@ impl From<nativeChainMonitor> for crate::util::events::EventsProvider {
 	}
 }
 #[no_mangle]
-pub extern "C" fn ChainMonitor_as_EventsProvider(this_arg: *const ChainMonitor) -> crate::util::events::EventsProvider {
+pub extern "C" fn ChainMonitor_as_EventsProvider(this_arg: &ChainMonitor) -> crate::util::events::EventsProvider {
 	crate::util::events::EventsProvider {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
