@@ -9,7 +9,7 @@
 
 //! The logic to build claims and bump in-flight transactions until confirmations.
 //!
-//! OnchainTxHandler objetcs are fully-part of ChannelMonitor and encapsulates all
+//! OnchainTxHandler objects are fully-part of ChannelMonitor and encapsulates all
 //! building, tracking, bumping and notifications functions.
 
 use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
@@ -24,7 +24,7 @@ use bitcoin::secp256k1;
 use ln::msgs::DecodeError;
 use ln::channelmanager::PaymentPreimage;
 use ln::chan_utils;
-use ln::chan_utils::{TxCreationKeys, HolderCommitmentTransaction};
+use ln::chan_utils::{TxCreationKeys, ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
 use chain::keysinterface::ChannelKeys;
@@ -244,14 +244,13 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	holder_commitment: Option<HolderCommitmentTransaction>,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
 	// transaction outputs (hence the Option<>s inside the Vec). The first usize is the index in
-	// the set of HTLCs in the HolderCommitmentTransaction (including those which do not appear in
-	// the commitment transaction).
+	// the set of HTLCs in the HolderCommitmentTransaction.
 	holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
-	on_holder_tx_csv: u16,
 
 	key_storage: ChanSigner,
+	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
 	// it (RBF or CPFP). If an input has been part of an aggregate tx at first claim try, we need to keep it within
@@ -295,9 +294,8 @@ impl<ChanSigner: ChannelKeys + Writeable> OnchainTxHandler<ChanSigner> {
 		self.prev_holder_commitment.write(writer)?;
 		self.prev_holder_htlc_sigs.write(writer)?;
 
-		self.on_holder_tx_csv.write(writer)?;
-
 		self.key_storage.write(writer)?;
+		self.channel_transaction_parameters.write(writer)?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
 		for (ref ancestor_claim_txid, claim_tx_data) in self.pending_claim_requests.iter() {
@@ -344,9 +342,8 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 		let prev_holder_commitment = Readable::read(reader)?;
 		let prev_holder_htlc_sigs = Readable::read(reader)?;
 
-		let on_holder_tx_csv = Readable::read(reader)?;
-
 		let key_storage = Readable::read(reader)?;
+		let channel_parameters = Readable::read(reader)?;
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -398,8 +395,8 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 			holder_htlc_sigs,
 			prev_holder_commitment,
 			prev_holder_htlc_sigs,
-			on_holder_tx_csv,
 			key_storage,
+			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
@@ -410,7 +407,7 @@ impl<ChanSigner: ChannelKeys + Readable> Readable for OnchainTxHandler<ChanSigne
 }
 
 impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(crate) fn new(destination_script: Script, keys: ChanSigner, on_holder_tx_csv: u16) -> Self {
+	pub(crate) fn new(destination_script: Script, keys: ChanSigner, channel_parameters: ChannelTransactionParameters) -> Self {
 
 		let key_storage = keys;
 
@@ -420,8 +417,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			holder_htlc_sigs: None,
 			prev_holder_commitment: None,
 			prev_holder_htlc_sigs: None,
-			on_holder_tx_csv,
 			key_storage,
+			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_waiting_threshold_conf: HashMap::new(),
@@ -654,7 +651,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						let signed_tx = self.get_fully_signed_holder_tx(funding_redeemscript).unwrap();
 						// Timer set to $NEVER given we can't bump tx without anchor outputs
 						log_trace!(logger, "Going to broadcast Holder Transaction {} claiming funding output {} from {}...", signed_tx.txid(), outp.vout, outp.txid);
-						return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw, signed_tx));
+						return Some((None, self.holder_commitment.as_ref().unwrap().feerate_per_kw(), signed_tx));
 					}
 					_ => unreachable!()
 				}
@@ -899,44 +896,39 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	fn sign_latest_holder_htlcs(&mut self) {
 		if let Some(ref holder_commitment) = self.holder_commitment {
 			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(holder_commitment, &self.secp_ctx) {
-				self.holder_htlc_sigs = Some(Vec::new());
-				let ret = self.holder_htlc_sigs.as_mut().unwrap();
-				for (htlc_idx, (holder_sig, &(ref htlc, _))) in sigs.iter().zip(holder_commitment.per_htlc.iter()).enumerate() {
-					if let Some(tx_idx) = htlc.transaction_output_index {
-						if ret.len() <= tx_idx as usize { ret.resize(tx_idx as usize + 1, None); }
-						ret[tx_idx as usize] = Some((htlc_idx, holder_sig.expect("Did not receive a signature for a non-dust HTLC")));
-					} else {
-						assert!(holder_sig.is_none(), "Received a signature for a dust HTLC");
-					}
-				}
-			}
-		}
-	}
-	fn sign_prev_holder_htlcs(&mut self) {
-		if let Some(ref holder_commitment) = self.prev_holder_commitment {
-			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(holder_commitment, &self.secp_ctx) {
-				self.prev_holder_htlc_sigs = Some(Vec::new());
-				let ret = self.prev_holder_htlc_sigs.as_mut().unwrap();
-				for (htlc_idx, (holder_sig, &(ref htlc, _))) in sigs.iter().zip(holder_commitment.per_htlc.iter()).enumerate() {
-					if let Some(tx_idx) = htlc.transaction_output_index {
-						if ret.len() <= tx_idx as usize { ret.resize(tx_idx as usize + 1, None); }
-						ret[tx_idx as usize] = Some((htlc_idx, holder_sig.expect("Did not receive a signature for a non-dust HTLC")));
-					} else {
-						assert!(holder_sig.is_none(), "Received a signature for a dust HTLC");
-					}
-				}
+				self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
 			}
 		}
 	}
 
-	//TODO: getting lastest holder transactions should be infaillible and result in us "force-closing the channel", but we may
+	fn sign_prev_holder_htlcs(&mut self) {
+		if let Some(ref holder_commitment) = self.prev_holder_commitment {
+			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(holder_commitment, &self.secp_ctx) {
+				self.prev_holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
+			}
+		}
+	}
+
+	fn extract_holder_sigs(holder_commitment: &HolderCommitmentTransaction, sigs: Vec<Signature>) -> Vec<Option<(usize, Signature)>> {
+		let mut ret = Vec::new();
+		for (htlc_idx, (holder_sig, htlc)) in sigs.iter().zip(holder_commitment.htlcs().iter()).enumerate() {
+			let tx_idx = htlc.transaction_output_index.unwrap();
+			if ret.len() <= tx_idx as usize { ret.resize(tx_idx as usize + 1, None); }
+			ret[tx_idx as usize] = Some((htlc_idx, holder_sig.clone()));
+		}
+		ret
+	}
+
+	//TODO: getting lastest holder transactions should be infallible and result in us "force-closing the channel", but we may
 	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			match self.key_storage.sign_holder_commitment(holder_commitment, &self.secp_ctx) {
-				Ok(sig) => Some(holder_commitment.add_holder_sig(funding_redeemscript, sig)),
+			match self.key_storage.sign_holder_commitment(&holder_commitment, &self.secp_ctx) {
+				Ok(sig) => {
+					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
+				},
 				Err(_) => return None,
 			}
 		} else {
@@ -947,9 +939,10 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			let holder_commitment = holder_commitment.clone();
-			match self.key_storage.sign_holder_commitment(&holder_commitment, &self.secp_ctx) {
-				Ok(sig) => Some(holder_commitment.add_holder_sig(funding_redeemscript, sig)),
+			match self.key_storage.sign_holder_commitment(holder_commitment, &self.secp_ctx) {
+				Ok(sig) => {
+					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
+				},
 				Err(_) => return None,
 			}
 		} else {
@@ -960,24 +953,30 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let mut htlc_tx = None;
 		if self.holder_commitment.is_some() {
-			let commitment_txid = self.holder_commitment.as_ref().unwrap().txid();
+			let commitment_txid = self.holder_commitment.as_ref().unwrap().trust().txid();
 			if commitment_txid == outp.txid {
 				self.sign_latest_holder_htlcs();
 				if let &Some(ref htlc_sigs) = &self.holder_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
-					htlc_tx = Some(self.holder_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_holder_tx_csv));
+					let holder_commitment = self.holder_commitment.as_ref().unwrap();
+					let trusted_tx = holder_commitment.trust();
+					let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[*htlc_idx];
+					htlc_tx = Some(trusted_tx
+						.get_signed_htlc_tx(&self.channel_transaction_parameters.as_holder_broadcastable(), *htlc_idx, &counterparty_htlc_sig, htlc_sig, preimage));
 				}
 			}
 		}
 		if self.prev_holder_commitment.is_some() {
-			let commitment_txid = self.prev_holder_commitment.as_ref().unwrap().txid();
+			let commitment_txid = self.prev_holder_commitment.as_ref().unwrap().trust().txid();
 			if commitment_txid == outp.txid {
 				self.sign_prev_holder_htlcs();
 				if let &Some(ref htlc_sigs) = &self.prev_holder_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
-					htlc_tx = Some(self.prev_holder_commitment.as_ref().unwrap()
-						.get_signed_htlc_tx(*htlc_idx, htlc_sig, preimage, self.on_holder_tx_csv));
+					let holder_commitment = self.prev_holder_commitment.as_ref().unwrap();
+					let trusted_tx = holder_commitment.trust();
+					let counterparty_htlc_sig = holder_commitment.counterparty_htlc_sigs[*htlc_idx];
+					htlc_tx = Some(trusted_tx
+						.get_signed_htlc_tx(&self.channel_transaction_parameters.as_holder_broadcastable(), *htlc_idx, &counterparty_htlc_sig, htlc_sig, preimage));
 				}
 			}
 		}

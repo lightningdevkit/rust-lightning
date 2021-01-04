@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::chan_utils::{HTLCOutputInCommitment, TxCreationKeys, ChannelPublicKeys, HolderCommitmentTransaction, PreCalculatedTxCreationKeys};
+use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction};
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
 
@@ -24,35 +24,22 @@ use util::ser::{Writeable, Writer, Readable};
 use std::io::Error;
 use ln::msgs::DecodeError;
 
-/// Enforces some rules on ChannelKeys calls. Eventually we will probably want to expose a variant
-/// of this which would essentially be what you'd want to run on a hardware wallet.
+/// An implementation of ChannelKeys that enforces some policy checks.
+///
+/// Eventually we will probably want to expose a variant of this which would essentially
+/// be what you'd want to run on a hardware wallet.
 #[derive(Clone)]
 pub struct EnforcingChannelKeys {
 	pub inner: InMemoryChannelKeys,
-	commitment_number_obscure_and_last: Arc<Mutex<(Option<u64>, u64)>>,
+	last_commitment_number: Arc<Mutex<Option<u64>>>,
 }
 
 impl EnforcingChannelKeys {
 	pub fn new(inner: InMemoryChannelKeys) -> Self {
 		Self {
 			inner,
-			commitment_number_obscure_and_last: Arc::new(Mutex::new((None, 0))),
+			last_commitment_number: Arc::new(Mutex::new(None)),
 		}
-	}
-}
-
-impl EnforcingChannelKeys {
-	fn check_keys<T: secp256k1::Signing + secp256k1::Verification>(&self, secp_ctx: &Secp256k1<T>,
-	                                                               keys: &TxCreationKeys) {
-		let remote_points = self.inner.counterparty_pubkeys();
-
-		let keys_expected = TxCreationKeys::derive_new(secp_ctx,
-		                                               &keys.per_commitment_point,
-		                                               &remote_points.delayed_payment_basepoint,
-		                                               &remote_points.htlc_basepoint,
-		                                               &self.inner.pubkeys().revocation_basepoint,
-		                                               &self.inner.pubkeys().htlc_basepoint).unwrap();
-		if keys != &keys_expected { panic!("derived different per-tx keys") }
 	}
 }
 
@@ -69,51 +56,52 @@ impl ChannelKeys for EnforcingChannelKeys {
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
 
-	fn sign_counterparty_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, feerate_per_kw: u32, commitment_tx: &Transaction, pre_keys: &PreCalculatedTxCreationKeys, htlcs: &[&HTLCOutputInCommitment], secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
-		if commitment_tx.input.len() != 1 { panic!("lightning commitment transactions have a single input"); }
-		self.check_keys(secp_ctx, pre_keys.trust_key_derivation());
-		let obscured_commitment_transaction_number = (commitment_tx.lock_time & 0xffffff) as u64 | ((commitment_tx.input[0].sequence as u64 & 0xffffff) << 3*8);
+	fn sign_counterparty_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
+		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
 		{
-			let mut commitment_data = self.commitment_number_obscure_and_last.lock().unwrap();
-			if commitment_data.0.is_none() {
-				commitment_data.0 = Some(obscured_commitment_transaction_number ^ commitment_data.1);
-			}
-			let commitment_number = obscured_commitment_transaction_number ^ commitment_data.0.unwrap();
-			assert!(commitment_number == commitment_data.1 || commitment_number == commitment_data.1 + 1);
-			commitment_data.1 = cmp::max(commitment_number, commitment_data.1)
+			let mut last_commitment_number_guard = self.last_commitment_number.lock().unwrap();
+			let actual_commitment_number = commitment_tx.commitment_number();
+			let last_commitment_number = last_commitment_number_guard.unwrap_or(actual_commitment_number);
+			// These commitment numbers are backwards counting.  We expect either the same as the previously encountered,
+			// or the next one.
+			assert!(last_commitment_number == actual_commitment_number || last_commitment_number - 1 == actual_commitment_number, "{} doesn't come after {}", actual_commitment_number, last_commitment_number);
+			*last_commitment_number_guard = Some(cmp::min(last_commitment_number, actual_commitment_number))
 		}
 
-		Ok(self.inner.sign_counterparty_commitment(feerate_per_kw, commitment_tx, pre_keys, htlcs, secp_ctx).unwrap())
+		Ok(self.inner.sign_counterparty_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
+
 		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
 		// TODO: need the commitment number
-		Ok(self.inner.sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
+		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.unsafe_sign_holder_commitment(holder_commitment_tx, secp_ctx).unwrap())
+	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, holder_commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Option<Signature>>, ()> {
-		let commitment_txid = holder_commitment_tx.txid();
+	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Signature>, ()> {
+		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
+		let commitment_txid = trusted_tx.txid();
 		let holder_csv = self.inner.counterparty_selected_contest_delay();
 
-		for this_htlc in holder_commitment_tx.per_htlc.iter() {
-			if this_htlc.0.transaction_output_index.is_some() {
-				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, holder_commitment_tx.feerate_per_kw, holder_csv, &this_htlc.0, &holder_commitment_tx.keys.broadcaster_delayed_payment_key, &holder_commitment_tx.keys.revocation_key);
+		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
+			assert!(this_htlc.transaction_output_index.is_some());
+			let keys = trusted_tx.keys();
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc.0, &holder_commitment_tx.keys);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, &keys);
 
-				let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.0.amount_msat / 1000, SigHashType::All)[..]);
-				secp_ctx.verify(&sighash, this_htlc.1.as_ref().unwrap(), &holder_commitment_tx.keys.countersignatory_htlc_key).unwrap();
-			}
+			let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, SigHashType::All)[..]);
+			secp_ctx.verify(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
-		Ok(self.inner.sign_holder_commitment_htlc_transactions(holder_commitment_tx, secp_ctx).unwrap())
+		Ok(self.inner.sign_holder_commitment_htlc_transactions(commitment_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
@@ -132,16 +120,16 @@ impl ChannelKeys for EnforcingChannelKeys {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn on_accept(&mut self, channel_pubkeys: &ChannelPublicKeys, counterparty_selected_delay: u16, holder_selected_delay: u16) {
-		self.inner.on_accept(channel_pubkeys, counterparty_selected_delay, holder_selected_delay)
+	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.ready_channel(channel_parameters)
 	}
 }
+
 
 impl Writeable for EnforcingChannelKeys {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.write(writer)?;
-		let (obscure, last) = *self.commitment_number_obscure_and_last.lock().unwrap();
-		obscure.write(writer)?;
+		let last = *self.last_commitment_number.lock().unwrap();
 		last.write(writer)?;
 		Ok(())
 	}
@@ -150,10 +138,24 @@ impl Writeable for EnforcingChannelKeys {
 impl Readable for EnforcingChannelKeys {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
-		let obscure_and_last = Readable::read(reader)?;
+		let last_commitment_number = Readable::read(reader)?;
 		Ok(EnforcingChannelKeys {
-			inner: inner,
-			commitment_number_obscure_and_last: Arc::new(Mutex::new(obscure_and_last))
+			inner,
+			last_commitment_number: Arc::new(Mutex::new(last_commitment_number))
 		})
+	}
+}
+
+impl EnforcingChannelKeys {
+	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
+		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
+			.expect("derived different per-tx keys or built transaction")
+	}
+
+	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
+		commitment_tx.verify(&self.inner.get_channel_parameters().as_holder_broadcastable(),
+		                     self.inner.pubkeys(), self.inner.counterparty_pubkeys(), secp_ctx)
+			.expect("derived different per-tx keys or built transaction")
 	}
 }

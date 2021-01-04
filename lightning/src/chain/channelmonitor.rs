@@ -27,7 +27,6 @@ use bitcoin::blockdata::transaction::{TxOut,Transaction};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
-use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -39,7 +38,7 @@ use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::chan_utils;
-use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HolderCommitmentTransaction, HTLCType};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -252,6 +251,7 @@ pub(crate) const ANTI_REORG_DELAY: u32 = 6;
 /// end up force-closing the channel on us to claim it.
 pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
+// TODO(devrandom) replace this with HolderCommitmentTransaction
 #[derive(Clone, PartialEq)]
 struct HolderSignedTx {
 	/// txid of the transaction in tx, just used to make comparison faster
@@ -493,7 +493,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 	},
 	LatestCounterpartyCommitmentTXInfo {
-		unsigned_commitment_tx: Transaction, // TODO: We should actually only need the txid here
+		commitment_txid: Txid,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64,
 		their_revocation_point: PublicKey,
@@ -527,9 +527,9 @@ impl Writeable for ChannelMonitorUpdateStep {
 					source.write(w)?;
 				}
 			}
-			&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { ref unsigned_commitment_tx, ref htlc_outputs, ref commitment_number, ref their_revocation_point } => {
+			&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, ref htlc_outputs, ref commitment_number, ref their_revocation_point } => {
 				1u8.write(w)?;
-				unsigned_commitment_tx.write(w)?;
+				commitment_txid.write(w)?;
 				commitment_number.write(w)?;
 				their_revocation_point.write(w)?;
 				(htlc_outputs.len() as u64).write(w)?;
@@ -573,7 +573,7 @@ impl Readable for ChannelMonitorUpdateStep {
 			},
 			1u8 => {
 				Ok(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-					unsigned_commitment_tx: Readable::read(r)?,
+					commitment_txid: Readable::read(r)?,
 					commitment_number: Readable::read(r)?,
 					their_revocation_point: Readable::read(r)?,
 					htlc_outputs: {
@@ -948,11 +948,11 @@ impl<ChanSigner: ChannelKeys + Writeable> ChannelMonitor<ChanSigner> {
 
 impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub(crate) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
-			on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
-			counterparty_htlc_base_key: &PublicKey, counterparty_delayed_payment_base_key: &PublicKey,
-			on_holder_tx_csv: u16, funding_redeemscript: Script, channel_value_satoshis: u64,
-			commitment_transaction_number_obscure_factor: u64,
-			initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<ChanSigner> {
+	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
+	                  channel_parameters: &ChannelTransactionParameters,
+	                  funding_redeemscript: Script, channel_value_satoshis: u64,
+	                  commitment_transaction_number_obscure_factor: u64,
+	                  initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<ChanSigner> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
@@ -960,21 +960,32 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
 		let counterparty_payment_script = Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&payment_key_hash[..]).into_script();
 
-		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key: *counterparty_delayed_payment_base_key, counterparty_htlc_base_key: *counterparty_htlc_base_key, on_counterparty_tx_csv, per_htlc: HashMap::new() };
+		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
+		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
+		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
+		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv, per_htlc: HashMap::new() };
 
-		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), on_holder_tx_csv);
+		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys.clone(), channel_parameters.clone());
 
-		let holder_tx_sequence = initial_holder_commitment_tx.unsigned_tx.input[0].sequence as u64;
-		let holder_tx_locktime = initial_holder_commitment_tx.unsigned_tx.lock_time as u64;
-		let holder_commitment_tx = HolderSignedTx {
-			txid: initial_holder_commitment_tx.txid(),
-			revocation_key: initial_holder_commitment_tx.keys.revocation_key,
-			a_htlc_key: initial_holder_commitment_tx.keys.broadcaster_htlc_key,
-			b_htlc_key: initial_holder_commitment_tx.keys.countersignatory_htlc_key,
-			delayed_payment_key: initial_holder_commitment_tx.keys.broadcaster_delayed_payment_key,
-			per_commitment_point: initial_holder_commitment_tx.keys.per_commitment_point,
-			feerate_per_kw: initial_holder_commitment_tx.feerate_per_kw,
-			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+		let secp_ctx = Secp256k1::new();
+
+		// block for Rust 1.34 compat
+		let (holder_commitment_tx, current_holder_commitment_number) = {
+			let trusted_tx = initial_holder_commitment_tx.trust();
+			let txid = trusted_tx.txid();
+
+			let tx_keys = trusted_tx.keys();
+			let holder_commitment_tx = HolderSignedTx {
+				txid,
+				revocation_key: tx_keys.revocation_key,
+				a_htlc_key: tx_keys.broadcaster_htlc_key,
+				b_htlc_key: tx_keys.countersignatory_htlc_key,
+				delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
+				per_commitment_point: tx_keys.per_commitment_point,
+				feerate_per_kw: trusted_tx.feerate_per_kw(),
+				htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+			};
+			(holder_commitment_tx, trusted_tx.commitment_number())
 		};
 		onchain_tx_handler.provide_latest_holder_tx(initial_holder_commitment_tx);
 
@@ -1000,7 +1011,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			channel_value_satoshis,
 			their_cur_revocation_points: None,
 
-			on_holder_tx_csv,
+			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 			counterparty_claimable_outpoints: HashMap::new(),
@@ -1010,7 +1021,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			prev_holder_signed_commitment_tx: None,
 			current_holder_commitment_tx: holder_commitment_tx,
 			current_counterparty_commitment_number: 1 << 48,
-			current_holder_commitment_number: 0xffff_ffff_ffff - ((((holder_tx_sequence & 0xffffff) << 3*8) | (holder_tx_locktime as u64 & 0xffffff)) ^ commitment_transaction_number_obscure_factor),
+			current_holder_commitment_number,
 
 			payment_preimages: HashMap::new(),
 			pending_monitor_events: Vec::new(),
@@ -1025,7 +1036,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			holder_tx_signed: false,
 
 			last_block_hash: Default::default(),
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 		}
 	}
 
@@ -1084,7 +1095,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// The monitor watches for it to be broadcasted and then uses the HTLC information (and
 	/// possibly future revocation/preimage information) to claim outputs where possible.
 	/// We cache also the mapping hash:commitment number to lighten pruning of old preimages by watchtowers.
-	pub(crate) fn provide_latest_counterparty_commitment_tx_info<L: Deref>(&mut self, unsigned_commitment_tx: &Transaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey, logger: &L) where L::Target: Logger {
+	pub(crate) fn provide_latest_counterparty_commitment_tx<L: Deref>(&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey, logger: &L) where L::Target: Logger {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
@@ -1093,12 +1104,10 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			self.counterparty_hash_commitment_number.insert(htlc.payment_hash, commitment_number);
 		}
 
-		let new_txid = unsigned_commitment_tx.txid();
-		log_trace!(logger, "Tracking new counterparty commitment transaction with txid {} at commitment number {} with {} HTLC outputs", new_txid, commitment_number, htlc_outputs.len());
-		log_trace!(logger, "New potential counterparty commitment transaction: {}", encode::serialize_hex(unsigned_commitment_tx));
+		log_trace!(logger, "Tracking new counterparty commitment transaction with txid {} at commitment number {} with {} HTLC outputs", txid, commitment_number, htlc_outputs.len());
 		self.prev_counterparty_commitment_txid = self.current_counterparty_commitment_txid.take();
-		self.current_counterparty_commitment_txid = Some(new_txid);
-		self.counterparty_claimable_outpoints.insert(new_txid, htlc_outputs.clone());
+		self.current_counterparty_commitment_txid = Some(txid);
+		self.counterparty_claimable_outpoints.insert(txid, htlc_outputs.clone());
 		self.current_counterparty_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-counterparty-transaction output storage stuff
 		match self.their_cur_revocation_points {
@@ -1125,7 +1134,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				htlcs.push(htlc.0);
 			}
 		}
-		self.counterparty_tx_cache.per_htlc.insert(new_txid, htlcs);
+		self.counterparty_tx_cache.per_htlc.insert(txid, htlcs);
 	}
 
 	/// Informs this monitor of the latest holder (ie broadcastable) commitment transaction. The
@@ -1133,22 +1142,25 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
-	fn provide_latest_holder_commitment_tx_info(&mut self, commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
-		let txid = commitment_tx.txid();
-		let sequence = commitment_tx.unsigned_tx.input[0].sequence as u64;
-		let locktime = commitment_tx.unsigned_tx.lock_time as u64;
-		let mut new_holder_commitment_tx = HolderSignedTx {
-			txid,
-			revocation_key: commitment_tx.keys.revocation_key,
-			a_htlc_key: commitment_tx.keys.broadcaster_htlc_key,
-			b_htlc_key: commitment_tx.keys.countersignatory_htlc_key,
-			delayed_payment_key: commitment_tx.keys.broadcaster_delayed_payment_key,
-			per_commitment_point: commitment_tx.keys.per_commitment_point,
-			feerate_per_kw: commitment_tx.feerate_per_kw,
-			htlc_outputs,
+	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
+		// block for Rust 1.34 compat
+		let mut new_holder_commitment_tx = {
+			let trusted_tx = holder_commitment_tx.trust();
+			let txid = trusted_tx.txid();
+			let tx_keys = trusted_tx.keys();
+			self.current_holder_commitment_number = trusted_tx.commitment_number();
+			HolderSignedTx {
+				txid,
+				revocation_key: tx_keys.revocation_key,
+				a_htlc_key: tx_keys.broadcaster_htlc_key,
+				b_htlc_key: tx_keys.countersignatory_htlc_key,
+				delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
+				per_commitment_point: tx_keys.per_commitment_point,
+				feerate_per_kw: trusted_tx.feerate_per_kw(),
+				htlc_outputs,
+			}
 		};
-		self.onchain_tx_handler.provide_latest_holder_tx(commitment_tx);
-		self.current_holder_commitment_number = 0xffff_ffff_ffff - ((((sequence & 0xffffff) << 3*8) | (locktime as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx);
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		if self.holder_tx_signed {
@@ -1239,11 +1251,11 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx_info(commitment_tx.clone(), htlc_outputs.clone())?
-				},
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { unsigned_commitment_tx, htlc_outputs, commitment_number, their_revocation_point } => {
+					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone())?
+				}
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_revocation_point } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
-					self.provide_latest_counterparty_commitment_tx_info(&unsigned_commitment_tx, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger)
+					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger)
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
@@ -2589,7 +2601,7 @@ mod tests {
 	use ln::channelmanager::{PaymentPreimage, PaymentHash};
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
-	use ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction};
+	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
@@ -2662,20 +2674,39 @@ mod tests {
 			(0, 0)
 		);
 
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
+			revocation_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()),
+			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+			delayed_payment_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap()),
+			htlc_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())
+		};
+		let funding_outpoint = OutPoint { txid: Default::default(), index: u16::max_value() };
+		let channel_parameters = ChannelTransactionParameters {
+			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
+			holder_selected_contest_delay: 66,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty_pubkeys,
+				selected_contest_delay: 67,
+			}),
+			funding_outpoint: Some(funding_outpoint),
+		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
 		let mut monitor = ChannelMonitor::new(keys,
-			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
-			(OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
-			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
-			&PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap()),
-			10, Script::new(), 46, 0, HolderCommitmentTransaction::dummy());
+		                                      &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
+		                                      (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
+		                                      &channel_parameters,
+		                                      Script::new(), 46, 0,
+		                                      HolderCommitmentTransaction::dummy());
 
-		monitor.provide_latest_holder_commitment_tx_info(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
-		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
-		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key, &logger);
-		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
-		monitor.provide_latest_counterparty_commitment_tx_info(&dummy_tx, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
+		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
+		let dummy_txid = dummy_tx.txid();
+		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[5..15]), 281474976710655, dummy_key, &logger);
+		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key, &logger);
+		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
+		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
 		}
@@ -2697,7 +2728,7 @@ mod tests {
 
 		// Now update holder commitment tx info, pruning only element 18 as we still care about the
 		// previous commitment tx's preimages too
-		monitor.provide_latest_holder_commitment_tx_info(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..5])).unwrap();
+		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..5])).unwrap();
 		secret[0..32].clone_from_slice(&hex::decode("2273e227a5b7449b6e70f1fb4652864038b1cbf9cd7c043a7d6456b7fc275ad8").unwrap());
 		monitor.provide_secret(281474976710653, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 12);
@@ -2705,7 +2736,7 @@ mod tests {
 		test_preimages_exist!(&preimages[18..20], monitor);
 
 		// But if we do it again, we'll prune 5-10
-		monitor.provide_latest_holder_commitment_tx_info(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..3])).unwrap();
+		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..3])).unwrap();
 		secret[0..32].clone_from_slice(&hex::decode("27cddaa5624534cb6cb9d7da077cf2b22ab21e9b506fd4998a51d54502e99116").unwrap());
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.payment_preimages.len(), 5);
