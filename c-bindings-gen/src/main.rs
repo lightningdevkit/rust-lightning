@@ -500,21 +500,28 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	write_cpp_wrapper(cpp_headers, &format!("{}", ident), true);
 }
 
+fn declare_struct<'a, 'b>(s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>) -> bool {
+	let export = export_status(&s.attrs);
+	match export {
+		ExportStatus::Export => {},
+		ExportStatus::TestOnly => return false,
+		ExportStatus::NoExport => {
+			types.struct_ignored(&s.ident);
+			return false;
+		}
+	}
+
+	types.struct_imported(&s.ident, format!("{}", s.ident));
+	true
+}
+
 /// Writes out all the relevant mappings for a Rust struct, deferring to writeln_opaque to generate
 /// the struct itself, and then writing getters and setters for public, understood-type fields and
 /// a constructor if every field is public.
 fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>, extra_headers: &mut File, cpp_headers: &mut File) {
-	let struct_name = &format!("{}", s.ident);
-	let export = export_status(&s.attrs);
-	match export {
-		ExportStatus::Export => {},
-		ExportStatus::TestOnly => return,
-		ExportStatus::NoExport => {
-			types.struct_ignored(&s.ident);
-			return;
-		}
-	}
+	if !declare_struct(s, types) { return; }
 
+	let struct_name = &format!("{}", s.ident);
 	writeln_opaque(w, &s.ident, struct_name, &s.generics, &s.attrs, types, extra_headers, cpp_headers);
 
 	eprintln!("exporting fields for {}", struct_name);
@@ -598,8 +605,6 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 			writeln!(w, "\t}})), is_owned: true }}\n}}").unwrap();
 		}
 	}
-
-	types.struct_imported(&s.ident, struct_name.clone());
 }
 
 /// Prints a relevant conversion for impl *
@@ -916,6 +921,19 @@ fn is_enum_opaque(e: &syn::ItemEnum) -> bool {
 	false
 }
 
+fn declare_enum<'a, 'b>(e: &'a syn::ItemEnum, types: &mut TypeResolver<'b, 'a>) {
+	match export_status(&e.attrs) {
+		ExportStatus::Export => {},
+		ExportStatus::NoExport|ExportStatus::TestOnly => return,
+	}
+
+	if is_enum_opaque(e) {
+		types.enum_ignored(&e.ident);
+	} else {
+		types.mirrored_enum_declared(&e.ident);
+	}
+}
+
 /// Print a mapping of an enum. If all of the enum's fields are C-mapped in some form (or the enum
 /// is unitary), we generate an equivalent enum with all types replaced with their C mapped
 /// versions followed by conversion functions which map between the Rust version and the C mapped
@@ -929,7 +947,6 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if is_enum_opaque(e) {
 		eprintln!("Skipping enum {} as it contains non-unit fields", e.ident);
 		writeln_opaque(w, &e.ident, &format!("{}", e.ident), &e.generics, &e.attrs, types, extra_headers, cpp_headers);
-		types.enum_ignored(&e.ident);
 		return;
 	}
 	writeln_docs(w, &e.attrs, "");
@@ -937,7 +954,6 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if e.generics.lt_token.is_some() {
 		unimplemented!();
 	}
-	types.mirrored_enum_declared(&e.ident);
 
 	let mut needs_free = false;
 
@@ -1166,9 +1182,27 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 
 	let mut type_resolver = TypeResolver::new(orig_crate, module, crate_types);
 
+	// First pass over the items and fill in imports and file-declared objects in the type resolver
 	for item in syntax.items.iter() {
 		match item {
 			syn::Item::Use(u) => type_resolver.process_use(&mut out, &u),
+			syn::Item::Struct(s) => {
+				if let syn::Visibility::Public(_) = s.vis {
+					declare_struct(&s, &mut type_resolver);
+				}
+			},
+			syn::Item::Enum(e) => {
+				if let syn::Visibility::Public(_) = e.vis {
+					declare_enum(&e, &mut type_resolver);
+				}
+			},
+			_ => {},
+		}
+	}
+
+	for item in syntax.items.iter() {
+		match item {
+			syn::Item::Use(_) => {}, // Handled above
 			syn::Item::Static(_) => {},
 			syn::Item::Enum(e) => {
 				if let syn::Visibility::Public(_) = e.vis {
