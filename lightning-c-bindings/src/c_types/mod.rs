@@ -57,8 +57,9 @@ impl Signature {
 	pub(crate) fn into_rust(&self) -> SecpSignature {
 		SecpSignature::from_compact(&self.compact_form).unwrap()
 	}
-	pub(crate) fn is_null(&self) -> bool { self.compact_form[..] == [0; 64][..] }
-	pub(crate) fn null() -> Self { Self { compact_form: [0; 64] } }
+	// The following are used for Option<Signature> which we support, but don't use anymore
+	#[allow(unused)] pub(crate) fn is_null(&self) -> bool { self.compact_form[..] == [0; 64][..] }
+	#[allow(unused)] pub(crate) fn null() -> Self { Self { compact_form: [0; 64] } }
 }
 
 #[repr(C)]
