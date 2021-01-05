@@ -172,6 +172,55 @@ pub fn write_result_block<W: std::io::Write>(w: &mut W, mangled_container: &str,
 	}
 }
 
+/// Writes out a C-callable concrete Vec<A> struct and utility methods
+pub fn write_vec_block<W: std::io::Write>(w: &mut W, mangled_container: &str, inner_type: &str, clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	writeln!(w, "\tpub data: *mut {},", inner_type).unwrap();
+	writeln!(w, "\tpub datalen: usize").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "impl {} {{", mangled_container).unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<{}> {{", inner_type).unwrap();
+	writeln!(w, "\t\tif self.datalen == 0 {{ return Vec::new(); }}").unwrap();
+	writeln!(w, "\t\tlet ret = unsafe {{ Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }}.into();").unwrap();
+	writeln!(w, "\t\tself.data = std::ptr::null_mut();").unwrap();
+	writeln!(w, "\t\tself.datalen = 0;").unwrap();
+	writeln!(w, "\t\tret").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn as_slice(&self) -> &[{}] {{", inner_type).unwrap();
+	writeln!(w, "\t\tunsafe {{ std::slice::from_raw_parts_mut(self.data, self.datalen) }}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "impl From<Vec<{}>> for {} {{", inner_type, mangled_container).unwrap();
+	writeln!(w, "\tfn from(v: Vec<{}>) -> Self {{", inner_type).unwrap();
+	writeln!(w, "\t\tlet datalen = v.len();").unwrap();
+	writeln!(w, "\t\tlet data = Box::into_raw(v.into_boxed_slice());").unwrap();
+	writeln!(w, "\t\tSelf {{ datalen, data: unsafe {{ (*data).as_mut_ptr() }} }}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+	writeln!(w, "impl Drop for {} {{", mangled_container).unwrap();
+	writeln!(w, "\tfn drop(&mut self) {{").unwrap();
+	writeln!(w, "\t\tif self.datalen == 0 {{ return; }}").unwrap();
+	writeln!(w, "\t\tunsafe {{ Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }};").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tlet mut res = Vec::new();").unwrap();
+		writeln!(w, "\t\tif self.datalen == 0 {{ return Self::from(res); }}").unwrap();
+		writeln!(w, "\t\tres.extend_from_slice(unsafe {{ std::slice::from_raw_parts_mut(self.data, self.datalen) }});").unwrap();
+		writeln!(w, "\t\tSelf::from(res)").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+	}
+}
+
 /// Prints the docs from a given attribute list unless its tagged no export
 pub fn writeln_docs<W: std::io::Write>(w: &mut W, attrs: &[syn::Attribute], prefix: &str) {
 	for attr in attrs.iter() {

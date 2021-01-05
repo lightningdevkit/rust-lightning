@@ -128,7 +128,7 @@ impl Transaction {
 impl Drop for Transaction {
 	fn drop(&mut self) {
 		if self.data_is_owned && self.datalen != 0 {
-			let _ = CVecTempl { data: self.data as *mut u8, datalen: self.datalen };
+			let _ = derived::CVec_u8Z { data: self.data as *mut u8, datalen: self.datalen };
 		}
 	}
 }
@@ -157,7 +157,7 @@ impl TxOut {
 	}
 	pub(crate) fn from_rust(txout: ::bitcoin::blockdata::transaction::TxOut) -> Self {
 		Self {
-			script_pubkey: CVecTempl::from(txout.script_pubkey.into_bytes()),
+			script_pubkey: derived::CVec_u8Z::from(txout.script_pubkey.into_bytes()),
 			value: txout.value
 		}
 	}
@@ -223,7 +223,7 @@ impl lightning::util::ser::Writer for VecWriter {
 pub(crate) fn serialize_obj<I: lightning::util::ser::Writeable>(i: &I) -> derived::CVec_u8Z {
 	let mut out = VecWriter(Vec::new());
 	i.write(&mut out).unwrap();
-	CVecTempl::from(out.0)
+	derived::CVec_u8Z::from(out.0)
 }
 pub(crate) fn deserialize_obj<I: lightning::util::ser::Readable>(s: u8slice) -> Result<I, lightning::ln::msgs::DecodeError> {
 	I::read(&mut s.to_slice())
@@ -295,46 +295,6 @@ impl<O, E> Drop for CResultTempl<O, E> {
 		} else if unsafe { !self.contents.err.is_null() } {
 			unsafe { Box::from_raw(self.contents.err) };
 		}
-	}
-}
-
-#[repr(C)]
-pub struct CVecTempl<T> {
-	pub data: *mut T,
-	pub datalen: usize
-}
-impl<T> CVecTempl<T> {
-	pub(crate) fn into_rust(&mut self) -> Vec<T> {
-		if self.datalen == 0 { return Vec::new(); }
-		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
-		self.data = std::ptr::null_mut();
-		self.datalen = 0;
-		ret
-	}
-	pub(crate) fn as_slice(&self) -> &[T] {
-		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
-	}
-}
-impl<T> From<Vec<T>> for CVecTempl<T> {
-	fn from(v: Vec<T>) -> Self {
-		let datalen = v.len();
-		let data = Box::into_raw(v.into_boxed_slice());
-		CVecTempl { datalen, data: unsafe { (*data).as_mut_ptr() } }
-	}
-}
-pub extern "C" fn CVecTempl_free<T>(_res: CVecTempl<T>) { }
-impl<T> Drop for CVecTempl<T> {
-	fn drop(&mut self) {
-		if self.datalen == 0 { return; }
-		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
-	}
-}
-impl<T: Clone> Clone for CVecTempl<T> {
-	fn clone(&self) -> Self {
-		let mut res = Vec::new();
-		if self.datalen == 0 { return Self::from(res); }
-		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
-		Self::from(res)
 	}
 }
 

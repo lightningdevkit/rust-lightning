@@ -1796,24 +1796,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(w, "{}", resolved_generic).unwrap();
 				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
 					if self.is_known_container(&resolved_generic, is_ref) {
-						if resolved_generic == "Result" {
-							let mut inner_args = Vec::new();
-							if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
-								for arg in args.args.iter() {
-									if let syn::GenericArgument::Type(t) = arg { inner_args.push(t) } else { unimplemented!() };
-								}
-							} else { unimplemented!(); }
-							self.write_c_mangled_container_path(w, inner_args, generics, &resolved_generic, is_ref, false, false);
-						} else {
-							write!(w, "{}::C{}Templ<", Self::container_templ_path(), single_ident_generic_path_to_ident(&p_arg.path).unwrap()).unwrap();
-							assert_eq!(p_arg.path.segments.len(), 1);
-							if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
-								self.write_template_generics(w, &mut args.args.iter().map(|gen|
-									if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-									generics, is_ref, in_crate);
-							} else { unimplemented!(); }
-							write!(w, ">").unwrap();
-						}
+						assert!(resolved_generic == "Vec" || resolved_generic == "Result");
+						let mut inner_args = Vec::new();
+						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
+							for arg in args.args.iter() {
+								if let syn::GenericArgument::Type(t) = arg { inner_args.push(t) } else { unimplemented!() };
+							}
+						} else { unimplemented!(); }
+						assert!(self.write_c_mangled_container_path(w, inner_args, generics, &resolved_generic, is_ref, false, false));
 					} else if resolved_generic == "Option" {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
@@ -1894,6 +1884,15 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				let err_str = String::from_utf8(b_ty).unwrap();
 				let is_clonable = self.is_clonable(&ok_str) && self.is_clonable(&err_str);
 				write_result_block(&mut created_container, &mangled_container, &ok_str, &err_str, is_clonable);
+				if is_clonable {
+					self.crate_types.clonable_types.insert(Self::generated_container_path().to_owned() + "::" + &mangled_container);
+				}
+			} else if container_type == "Vec" {
+				let mut a_ty: Vec<u8> = Vec::new();
+				self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t), generics, is_ref, true);
+				let ty = String::from_utf8(a_ty).unwrap();
+				let is_clonable = self.is_clonable(&ty);
+				write_vec_block(&mut created_container, &mangled_container, &ty, is_clonable);
 				if is_clonable {
 					self.crate_types.clonable_types.insert(Self::generated_container_path().to_owned() + "::" + &mangled_container);
 				}
