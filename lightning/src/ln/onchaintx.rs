@@ -490,6 +490,8 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
+	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
+	/// are not expected to fail, and if they do, we may lose funds.
 	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_claim_datas: &ClaimTxBumpMaterial, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u32, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -906,20 +908,29 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 
 	pub(crate) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) {
 		self.prev_holder_commitment = self.holder_commitment.take();
+		self.holder_htlc_sigs = None;
 		self.holder_commitment = Some(tx);
 	}
 
+	// Normally holder HTLCs are signed at the same time as the holder commitment tx.  However,
+	// in some configurations, the holder commitment tx has been signed and broadcast by a
+	// ChannelMonitor replica, so we handle that case here.
 	fn sign_latest_holder_htlcs(&mut self) {
-		if let Some(ref holder_commitment) = self.holder_commitment {
-			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(holder_commitment, &self.secp_ctx) {
+		if self.holder_htlc_sigs.is_none() {
+			if let Some(ref holder_commitment) = self.holder_commitment {
+				let (_sig, sigs) = self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 				self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
 			}
 		}
 	}
 
+	// Normally only the latest commitment tx and HTLCs need to be signed.  However, in some
+	// configurations we may have updated our holder commtiment but a replica of the ChannelMonitor
+	// broadcast the previous one before we sync with it.  We handle that case here.
 	fn sign_prev_holder_htlcs(&mut self) {
-		if let Some(ref holder_commitment) = self.prev_holder_commitment {
-			if let Ok(sigs) = self.key_storage.sign_holder_commitment_htlc_transactions(holder_commitment, &self.secp_ctx) {
+		if self.prev_holder_htlc_sigs.is_none() {
+			if let Some(ref holder_commitment) = self.prev_holder_commitment {
+				let (_sig, sigs) = self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign previous holder commitment");
 				self.prev_holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
 			}
 		}
@@ -941,8 +952,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			match self.key_storage.sign_holder_commitment(&holder_commitment, &self.secp_ctx) {
-				Ok(sig) => {
+			match self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx) {
+				Ok((sig, htlc_sigs)) => {
+					self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
 					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
 				},
 				Err(_) => return None,
@@ -955,8 +967,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			match self.key_storage.sign_holder_commitment(holder_commitment, &self.secp_ctx) {
-				Ok(sig) => {
+			match self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx) {
+				Ok((sig, htlc_sigs)) => {
+					self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
 					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
 				},
 				Err(_) => return None,
@@ -982,7 +995,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 				}
 			}
 		}
-		if self.prev_holder_commitment.is_some() {
+		if htlc_tx.is_none() && self.prev_holder_commitment.is_some() {
 			let commitment_txid = self.prev_holder_commitment.as_ref().unwrap().trust().txid();
 			if commitment_txid == outp.txid {
 				self.sign_prev_holder_htlcs();
