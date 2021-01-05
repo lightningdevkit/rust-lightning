@@ -612,17 +612,15 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
 							};
 
-							if let Ok(sig) = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx) {
-								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-								if htlc.is_some() {
-									bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
-								} else {
-									bumped_tx.input[i].witness.push(vec!(1));
-								}
-								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-							} else { return None; }
-							//TODO: panic ?
+							let sig = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx).expect("sign justice tx");
+							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+							if htlc.is_some() {
+								bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+							} else {
+								bumped_tx.input[i].witness.push(vec!(1));
+							}
+							bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 
 							log_trace!(logger, "Going to broadcast Penalty Transaction {} claiming revoked {} output {} from {} with new feerate {}...", bumped_tx.txid(), if *input_descriptor == InputDescriptors::RevokedOutput { "to_holder" } else if *input_descriptor == InputDescriptors::RevokedOfferedHTLC { "offered" } else if *input_descriptor == InputDescriptors::RevokedReceivedHTLC { "received" } else { "" }, outp.vout, outp.txid, new_feerate);
 						}
@@ -632,17 +630,16 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							if let Ok(sig) = self.key_storage.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx) {
-								bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-								bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
-								if let &Some(preimage) = preimage {
-									bumped_tx.input[i].witness.push(preimage.0.to_vec());
-								} else {
-									// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-									bumped_tx.input[i].witness.push(vec![]);
-								}
-								bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+							let sig = self.key_storage.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx).expect("sign counterparty HTLC tx");
+							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
+							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+							if let &Some(preimage) = preimage {
+								bumped_tx.input[i].witness.push(preimage.0.to_vec());
+							} else {
+								// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
+								bumped_tx.input[i].witness.push(vec![]);
 							}
+							bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 							log_trace!(logger, "Going to broadcast Claim Transaction {} claiming counterparty {} htlc output {} from {} with new feerate {}...", bumped_tx.txid(), if preimage.is_some() { "offered" } else { "received" }, outp.vout, outp.txid, new_feerate);
 						}
 					},
@@ -952,13 +949,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			match self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx) {
-				Ok((sig, htlc_sigs)) => {
-					self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
-					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
-				},
-				Err(_) => return None,
-			}
+			let (sig, htlc_sigs) = self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("signing holder commitment");
+			self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
+			Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
 		} else {
 			None
 		}
@@ -967,13 +960,9 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Option<Transaction> {
 		if let Some(ref mut holder_commitment) = self.holder_commitment {
-			match self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx) {
-				Ok((sig, htlc_sigs)) => {
-					self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
-					Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
-				},
-				Err(_) => return None,
-			}
+			let (sig, htlc_sigs) = self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+			self.holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, htlc_sigs));
+			Some(holder_commitment.add_holder_sig(funding_redeemscript, sig))
 		} else {
 			None
 		}
