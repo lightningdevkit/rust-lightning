@@ -1758,102 +1758,28 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// *** C Container Type Equivalent and alias Printing ***
 	// ******************************************************
 
-	fn write_template_constructor<W: std::io::Write>(&mut self, w: &mut W, container_type: &str, mangled_container: &str, args: &Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) -> bool {
-		if container_type.ends_with("Tuple") {
-			write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
-			for (idx, gen) in args.iter().enumerate() {
-				write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
-				if !self.write_c_type_intern(w, gen, None, false, false, false) { return false; }
-			}
-			writeln!(w, ") -> {} {{", mangled_container).unwrap();
-			write!(w, "\t{} {{ ", mangled_container).unwrap();
-			for idx in 0..args.len() {
-				write!(w, "{}, ", ('a' as u8 + idx as u8) as char).unwrap();
-			}
-			writeln!(w, "}}\n}}\n").unwrap();
-		} else {
-			writeln!(w, "").unwrap();
-		}
-		true
-	}
-
-	fn write_template_generics<'b, W: std::io::Write>(&mut self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool, in_crate: bool) {
+	fn write_template_generics<'b, W: std::io::Write>(&mut self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) -> bool {
+		assert!(!is_ref); // We don't currently support outer reference types
 		for (idx, t) in args.enumerate() {
 			if idx != 0 {
 				write!(w, ", ").unwrap();
 			}
-			if let syn::Type::Tuple(tup) = t {
-				if tup.elems.is_empty() {
-					write!(w, "u8").unwrap();
-				} else {
-					let mut inner_args = Vec::new();
-					for arg in tup.elems.iter() {
-						inner_args.push(arg);
-					}
-					assert!(self.write_c_mangled_container_path(w, inner_args, generics, &format!("{}Tuple", tup.elems.len()), is_ref, false, false));
-				}
-			} else if let syn::Type::Path(p_arg) = t {
-				let resolved_generic = self.resolve_path(&p_arg.path, generics);
-				if self.is_primitive(&resolved_generic) {
-					write!(w, "{}", resolved_generic).unwrap();
-				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
-					if self.is_known_container(&resolved_generic, is_ref) {
-						assert!(resolved_generic == "Vec" || resolved_generic == "Result");
-						let mut inner_args = Vec::new();
-						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
-							for arg in args.args.iter() {
-								if let syn::GenericArgument::Type(t) = arg { inner_args.push(t) } else { unimplemented!() };
-							}
-						} else { unimplemented!(); }
-						assert!(self.write_c_mangled_container_path(w, inner_args, generics, &resolved_generic, is_ref, false, false));
-					} else if resolved_generic == "Option" {
-						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
-							self.write_template_generics(w, &mut args.args.iter().map(|gen|
-								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								generics, is_ref, in_crate);
-						} else { unimplemented!(); }
-					} else if in_crate {
-						write!(w, "{}", c_type).unwrap();
-					} else {
-						self.write_rust_type(w, generics, &t);
-					}
-				} else {
-					// If we just write out resolved_generic, it may mostly work, however for
-					// original types which are generic, we need the template args. We could
-					// figure them out and write them out, too, but its much easier to just
-					// reference the native{} type alias which exists at least for opaque types.
-					if in_crate {
-						write!(w, "crate::{}", resolved_generic).unwrap();
-					} else {
-						let path_name: Vec<&str> = resolved_generic.rsplitn(2, "::").collect();
-						if path_name.len() > 1 {
-							write!(w, "crate::{}::native{}", path_name[1], path_name[0]).unwrap();
-						} else {
-							write!(w, "crate::native{}", path_name[0]).unwrap();
-						}
-					}
-				}
-			} else if let syn::Type::Reference(r_arg) = t {
+			if let syn::Type::Reference(r_arg) = t {
+				if !self.write_c_type_intern(w, &*r_arg.elem, generics, false, false, false) { return false; }
+
+				// While write_c_type_intern, above is correct, we don't want to blindly convert a
+				// reference to something stupid, so check that the container is either opaque or a
+				// predefined type (currently only Transaction).
 				if let syn::Type::Path(p_arg) = &*r_arg.elem {
 					let resolved = self.resolve_path(&p_arg.path, generics);
-					if self.crate_types.opaques.get(&resolved).is_some() {
-						write!(w, "crate::{}", resolved).unwrap();
-					} else {
-						let cty = self.c_type_from_path(&resolved, true, true).expect("Template generics should be opaque or have a predefined mapping");
-						w.write(cty.as_bytes()).unwrap();
-					}
+					assert!(self.crate_types.opaques.get(&resolved).is_some() ||
+							self.c_type_from_path(&resolved, true, true).is_some(), "Template generics should be opaque or have a predefined mapping");
 				} else { unimplemented!(); }
-			} else if let syn::Type::Array(a_arg) = t {
-				if let syn::Type::Path(p_arg) = &*a_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path, generics);
-					assert!(self.is_primitive(&resolved));
-					if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(len), .. }) = &a_arg.len {
-						write!(w, "{}",
-							self.c_type_from_path(&format!("[{}; {}]", resolved, len.base10_digits()), is_ref, false).unwrap()).unwrap();
-					}
-				}
+			} else {
+				if !self.write_c_type_intern(w, t, generics, false, false, false) { return false; }
 			}
 		}
+		true
 	}
 	fn check_create_container(&mut self, mangled_container: String, container_type: &str, args: Vec<&syn::Type>, generics: Option<&GenericTypes>, is_ref: bool) -> bool {
 		if !self.crate_types.templates_defined.get(&mangled_container).is_some() {
@@ -1865,10 +1791,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if tup.elems.is_empty() {
 						write!(&mut a_ty, "()").unwrap();
 					} else {
-						self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref, true);
+						if !self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref) { return false; }
 					}
 				} else {
-					self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref, true);
+					if !self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t).take(1), generics, is_ref) { return false; }
 				}
 
 				let mut b_ty: Vec<u8> = Vec::new();
@@ -1876,10 +1802,10 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if tup.elems.is_empty() {
 						write!(&mut b_ty, "()").unwrap();
 					} else {
-						self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref, true);
+						if !self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref) { return false; }
 					}
 				} else {
-					self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref, true);
+					if !self.write_template_generics(&mut b_ty, &mut args.iter().map(|t| *t).skip(1), generics, is_ref) { return false; }
 				}
 
 				let ok_str = String::from_utf8(a_ty).unwrap();
@@ -1891,7 +1817,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			} else if container_type == "Vec" {
 				let mut a_ty: Vec<u8> = Vec::new();
-				self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t), generics, is_ref, true);
+				if !self.write_template_generics(&mut a_ty, &mut args.iter().map(|t| *t), generics, is_ref) { return false; }
 				let ty = String::from_utf8(a_ty).unwrap();
 				let is_clonable = self.is_clonable(&ty);
 				write_vec_block(&mut created_container, &mangled_container, &ty, is_clonable);
@@ -1903,7 +1829,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				let mut is_clonable = true;
 				for arg in args.iter() {
 					let mut ty: Vec<u8> = Vec::new();
-					self.write_template_generics(&mut ty, &mut [arg].iter().map(|t| **t), generics, is_ref, true);
+					if !self.write_template_generics(&mut ty, &mut [arg].iter().map(|t| **t), generics, is_ref) { return false; }
 					let ty_str = String::from_utf8(ty).unwrap();
 					if !self.is_clonable(&ty_str) {
 						is_clonable = false;
