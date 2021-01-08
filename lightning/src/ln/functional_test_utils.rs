@@ -21,7 +21,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingChannelKeys;
 use util::test_utils;
-use util::test_utils::TestChainMonitor;
+use util::test_utils::{TestChainMonitor, OnlyReadsKeysInterface};
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 use util::config::UserConfig;
@@ -170,9 +170,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let old_monitors = self.chain_monitor.chain_monitor.monitors.lock().unwrap();
 				for (_, old_monitor) in old_monitors.iter() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
-					old_monitor.serialize_for_disk(&mut w).unwrap();
+					old_monitor.write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
-						&mut ::std::io::Cursor::new(&w.0)).unwrap();
+						&mut ::std::io::Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
 			}

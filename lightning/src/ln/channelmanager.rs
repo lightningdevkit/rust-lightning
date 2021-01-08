@@ -3693,7 +3693,7 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Writeable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
+impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
 	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
@@ -3784,7 +3784,8 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
         L::Target: Logger,
 {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
-	/// deserialization.
+	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
+	/// signing data.
 	pub keys_manager: K,
 
 	/// The fee_estimator for use in the ChannelManager in the future.
@@ -3846,7 +3847,7 @@ impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+impl<'a, ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F, L>>)
 	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
@@ -3860,7 +3861,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+impl<'a, ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)
 	where M::Target: chain::Watch<Keys=ChanSigner>,
         T::Target: BroadcasterInterface,
@@ -3886,7 +3887,7 @@ impl<'a, ChanSigner: ChannelKeys + Readable, M: Deref, T: Deref, K: Deref, F: De
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
-			let mut channel: Channel<ChanSigner> = Readable::read(reader)?;
+			let mut channel: Channel<ChanSigner> = Channel::read(reader, &args.keys_manager)?;
 			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}

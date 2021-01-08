@@ -33,12 +33,14 @@ use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
+use lightning::ln::msgs::DecodeError;
 use lightning::routing::router::get_route;
 use lightning::routing::network_graph::NetGraphMsgHandler;
+use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider,Event};
 use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 use lightning::util::logger::Logger;
-use lightning::util::config::UserConfig;
+use lightning::util::ser::Readable;
 
 use utils::test_logger;
 use utils::test_persister::TestPersister;
@@ -298,6 +300,10 @@ impl KeysInterface for KeyProvider {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+	}
+
+	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingChannelKeys, DecodeError> {
+		EnforcingChannelKeys::read(&mut std::io::Cursor::new(data))
 	}
 }
 

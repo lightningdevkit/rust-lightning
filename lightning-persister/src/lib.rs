@@ -7,13 +7,15 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Cha
 use lightning::chain::channelmonitor;
 use lightning::chain::keysinterface::ChannelKeys;
 use lightning::chain::transaction::OutPoint;
-use lightning::util::ser::{Writeable, Readable};
+use lightning::util::ser::Writeable;
 use std::fs;
 use std::io::Error;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use {
+	lightning::chain::keysinterface::KeysInterface,
+	lightning::util::ser::ReadableArgs,
 	bitcoin::{BlockHash, Txid},
 	bitcoin::hashes::hex::FromHex,
 	std::collections::HashMap,
@@ -43,9 +45,9 @@ trait DiskWriteable {
 	fn write(&self, writer: &mut fs::File) -> Result<(), Error>;
 }
 
-impl<ChanSigner: ChannelKeys + Writeable> DiskWriteable for ChannelMonitor<ChanSigner> {
+impl<ChanSigner: ChannelKeys> DiskWriteable for ChannelMonitor<ChanSigner> {
 	fn write(&self, writer: &mut fs::File) -> Result<(), Error> {
-		self.serialize_for_disk(writer)
+		Writeable::write(self, writer)
 	}
 }
 
@@ -94,8 +96,8 @@ impl FilesystemPersister {
 	}
 
 	#[cfg(test)]
-	fn load_channel_data<ChanSigner: ChannelKeys + Readable + Writeable>(&self) ->
-		Result<HashMap<OutPoint, ChannelMonitor<ChanSigner>>, ChannelMonitorUpdateErr> {
+	fn load_channel_data<Keys: KeysInterface>(&self, keys: &Keys) ->
+		Result<HashMap<OutPoint, ChannelMonitor<Keys::ChanKeySigner>>, ChannelMonitorUpdateErr> {
 		if let Err(_) = fs::create_dir_all(&self.path_to_channel_data) {
 			return Err(ChannelMonitorUpdateErr::PermanentFailure);
 		}
@@ -118,7 +120,7 @@ impl FilesystemPersister {
 			if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
 			if let Ok((_, loaded_monitor)) =
-				<(BlockHash, ChannelMonitor<ChanSigner>)>::read(&mut Cursor::new(&contents.unwrap())) {
+				<(BlockHash, ChannelMonitor<Keys::ChanKeySigner>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
 				res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
 			} else {
 				return Err(ChannelMonitorUpdateErr::PermanentFailure);
@@ -128,7 +130,7 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Readable + Writeable + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
+impl<ChanSigner: ChannelKeys + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		self.write_channel_data(funding_txo, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
@@ -168,7 +170,6 @@ mod tests {
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ErrorAction;
-	use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
 	use lightning::util::events::{MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writer;
 	use lightning::util::test_utils;
@@ -206,20 +207,20 @@ mod tests {
 
 		// Check that the persisted channel data is empty before any channels are
 		// open.
-		let mut persisted_chan_data_0 = persister_0.load_channel_data::<EnforcingChannelKeys>().unwrap();
+		let mut persisted_chan_data_0 = persister_0.load_channel_data(nodes[0].keys_manager).unwrap();
 		assert_eq!(persisted_chan_data_0.keys().len(), 0);
-		let mut persisted_chan_data_1 = persister_1.load_channel_data::<EnforcingChannelKeys>().unwrap();
+		let mut persisted_chan_data_1 = persister_1.load_channel_data(nodes[1].keys_manager).unwrap();
 		assert_eq!(persisted_chan_data_1.keys().len(), 0);
 
 		// Helper to make sure the channel is on the expected update ID.
 		macro_rules! check_persisted_data {
 			($expected_update_id: expr) => {
-				persisted_chan_data_0 = persister_0.load_channel_data::<EnforcingChannelKeys>().unwrap();
+				persisted_chan_data_0 = persister_0.load_channel_data(nodes[0].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_0.keys().len(), 1);
 				for mon in persisted_chan_data_0.values() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
-				persisted_chan_data_1 = persister_1.load_channel_data::<EnforcingChannelKeys>().unwrap();
+				persisted_chan_data_1 = persister_1.load_channel_data(nodes[1].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_1.keys().len(), 1);
 				for mon in persisted_chan_data_1.values() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);

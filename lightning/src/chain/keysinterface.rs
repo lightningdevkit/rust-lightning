@@ -204,7 +204,7 @@ impl Readable for SpendableOutputDescriptor {
 // routine).
 // TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
-pub trait ChannelKeys : Send+Clone {
+pub trait ChannelKeys : Send+Clone + Writeable {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
@@ -344,6 +344,14 @@ pub trait KeysInterface: Send + Sync {
 	/// onion packets and for temporary channel IDs. There is no requirement that these be
 	/// persisted anywhere, though they must be unique across restarts.
 	fn get_secure_random_bytes(&self) -> [u8; 32];
+
+	/// Reads a `ChanKeySigner` for this `KeysInterface` from the given input stream.
+	/// This is only called during deserialization of other objects which contain
+	/// `ChannelKeys`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
+	/// The bytes are exactly those which `<Self::ChanKeySigner as Writeable>::write()` writes, and
+	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
+	/// you've read all of the provided bytes to ensure no corruption occurred.
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, DecodeError>;
 }
 
 #[derive(Clone)]
@@ -808,5 +816,9 @@ impl KeysInterface for KeysManager {
 
 		sha.input(b"Unique Secure Random Bytes Salt");
 		Sha256::from_engine(sha).into_inner()
+	}
+
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> {
+		InMemoryChannelKeys::read(&mut std::io::Cursor::new(reader))
 	}
 }
