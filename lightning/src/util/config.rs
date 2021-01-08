@@ -15,7 +15,7 @@ use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 /// Configuration we set when applicable.
 ///
 /// Default::default() provides sane defaults.
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeConfig {
 	/// Confirmations we will wait for before considering the channel locked in.
 	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
@@ -209,7 +209,7 @@ impl_writeable!(ChannelConfig, 8+1+1, {
 ///
 /// Default::default() provides sane defaults for most configurations
 /// (but currently with 0 relay fees!)
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct UserConfig {
 	/// Channel config that we propose to our counterparty.
 	pub own_channel_config: ChannelHandshakeConfig,
