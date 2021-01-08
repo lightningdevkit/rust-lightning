@@ -100,7 +100,7 @@ pub trait BlockSource : Sync + Send {
 /// related chain data. It serves as an adapter for `BlockSource`.
 pub trait Poll {
 	/// Returns a chain tip in terms of its relationship to the provided chain tip.
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>;
 
 	/// Returns the header that preceded the given header in the chain.

@@ -16,19 +16,19 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainPo
 }
 
 impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll for ChainPoller<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>
 	{
 		Box::pin(async move {
 			let (block_hash, height) = self.block_source.get_best_block().await?;
-			if block_hash == best_chain_tip.header.block_hash() {
+			if block_hash == best_known_chain_tip.header.block_hash() {
 				return Ok(ChainTip::Common);
 			}
 
 			let chain_tip = self.block_source
 				.get_header(&block_hash, height).await?
 				.validate(block_hash)?;
-			if chain_tip.chainwork > best_chain_tip.chainwork {
+			if chain_tip.chainwork > best_known_chain_tip.chainwork {
 				Ok(ChainTip::Better(chain_tip))
 			} else {
 				Ok(ChainTip::Worse(chain_tip))
@@ -97,11 +97,11 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainMu
 }
 
 impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll for ChainMultiplexer<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_chain_tip: ValidatedBlockHeader) ->
+	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>
 	{
 		Box::pin(async move {
-			let mut heaviest_chain_tip = best_chain_tip;
+			let mut heaviest_chain_tip = best_known_chain_tip;
 			let mut best_result = Err(BlockSourceError::Persistent);
 			for (i, (poller, error)) in self.block_sources.iter_mut().enumerate() {
 				if let BlockSourceError::Persistent = error {
@@ -181,11 +181,11 @@ mod tests {
 	#[tokio::test]
 	async fn poll_empty_chain() {
 		let mut chain = Blockchain::default().with_height(0);
-		let best_chain_tip = chain.tip();
+		let best_known_chain_tip = chain.tip();
 		chain.disconnect_tip();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Transient),
 			Ok(_) => panic!("Expected error"),
 		}
@@ -194,10 +194,10 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_without_headers() {
 		let mut chain = Blockchain::default().with_height(1).without_headers();
-		let best_chain_tip = chain.at_height(0);
+		let best_known_chain_tip = chain.at_height(0);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
 		}
@@ -206,14 +206,14 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_invalid_pow() {
 		let mut chain = Blockchain::default().with_height(1);
-		let best_chain_tip = chain.at_height(0);
+		let best_known_chain_tip = chain.at_height(0);
 
 		// Invalidate the tip by changing its target.
 		chain.blocks.last_mut().unwrap().header.bits =
 			BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0; 32]));
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
 		}
@@ -222,10 +222,10 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_malformed_headers() {
 		let mut chain = Blockchain::default().with_height(1).malformed_headers();
-		let best_chain_tip = chain.at_height(0);
+		let best_known_chain_tip = chain.at_height(0);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
 		}
@@ -234,10 +234,10 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_common_tip() {
 		let mut chain = Blockchain::default().with_height(0);
-		let best_chain_tip = chain.tip();
+		let best_known_chain_tip = chain.tip();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Common),
 		}
@@ -246,7 +246,7 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_uncommon_tip_but_equal_chainwork() {
 		let mut chain = Blockchain::default().with_height(1);
-		let best_chain_tip = chain.tip();
+		let best_known_chain_tip = chain.tip();
 
 		// Change the nonce to get a different block hash with the same chainwork.
 		chain.blocks.last_mut().unwrap().header.nonce += 1;
@@ -254,10 +254,10 @@ mod tests {
 		let worse_chain_tip = chain.tip();
 		let worse_chain_tip_hash = worse_chain_tip.header.block_hash();
 		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
-		assert_eq!(best_chain_tip.chainwork, worse_chain_tip.chainwork);
+		assert_eq!(best_known_chain_tip.chainwork, worse_chain_tip.chainwork);
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
 		}
@@ -266,7 +266,7 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_worse_tip() {
 		let mut chain = Blockchain::default().with_height(1);
-		let best_chain_tip = chain.tip();
+		let best_known_chain_tip = chain.tip();
 		chain.disconnect_tip();
 
 		let worse_chain_tip = chain.tip();
@@ -274,7 +274,7 @@ mod tests {
 		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(best_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
 		}
@@ -283,16 +283,16 @@ mod tests {
 	#[tokio::test]
 	async fn poll_chain_with_better_tip() {
 		let mut chain = Blockchain::default().with_height(1);
-		let worse_chain_tip = chain.at_height(0);
+		let best_known_chain_tip = chain.at_height(0);
 
-		let best_chain_tip = chain.tip();
-		let best_chain_tip_hash = best_chain_tip.header.block_hash();
-		let best_chain_tip = best_chain_tip.validate(best_chain_tip_hash).unwrap();
+		let better_chain_tip = chain.tip();
+		let better_chain_tip_hash = better_chain_tip.header.block_hash();
+		let better_chain_tip = better_chain_tip.validate(better_chain_tip_hash).unwrap();
 
 		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
-		match poller.poll_chain_tip(worse_chain_tip).await {
+		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
-			Ok(tip) => assert_eq!(tip, ChainTip::Better(best_chain_tip)),
+			Ok(tip) => assert_eq!(tip, ChainTip::Better(better_chain_tip)),
 		}
 	}
 }
