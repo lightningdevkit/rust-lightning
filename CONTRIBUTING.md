@@ -30,8 +30,12 @@ Getting Started
 First and foremost, start small.
 
 This doesn't mean don't be ambitious with the breadth and depth of your contributions but rather
-understand the project context and culture before investing an asymmetric number of hours on
+understand the project culture before investing an asymmetric number of hours on
 development compared to your merged work.
+
+Browsing through the [meeting minutes](https://github.com/rust-bitcoin/rust-lightning/wiki/Meetings)
+is a good first step. You will learn who is working on what, how releases are drafted, what are the
+pending tasks to deliver, where you can contribute review bandwidth, etc.
 
 Even if you have an extensive open source background or sound software engineering skills, consider
 that the reviewers' comprehension of the code is as much important as technical correctness.
@@ -42,6 +46,8 @@ a "soft" commitment.
 
 If you're eager to increase the velocity of the dev process, reviewing other contributors work is
 the best you can do while waiting review on yours.
+
+Also, getting familiar with the [glossary](GLOSSARY.md) will streamline discussions with regular contributors.
 
 Contribution Workflow
 ---------------------
