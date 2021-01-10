@@ -491,6 +491,118 @@ impl<P: Poll, CL: ChainListener> MicroSPVClient<P, CL> {
 }
 
 #[cfg(test)]
+mod spv_client_tests {
+	use crate::test_utils::{Blockchain, NullChainListener};
+	use super::*;
+
+	use bitcoin::network::constants::Network;
+
+	#[tokio::test]
+	async fn poll_from_chain_without_headers() {
+		let mut chain = Blockchain::default().with_height(3).without_headers();
+		let best_tip = chain.at_height(1);
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(best_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
+			Ok(_) => panic!("Expected error"),
+		}
+		assert_eq!(client.chain_tip, best_tip);
+	}
+
+	#[tokio::test]
+	async fn poll_from_chain_with_common_tip() {
+		let mut chain = Blockchain::default().with_height(3);
+		let common_tip = chain.tip();
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(common_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((chain_tip, blocks_connected)) => {
+				assert_eq!(chain_tip, ChainTip::Common);
+				assert!(!blocks_connected);
+			},
+		}
+		assert_eq!(client.chain_tip, common_tip);
+	}
+
+	#[tokio::test]
+	async fn poll_from_chain_with_better_tip() {
+		let mut chain = Blockchain::default().with_height(3);
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((chain_tip, blocks_connected)) => {
+				assert_eq!(chain_tip, ChainTip::Better(new_tip));
+				assert!(blocks_connected);
+			},
+		}
+		assert_eq!(client.chain_tip, new_tip);
+	}
+
+	#[tokio::test]
+	async fn poll_from_chain_with_better_tip_and_without_any_new_blocks() {
+		let mut chain = Blockchain::default().with_height(3).without_blocks(2..);
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((chain_tip, blocks_connected)) => {
+				assert_eq!(chain_tip, ChainTip::Better(new_tip));
+				assert!(!blocks_connected);
+			},
+		}
+		assert_eq!(client.chain_tip, old_tip);
+	}
+
+	#[tokio::test]
+	async fn poll_from_chain_with_better_tip_and_without_some_new_blocks() {
+		let mut chain = Blockchain::default().with_height(3).without_blocks(3..);
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((chain_tip, blocks_connected)) => {
+				assert_eq!(chain_tip, ChainTip::Better(new_tip));
+				assert!(blocks_connected);
+			},
+		}
+		assert_eq!(client.chain_tip, chain.at_height(2));
+	}
+
+	#[tokio::test]
+	async fn poll_from_chain_with_worse_tip() {
+		let mut chain = Blockchain::default().with_height(3);
+		let best_tip = chain.tip();
+		chain.disconnect_tip();
+		let worse_tip = chain.tip();
+
+		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut client = MicroSPVClient::init(best_tip, poller, NullChainListener {});
+		match client.poll_best_tip().await {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok((chain_tip, blocks_connected)) => {
+				assert_eq!(chain_tip, ChainTip::Worse(worse_tip));
+				assert!(!blocks_connected);
+			},
+		}
+		assert_eq!(client.chain_tip, best_tip);
+	}
+}
+
+#[cfg(test)]
 mod chain_notifier_tests {
 	use crate::test_utils::{Blockchain, MockChainListener};
 	use super::*;
