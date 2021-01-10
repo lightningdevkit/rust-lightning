@@ -447,7 +447,7 @@ impl<P: Poll, CL: ChainListener> MicroSPVClient<P, CL> {
 	/// useful when you have a block source which is more censorship-resistant than others but
 	/// which only provides headers. In this case, we can use such source(s) to learn of a censorship
 	/// attack without giving up privacy by querying a privacy-losing block sources.
-	pub fn init(chain_tip: ValidatedBlockHeader, chain_poller: P, chain_listener: CL) -> Self {
+	pub fn new(chain_tip: ValidatedBlockHeader, chain_poller: P, chain_listener: CL) -> Self {
 		let header_cache = HeaderCache::new();
 		let chain_notifier = ChainNotifier { header_cache };
 		Self { chain_tip, chain_poller, chain_notifier, chain_listener }
@@ -503,7 +503,7 @@ mod spv_client_tests {
 		let best_tip = chain.at_height(1);
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(best_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(best_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
@@ -517,7 +517,7 @@ mod spv_client_tests {
 		let common_tip = chain.tip();
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(common_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(common_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -535,7 +535,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -553,7 +553,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -571,7 +571,7 @@ mod spv_client_tests {
 		let old_tip = chain.at_height(1);
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(old_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -590,7 +590,7 @@ mod spv_client_tests {
 		let worse_tip = chain.tip();
 
 		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
-		let mut client = MicroSPVClient::init(best_tip, poller, NullChainListener {});
+		let mut client = MicroSPVClient::new(best_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok((chain_tip, blocks_connected)) => {
@@ -999,7 +999,7 @@ mod tests {
 		let mut source_two = &chain_two;
 		let mut source_three = &header_chain;
 		let mut source_four = &backup_chain;
-		let mut client = MicroSPVClient::init(
+		let mut client = MicroSPVClient::new(
 			(&chain_one).get_header(&block_1a_hash, Some(1)).await.unwrap().validate(block_1a_hash).unwrap(),
 			poller::ChainMultiplexer::new(
 				vec![&mut source_one as &mut dyn BlockSource, &mut source_two as &mut dyn BlockSource, &mut source_three as &mut dyn BlockSource],
