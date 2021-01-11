@@ -6,17 +6,21 @@ extern crate libc;
 
 use bitcoin::hashes::hex::ToHex;
 use crate::util::DiskWriteable;
+use lightning::chain;
+use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr};
 use lightning::chain::channelmonitor;
-use lightning::chain::keysinterface::ChannelKeys;
+use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
 use lightning::chain::transaction::OutPoint;
+use lightning::ln::channelmanager::ChannelManager;
+use lightning::util::logger::Logger;
 use lightning::util::ser::Writeable;
 use std::fs;
 use std::io::Error;
+use std::sync::Arc;
 
 #[cfg(test)]
 use {
-	lightning::chain::keysinterface::KeysInterface,
 	lightning::util::ser::ReadableArgs,
 	bitcoin::{BlockHash, Txid},
 	bitcoin::hashes::hex::FromHex,
@@ -46,6 +50,19 @@ impl<ChanSigner: ChannelKeys> DiskWriteable for ChannelMonitor<ChanSigner> {
 	}
 }
 
+impl<ChanSigner, M, T, K, F, L> DiskWriteable for ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+where ChanSigner: ChannelKeys + Writeable,
+	    M: chain::Watch<Keys=ChanSigner>,
+	    T: BroadcasterInterface,
+	    K: KeysInterface<ChanKeySigner=ChanSigner>,
+	    F: FeeEstimator,
+	    L: Logger,
+{
+	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
+		self.write(writer)
+	}
+}
+
 impl FilesystemPersister {
 	/// Initialize a new FilesystemPersister and set the path to the individual channels'
 	/// files.
@@ -53,6 +70,26 @@ impl FilesystemPersister {
 		return Self {
 			path_to_channel_data,
 		}
+	}
+
+	pub fn get_data_dir(&self) -> String {
+		self.path_to_channel_data.clone()
+	}
+
+	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
+	/// initialization, within a file called "manager".
+	pub fn persist_manager<ChanSigner, M, T, K, F, L>(
+		data_dir: String,
+		manager: &ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+	) -> Result<(), std::io::Error>
+	where ChanSigner: ChannelKeys + Writeable,
+        M: chain::Watch<Keys=ChanSigner>,
+        T: BroadcasterInterface,
+        K: KeysInterface<ChanKeySigner=ChanSigner>,
+        F: FeeEstimator,
+        L: Logger
+	{
+		util::write_to_file(data_dir, "manager".to_string(), manager)
 	}
 
 	#[cfg(test)]

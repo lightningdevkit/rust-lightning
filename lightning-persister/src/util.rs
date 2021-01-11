@@ -17,7 +17,7 @@ pub(crate) trait DiskWriteable {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error>;
 }
 
-pub fn get_full_filepath(filepath: String, filename: String) -> String {
+pub(crate) fn get_full_filepath(filepath: String, filename: String) -> String {
 	let mut path = PathBuf::from(filepath);
 	path.push(filename);
 	path.to_str().unwrap().to_string()
