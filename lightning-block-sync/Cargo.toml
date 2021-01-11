@@ -1,0 +1,13 @@
+[package]
+name = "lightning-block-sync"
+version = "0.0.1"
+authors = ["Jeffrey Czyz", "Matt Corallo"]
+license = "Apache-2.0"
+edition = "2018"
+description = """
+Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
+"""
+
+[dependencies]
+bitcoin = "0.24"
+lightning = { version = "0.0.12", path = "../lightning" }
