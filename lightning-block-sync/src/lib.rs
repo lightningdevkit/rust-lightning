@@ -410,8 +410,8 @@ pub async fn init_sync_listener<CL: ChainListener, B: BlockSource>(new_block: Bl
 /// Unbounded cache of header data keyed by block hash.
 pub(crate) type HeaderCache = std::collections::HashMap<BlockHash, ValidatedBlockHeader>;
 
-/// Keep the chain that a chain listener knows about up-to-date with the best chain from any of the
-/// given block_sources.
+/// A lightweight client for keeping a listener in sync with the chain, which is polled using one
+/// one or more block sources.
 ///
 /// This implements a pretty bare-bones SPV client, checking all relevant commitments and finding
 /// the heaviest chain, but not storing the full header chain, leading to some important
@@ -453,8 +453,11 @@ impl<P: Poll, CL: ChainListener> MicroSPVClient<P, CL> {
 		Self { chain_tip, chain_poller, chain_notifier, chain_listener }
 	}
 
-	/// Check each source for a new best tip and update the chain listener accordingly.
-	/// Returns true if some blocks were [dis]connected, false otherwise.
+	/// Polls for the best tip and updates the chain listener with any connected or disconnected
+	/// blocks accordingly.
+	///
+	/// Returns the best polled chain tip relative to the previous best known tip and whether any
+	/// blocks were indeed connected or disconnected.
 	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
 		let chain_tip = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
 		let blocks_connected = match chain_tip {
