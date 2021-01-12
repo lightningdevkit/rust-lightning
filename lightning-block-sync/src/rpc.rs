@@ -1,4 +1,9 @@
+use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{HttpClient, HttpEndpoint, JsonResponse};
+
+use bitcoin::blockdata::block::Block;
+use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::hex::ToHex;
 
 use serde_json;
 
@@ -58,6 +63,29 @@ impl RpcClient {
 		}
 
 		JsonResponse(result.take()).try_into()
+	}
+}
+
+impl BlockSource for RpcClient {
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+		Box::pin(async move {
+			let header_hash = serde_json::json!(header_hash.to_hex());
+			Ok(self.call_method("getblockheader", &[header_hash]).await?)
+		})
+	}
+
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+		Box::pin(async move {
+			let header_hash = serde_json::json!(header_hash.to_hex());
+			let verbosity = serde_json::json!(0);
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await?)
+		})
+	}
+
+	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
+		Box::pin(async move {
+			Ok(self.call_method("getblockchaininfo", &[]).await?)
+		})
 	}
 }
 

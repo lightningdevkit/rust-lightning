@@ -20,6 +20,12 @@ pub mod rest;
 #[cfg(feature = "rpc-client")]
 pub mod rpc;
 
+#[cfg(any(feature = "rest-client", feature = "rpc-client"))]
+mod convert;
+
+#[cfg(any(feature = "rest-client", feature = "rpc-client"))]
+mod utils;
+
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::util::uint::Uint256;
