@@ -3,7 +3,22 @@
 //! Defines a [`BlockSource`] trait, which is an asynchronous interface for retrieving block headers
 //! and data.
 //!
+//! Enabling feature `rest-client` or `rpc-client` allows configuring the client to fetch blocks
+//! using Bitcoin Core's REST or RPC interface, respectively.
+//!
+//! Both features support either blocking I/O using `std::net::TcpStream` or, with feature `tokio`,
+//! non-blocking I/O using `tokio::net::TcpStream` from inside a Tokio runtime.
+//!
 //! [`BlockSource`]: trait.BlockSource.html
+
+#[cfg(any(feature = "rest-client", feature = "rpc-client"))]
+pub mod http;
+
+#[cfg(feature = "rest-client")]
+pub mod rest;
+
+#[cfg(feature = "rpc-client")]
+pub mod rpc;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
