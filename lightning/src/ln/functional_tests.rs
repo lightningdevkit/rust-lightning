@@ -3396,7 +3396,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
-	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
+	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -3457,7 +3457,7 @@ fn test_force_close_fail_back() {
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
 
-	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id);
+	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id).unwrap();
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
 	let tx = {
@@ -4783,7 +4783,7 @@ fn test_claim_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
-	nodes[1].node.force_close_channel(&chan.2);
+	nodes[1].node.force_close_channel(&chan.2).unwrap();
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -4810,7 +4810,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
-	nodes[0].node.force_close_channel(&chan.2);
+	nodes[0].node.force_close_channel(&chan.2).unwrap();
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 
@@ -8544,7 +8544,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	// responds by (1) broadcasting a channel update and (2) adding a new ChannelMonitor.
 	let mut force_closing_node = 0; // Alice force-closes
 	if !broadcast_alice { force_closing_node = 1; } // Bob force-closes
-	nodes[force_closing_node].node.force_close_channel(&chan_ab.2);
+	nodes[force_closing_node].node.force_close_channel(&chan_ab.2).unwrap();
 	check_closed_broadcast!(nodes[force_closing_node], false);
 	check_added_monitors!(nodes[force_closing_node], 1);
 	if go_onchain_before_fulfill {
