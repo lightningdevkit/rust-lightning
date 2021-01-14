@@ -969,7 +969,6 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 
 		let key_derivation_params = keys.key_derivation_params();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
-		let mut onchain_tx_handler = OnchainTxHandler::new(destination_script.clone(), keys, channel_parameters.clone());
 
 		let secp_ctx = Secp256k1::new();
 
@@ -991,7 +990,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			};
 			(holder_commitment_tx, trusted_tx.commitment_number())
 		};
-		onchain_tx_handler.provide_latest_holder_tx(initial_holder_commitment_tx);
+
+		let onchain_tx_handler =
+			OnchainTxHandler::new(destination_script.clone(), keys, channel_parameters.clone(), initial_holder_commitment_tx);
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
@@ -1725,28 +1726,26 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
 		log_trace!(logger, "Getting signed latest holder commitment transaction!");
 		self.holder_tx_signed = true;
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript) {
-			let txid = commitment_tx.txid();
-			let mut res = vec![commitment_tx];
-			for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
-				if let Some(vout) = htlc.0.transaction_output_index {
-					let preimage = if !htlc.0.offered {
-							if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
-								// We can't build an HTLC-Success transaction without the preimage
-								continue;
-							}
-						} else { None };
-					if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
-							&::bitcoin::OutPoint { txid, vout }, &preimage) {
-						res.push(htlc_tx);
+		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
+		let txid = commitment_tx.txid();
+		let mut res = vec![commitment_tx];
+		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
+			if let Some(vout) = htlc.0.transaction_output_index {
+				let preimage = if !htlc.0.offered {
+					if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
+						// We can't build an HTLC-Success transaction without the preimage
+						continue;
 					}
+				} else { None };
+				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
+					&::bitcoin::OutPoint { txid, vout }, &preimage) {
+					res.push(htlc_tx);
 				}
 			}
-			// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
-			// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-			return res
 		}
-		Vec::new()
+		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
+		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
+		return res;
 	}
 
 	/// Unsafe test-only version of get_latest_holder_commitment_txn used by our test framework
@@ -1755,26 +1754,24 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
 		log_trace!(logger, "Getting signed copy of latest holder commitment transaction!");
-		if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript) {
-			let txid = commitment_tx.txid();
-			let mut res = vec![commitment_tx];
-			for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
-				if let Some(vout) = htlc.0.transaction_output_index {
-					let preimage = if !htlc.0.offered {
-							if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
-								// We can't build an HTLC-Success transaction without the preimage
-								continue;
-							}
-						} else { None };
-					if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
-							&::bitcoin::OutPoint { txid, vout }, &preimage) {
-						res.push(htlc_tx);
+		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
+		let txid = commitment_tx.txid();
+		let mut res = vec![commitment_tx];
+		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
+			if let Some(vout) = htlc.0.transaction_output_index {
+				let preimage = if !htlc.0.offered {
+					if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
+						// We can't build an HTLC-Success transaction without the preimage
+						continue;
 					}
+				} else { None };
+				if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
+					&::bitcoin::OutPoint { txid, vout }, &preimage) {
+					res.push(htlc_tx);
 				}
 			}
-			return res
 		}
-		Vec::new()
+		return res
 	}
 
 	/// Processes transactions in a newly connected block, which may result in any of the following:
@@ -1853,15 +1850,14 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		}
 		if should_broadcast {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
-			if let Some(commitment_tx) = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript) {
-				self.holder_tx_signed = true;
-				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
-				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
-				if !new_outputs.is_empty() {
-					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
-				}
-				claimable_outpoints.append(&mut new_outpoints);
+			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
+			self.holder_tx_signed = true;
+			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
+			if !new_outputs.is_empty() {
+				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
 			}
+			claimable_outpoints.append(&mut new_outpoints);
 		}
 		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&height) {
 			for ev in events {
