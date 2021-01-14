@@ -182,7 +182,7 @@ impl KeysInterface for KeyProvider {
 			(0, 0),
 		);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment)
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, false)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -202,6 +202,7 @@ impl KeysInterface for KeyProvider {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
 			revoked_commitment,
+			disable_revocation_policy_check: false,
 		})
 	}
 }

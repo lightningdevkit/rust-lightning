@@ -27,31 +27,49 @@ use ln::msgs::DecodeError;
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 
-/// An implementation of ChannelKeys that enforces some policy checks.
+/// An implementation of ChannelKeys that enforces some policy checks.  The current checks
+/// are an incomplete set.  They include:
+///
+/// - When signing, the holder transaction has not been revoked
+/// - When revoking, the holder transaction has not been signed
+/// - The holder commitment number is monotonic and without gaps
+/// - The counterparty commitment number is monotonic and without gaps
+/// - The pre-derived keys and pre-built transaction in CommitmentTransaction were correctly built
 ///
 /// Eventually we will probably want to expose a variant of this which would essentially
 /// be what you'd want to run on a hardware wallet.
 #[derive(Clone)]
 pub struct EnforcingChannelKeys {
 	pub inner: InMemoryChannelKeys,
+	/// The last counterparty commitment number we signed, backwards counting
 	pub last_commitment_number: Arc<Mutex<Option<u64>>>,
+	/// The last holder commitment number we revoked, backwards counting
 	pub revoked_commitment: Arc<Mutex<u64>>,
+	pub disable_revocation_policy_check: bool,
 }
 
 impl EnforcingChannelKeys {
+	/// Construct an EnforcingChannelKeys
 	pub fn new(inner: InMemoryChannelKeys) -> Self {
 		Self {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(None)),
-			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER))
+			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)),
+			disable_revocation_policy_check: false
 		}
 	}
 
-	pub fn new_with_revoked(inner: InMemoryChannelKeys, revoked_commitment: Arc<Mutex<u64>>) -> Self {
+	/// Construct an EnforcingChannelKeys with externally managed storage
+	///
+	/// Since there are multiple copies of this struct for each channel, some coordination is needed
+	/// so that all copies are aware of revocations.  A pointer to this state is provided here, usually
+	/// by an implementation of KeysInterface.
+	pub fn new_with_revoked(inner: InMemoryChannelKeys, revoked_commitment: Arc<Mutex<u64>>, disable_revocation_policy_check: bool) -> Self {
 		Self {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(None)),
-			revoked_commitment
+			revoked_commitment,
+			disable_revocation_policy_check
 		}
 	}
 }
@@ -62,8 +80,6 @@ impl ChannelKeys for EnforcingChannelKeys {
 	}
 
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
-		println!("XXX revoke {} for {}", idx, self.inner.commitment_seed[0]);
-
 		{
 			let mut revoked = self.revoked_commitment.lock().unwrap();
 			assert!(idx == *revoked || idx == *revoked - 1, "can only revoke the current or next unrevoked commitment - trying {}, revoked {}", idx, *revoked);
@@ -98,11 +114,11 @@ impl ChannelKeys for EnforcingChannelKeys {
 
 		let revoked = self.revoked_commitment.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
-		println!("XXX sign {} for {}", commitment_number, self.inner.commitment_seed[0]);
 		if *revoked - 1 != commitment_number && *revoked - 2 != commitment_number {
-			println!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-			         *revoked, commitment_number, self.inner.commitment_seed[0]);
-			return Err(());
+			if !self.disable_revocation_policy_check {
+				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
+				       *revoked, commitment_number, self.inner.commitment_seed[0])
+			}
 		}
 
 		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
@@ -116,8 +132,6 @@ impl ChannelKeys for EnforcingChannelKeys {
 			secp_ctx.verify(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
-		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
-		// TODO: need the commitment number
 		Ok(self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
 	}
 
@@ -159,12 +173,13 @@ impl Writeable for EnforcingChannelKeys {
 
 impl Readable for EnforcingChannelKeys {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let inner: InMemoryChannelKeys = Readable::read(reader)?;
+		let inner = Readable::read(reader)?;
 		let last_commitment_number = Readable::read(reader)?;
 		Ok(EnforcingChannelKeys {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
 			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)),
+			disable_revocation_policy_check: false,
 		})
 	}
 }

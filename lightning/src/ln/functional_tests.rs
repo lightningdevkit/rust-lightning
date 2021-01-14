@@ -2470,7 +2470,9 @@ fn test_justice_tx() {
 	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	bob_config.own_channel_config.our_to_self_delay = 6 * 24 * 3;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2600,7 +2602,8 @@ fn revoked_output_claim() {
 #[test]
 fn claim_htlc_outputs_shared_tx() {
 	// Node revoked old state, htlcs haven't time out yet, claim them in shared justice tx
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2670,7 +2673,8 @@ fn claim_htlc_outputs_shared_tx() {
 #[test]
 fn claim_htlc_outputs_single_tx() {
 	// Node revoked old state, htlcs have timed out, claim each of them in separated justice tx
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -4993,7 +4997,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -5059,7 +5064,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -7040,7 +7046,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	// We can have at most two valid local commitment tx, so both cases must be covered, and both txs must be checked to get them all as
 	// HTLC could have been removed from lastest local commitment tx but still valid until we get remote RAA
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -7379,7 +7386,10 @@ fn test_data_loss_protect() {
 	let fee_estimator;
 	let tx_broadcaster;
 	let chain_source;
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// We broadcast during Drop because chanmon is out of sync with chanmgr, which would cause a panic
+	// during signing due to revoked tx
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
 	let monitor;
 	let node_state_0;
@@ -7699,7 +7709,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// In case of penalty txn with too low feerates for getting into mempools, RBF-bump them to sure
 	// we're able to claim outputs on revoked HTLC transactions before timelocks expiration
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);

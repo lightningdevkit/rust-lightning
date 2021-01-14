@@ -422,6 +422,7 @@ pub struct TestKeysInterface {
 	backing: keysinterface::KeysManager,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
+	pub disable_revocation_policy_check: bool,
 	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
 }
 
@@ -434,7 +435,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
 		let keys = self.backing.get_channel_keys(inbound, channel_value_satoshis);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment)
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -464,6 +465,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
 			revoked_commitment,
+			disable_revocation_policy_check: self.disable_revocation_policy_check,
 		})
 	}
 }
@@ -476,13 +478,14 @@ impl TestKeysInterface {
 			backing: keysinterface::KeysManager::new(seed, network, now.as_secs(), now.subsec_nanos()),
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
+			disable_revocation_policy_check: false,
 			revoked_commitments: Mutex::new(HashMap::new()),
 		}
 	}
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, user_id_1: u64, user_id_2: u64) -> EnforcingChannelKeys {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, user_id_1, user_id_2);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment)
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
 	}
 
 	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {

@@ -97,7 +97,6 @@ pub struct TestChanMonCfg {
 	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 	pub keys_manager: test_utils::TestKeysInterface,
-
 }
 
 pub struct NodeCfg<'a> {
