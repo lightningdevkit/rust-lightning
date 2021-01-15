@@ -253,12 +253,14 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 		excess_data: Vec::new(),
 	};
 
-	msgs::ChannelAnnouncement {
-		node_signature_1: Signature::from(FFISignature::new()),
-		node_signature_2: Signature::from(FFISignature::new()),
-		bitcoin_signature_1: Signature::from(FFISignature::new()),
-		bitcoin_signature_2: Signature::from(FFISignature::new()),
-		contents: unsigned_ann,
+	unsafe {
+		msgs::ChannelAnnouncement {
+			node_signature_1: Signature::from(FFISignature::new()),
+			node_signature_2: Signature::from(FFISignature::new()),
+			bitcoin_signature_1: Signature::from(FFISignature::new()),
+			bitcoin_signature_2: Signature::from(FFISignature::new()),
+			contents: unsigned_ann,
+		}
 	}
 }
 
@@ -266,7 +268,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	let network = Network::Testnet;
 	msgs::ChannelUpdate {
-		signature: Signature::from(FFISignature::new()),
+		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
 			chain_hash: genesis_block(network).header.block_hash(),
 			short_channel_id: short_chan_id,

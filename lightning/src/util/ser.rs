@@ -707,8 +707,7 @@ macro_rules! impl_consensus_ser {
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 				match self.consensus_encode(WriterWriteAdaptor(writer)) {
 					Ok(_) => Ok(()),
-					Err(consensus::encode::Error::Io(e)) => Err(e),
-					Err(_) => panic!("We shouldn't get a consensus::encode::Error unless our Write generated an std::io::Error"),
+					Err(e) => Err(e),
 				}
 			}
 		}

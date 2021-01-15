@@ -13,7 +13,7 @@ rest-client = [ "serde", "serde_json", "chunked_transfer" ]
 rpc-client = [ "serde", "serde_json", "chunked_transfer" ]
 
 [dependencies]
-bitcoin = "0.24"
+bitcoin = "0.26"
 lightning = { version = "0.0.12", path = "../lightning" }
 tokio = { version = "1.0", features = [ "io-util", "net" ], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

@@ -8,7 +8,7 @@ Utilities to manage channel data persistence and retrieval.
 """
 
 [dependencies]
-bitcoin = "0.24"
+bitcoin = "0.26"
 lightning = { version = "0.0.12", path = "../lightning" }
 libc = "0.2"
 
@@ -16,7 +16,7 @@ libc = "0.2"
 winapi = { version = "0.3", features = ["winbase"] }
 
 [dev-dependencies.bitcoin]
-version = "0.24"
+version = "0.26"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]

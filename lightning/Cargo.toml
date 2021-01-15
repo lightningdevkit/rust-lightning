@@ -27,13 +27,13 @@ unsafe_revoked_tx_signing = []
 unstable = []
 
 [dependencies]
-bitcoin = "0.24"
+bitcoin = "0.26"
 
 hex = { version = "0.3", optional = true }
 regex = { version = "0.1.80", optional = true }
 
 [dev-dependencies.bitcoin]
-version = "0.24"
+version = "0.26"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
