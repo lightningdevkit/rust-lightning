@@ -4742,14 +4742,12 @@ mod tests {
 					&chan.holder_keys.pubkeys().funding_pubkey,
 					chan.counterparty_funding_pubkey()
 				);
-				let holder_sig = chan_keys.sign_holder_commitment(&holder_commitment_tx, &secp_ctx).unwrap();
+				let (holder_sig, htlc_sigs) = chan_keys.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
 				let funding_redeemscript = chan.get_funding_redeemscript();
 				let tx = holder_commitment_tx.add_holder_sig(&funding_redeemscript, holder_sig);
 				assert_eq!(serialize(&tx)[..], hex::decode($tx_hex).unwrap()[..], "tx");
-
-				let htlc_sigs = chan_keys.sign_holder_commitment_htlc_transactions(&holder_commitment_tx, &secp_ctx).unwrap();
 
 				// ((htlc, counterparty_sig), (index, holder_sig))
 				let mut htlc_sig_iter = holder_commitment_tx.htlcs().iter().zip(&holder_commitment_tx.counterparty_htlc_sigs).zip(htlc_sigs.iter().enumerate());

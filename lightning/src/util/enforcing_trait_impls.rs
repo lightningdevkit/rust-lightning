@@ -72,20 +72,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
-
-		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
-		// TODO: need the commitment number
-		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
-	}
-
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
-		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
-	}
-
-	fn sign_holder_commitment_htlc_transactions<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Vec<Signature>, ()> {
+	fn sign_holder_commitment_and_htlcs<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
 		let commitment_txid = trusted_tx.txid();
 		let holder_csv = self.inner.counterparty_selected_contest_delay();
@@ -101,7 +88,14 @@ impl ChannelKeys for EnforcingChannelKeys {
 			secp_ctx.verify(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
-		Ok(self.inner.sign_holder_commitment_htlc_transactions(commitment_tx, secp_ctx).unwrap())
+		// TODO: enforce the ChannelKeys contract - error if this commitment was already revoked
+		// TODO: need the commitment number
+		Ok(self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
+	}
+
+	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
+		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
 	fn sign_justice_transaction<T: secp256k1::Signing + secp256k1::Verification>(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<T>) -> Result<Signature, ()> {
