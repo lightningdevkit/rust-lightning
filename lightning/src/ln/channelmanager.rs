@@ -917,8 +917,8 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
-	/// the chain and rejecting new HTLCs on the given channel.
-	pub fn force_close_channel(&self, channel_id: &[u8; 32]) {
+	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
+	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError>{
 		let _consistency_lock = self.total_consistency_lock.read().unwrap();
 
 		let mut chan = {
@@ -930,7 +930,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				}
 				chan
 			} else {
-				return;
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
 		};
 		log_trace!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
@@ -941,13 +941,15 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 				msg: update
 			});
 		}
+
+		Ok(())
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
 	/// for each to the chain and rejecting new HTLCs on each.
 	pub fn force_close_all_channels(&self) {
 		for chan in self.list_channels() {
-			self.force_close_channel(&chan.channel_id);
+			let _ = self.force_close_channel(&chan.channel_id);
 		}
 	}
 
@@ -3471,11 +3473,13 @@ impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K:
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
 				if chan.remote_network_id == *counterparty_node_id {
-					self.force_close_channel(&chan.channel_id);
+					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
+					let _ = self.force_close_channel(&msg.channel_id);
 				}
 			}
 		} else {
-			self.force_close_channel(&msg.channel_id);
+			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
+			let _ = self.force_close_channel(&msg.channel_id);
 		}
 	}
 }

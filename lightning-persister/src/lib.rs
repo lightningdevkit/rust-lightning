@@ -240,7 +240,7 @@ mod tests {
 
 		// Force close because cooperative close doesn't result in any persisted
 		// updates.
-		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id);
+		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
 		check_closed_broadcast!(nodes[0], false);
 		check_added_monitors!(nodes[0], 1);
 
@@ -354,7 +354,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		nodes[1].node.force_close_channel(&chan.2);
+		nodes[1].node.force_close_channel(&chan.2).unwrap();
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Set the persister's directory to read-only, which should result in
@@ -390,7 +390,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		nodes[1].node.force_close_channel(&chan.2);
+		nodes[1].node.force_close_channel(&chan.2).unwrap();
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Create the persister with an invalid directory name and test that the
