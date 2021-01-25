@@ -38,7 +38,7 @@ use lightning::chain::keysinterface::{KeysInterface, InMemoryChannelKeys};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
-use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+use lightning::util::enforcing_trait_impls::{EnforcingChannelKeys, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
@@ -146,6 +146,7 @@ impl chain::Watch for TestChainMonitor {
 struct KeyProvider {
 	node_id: u8,
 	rand_bytes_id: atomic::AtomicU8,
+	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
 }
 impl KeysInterface for KeyProvider {
 	type ChanKeySigner = EnforcingChannelKeys;
@@ -168,17 +169,20 @@ impl KeysInterface for KeyProvider {
 
 	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
 		let secp_ctx = Secp256k1::signing_only();
-		EnforcingChannelKeys::new(InMemoryChannelKeys::new(
+		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
+		let keys = InMemoryChannelKeys::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
-			[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
+			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
 			channel_value_satoshis,
 			(0, 0),
-		))
+		);
+		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
+		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, false)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -186,8 +190,31 @@ impl KeysInterface for KeyProvider {
 		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]
 	}
 
-	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingChannelKeys, DecodeError> {
-		EnforcingChannelKeys::read(&mut std::io::Cursor::new(data))
+	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> {
+		let mut reader = std::io::Cursor::new(buffer);
+
+		let inner: InMemoryChannelKeys = Readable::read(&mut reader)?;
+		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);
+
+		let last_commitment_number = Readable::read(&mut reader)?;
+
+		Ok(EnforcingChannelKeys {
+			inner,
+			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
+			revoked_commitment,
+			disable_revocation_policy_check: false,
+		})
+	}
+}
+
+impl KeyProvider {
+	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {
+		let mut revoked_commitments = self.revoked_commitments.lock().unwrap();
+		if !revoked_commitments.contains_key(&commitment_seed) {
+			revoked_commitments.insert(commitment_seed, Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)));
+		}
+		let cell = revoked_commitments.get(&commitment_seed).unwrap();
+		Arc::clone(cell)
 	}
 }
 
@@ -288,22 +315,22 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{})));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0),
-			monitor)
+			monitor, keys_manager)
 		} }
 	}
 
 	macro_rules! reload_node {
-		($ser: expr, $node_id: expr, $old_monitors: expr) => { {
+		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr) => { {
+		    let keys_manager = Arc::clone(& $keys_manager);
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{})));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0) });
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
@@ -440,9 +467,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (node_a, mut monitor_a) = make_node!(0);
-	let (node_b, mut monitor_b) = make_node!(1);
-	let (node_c, mut monitor_c) = make_node!(2);
+	let (node_a, mut monitor_a, keys_manager_a) = make_node!(0);
+	let (node_b, mut monitor_b, keys_manager_b) = make_node!(1);
+	let (node_c, mut monitor_c, keys_manager_c) = make_node!(2);
 
 	let mut nodes = [node_a, node_b, node_c];
 
@@ -793,7 +820,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
-				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a);
+				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a, keys_manager_a);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
@@ -810,7 +837,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
 				}
-				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b);
+				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b, keys_manager_b);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
@@ -820,7 +847,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
-				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c);
+				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c, keys_manager_c);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},

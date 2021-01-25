@@ -53,7 +53,7 @@ use regex;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::mem;
 
@@ -1616,27 +1616,26 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Get the EnforcingChannelKeys for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, local_secret2) = {
+	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = local_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER), chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2))
+		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
+		 chan_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx))
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_secret1) = {
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_keys = remote_chan.get_keys();
 		let pubkeys = chan_keys.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1))
+		 chan_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx))
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
-	let commitment_secret = SecretKey::from_slice(&remote_secret1).unwrap();
-	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &commitment_secret);
-	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, &remote_delayed_payment_basepoint,
+	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
 		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
@@ -1680,10 +1679,11 @@ fn test_fee_spike_violation_fails_htlc() {
 	let _ = nodes[1].node.get_and_clear_pending_msg_events();
 
 	// Send the RAA to nodes[1].
-	let per_commitment_secret = local_secret;
-	let next_secret = SecretKey::from_slice(&local_secret2).unwrap();
-	let next_per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &next_secret);
-	let raa_msg = msgs::RevokeAndACK{ channel_id: chan.2, per_commitment_secret, next_per_commitment_point};
+	let raa_msg = msgs::RevokeAndACK {
+		channel_id: chan.2,
+		per_commitment_secret: local_secret,
+		next_per_commitment_point: next_local_point
+	};
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_msg);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -2470,7 +2470,9 @@ fn test_justice_tx() {
 	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	bob_config.own_channel_config.our_to_self_delay = 6 * 24 * 3;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2600,7 +2602,8 @@ fn revoked_output_claim() {
 #[test]
 fn claim_htlc_outputs_shared_tx() {
 	// Node revoked old state, htlcs haven't time out yet, claim them in shared justice tx
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -2670,7 +2673,8 @@ fn claim_htlc_outputs_shared_tx() {
 #[test]
 fn claim_htlc_outputs_single_tx() {
 	// Node revoked old state, htlcs have timed out, claim each of them in separated justice tx
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -4269,7 +4273,6 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -4284,12 +4287,12 @@ fn test_no_txn_manager_serialize_deserialize() {
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
-	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
-		&mut chan_0_monitor_read, &keys_manager).unwrap();
+		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
@@ -4299,7 +4302,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
-			keys_manager: &keys_manager,
+			keys_manager,
 			fee_estimator: &fee_estimator,
 			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
@@ -4346,7 +4349,6 @@ fn test_manager_serialize_deserialize_events() {
 	let persister: test_utils::TestPersister;
 	let logger: test_utils::TestLogger;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -4355,8 +4357,8 @@ fn test_manager_serialize_deserialize_events() {
 	let push_msat = 10001;
 	let a_flags = InitFeatures::known();
 	let b_flags = InitFeatures::known();
-	let node_a = nodes.pop().unwrap();
-	let node_b = nodes.pop().unwrap();
+	let node_a = nodes.remove(0);
+	let node_b = nodes.remove(0);
 	node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None).unwrap();
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
@@ -4394,12 +4396,12 @@ fn test_manager_serialize_deserialize_events() {
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	logger = test_utils::TestLogger::new();
 	persister = test_utils::TestPersister::new();
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
-	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
-		&mut chan_0_monitor_read, &keys_manager).unwrap();
+		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
@@ -4409,7 +4411,7 @@ fn test_manager_serialize_deserialize_events() {
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
-			keys_manager: &keys_manager,
+			keys_manager,
 			fee_estimator: &fee_estimator,
 			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
@@ -4470,7 +4472,6 @@ fn test_simple_manager_serialize_deserialize() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
@@ -4487,12 +4488,12 @@ fn test_simple_manager_serialize_deserialize() {
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
-	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
 	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
-		&mut chan_0_monitor_read, &keys_manager).unwrap();
+		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
@@ -4501,7 +4502,7 @@ fn test_simple_manager_serialize_deserialize() {
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: UserConfig::default(),
-			keys_manager: &keys_manager,
+			keys_manager,
 			fee_estimator: &fee_estimator,
 			chain_monitor: nodes[0].chain_monitor,
 			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
@@ -4532,7 +4533,6 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let keys_manager: test_utils::TestKeysInterface;
 	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
@@ -4568,15 +4568,15 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	logger = test_utils::TestLogger::new();
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister);
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 
-	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
 
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, &keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, keys_manager).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -4584,7 +4584,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, &keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, keys_manager).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}
@@ -4593,7 +4593,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	if let Err(msgs::DecodeError::InvalidValue) =
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
-		keys_manager: &keys_manager,
+		keys_manager,
 		fee_estimator: &fee_estimator,
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
@@ -4607,7 +4607,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let (_, nodes_0_deserialized_tmp) =
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
-		keys_manager: &keys_manager,
+		keys_manager,
 		fee_estimator: &fee_estimator,
 		chain_monitor: nodes[0].chain_monitor,
 		tx_broadcaster: nodes[0].tx_broadcaster.clone(),
@@ -4997,7 +4997,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -5063,7 +5064,8 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 #[test]
 fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -5713,8 +5715,8 @@ fn test_key_derivation_params() {
 	// We manually create the node configuration to backup the seed.
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister);
-	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager, node_seed: seed };
+	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister, &keys_manager);
+	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager: &keys_manager, node_seed: seed };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
@@ -7044,7 +7046,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	// We can have at most two valid local commitment tx, so both cases must be covered, and both txs must be checked to get them all as
 	// HTLC could have been removed from lastest local commitment tx but still valid until we get remote RAA
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -7325,8 +7328,7 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet));
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7337,7 +7339,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7363,7 +7365,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7375,17 +7377,22 @@ fn test_user_configurable_csv_delay() {
 fn test_data_loss_protect() {
 	// We want to be sure that :
 	// * we don't broadcast our Local Commitment Tx in case of fallen behind
+	//   (but this is not quite true - we broadcast during Drop because chanmon is out of sync with chanmgr)
 	// * we close channel in case of detecting other being fallen behind
 	// * we are able to claim our own outputs thanks to to_remote being static
-	let keys_manager;
+	// TODO: this test is incomplete and the data_loss_protect implementation is incomplete - see issue #775
 	let persister;
 	let logger;
 	let fee_estimator;
 	let tx_broadcaster;
 	let chain_source;
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// We broadcast during Drop because chanmon is out of sync with chanmgr, which would cause a panic
+	// during signing due to revoked tx
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
 	let monitor;
 	let node_state_0;
-	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -7405,18 +7412,17 @@ fn test_data_loss_protect() {
 
 	// Restore node A from previous state
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
-	keys_manager = test_utils::TestKeysInterface::new(&nodes[0].node_seed, Network::Testnet);
-	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), &keys_manager).unwrap().1;
+	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
-	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister);
+	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
 	node_state_0 = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chain_monitor);
 		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
-			keys_manager: &keys_manager,
+			keys_manager: keys_manager,
 			fee_estimator: &fee_estimator,
 			chain_monitor: &monitor,
 			logger: &logger,
@@ -7703,7 +7709,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// In case of penalty txn with too low feerates for getting into mempools, RBF-bump them to sure
 	// we're able to claim outputs on revoked HTLC transactions before timelocks expiration
 
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -8086,9 +8093,11 @@ fn test_counterparty_raa_skip_no_crash() {
 	let mut guard = nodes[0].node.channel_state.lock().unwrap();
 	let keys = &guard.by_id.get_mut(&channel_id).unwrap().holder_keys;
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+	// Must revoke without gaps
+	keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
 	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
 		&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
-	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
 		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
@@ -8281,7 +8290,7 @@ fn test_update_err_monitor_lockdown() {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister);
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
@@ -8340,7 +8349,7 @@ fn test_concurrent_monitor_claim() {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister);
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
@@ -8366,7 +8375,7 @@ fn test_concurrent_monitor_claim() {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister);
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
 		watchtower
 	};
