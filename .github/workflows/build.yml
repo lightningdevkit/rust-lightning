@@ -75,7 +75,7 @@ jobs:
       - name: Generate coverage report
         if: matrix.coverage
         run: |
-          for file in target/debug/lightning-*; do
+          for file in target/debug/deps/lightning*; do
             [ -x "${file}" ] || continue;
             mkdir -p "target/cov/$(basename $file)";
             ./kcov-build/usr/local/bin/kcov --exclude-pattern=/.cargo,/usr/lib --verify "target/cov/$(basename $file)" "$file";
