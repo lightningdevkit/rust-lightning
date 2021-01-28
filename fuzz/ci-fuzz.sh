@@ -12,6 +12,7 @@ rm *_target.rs
 [ "$(git diff)" != "" ] && exit 1
 popd
 
+cargo update
 cargo install --color always --force honggfuzz
 sed -i 's/lto = true//' Cargo.toml
 HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz" cargo --color always hfuzz build
