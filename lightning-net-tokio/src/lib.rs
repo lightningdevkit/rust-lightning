@@ -157,7 +157,7 @@ impl Connection {
 			// In this case, we do need to call peer_manager.socket_disconnected() to inform
 			// Rust-Lightning that the socket is gone.
 			PeerDisconnected
-		};
+		}
 		let disconnect_type = loop {
 			macro_rules! shutdown_socket {
 				($err: expr, $need_disconnect: expr) => { {
