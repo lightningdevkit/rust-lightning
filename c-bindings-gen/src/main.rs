@@ -559,7 +559,8 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 		writeln!(w, "impl Clone for {} {{", struct_name).unwrap();
 		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
 		writeln!(w, "\t\tSelf {{").unwrap();
-		writeln!(w, "\t\t\tinner: Box::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())),").unwrap();
+		writeln!(w, "\t\t\tinner: if self.inner.is_null() {{ std::ptr::null_mut() }} else {{").unwrap();
+		writeln!(w, "\t\t\t\tBox::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())) }},").unwrap();
 		writeln!(w, "\t\t\tis_owned: true,").unwrap();
 		writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
 		writeln!(w, "#[allow(unused)]").unwrap();
@@ -569,7 +570,7 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 		writeln!(w, "}}").unwrap();
 		writeln!(w, "#[no_mangle]").unwrap();
 		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
-		writeln!(w, "\t{} {{ inner: Box::into_raw(Box::new(unsafe {{ &*orig.inner }}.clone())), is_owned: true }}", struct_name).unwrap();
+		writeln!(w, "\torig.clone()").unwrap();
 		writeln!(w, "}}").unwrap();
 	}
 
