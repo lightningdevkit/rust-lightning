@@ -45,6 +45,7 @@ impl SecretKey {
 }
 
 #[repr(C)]
+#[derive(Clone)]
 pub struct Signature {
 	pub compact_form: [u8; 64],
 }
@@ -163,6 +164,8 @@ impl TxOut {
 }
 #[no_mangle]
 pub extern "C" fn TxOut_free(_res: TxOut) { }
+#[no_mangle]
+pub extern "C" fn TxOut_clone(orig: &TxOut) -> TxOut { orig.clone() }
 
 #[repr(C)]
 pub struct u8slice {
