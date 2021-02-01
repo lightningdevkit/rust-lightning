@@ -1179,6 +1179,24 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		};
 	}
 
+	/// Disconnect a peer given its node id.
+	///
+	/// Set no_connection_possible to true to prevent any further connection with this peer,
+	/// force-closing any channels we have with it.
+	///
+	/// If a peer is connected, this will call `disconnect_socket` on the descriptor for the peer,
+	/// so be careful about reentrancy issues.
+	pub fn disconnect_by_node_id(&self, node_id: PublicKey, no_connection_possible: bool) {
+		let mut peers_lock = self.peers.lock().unwrap();
+		if let Some(mut descriptor) = peers_lock.node_id_to_descriptor.remove(&node_id) {
+			log_trace!(self.logger, "Disconnecting peer with id {} due to client request", node_id);
+			peers_lock.peers.remove(&descriptor);
+			peers_lock.peers_needing_send.remove(&descriptor);
+			self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+			descriptor.disconnect_socket();
+		}
+	}
+
 	/// This function should be called roughly once every 30 seconds.
 	/// It will send pings to each peer and disconnect those which did not respond to the last round of pings.
 
