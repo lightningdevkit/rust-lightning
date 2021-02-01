@@ -850,7 +850,7 @@ pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
 	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
+impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> {
 	fn clone(&self) -> Self {
 		let inner = self.inner.lock().unwrap().clone();
 		ChannelMonitor::from_impl(inner)
