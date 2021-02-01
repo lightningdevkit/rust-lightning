@@ -25,6 +25,9 @@ pub mod rpc;
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 mod convert;
 
+#[cfg(test)]
+mod test_utils;
+
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 mod utils;
 
@@ -67,13 +70,14 @@ type AsyncBlockSourceResult<'a, T> = Pin<Box<dyn Future<Output = BlockSourceResu
 ///
 /// Transient errors may be resolved when re-polling, but no attempt will be made to re-poll on
 /// persistent errors.
+#[derive(Debug)]
 pub struct BlockSourceError {
 	kind: BlockSourceErrorKind,
 	error: Box<dyn std::error::Error + Send + Sync>,
 }
 
 /// The kind of `BlockSourceError`, either persistent or transient.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BlockSourceErrorKind {
 	/// Indicates an error that won't resolve when retrying a request (e.g., invalid data).
 	Persistent,
