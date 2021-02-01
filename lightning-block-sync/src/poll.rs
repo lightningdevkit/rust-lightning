@@ -96,7 +96,7 @@ impl Validate for Block {
 /// A block header with validated proof of work and corresponding block hash.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ValidatedBlockHeader {
-	block_hash: BlockHash,
+	pub(crate) block_hash: BlockHash,
 	inner: BlockHeaderData,
 }
 
@@ -142,7 +142,7 @@ impl ValidatedBlockHeader {
 
 /// A block with validated data against its transaction list and corresponding block hash.
 pub struct ValidatedBlock {
-	block_hash: BlockHash,
+	pub(crate) block_hash: BlockHash,
 	inner: Block,
 }
 
