@@ -14,6 +14,8 @@
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http;
 
+pub mod poll;
+
 #[cfg(feature = "rest-client")]
 pub mod rest;
 
