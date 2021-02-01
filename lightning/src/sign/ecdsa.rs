@@ -34,7 +34,25 @@ use crate::sign::{ChannelSigner, HTLCDescriptor};
 ///
 /// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 /// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
-pub trait EcdsaChannelSigner: ChannelSigner {
+pub trait EcdsaChannelSigner: BaseEcdsaChannelSigner + Clone {}
+
+/// A trait to sign Lightning channel transactions as described in
+/// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).
+///
+/// Signing services could be implemented on a hardware wallet and should implement signing
+/// policies in order to be secure. Please refer to the [VLS Policy
+/// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
+/// for an example of such policies.
+///
+/// Like [`ChannelSigner`], many of the methods allow errors to be returned to support async
+/// signing. In such cases, the signing operation can be replayed by calling
+/// [`ChannelManager::signer_unblocked`] or [`ChainMonitor::signer_unblocked`] (see individual
+/// method documentation for which method should be called) once the result is ready, at which
+/// point the channel operation will resume.
+///
+/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
+/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
+pub trait BaseEcdsaChannelSigner: ChannelSigner {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Policy checks should be implemented in this function, including checking the amount

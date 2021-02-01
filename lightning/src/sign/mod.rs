@@ -64,7 +64,7 @@ use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
 use crate::prelude::*;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::{BaseEcdsaChannelSigner, EcdsaChannelSigner};
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
@@ -1516,7 +1516,9 @@ impl ChannelSigner for InMemorySigner {
 const MISSING_PARAMS_ERR: &'static str =
 	"ChannelTransactionParameters must be populated before signing operations";
 
-impl EcdsaChannelSigner for InMemorySigner {
+impl EcdsaChannelSigner for InMemorySigner {}
+
+impl BaseEcdsaChannelSigner for InMemorySigner {
 	fn sign_counterparty_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>,
@@ -2691,11 +2693,11 @@ impl EntropySource for RandomBytes {
 	}
 }
 
-// Ensure that EcdsaChannelSigner can have a vtable
-#[test]
+// Ensure that EcdsaChannelSigner can have a vtable - not required in bindings
+/*#[test]
 pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
-}
+}*/
 
 #[cfg(ldk_bench)]
 pub mod benches {

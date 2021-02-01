@@ -15,7 +15,7 @@ use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSe
 use crate::ln::onion_utils::{self, AttributionData};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::routing::router::PaymentParameters;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::BaseEcdsaChannelSigner;
 use crate::sign::tx_builder::{SpecTxBuilder, TxBuilder};
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;

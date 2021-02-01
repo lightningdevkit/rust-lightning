@@ -14,7 +14,7 @@ use crate::ln::chan_utils::{
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::{BaseEcdsaChannelSigner, EcdsaChannelSigner};
 use crate::sign::ChannelSigner;
 use crate::types::payment::PaymentPreimage;
 
@@ -264,7 +264,9 @@ impl ChannelSigner for TestChannelSigner {
 	}
 }
 
-impl EcdsaChannelSigner for TestChannelSigner {
+impl EcdsaChannelSigner for TestChannelSigner {}
+
+impl BaseEcdsaChannelSigner for TestChannelSigner {
 	fn sign_counterparty_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
@@ -358,7 +360,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedOutput) {
 			return Err(());
 		}
-		Ok(EcdsaChannelSigner::sign_justice_revoked_output(
+		Ok(BaseEcdsaChannelSigner::sign_justice_revoked_output(
 			&self.inner,
 			channel_parameters,
 			justice_tx,
@@ -379,7 +381,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedHtlc) {
 			return Err(());
 		}
-		Ok(EcdsaChannelSigner::sign_justice_revoked_htlc(
+		Ok(BaseEcdsaChannelSigner::sign_justice_revoked_htlc(
 			&self.inner,
 			channel_parameters,
 			justice_tx,
@@ -447,7 +449,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 				)
 				.unwrap();
 		}
-		Ok(EcdsaChannelSigner::sign_holder_htlc_transaction(
+		Ok(BaseEcdsaChannelSigner::sign_holder_htlc_transaction(
 			&self.inner,
 			htlc_tx,
 			input,
@@ -466,7 +468,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
 			return Err(());
 		}
-		Ok(EcdsaChannelSigner::sign_counterparty_htlc_transaction(
+		Ok(BaseEcdsaChannelSigner::sign_counterparty_htlc_transaction(
 			&self.inner,
 			channel_parameters,
 			htlc_tx,

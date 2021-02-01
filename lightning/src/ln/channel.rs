@@ -72,7 +72,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::LN_MAX_MSG_LEN;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::{BaseEcdsaChannelSigner, EcdsaChannelSigner};
 use crate::sign::tx_builder::{HTLCAmountDirection, NextCommitmentStats, SpecTxBuilder, TxBuilder};
 use crate::sign::{ChannelSigner, EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};

@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::types::ChannelId;
 use crate::prelude::*;
-use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::ecdsa::BaseEcdsaChannelSigner;
 use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT,
 };
