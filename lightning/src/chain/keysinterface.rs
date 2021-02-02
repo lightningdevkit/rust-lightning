@@ -335,18 +335,31 @@ pub trait KeysInterface: Send + Sync {
 	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
 	type ChanKeySigner : ChannelKeys;
 
-	/// Get node secret key (aka node_id or network_key)
+	/// Get node secret key (aka node_id or network_key).
+	///
+	/// This method must return the same value each time it is called.
 	fn get_node_secret(&self) -> SecretKey;
-	/// Get destination redeemScript to encumber static protocol exit points.
+	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
 	fn get_destination_script(&self) -> Script;
-	/// Get shutdown_pubkey to use as PublicKey at channel closure
+	/// Get a public key which we will send funds to (in the form of a P2WPKH output) when closing
+	/// a channel.
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_pubkey(&self) -> PublicKey;
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
+	///
+	/// This method must return a different value each time it is called.
 	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
 	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
 	/// onion packets and for temporary channel IDs. There is no requirement that these be
 	/// persisted anywhere, though they must be unique across restarts.
+	///
+	/// This method must return a different value each time it is called.
 	fn get_secure_random_bytes(&self) -> [u8; 32];
 
 	/// Reads a `ChanKeySigner` for this `KeysInterface` from the given input stream.
