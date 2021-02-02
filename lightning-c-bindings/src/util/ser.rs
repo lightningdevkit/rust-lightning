@@ -5,3 +5,6 @@ use std::ffi::c_void;
 use bitcoin::hashes::Hash;
 use crate::c_types::*;
 
+
+#[no_mangle]
+pub static MAX_BUF_SIZE: usize = lightning::util::ser::MAX_BUF_SIZE;

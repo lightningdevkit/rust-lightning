@@ -64,7 +64,7 @@ extern "C" fn ChainMonitor_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChainMonitor {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChainMonitor {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChainMonitor {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -117,6 +117,16 @@ pub extern "C" fn ChainMonitor_new(chain_source: *mut crate::chain::Filter, mut 
 	ChainMonitor { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
+impl From<nativeChainMonitor> for crate::chain::Watch {
+	fn from(obj: nativeChainMonitor) -> Self {
+		let mut rust_obj = ChainMonitor { inner: Box::into_raw(Box::new(obj)), is_owned: true };
+		let mut ret = ChainMonitor_as_Watch(&rust_obj);
+		// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn
+		rust_obj.inner = std::ptr::null_mut();
+		ret.free = Some(ChainMonitor_free_void);
+		ret
+	}
+}
 #[no_mangle]
 pub extern "C" fn ChainMonitor_as_Watch(this_arg: *const ChainMonitor) -> crate::chain::Watch {
 	crate::chain::Watch {
@@ -130,13 +140,13 @@ pub extern "C" fn ChainMonitor_as_Watch(this_arg: *const ChainMonitor) -> crate:
 use lightning::chain::Watch as WatchTraitImport;
 #[must_use]
 extern "C" fn ChainMonitor_Watch_watch_channel(this_arg: *const c_void, mut funding_outpoint: crate::chain::transaction::OutPoint, mut monitor: crate::chain::channelmonitor::ChannelMonitor) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.watch_channel(*unsafe { Box::from_raw(funding_outpoint.take_ptr()) }, *unsafe { Box::from_raw(monitor.take_ptr()) });
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.watch_channel(*unsafe { Box::from_raw(funding_outpoint.take_inner()) }, *unsafe { Box::from_raw(monitor.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::chain::channelmonitor::ChannelMonitorUpdateErr::native_into(e) }) };
 	local_ret
 }
 #[must_use]
 extern "C" fn ChainMonitor_Watch_update_channel(this_arg: *const c_void, mut funding_txo: crate::chain::transaction::OutPoint, mut update: crate::chain::channelmonitor::ChannelMonitorUpdate) -> crate::c_types::derived::CResult_NoneChannelMonitorUpdateErrZ {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.update_channel(*unsafe { Box::from_raw(funding_txo.take_ptr()) }, *unsafe { Box::from_raw(update.take_ptr()) });
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.update_channel(*unsafe { Box::from_raw(funding_txo.take_inner()) }, *unsafe { Box::from_raw(update.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::chain::channelmonitor::ChannelMonitorUpdateErr::native_into(e) }) };
 	local_ret
 }
@@ -147,6 +157,16 @@ extern "C" fn ChainMonitor_Watch_release_pending_monitor_events(this_arg: *const
 	local_ret.into()
 }
 
+impl From<nativeChainMonitor> for crate::util::events::EventsProvider {
+	fn from(obj: nativeChainMonitor) -> Self {
+		let mut rust_obj = ChainMonitor { inner: Box::into_raw(Box::new(obj)), is_owned: true };
+		let mut ret = ChainMonitor_as_EventsProvider(&rust_obj);
+		// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn
+		rust_obj.inner = std::ptr::null_mut();
+		ret.free = Some(ChainMonitor_free_void);
+		ret
+	}
+}
 #[no_mangle]
 pub extern "C" fn ChainMonitor_as_EventsProvider(this_arg: *const ChainMonitor) -> crate::util::events::EventsProvider {
 	crate::util::events::EventsProvider {

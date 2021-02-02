@@ -49,7 +49,7 @@ extern "C" fn ChannelMonitorUpdate_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelMonitorUpdate {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelMonitorUpdate {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelMonitorUpdate {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -114,6 +114,10 @@ pub static CLOSED_CHANNEL_UPDATE_ID: u64 = lightning::chain::channelmonitor::CLO
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_write(obj: *const ChannelMonitorUpdate) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub(crate) extern "C" fn ChannelMonitorUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelMonitorUpdate) })
 }
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_read(ser: crate::c_types::u8slice) -> ChannelMonitorUpdate {
@@ -255,7 +259,7 @@ extern "C" fn MonitorUpdateError_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl MonitorUpdateError {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeMonitorUpdateError {
+	pub(crate) fn take_inner(mut self) -> *mut nativeMonitorUpdateError {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -293,7 +297,7 @@ extern "C" fn MonitorEvent_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl MonitorEvent {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeMonitorEvent {
+	pub(crate) fn take_inner(mut self) -> *mut nativeMonitorEvent {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -352,7 +356,7 @@ extern "C" fn HTLCUpdate_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl HTLCUpdate {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeHTLCUpdate {
+	pub(crate) fn take_inner(mut self) -> *mut nativeHTLCUpdate {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -381,6 +385,10 @@ pub extern "C" fn HTLCUpdate_write(obj: *const HTLCUpdate) -> crate::c_types::de
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
+pub(crate) extern "C" fn HTLCUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeHTLCUpdate) })
+}
+#[no_mangle]
 pub extern "C" fn HTLCUpdate_read(ser: crate::c_types::u8slice) -> HTLCUpdate {
 	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
 		HTLCUpdate { inner: Box::into_raw(Box::new(res)), is_owned: true }
@@ -402,6 +410,12 @@ type nativeChannelMonitor = nativeChannelMonitorImport<crate::chain::keysinterfa
 /// get_and_clear_pending_monitor_events or get_and_clear_pending_events are serialized to disk and
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
+///
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
+/// the \"reorg path\" (ie disconnecting blocks until you find a common ancestor from both the
+/// returned block hash and the the current chain and then reconnecting blocks to get to the
+/// best chain) upon deserializing the object!
 #[must_use]
 #[repr(C)]
 pub struct ChannelMonitor {
@@ -428,7 +442,7 @@ extern "C" fn ChannelMonitor_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelMonitor {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelMonitor {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelMonitor {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -600,12 +614,12 @@ use lightning::chain::channelmonitor::Persist as rustPersist;
 impl rustPersist<crate::chain::keysinterface::ChannelKeys> for Persist {
 	fn persist_new_channel(&self, id: lightning::chain::transaction::OutPoint, data: &lightning::chain::channelmonitor::ChannelMonitor<crate::chain::keysinterface::ChannelKeys>) -> Result<(), lightning::chain::channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ret = (self.persist_new_channel)(self.this_arg, crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(id)), is_owned: true }, &crate::chain::channelmonitor::ChannelMonitor { inner: unsafe { (data as *const _) as *mut _ }, is_owned: false });
-		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(ret.contents.result.take_ptr()) })*/ }), false => Err( { (*unsafe { Box::from_raw(ret.contents.err.take_ptr()) }).into_native() })};
+		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut ret.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut ret.contents.err)) }).into_native() })};
 		local_ret
 	}
 	fn update_persisted_channel(&self, id: lightning::chain::transaction::OutPoint, update: &lightning::chain::channelmonitor::ChannelMonitorUpdate, data: &lightning::chain::channelmonitor::ChannelMonitor<crate::chain::keysinterface::ChannelKeys>) -> Result<(), lightning::chain::channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ret = (self.update_persisted_channel)(self.this_arg, crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(id)), is_owned: true }, &crate::chain::channelmonitor::ChannelMonitorUpdate { inner: unsafe { (update as *const _) as *mut _ }, is_owned: false }, &crate::chain::channelmonitor::ChannelMonitor { inner: unsafe { (data as *const _) as *mut _ }, is_owned: false });
-		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(ret.contents.result.take_ptr()) })*/ }), false => Err( { (*unsafe { Box::from_raw(ret.contents.err.take_ptr()) }).into_native() })};
+		let mut local_ret = match ret.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut ret.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut ret.contents.err)) }).into_native() })};
 		local_ret
 	}
 }

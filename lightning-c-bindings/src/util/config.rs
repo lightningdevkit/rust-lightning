@@ -38,7 +38,7 @@ extern "C" fn ChannelHandshakeConfig_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelHandshakeConfig {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelHandshakeConfig {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelHandshakeConfig {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -192,7 +192,7 @@ extern "C" fn ChannelHandshakeLimits_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelHandshakeLimits {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelHandshakeLimits {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelHandshakeLimits {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -465,7 +465,7 @@ extern "C" fn ChannelConfig_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelConfig {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelConfig {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelConfig {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -589,6 +589,10 @@ pub extern "C" fn ChannelConfig_write(obj: *const ChannelConfig) -> crate::c_typ
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
+pub(crate) extern "C" fn ChannelConfig_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelConfig) })
+}
+#[no_mangle]
 pub extern "C" fn ChannelConfig_read(ser: crate::c_types::u8slice) -> ChannelConfig {
 	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
 		ChannelConfig { inner: Box::into_raw(Box::new(res)), is_owned: true }
@@ -630,7 +634,7 @@ extern "C" fn UserConfig_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl UserConfig {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeUserConfig {
+	pub(crate) fn take_inner(mut self) -> *mut nativeUserConfig {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -663,7 +667,7 @@ pub extern "C" fn UserConfig_get_own_channel_config(this_ptr: &UserConfig) -> cr
 /// Channel config that we propose to our counterparty.
 #[no_mangle]
 pub extern "C" fn UserConfig_set_own_channel_config(this_ptr: &mut UserConfig, mut val: crate::util::config::ChannelHandshakeConfig) {
-	unsafe { &mut *this_ptr.inner }.own_channel_config = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.own_channel_config = *unsafe { Box::from_raw(val.take_inner()) };
 }
 /// Limits applied to our counterparty's proposed channel config settings.
 #[no_mangle]
@@ -674,7 +678,7 @@ pub extern "C" fn UserConfig_get_peer_channel_config_limits(this_ptr: &UserConfi
 /// Limits applied to our counterparty's proposed channel config settings.
 #[no_mangle]
 pub extern "C" fn UserConfig_set_peer_channel_config_limits(this_ptr: &mut UserConfig, mut val: crate::util::config::ChannelHandshakeLimits) {
-	unsafe { &mut *this_ptr.inner }.peer_channel_config_limits = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.peer_channel_config_limits = *unsafe { Box::from_raw(val.take_inner()) };
 }
 /// Channel config which affects behavior during channel lifetime.
 #[no_mangle]
@@ -685,15 +689,15 @@ pub extern "C" fn UserConfig_get_channel_options(this_ptr: &UserConfig) -> crate
 /// Channel config which affects behavior during channel lifetime.
 #[no_mangle]
 pub extern "C" fn UserConfig_set_channel_options(this_ptr: &mut UserConfig, mut val: crate::util::config::ChannelConfig) {
-	unsafe { &mut *this_ptr.inner }.channel_options = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.channel_options = *unsafe { Box::from_raw(val.take_inner()) };
 }
 #[must_use]
 #[no_mangle]
 pub extern "C" fn UserConfig_new(mut own_channel_config_arg: crate::util::config::ChannelHandshakeConfig, mut peer_channel_config_limits_arg: crate::util::config::ChannelHandshakeLimits, mut channel_options_arg: crate::util::config::ChannelConfig) -> UserConfig {
 	UserConfig { inner: Box::into_raw(Box::new(nativeUserConfig {
-		own_channel_config: *unsafe { Box::from_raw(own_channel_config_arg.take_ptr()) },
-		peer_channel_config_limits: *unsafe { Box::from_raw(peer_channel_config_limits_arg.take_ptr()) },
-		channel_options: *unsafe { Box::from_raw(channel_options_arg.take_ptr()) },
+		own_channel_config: *unsafe { Box::from_raw(own_channel_config_arg.take_inner()) },
+		peer_channel_config_limits: *unsafe { Box::from_raw(peer_channel_config_limits_arg.take_inner()) },
+		channel_options: *unsafe { Box::from_raw(channel_options_arg.take_inner()) },
 	})), is_owned: true }
 }
 #[must_use]
