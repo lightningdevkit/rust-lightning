@@ -40,6 +40,57 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
 use ln::msgs::DecodeError;
 
+/// Information about a spendable output to a P2WSH script. See
+/// SpendableOutputDescriptor::DynamicOutputP2WSH for more details on how to spend this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynamicP2WSHOutputDescriptor {
+	/// The outpoint which is spendable
+	pub outpoint: OutPoint,
+	/// Per commitment point to derive delayed_payment_key by key holder
+	pub per_commitment_point: PublicKey,
+	/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
+	/// the witness_script.
+	pub to_self_delay: u16,
+	/// The output which is referenced by the given outpoint
+	pub output: TxOut,
+	/// The revocation_pubkey used to derive witnessScript
+	pub revocation_pubkey: PublicKey,
+	/// Arbitrary identification information returned by a call to
+	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+	/// the channel to spend the output.
+	pub channel_keys_id: [u8; 32],
+	/// The value of the channel which this output originated from, possibly indirectly.
+	pub channel_value_satoshis: u64,
+}
+impl DynamicP2WSHOutputDescriptor {
+	/// The maximum length a well-formed witness spending one of these should have.
+	// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
+	// redeemscript push length.
+	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH + 1;
+}
+
+/// Information about a spendable output to our "payment key". See
+/// SpendableOutputDescriptor::StaticOutputCounterpartyPayment for more details on how to spend this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StaticCounterpartyPaymentOutputDescriptor {
+	/// The outpoint which is spendable
+	pub outpoint: OutPoint,
+	/// The output which is reference by the given outpoint
+	pub output: TxOut,
+	/// Arbitrary identification information returned by a call to
+	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+	/// the channel to spend the output.
+	pub channel_keys_id: [u8; 32],
+	/// The value of the channel which this transactions spends.
+	pub channel_value_satoshis: u64,
+}
+impl StaticCounterpartyPaymentOutputDescriptor {
+	/// The maximum length a well-formed witness spending one of these should have.
+	// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
+	// redeemscript push length.
+	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 34;
+}
+
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
 /// spend on-chain. The information needed to do this is provided in this enum, including the
@@ -88,25 +139,7 @@ pub enum SpendableOutputDescriptor {
 	/// chan_utils::get_revokeable_redeemscript.
 	//
 	// TODO: we need to expose utility methods in KeyManager to do all the relevant derivation.
-	DynamicOutputP2WSH {
-		/// The outpoint which is spendable
-		outpoint: OutPoint,
-		/// Per commitment point to derive delayed_payment_key by key holder
-		per_commitment_point: PublicKey,
-		/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
-		/// the witness_script.
-		to_self_delay: u16,
-		/// The output which is referenced by the given outpoint
-		output: TxOut,
-		/// The revocation_pubkey used to derive witnessScript
-		revocation_pubkey: PublicKey,
-		/// Arbitrary identification information returned by a call to
-		/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
-		/// the channel to spend the output.
-		channel_keys_id: [u8; 32],
-		/// The value of the channel which this output originated from, possibly indirectly.
-		channel_value_satoshis: u64,
-	},
+	DynamicOutputP2WSH(DynamicP2WSHOutputDescriptor),
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
 	/// The witness in the spending input, is, thus, simply:
@@ -114,18 +147,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
-	StaticOutputCounterpartyPayment {
-		/// The outpoint which is spendable
-		outpoint: OutPoint,
-		/// The output which is reference by the given outpoint
-		output: TxOut,
-		/// Arbitrary identification information returned by a call to
-		/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
-		/// the channel to spend the output.
-		channel_keys_id: [u8; 32],
-		/// The value of the channel which this transactions spends.
-		channel_value_satoshis: u64,
-	}
+	StaticOutputCounterpartyPayment(StaticCounterpartyPaymentOutputDescriptor),
 }
 
 impl Writeable for SpendableOutputDescriptor {
@@ -136,22 +158,22 @@ impl Writeable for SpendableOutputDescriptor {
 				outpoint.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, channel_value_satoshis } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WSH(ref descriptor) => {
 				1u8.write(writer)?;
-				outpoint.write(writer)?;
-				per_commitment_point.write(writer)?;
-				to_self_delay.write(writer)?;
-				output.write(writer)?;
-				revocation_pubkey.write(writer)?;
-				channel_keys_id.write(writer)?;
-				channel_value_satoshis.write(writer)?;
+				descriptor.outpoint.write(writer)?;
+				descriptor.per_commitment_point.write(writer)?;
+				descriptor.to_self_delay.write(writer)?;
+				descriptor.output.write(writer)?;
+				descriptor.revocation_pubkey.write(writer)?;
+				descriptor.channel_keys_id.write(writer)?;
+				descriptor.channel_value_satoshis.write(writer)?;
 			},
-			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref channel_keys_id, channel_value_satoshis } => {
+			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment(ref descriptor) => {
 				2u8.write(writer)?;
-				outpoint.write(writer)?;
-				output.write(writer)?;
-				channel_keys_id.write(writer)?;
-				channel_value_satoshis.write(writer)?;
+				descriptor.outpoint.write(writer)?;
+				descriptor.output.write(writer)?;
+				descriptor.channel_keys_id.write(writer)?;
+				descriptor.channel_value_satoshis.write(writer)?;
 			},
 		}
 		Ok(())
@@ -165,7 +187,7 @@ impl Readable for SpendableOutputDescriptor {
 				outpoint: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 			}),
-			1u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WSH {
+			1u8 => Ok(SpendableOutputDescriptor::DynamicOutputP2WSH(DynamicP2WSHOutputDescriptor {
 				outpoint: Readable::read(reader)?,
 				per_commitment_point: Readable::read(reader)?,
 				to_self_delay: Readable::read(reader)?,
@@ -173,13 +195,13 @@ impl Readable for SpendableOutputDescriptor {
 				revocation_pubkey: Readable::read(reader)?,
 				channel_keys_id: Readable::read(reader)?,
 				channel_value_satoshis: Readable::read(reader)?,
-			}),
-			2u8 => Ok(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
+			})),
+			2u8 => Ok(SpendableOutputDescriptor::StaticOutputCounterpartyPayment(StaticCounterpartyPaymentOutputDescriptor {
 				outpoint: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 				channel_keys_id: Readable::read(reader)?,
 				channel_value_satoshis: Readable::read(reader)?,
-			}),
+			})),
 			_ => Err(DecodeError::InvalidValue),
 		}
 	}

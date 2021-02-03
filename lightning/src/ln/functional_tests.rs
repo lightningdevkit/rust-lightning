@@ -4662,17 +4662,17 @@ macro_rules! check_spendable_outputs {
 					Event::SpendableOutputs { ref outputs } => {
 						for outp in outputs {
 							match *outp {
-								SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref channel_keys_id, channel_value_satoshis } => {
-									assert_eq!(channel_value_satoshis, $chan_value);
+								SpendableOutputDescriptor::StaticOutputCounterpartyPayment(ref descriptor) => {
+									assert_eq!(descriptor.channel_value_satoshis, $chan_value);
 									let input = TxIn {
-										previous_output: outpoint.into_bitcoin_outpoint(),
+										previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
 										sequence: 0,
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
 										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
+										value: descriptor.output.value,
 									};
 									let mut spend_tx = Transaction {
 										version: 2,
@@ -4682,27 +4682,27 @@ macro_rules! check_spendable_outputs {
 									};
 									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 35 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
 									let secp_ctx = Secp256k1::new();
-									let keys = $keysinterface.derive_channel_keys($chan_value, channel_keys_id);
+									let keys = $keysinterface.derive_channel_keys($chan_value, &descriptor.channel_keys_id);
 									let remotepubkey = keys.pubkeys().payment_point;
 									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
-									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
+									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, descriptor.output.value, SigHashType::All)[..]).unwrap();
 									let remotesig = secp_ctx.sign(&sighash, &keys.inner.payment_key);
 									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
 									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
 									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
 									txn.push(spend_tx);
 								},
-								SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, channel_value_satoshis  } => {
-									assert_eq!(channel_value_satoshis, $chan_value);
+								SpendableOutputDescriptor::DynamicOutputP2WSH(ref descriptor) => {
+									assert_eq!(descriptor.channel_value_satoshis, $chan_value);
 									let input = TxIn {
-										previous_output: outpoint.into_bitcoin_outpoint(),
+										previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
 										script_sig: Script::new(),
-										sequence: *to_self_delay as u32,
+										sequence: descriptor.to_self_delay as u32,
 										witness: Vec::new(),
 									};
 									let outp = TxOut {
 										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
+										value: descriptor.output.value,
 									};
 									let mut spend_tx = Transaction {
 										version: 2,
@@ -4711,13 +4711,13 @@ macro_rules! check_spendable_outputs {
 										output: vec![outp],
 									};
 									let secp_ctx = Secp256k1::new();
-									let keys = $keysinterface.derive_channel_keys($chan_value, channel_keys_id);
-									if let Ok(delayed_payment_key) = chan_utils::derive_private_key(&secp_ctx, &per_commitment_point, &keys.inner.delayed_payment_base_key) {
+									let keys = $keysinterface.derive_channel_keys($chan_value, &descriptor.channel_keys_id);
+									if let Ok(delayed_payment_key) = chan_utils::derive_private_key(&secp_ctx, &descriptor.per_commitment_point, &keys.inner.delayed_payment_base_key) {
 
 										let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
-										let witness_script = chan_utils::get_revokeable_redeemscript(revocation_pubkey, *to_self_delay, &delayed_payment_pubkey);
+										let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
 										spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 1 + witness_script.len() + 1 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
-										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
+										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, descriptor.output.value, SigHashType::All)[..]).unwrap();
 										let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
 										spend_tx.input[0].witness.push(local_delayedsig.serialize_der().to_vec());
 										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
