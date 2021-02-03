@@ -4744,7 +4744,7 @@ macro_rules! check_spendable_outputs {
 										input: vec![input],
 										output: vec![outp.clone()],
 									};
-									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 35 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
+									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 34 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
 									let secret = {
 										match ExtendedPrivKey::new_master(Network::Testnet, &$node.node_seed) {
 											Ok(master_key) => {
