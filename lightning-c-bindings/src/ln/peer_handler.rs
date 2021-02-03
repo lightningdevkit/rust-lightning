@@ -41,7 +41,7 @@ extern "C" fn MessageHandler_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl MessageHandler {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeMessageHandler {
+	pub(crate) fn take_inner(mut self) -> *mut nativeMessageHandler {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -213,7 +213,7 @@ extern "C" fn PeerHandleError_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl PeerHandleError {
-	pub(crate) fn take_ptr(mut self) -> *mut nativePeerHandleError {
+	pub(crate) fn take_inner(mut self) -> *mut nativePeerHandleError {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -278,7 +278,7 @@ extern "C" fn PeerManager_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl PeerManager {
-	pub(crate) fn take_ptr(mut self) -> *mut nativePeerManager {
+	pub(crate) fn take_inner(mut self) -> *mut nativePeerManager {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -291,7 +291,7 @@ impl PeerManager {
 #[must_use]
 #[no_mangle]
 pub extern "C" fn PeerManager_new(mut message_handler: crate::ln::peer_handler::MessageHandler, mut our_node_secret: crate::c_types::SecretKey, ephemeral_random_data: *const [u8; 32], mut logger: crate::util::logger::Logger) -> PeerManager {
-	let mut ret = lightning::ln::peer_handler::PeerManager::new(*unsafe { Box::from_raw(message_handler.take_ptr()) }, our_node_secret.into_rust(), unsafe { &*ephemeral_random_data}, logger);
+	let mut ret = lightning::ln::peer_handler::PeerManager::new(*unsafe { Box::from_raw(message_handler.take_inner()) }, our_node_secret.into_rust(), unsafe { &*ephemeral_random_data}, logger);
 	PeerManager { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -398,6 +398,18 @@ pub extern "C" fn PeerManager_process_events(this_arg: &PeerManager) {
 #[no_mangle]
 pub extern "C" fn PeerManager_socket_disconnected(this_arg: &PeerManager, descriptor: &crate::ln::peer_handler::SocketDescriptor) {
 	unsafe { &*this_arg.inner }.socket_disconnected(descriptor)
+}
+
+/// Disconnect a peer given its node id.
+///
+/// Set no_connection_possible to true to prevent any further connection with this peer,
+/// force-closing any channels we have with it.
+///
+/// If a peer is connected, this will call `disconnect_socket` on the descriptor for the peer,
+/// so be careful about reentrancy issues.
+#[no_mangle]
+pub extern "C" fn PeerManager_disconnect_by_node_id(this_arg: &PeerManager, mut node_id: crate::c_types::PublicKey, mut no_connection_possible: bool) {
+	unsafe { &*this_arg.inner }.disconnect_by_node_id(node_id.into_rust(), no_connection_possible)
 }
 
 /// This function should be called roughly once every 30 seconds.

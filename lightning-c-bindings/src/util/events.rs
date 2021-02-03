@@ -100,7 +100,7 @@ impl Event {
 				let mut funding_txo_nonref = (*funding_txo).clone();
 				let mut user_channel_id_nonref = (*user_channel_id).clone();
 				nativeEvent::FundingBroadcastSafe {
-					funding_txo: *unsafe { Box::from_raw(funding_txo_nonref.take_ptr()) },
+					funding_txo: *unsafe { Box::from_raw(funding_txo_nonref.take_inner()) },
 					user_channel_id: user_channel_id_nonref,
 				}
 			},
@@ -157,7 +157,7 @@ impl Event {
 			},
 			Event::FundingBroadcastSafe {mut funding_txo, mut user_channel_id, } => {
 				nativeEvent::FundingBroadcastSafe {
-					funding_txo: *unsafe { Box::from_raw(funding_txo.take_ptr()) },
+					funding_txo: *unsafe { Box::from_raw(funding_txo.take_inner()) },
 					user_channel_id: user_channel_id,
 				}
 			},
@@ -407,6 +407,17 @@ pub enum MessageSendEvent {
 	PaymentFailureNetworkUpdate {
 		update: crate::ln::msgs::HTLCFailChannelUpdate,
 	},
+	/// Query a peer for channels with funding transaction UTXOs in a block range.
+	SendChannelRangeQuery {
+		node_id: crate::c_types::PublicKey,
+		msg: crate::ln::msgs::QueryChannelRange,
+	},
+	/// Request routing gossip messages from a peer for a list of channels identified by
+	/// their short_channel_ids.
+	SendShortIdsQuery {
+		node_id: crate::c_types::PublicKey,
+		msg: crate::ln::msgs::QueryShortChannelIds,
+	},
 }
 use lightning::util::events::MessageSendEvent as nativeMessageSendEvent;
 impl MessageSendEvent {
@@ -418,7 +429,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendAcceptChannel {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendOpenChannel {ref node_id, ref msg, } => {
@@ -426,7 +437,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendOpenChannel {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingCreated {ref node_id, ref msg, } => {
@@ -434,7 +445,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendFundingCreated {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingSigned {ref node_id, ref msg, } => {
@@ -442,7 +453,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendFundingSigned {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingLocked {ref node_id, ref msg, } => {
@@ -450,7 +461,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendFundingLocked {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendAnnouncementSignatures {ref node_id, ref msg, } => {
@@ -458,7 +469,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendAnnouncementSignatures {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::UpdateHTLCs {ref node_id, ref updates, } => {
@@ -466,7 +477,7 @@ impl MessageSendEvent {
 				let mut updates_nonref = (*updates).clone();
 				nativeMessageSendEvent::UpdateHTLCs {
 					node_id: node_id_nonref.into_rust(),
-					updates: *unsafe { Box::from_raw(updates_nonref.take_ptr()) },
+					updates: *unsafe { Box::from_raw(updates_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendRevokeAndACK {ref node_id, ref msg, } => {
@@ -474,7 +485,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendRevokeAndACK {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendClosingSigned {ref node_id, ref msg, } => {
@@ -482,7 +493,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendClosingSigned {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendShutdown {ref node_id, ref msg, } => {
@@ -490,7 +501,7 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendShutdown {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendChannelReestablish {ref node_id, ref msg, } => {
@@ -498,27 +509,27 @@ impl MessageSendEvent {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::SendChannelReestablish {
 					node_id: node_id_nonref.into_rust(),
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastChannelAnnouncement {ref msg, ref update_msg, } => {
 				let mut msg_nonref = (*msg).clone();
 				let mut update_msg_nonref = (*update_msg).clone();
 				nativeMessageSendEvent::BroadcastChannelAnnouncement {
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
-					update_msg: *unsafe { Box::from_raw(update_msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
+					update_msg: *unsafe { Box::from_raw(update_msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastNodeAnnouncement {ref msg, } => {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::BroadcastNodeAnnouncement {
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastChannelUpdate {ref msg, } => {
 				let mut msg_nonref = (*msg).clone();
 				nativeMessageSendEvent::BroadcastChannelUpdate {
-					msg: *unsafe { Box::from_raw(msg_nonref.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
 				}
 			},
 			MessageSendEvent::HandleError {ref node_id, ref action, } => {
@@ -535,6 +546,22 @@ impl MessageSendEvent {
 					update: update_nonref.into_native(),
 				}
 			},
+			MessageSendEvent::SendChannelRangeQuery {ref node_id, ref msg, } => {
+				let mut node_id_nonref = (*node_id).clone();
+				let mut msg_nonref = (*msg).clone();
+				nativeMessageSendEvent::SendChannelRangeQuery {
+					node_id: node_id_nonref.into_rust(),
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
+				}
+			},
+			MessageSendEvent::SendShortIdsQuery {ref node_id, ref msg, } => {
+				let mut node_id_nonref = (*node_id).clone();
+				let mut msg_nonref = (*msg).clone();
+				nativeMessageSendEvent::SendShortIdsQuery {
+					node_id: node_id_nonref.into_rust(),
+					msg: *unsafe { Box::from_raw(msg_nonref.take_inner()) },
+				}
+			},
 		}
 	}
 	#[allow(unused)]
@@ -543,83 +570,83 @@ impl MessageSendEvent {
 			MessageSendEvent::SendAcceptChannel {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendAcceptChannel {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendOpenChannel {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendOpenChannel {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingCreated {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendFundingCreated {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingSigned {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendFundingSigned {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendFundingLocked {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendFundingLocked {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendAnnouncementSignatures {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendAnnouncementSignatures {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::UpdateHTLCs {mut node_id, mut updates, } => {
 				nativeMessageSendEvent::UpdateHTLCs {
 					node_id: node_id.into_rust(),
-					updates: *unsafe { Box::from_raw(updates.take_ptr()) },
+					updates: *unsafe { Box::from_raw(updates.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendRevokeAndACK {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendRevokeAndACK {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendClosingSigned {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendClosingSigned {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendShutdown {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendShutdown {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::SendChannelReestablish {mut node_id, mut msg, } => {
 				nativeMessageSendEvent::SendChannelReestablish {
 					node_id: node_id.into_rust(),
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastChannelAnnouncement {mut msg, mut update_msg, } => {
 				nativeMessageSendEvent::BroadcastChannelAnnouncement {
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
-					update_msg: *unsafe { Box::from_raw(update_msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
+					update_msg: *unsafe { Box::from_raw(update_msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastNodeAnnouncement {mut msg, } => {
 				nativeMessageSendEvent::BroadcastNodeAnnouncement {
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::BroadcastChannelUpdate {mut msg, } => {
 				nativeMessageSendEvent::BroadcastChannelUpdate {
-					msg: *unsafe { Box::from_raw(msg.take_ptr()) },
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 			MessageSendEvent::HandleError {mut node_id, mut action, } => {
@@ -631,6 +658,18 @@ impl MessageSendEvent {
 			MessageSendEvent::PaymentFailureNetworkUpdate {mut update, } => {
 				nativeMessageSendEvent::PaymentFailureNetworkUpdate {
 					update: update.into_native(),
+				}
+			},
+			MessageSendEvent::SendChannelRangeQuery {mut node_id, mut msg, } => {
+				nativeMessageSendEvent::SendChannelRangeQuery {
+					node_id: node_id.into_rust(),
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
+				}
+			},
+			MessageSendEvent::SendShortIdsQuery {mut node_id, mut msg, } => {
+				nativeMessageSendEvent::SendShortIdsQuery {
+					node_id: node_id.into_rust(),
+					msg: *unsafe { Box::from_raw(msg.take_inner()) },
 				}
 			},
 		}
@@ -760,6 +799,22 @@ impl MessageSendEvent {
 					update: crate::ln::msgs::HTLCFailChannelUpdate::native_into(update_nonref),
 				}
 			},
+			nativeMessageSendEvent::SendChannelRangeQuery {ref node_id, ref msg, } => {
+				let mut node_id_nonref = (*node_id).clone();
+				let mut msg_nonref = (*msg).clone();
+				MessageSendEvent::SendChannelRangeQuery {
+					node_id: crate::c_types::PublicKey::from_rust(&node_id_nonref),
+					msg: crate::ln::msgs::QueryChannelRange { inner: Box::into_raw(Box::new(msg_nonref)), is_owned: true },
+				}
+			},
+			nativeMessageSendEvent::SendShortIdsQuery {ref node_id, ref msg, } => {
+				let mut node_id_nonref = (*node_id).clone();
+				let mut msg_nonref = (*msg).clone();
+				MessageSendEvent::SendShortIdsQuery {
+					node_id: crate::c_types::PublicKey::from_rust(&node_id_nonref),
+					msg: crate::ln::msgs::QueryShortChannelIds { inner: Box::into_raw(Box::new(msg_nonref)), is_owned: true },
+				}
+			},
 		}
 	}
 	#[allow(unused)]
@@ -856,6 +911,18 @@ impl MessageSendEvent {
 			nativeMessageSendEvent::PaymentFailureNetworkUpdate {mut update, } => {
 				MessageSendEvent::PaymentFailureNetworkUpdate {
 					update: crate::ln::msgs::HTLCFailChannelUpdate::native_into(update),
+				}
+			},
+			nativeMessageSendEvent::SendChannelRangeQuery {mut node_id, mut msg, } => {
+				MessageSendEvent::SendChannelRangeQuery {
+					node_id: crate::c_types::PublicKey::from_rust(&node_id),
+					msg: crate::ln::msgs::QueryChannelRange { inner: Box::into_raw(Box::new(msg)), is_owned: true },
+				}
+			},
+			nativeMessageSendEvent::SendShortIdsQuery {mut node_id, mut msg, } => {
+				MessageSendEvent::SendShortIdsQuery {
+					node_id: crate::c_types::PublicKey::from_rust(&node_id),
+					msg: crate::ln::msgs::QueryShortChannelIds { inner: Box::into_raw(Box::new(msg)), is_owned: true },
 				}
 			},
 		}

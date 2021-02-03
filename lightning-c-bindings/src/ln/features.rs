@@ -51,7 +51,7 @@ extern "C" fn InitFeatures_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl InitFeatures {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeInitFeatures {
+	pub(crate) fn take_inner(mut self) -> *mut nativeInitFeatures {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -89,7 +89,7 @@ extern "C" fn NodeFeatures_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl NodeFeatures {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeNodeFeatures {
+	pub(crate) fn take_inner(mut self) -> *mut nativeNodeFeatures {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -127,7 +127,7 @@ extern "C" fn ChannelFeatures_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl ChannelFeatures {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeChannelFeatures {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChannelFeatures {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();

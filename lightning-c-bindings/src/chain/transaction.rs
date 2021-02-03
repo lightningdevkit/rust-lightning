@@ -38,7 +38,7 @@ extern "C" fn OutPoint_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl OutPoint {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeOutPoint {
+	pub(crate) fn take_inner(mut self) -> *mut nativeOutPoint {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -103,6 +103,10 @@ pub extern "C" fn OutPoint_to_channel_id(this_arg: &OutPoint) -> crate::c_types:
 #[no_mangle]
 pub extern "C" fn OutPoint_write(obj: *const OutPoint) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub(crate) extern "C" fn OutPoint_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeOutPoint) })
 }
 #[no_mangle]
 pub extern "C" fn OutPoint_read(ser: crate::c_types::u8slice) -> OutPoint {

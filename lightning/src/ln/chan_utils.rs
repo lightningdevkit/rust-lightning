@@ -889,6 +889,8 @@ impl CommitmentTransaction {
 	/// This auxiliary data is not stored in this object.
 	///
 	/// Only include HTLCs that are above the dust limit for the channel.
+	///
+	/// (C-not exported) due to the generic though we likely should expose a version without
 	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters).unwrap();
@@ -1056,6 +1058,9 @@ impl CommitmentTransaction {
 	/// The non-dust HTLCs (direction, amt, height expiration, hash, transaction output index)
 	/// which were included in this commitment transaction in output order.
 	/// The transaction index is always populated.
+	///
+	/// (C-not exported) as we cannot currently convert Vec references to/from C, though we should
+	/// expose a less effecient version which creates a Vec of references in the future.
 	pub fn htlcs(&self) -> &Vec<HTLCOutputInCommitment> {
 		&self.htlcs
 	}

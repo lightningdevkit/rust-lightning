@@ -38,7 +38,7 @@ extern "C" fn RouteHop_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl RouteHop {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeRouteHop {
+	pub(crate) fn take_inner(mut self) -> *mut nativeRouteHop {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -84,7 +84,7 @@ pub extern "C" fn RouteHop_get_node_features(this_ptr: &RouteHop) -> crate::ln::
 /// amended to match the features present in the invoice this node generated.
 #[no_mangle]
 pub extern "C" fn RouteHop_set_node_features(this_ptr: &mut RouteHop, mut val: crate::ln::features::NodeFeatures) {
-	unsafe { &mut *this_ptr.inner }.node_features = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.node_features = *unsafe { Box::from_raw(val.take_inner()) };
 }
 /// The channel that should be used from the previous hop to reach this node.
 #[no_mangle]
@@ -108,7 +108,7 @@ pub extern "C" fn RouteHop_get_channel_features(this_ptr: &RouteHop) -> crate::l
 /// to reach this node.
 #[no_mangle]
 pub extern "C" fn RouteHop_set_channel_features(this_ptr: &mut RouteHop, mut val: crate::ln::features::ChannelFeatures) {
-	unsafe { &mut *this_ptr.inner }.channel_features = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.channel_features = *unsafe { Box::from_raw(val.take_inner()) };
 }
 /// The fee taken on this hop. For the last hop, this should be the full value of the payment.
 #[no_mangle]
@@ -139,9 +139,9 @@ pub extern "C" fn RouteHop_set_cltv_expiry_delta(this_ptr: &mut RouteHop, mut va
 pub extern "C" fn RouteHop_new(mut pubkey_arg: crate::c_types::PublicKey, mut node_features_arg: crate::ln::features::NodeFeatures, mut short_channel_id_arg: u64, mut channel_features_arg: crate::ln::features::ChannelFeatures, mut fee_msat_arg: u64, mut cltv_expiry_delta_arg: u32) -> RouteHop {
 	RouteHop { inner: Box::into_raw(Box::new(nativeRouteHop {
 		pubkey: pubkey_arg.into_rust(),
-		node_features: *unsafe { Box::from_raw(node_features_arg.take_ptr()) },
+		node_features: *unsafe { Box::from_raw(node_features_arg.take_inner()) },
 		short_channel_id: short_channel_id_arg,
-		channel_features: *unsafe { Box::from_raw(channel_features_arg.take_ptr()) },
+		channel_features: *unsafe { Box::from_raw(channel_features_arg.take_inner()) },
 		fee_msat: fee_msat_arg,
 		cltv_expiry_delta: cltv_expiry_delta_arg,
 	})), is_owned: true }
@@ -178,7 +178,7 @@ extern "C" fn Route_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl Route {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeRoute {
+	pub(crate) fn take_inner(mut self) -> *mut nativeRoute {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -210,13 +210,13 @@ pub extern "C" fn Route_clone(orig: &Route) -> Route {
 /// ensure it is viable.
 #[no_mangle]
 pub extern "C" fn Route_set_paths(this_ptr: &mut Route, mut val: crate::c_types::derived::CVec_CVec_RouteHopZZ) {
-	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { let mut local_val_0 = Vec::new(); for mut item in item.into_rust().drain(..) { local_val_0.push( { *unsafe { Box::from_raw(item.take_ptr()) } }); }; local_val_0 }); };
+	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { let mut local_val_0 = Vec::new(); for mut item in item.into_rust().drain(..) { local_val_0.push( { *unsafe { Box::from_raw(item.take_inner()) } }); }; local_val_0 }); };
 	unsafe { &mut *this_ptr.inner }.paths = local_val;
 }
 #[must_use]
 #[no_mangle]
 pub extern "C" fn Route_new(mut paths_arg: crate::c_types::derived::CVec_CVec_RouteHopZZ) -> Route {
-	let mut local_paths_arg = Vec::new(); for mut item in paths_arg.into_rust().drain(..) { local_paths_arg.push( { let mut local_paths_arg_0 = Vec::new(); for mut item in item.into_rust().drain(..) { local_paths_arg_0.push( { *unsafe { Box::from_raw(item.take_ptr()) } }); }; local_paths_arg_0 }); };
+	let mut local_paths_arg = Vec::new(); for mut item in paths_arg.into_rust().drain(..) { local_paths_arg.push( { let mut local_paths_arg_0 = Vec::new(); for mut item in item.into_rust().drain(..) { local_paths_arg_0.push( { *unsafe { Box::from_raw(item.take_inner()) } }); }; local_paths_arg_0 }); };
 	Route { inner: Box::into_raw(Box::new(nativeRoute {
 		paths: local_paths_arg,
 	})), is_owned: true }
@@ -224,6 +224,10 @@ pub extern "C" fn Route_new(mut paths_arg: crate::c_types::derived::CVec_CVec_Ro
 #[no_mangle]
 pub extern "C" fn Route_write(obj: *const Route) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+}
+#[no_mangle]
+pub(crate) extern "C" fn Route_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeRoute) })
 }
 #[no_mangle]
 pub extern "C" fn Route_read(ser: crate::c_types::u8slice) -> Route {
@@ -264,7 +268,7 @@ extern "C" fn RouteHint_free_void(this_ptr: *mut c_void) {
 #[allow(unused)]
 /// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
 impl RouteHint {
-	pub(crate) fn take_ptr(mut self) -> *mut nativeRouteHint {
+	pub(crate) fn take_inner(mut self) -> *mut nativeRouteHint {
 		assert!(self.is_owned);
 		let ret = self.inner;
 		self.inner = std::ptr::null_mut();
@@ -319,7 +323,7 @@ pub extern "C" fn RouteHint_get_fees(this_ptr: &RouteHint) -> crate::routing::ne
 /// The fees which must be paid to use this channel
 #[no_mangle]
 pub extern "C" fn RouteHint_set_fees(this_ptr: &mut RouteHint, mut val: crate::routing::network_graph::RoutingFees) {
-	unsafe { &mut *this_ptr.inner }.fees = *unsafe { Box::from_raw(val.take_ptr()) };
+	unsafe { &mut *this_ptr.inner }.fees = *unsafe { Box::from_raw(val.take_inner()) };
 }
 /// The difference in CLTV values between this node and the next node.
 #[no_mangle]
@@ -349,7 +353,7 @@ pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, 
 	RouteHint { inner: Box::into_raw(Box::new(nativeRouteHint {
 		src_node_id: src_node_id_arg.into_rust(),
 		short_channel_id: short_channel_id_arg,
-		fees: *unsafe { Box::from_raw(fees_arg.take_ptr()) },
+		fees: *unsafe { Box::from_raw(fees_arg.take_inner()) },
 		cltv_expiry_delta: cltv_expiry_delta_arg,
 		htlc_minimum_msat: htlc_minimum_msat_arg,
 	})), is_owned: true }

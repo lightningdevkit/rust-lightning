@@ -1,7 +1,6 @@
 //! Printing logic for basic blocks of Rust-mapped code - parts of functions and declarations but
 //! not the full mapping logic.
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use proc_macro2::{TokenTree, Span};
@@ -77,7 +76,7 @@ pub fn writeln_docs<W: std::io::Write>(w: &mut W, attrs: &[syn::Attribute], pref
 ///
 /// this_param is used when returning Self or accepting a self parameter, and should be the
 /// concrete, mapped type.
-pub fn write_method_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, associated_types: &HashMap<&syn::Ident, &syn::Ident>, this_param: &str, types: &mut TypeResolver, generics: Option<&GenericTypes>, self_ptr: bool, fn_decl: bool) {
+pub fn write_method_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, this_param: &str, types: &mut TypeResolver, generics: Option<&GenericTypes>, self_ptr: bool, fn_decl: bool) {
 	if sig.constness.is_some() || sig.asyncness.is_some() || sig.unsafety.is_some() ||
 			sig.abi.is_some() || sig.variadic.is_some() {
 		unimplemented!();
@@ -140,26 +139,16 @@ pub fn write_method_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, a
 		syn::ReturnType::Type(_, rtype) => {
 			write!(w, " -> ").unwrap();
 			if let Some(mut remaining_path) = first_seg_self(&*rtype) {
-				if let Some(associated_seg) = get_single_remaining_path_seg(&mut remaining_path) {
-					// We're returning an associated type in a trait impl. Its probably a safe bet
-					// that its also a trait, so just return the trait type.
-					let real_type = associated_types.get(associated_seg).unwrap();
-					types.write_c_type(w, &syn::Type::Path(syn::TypePath { qself: None,
-						path: syn::PathSegment {
-							ident: (*real_type).clone(),
-							arguments: syn::PathArguments::None
-						}.into()
-					}), generics, true);
-				} else {
+				if remaining_path.next().is_none() {
 					write!(w, "{}", this_param).unwrap();
+					return;
 				}
+			}
+			if let syn::Type::Reference(r) = &**rtype {
+				// We can't return a reference, cause we allocate things on the stack.
+				types.write_c_type(w, &*r.elem, generics, true);
 			} else {
-				if let syn::Type::Reference(r) = &**rtype {
-					// We can't return a reference, cause we allocate things on the stack.
-					types.write_c_type(w, &*r.elem, generics, true);
-				} else {
-					types.write_c_type(w, &*rtype, generics, true);
-				}
+				types.write_c_type(w, &*rtype, generics, true);
 			}
 		},
 		_ => {},
@@ -222,7 +211,7 @@ pub fn write_method_var_decl_body<W: std::io::Write>(w: &mut W, sig: &syn::Signa
 ///
 /// The return value is expected to be bound to a variable named `ret` which is available after a
 /// method-call-ending semicolon.
-pub fn write_method_call_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, associated_types: &HashMap<&syn::Ident, &syn::Ident>, extra_indent: &str, types: &TypeResolver, generics: Option<&GenericTypes>, this_type: &str, to_c: bool) {
+pub fn write_method_call_params<W: std::io::Write>(w: &mut W, sig: &syn::Signature, extra_indent: &str, types: &TypeResolver, generics: Option<&GenericTypes>, this_type: &str, to_c: bool) {
 	let mut first_arg = true;
 	let mut num_unused = 0;
 	for inp in sig.inputs.iter() {
@@ -285,26 +274,12 @@ pub fn write_method_call_params<W: std::io::Write>(w: &mut W, sig: &syn::Signatu
 		syn::ReturnType::Type(_, rtype) => {
 			write!(w, ";\n\t{}", extra_indent).unwrap();
 
+			let self_segs_iter = first_seg_self(&*rtype);
 			if to_c && first_seg_self(&*rtype).is_some() {
 				// Assume rather blindly that we're returning an associated trait from a C fn call to a Rust trait object.
 				write!(w, "ret").unwrap();
-			} else if !to_c && first_seg_self(&*rtype).is_some() {
-				if let Some(mut remaining_path) = first_seg_self(&*rtype) {
-					if let Some(associated_seg) = get_single_remaining_path_seg(&mut remaining_path) {
-						let real_type = associated_types.get(associated_seg).unwrap();
-						if let Some(t) = types.crate_types.traits.get(&types.maybe_resolve_ident(&real_type).unwrap()) {
-							// We're returning an associated trait from a Rust fn call to a C trait
-							// object.
-							writeln!(w, "let mut rust_obj = {} {{ inner: Box::into_raw(Box::new(ret)), is_owned: true }};", this_type).unwrap();
-							writeln!(w, "\t{}let mut ret = {}_as_{}(&rust_obj);", extra_indent, this_type, t.ident).unwrap();
-							writeln!(w, "\t{}// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn", extra_indent).unwrap();
-							writeln!(w, "\t{}rust_obj.inner = std::ptr::null_mut();", extra_indent).unwrap();
-							writeln!(w, "\t{}ret.free = Some({}_free_void);", extra_indent, this_type).unwrap();
-							writeln!(w, "\t{}ret", extra_indent).unwrap();
-							return;
-						}
-					}
-				}
+			} else if !to_c && self_segs_iter.is_some() && self_segs_iter.unwrap().next().is_none() {
+				// If we're returning "Self" (and not "Self::X"), just do it manually
 				write!(w, "{} {{ inner: Box::into_raw(Box::new(ret)), is_owned: true }}", this_type).unwrap();
 			} else if to_c {
 				let new_var = types.write_from_c_conversion_new_var(w, &syn::Ident::new("ret", Span::call_site()), rtype, generics);

@@ -33,11 +33,6 @@ pub fn get_single_remaining_path_seg<'a, I: Iterator<Item=&'a syn::PathSegment>>
 	} else { None }
 }
 
-pub fn assert_single_path_seg<'a>(p: &'a syn::Path) -> &'a syn::Ident {
-	if p.leading_colon.is_some() { unimplemented!(); }
-	get_single_remaining_path_seg(&mut p.segments.iter()).unwrap()
-}
-
 pub fn single_ident_generic_path_to_ident(p: &syn::Path) -> Option<&syn::Ident> {
 	if p.segments.len() == 1 {
 		Some(&p.segments.iter().next().unwrap().ident)
@@ -134,6 +129,7 @@ impl<'a> GenericTypes<'a> {
 
 	/// Learn the generics in generics in the current context, given a TypeResolver.
 	pub fn learn_generics<'b, 'c>(&mut self, generics: &'a syn::Generics, types: &'b TypeResolver<'a, 'c>) -> bool {
+		// First learn simple generics...
 		for generic in generics.params.iter() {
 			match generic {
 				syn::GenericParam::Type(type_param) => {
@@ -161,6 +157,7 @@ impl<'a> GenericTypes<'a> {
 				_ => {},
 			}
 		}
+		// Then find generics where we are required to pass a Deref<Target=X> and pretend its just X.
 		if let Some(wh) = &generics.where_clause {
 			for pred in wh.predicates.iter() {
 				if let syn::WherePredicate::Type(t) = pred {
@@ -193,6 +190,38 @@ impl<'a> GenericTypes<'a> {
 		true
 	}
 
+	/// Learn the associated types from the trait in the current context.
+	pub fn learn_associated_types<'b, 'c>(&mut self, t: &'a syn::ItemTrait, types: &'b TypeResolver<'a, 'c>) {
+		for item in t.items.iter() {
+			match item {
+				&syn::TraitItem::Type(ref t) => {
+					if t.default.is_some() || t.generics.lt_token.is_some() { unimplemented!(); }
+					let mut bounds_iter = t.bounds.iter();
+					match bounds_iter.next().unwrap() {
+						syn::TypeParamBound::Trait(tr) => {
+							assert_simple_bound(&tr);
+							if let Some(mut path) = types.maybe_resolve_path(&tr.path, None) {
+								if types.skip_path(&path) { continue; }
+								// In general we handle Deref<Target=X> as if it were just X (and
+								// implement Deref<Target=Self> for relevant types). We don't
+								// bother to implement it for associated types, however, so we just
+								// ignore such bounds.
+								let new_ident = if path != "std::ops::Deref" {
+									path = "crate::".to_string() + &path;
+									Some(&tr.path)
+								} else { None };
+								self.typed_generics.last_mut().unwrap().insert(&t.ident, (path, new_ident));
+							} else { unimplemented!(); }
+						},
+						_ => unimplemented!(),
+					}
+					if bounds_iter.next().is_some() { unimplemented!(); }
+				},
+				_ => {},
+			}
+		}
+	}
+
 	/// Attempt to resolve an Ident as a generic parameter and return the full path.
 	pub fn maybe_resolve_ident<'b>(&'b self, ident: &syn::Ident) -> Option<&'b String> {
 		for gen in self.typed_generics.iter().rev() {
@@ -209,6 +238,18 @@ impl<'a> GenericTypes<'a> {
 			for gen in self.typed_generics.iter().rev() {
 				if let Some(res) = gen.get(ident).map(|(a, b)| (a, b.unwrap())) {
 					return Some(res);
+				}
+			}
+		} else {
+			// Associated types are usually specified as "Self::Generic", so we check for that
+			// explicitly here.
+			let mut it = path.segments.iter();
+			if path.segments.len() == 2 && format!("{}", it.next().unwrap().ident) == "Self" {
+				let ident = &it.next().unwrap().ident;
+				for gen in self.typed_generics.iter().rev() {
+					if let Some(res) = gen.get(ident).map(|(a, b)| (a, b.unwrap())) {
+						return Some(res);
+					}
 				}
 			}
 		}
@@ -360,10 +401,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::secp256k1::Error" if !is_ref => Some("crate::c_types::Secp256k1Error"),
 			"bitcoin::blockdata::script::Script" if is_ref => Some("crate::c_types::u8slice"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some("crate::c_types::derived::CVec_u8Z"),
-			"bitcoin::blockdata::transaction::OutPoint" if is_ref => Some("crate::chain::transaction::OutPoint"),
+			"bitcoin::blockdata::transaction::OutPoint" => Some("crate::chain::transaction::OutPoint"),
 			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::Transaction"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some("crate::c_types::TxOut"),
-			"bitcoin::OutPoint" => Some("crate::chain::transaction::OutPoint"),
 			"bitcoin::network::constants::Network" => Some("crate::bitcoin::network::Network"),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref  => Some("*const [u8; 80]"),
 			"bitcoin::blockdata::block::Block" if is_ref  => Some("crate::c_types::u8slice"),
@@ -373,6 +413,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::hash_types::Txid" if !is_ref => Some("crate::c_types::ThirtyTwoBytes"),
 			"bitcoin::hash_types::BlockHash" if is_ref  => Some("*const [u8; 32]"),
 			"bitcoin::hash_types::BlockHash" if !is_ref => Some("crate::c_types::ThirtyTwoBytes"),
+			"bitcoin::secp256k1::Message" if !is_ref => Some("crate::c_types::ThirtyTwoBytes"),
 			"ln::channelmanager::PaymentHash" if is_ref => Some("*const [u8; 32]"),
 			"ln::channelmanager::PaymentHash" if !is_ref => Some("crate::c_types::ThirtyTwoBytes"),
 			"ln::channelmanager::PaymentPreimage" if is_ref => Some("*const [u8; 32]"),
@@ -509,7 +550,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 			// List of structs we map (possibly during processing of other files):
 			"ln::features::InitFeatures" if is_ref => Some(".inner) }"),
-			"ln::features::InitFeatures" if !is_ref => Some(".take_ptr()) }"),
+			"ln::features::InitFeatures" if !is_ref => Some(".take_inner()) }"),
 
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
@@ -573,6 +614,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::script::Script" if is_ref => Some("crate::c_types::u8slice::from_slice(&"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some(""),
 			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::Transaction::from_vec(local_"),
+			"bitcoin::blockdata::transaction::OutPoint" => Some("crate::c_types::bitcoin_to_C_outpoint("),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some("crate::c_types::TxOut::from_rust("),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some("&local_"),
 			"bitcoin::blockdata::block::Block" if is_ref => Some("crate::c_types::u8slice::from_slice(&local_"),
@@ -583,6 +625,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::hash_types::Txid" if is_ref => Some(""),
 			"bitcoin::hash_types::BlockHash" if is_ref => Some(""),
 			"bitcoin::hash_types::BlockHash" => Some("crate::c_types::ThirtyTwoBytes { data: "),
+			"bitcoin::secp256k1::Message" if !is_ref => Some("crate::c_types::ThirtyTwoBytes { data: "),
 			"ln::channelmanager::PaymentHash" if is_ref => Some("&"),
 			"ln::channelmanager::PaymentHash" if !is_ref => Some("crate::c_types::ThirtyTwoBytes { data: "),
 			"ln::channelmanager::PaymentPreimage" if is_ref => Some("&"),
@@ -636,6 +679,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::script::Script" if is_ref => Some("[..])"),
 			"bitcoin::blockdata::script::Script" if !is_ref => Some(".into_bytes().into()"),
 			"bitcoin::blockdata::transaction::Transaction" => Some(")"),
+			"bitcoin::blockdata::transaction::OutPoint" => Some(")"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some(")"),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some(""),
 			"bitcoin::blockdata::block::Block" if is_ref => Some(")"),
@@ -646,6 +690,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::hash_types::Txid" if is_ref => Some(".as_inner()"),
 			"bitcoin::hash_types::BlockHash" if is_ref => Some(".as_inner()"),
 			"bitcoin::hash_types::BlockHash" => Some(".into_inner() }"),
+			"bitcoin::secp256k1::Message" if !is_ref => Some(".as_ref().clone() }"),
 			"ln::channelmanager::PaymentHash" if is_ref => Some(".0"),
 			"ln::channelmanager::PaymentHash" => Some(".0 }"),
 			"ln::channelmanager::PaymentPreimage" if is_ref => Some(".0"),
@@ -753,8 +798,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match full_path {
 			"Result" if !is_ref => {
 				Some(("match ",
-						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw({}.contents.result.take_ptr()) }})", var_name)),
-						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw({}.contents.err.take_ptr()) }})", var_name))],
+						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.result)) }})", var_name)),
+						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.err)) }})", var_name))],
 						")}"))
 			},
 			"Vec"|"Slice" if !is_ref => {
@@ -1209,17 +1254,16 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					decl_lookup(w, &DeclType::StructImported, &resolved_path, is_ref, is_mut);
 				} else if self.crate_types.mirrored_enums.get(&resolved_path).is_some() {
 					decl_lookup(w, &DeclType::MirroredEnum, &resolved_path, is_ref, is_mut);
+				} else if let Some(t) = self.crate_types.traits.get(&resolved_path) {
+					decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
 				} else if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
-					if let Some(t) = self.crate_types.traits.get(&resolved_path) {
-						decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
-						return;
-					} else if let Some(_) = self.imports.get(ident) {
+					if let Some(_) = self.imports.get(ident) {
 						// crate_types lookup has to have succeeded:
 						panic!("Failed to print inline conversion for {}", ident);
 					} else if let Some(decl_type) = self.declared.get(ident) {
 						decl_lookup(w, decl_type, &self.maybe_resolve_ident(ident).unwrap(), is_ref, is_mut);
 					} else { unimplemented!(); }
-				}
+				} else { unimplemented!(); }
 			},
 			syn::Type::Array(a) => {
 				// We assume all arrays contain only [int_literal; X]s.
@@ -1302,6 +1346,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						DeclType::EnumIgnored|DeclType::StructImported if !is_ref =>
 							write!(w, "crate::{} {{ inner: Box::into_raw(Box::new(", decl_path).unwrap(),
 						DeclType::Trait(_) if is_ref => write!(w, "&").unwrap(),
+						DeclType::Trait(_) if !is_ref => {},
 						_ => panic!("{:?}", decl_path),
 					}
 				});
@@ -1324,6 +1369,13 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						write!(w, ", is_owned: true }}").unwrap(),
 					DeclType::EnumIgnored|DeclType::StructImported if !is_ref => write!(w, ")), is_owned: true }}").unwrap(),
 					DeclType::Trait(_) if is_ref => {},
+					DeclType::Trait(_) => {
+						// This is used when we're converting a concrete Rust type into a C trait
+						// for use when a Rust trait method returns an associated type.
+						// Because all of our C traits implement From<RustTypesImplementingTraits>
+						// we can just call .into() here and be done.
+						write!(w, ".into()").unwrap()
+					},
 					_ => unimplemented!(),
 				});
 	}
@@ -1358,7 +1410,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				|w, decl_type, _full_path, is_ref, _is_mut| match decl_type {
 					DeclType::StructImported if is_ref && ptr_for_ref => write!(w, ").inner }}").unwrap(),
 					DeclType::StructImported if is_ref => write!(w, ".inner }}").unwrap(),
-					DeclType::StructImported if !is_ref => write!(w, ".take_ptr()) }}").unwrap(),
+					DeclType::StructImported if !is_ref => write!(w, ".take_inner()) }}").unwrap(),
 					DeclType::MirroredEnum if is_ref => write!(w, ".to_native()").unwrap(),
 					DeclType::MirroredEnum => write!(w, ".into_native()").unwrap(),
 					DeclType::Trait(_) => {},
@@ -1686,14 +1738,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 							self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(path), generics,
 								&format!("{}", single_ident_generic_path_to_ident(path).unwrap()), is_ref, false, false, false);
 						} else {
-							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), is_ref, true);
+							self.write_template_generics(w, &mut [$item].iter().map(|t| *t), generics, is_ref, true);
 						}
 					} else if let syn::Type::Tuple(syn::TypeTuple { elems, .. }) = $item {
 						self.write_c_mangled_container_path_intern(w, elems.iter().collect(), generics,
 							&format!("{}Tuple", elems.len()), is_ref, false, false, false);
 					} else { unimplemented!(); }
 					write!(w, ") -> {} =\n\t{}::CResultTempl::<", mangled_container, Self::container_templ_path()).unwrap();
-					self.write_template_generics(w, &mut args.iter().map(|t| *t), is_ref, true);
+					self.write_template_generics(w, &mut args.iter().map(|t| *t), generics, is_ref, true);
 					writeln!(w, ">::{};\n", $call).unwrap();
 				} }
 			}
@@ -1722,7 +1774,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		}
 	}
 
-	fn write_template_generics<'b, W: std::io::Write>(&self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, is_ref: bool, in_crate: bool) {
+	fn write_template_generics<'b, W: std::io::Write>(&self, w: &mut W, args: &mut dyn Iterator<Item=&'b syn::Type>, generics: Option<&GenericTypes>, is_ref: bool, in_crate: bool) {
 		for (idx, t) in args.enumerate() {
 			if idx != 0 {
 				write!(w, ", ").unwrap();
@@ -1732,11 +1784,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					write!(w, "u8").unwrap();
 				} else {
 					write!(w, "{}::C{}TupleTempl<", Self::container_templ_path(), tup.elems.len()).unwrap();
-					self.write_template_generics(w, &mut tup.elems.iter(), is_ref, in_crate);
+					self.write_template_generics(w, &mut tup.elems.iter(), generics, is_ref, in_crate);
 					write!(w, ">").unwrap();
 				}
 			} else if let syn::Type::Path(p_arg) = t {
-				let resolved_generic = self.resolve_path(&p_arg.path, None);
+				let resolved_generic = self.resolve_path(&p_arg.path, generics);
 				if self.is_primitive(&resolved_generic) {
 					write!(w, "{}", resolved_generic).unwrap();
 				} else if let Some(c_type) = self.c_type_from_path(&resolved_generic, is_ref, false) {
@@ -1746,19 +1798,19 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
 								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								is_ref, in_crate);
+								generics, is_ref, in_crate);
 						} else { unimplemented!(); }
 						write!(w, ">").unwrap();
 					} else if resolved_generic == "Option" {
 						if let syn::PathArguments::AngleBracketed(args) = &p_arg.path.segments.iter().next().unwrap().arguments {
 							self.write_template_generics(w, &mut args.args.iter().map(|gen|
 								if let syn::GenericArgument::Type(t) = gen { t } else { unimplemented!() }),
-								is_ref, in_crate);
+								generics, is_ref, in_crate);
 						} else { unimplemented!(); }
 					} else if in_crate {
 						write!(w, "{}", c_type).unwrap();
 					} else {
-						self.write_rust_type(w, None, &t);
+						self.write_rust_type(w, generics, &t);
 					}
 				} else {
 					// If we just write out resolved_generic, it may mostly work, however for
@@ -1778,7 +1830,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				}
 			} else if let syn::Type::Reference(r_arg) = t {
 				if let syn::Type::Path(p_arg) = &*r_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path, None);
+					let resolved = self.resolve_path(&p_arg.path, generics);
 					if self.crate_types.opaques.get(&resolved).is_some() {
 						write!(w, "crate::{}", resolved).unwrap();
 					} else {
@@ -1788,7 +1840,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				} else { unimplemented!(); }
 			} else if let syn::Type::Array(a_arg) = t {
 				if let syn::Type::Path(p_arg) = &*a_arg.elem {
-					let resolved = self.resolve_path(&p_arg.path, None);
+					let resolved = self.resolve_path(&p_arg.path, generics);
 					assert!(self.is_primitive(&resolved));
 					if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(len), .. }) = &a_arg.len {
 						write!(w, "{}",
@@ -1803,14 +1855,14 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 			let mut created_container: Vec<u8> = Vec::new();
 
-			write!(&mut created_container, "#[no_mangle]\npub type {} = ", mangled_container).unwrap();
+			write!(&mut created_container, "pub type {} = ", mangled_container).unwrap();
 			write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
+			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
 			write!(&mut created_container, "#[no_mangle]\npub static {}_free: extern \"C\" fn({}) = ", mangled_container, mangled_container).unwrap();
 			write!(&mut created_container, "{}::C{}Templ_free::<", Self::container_templ_path(), container_type).unwrap();
-			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), is_ref, true);
+			self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
 			writeln!(&mut created_container, ">;").unwrap();
 
 			self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref);

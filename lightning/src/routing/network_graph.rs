@@ -29,7 +29,7 @@ use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, Reply
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
-use util::events;
+use util::events::{MessageSendEvent, MessageSendEventsProvider};
 
 use std::{cmp, fmt};
 use std::sync::{RwLock, RwLockReadGuard};
@@ -64,7 +64,7 @@ pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access
 	pub network_graph: RwLock<NetworkGraph>,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
-	pending_events: Mutex<Vec<events::MessageSendEvent>>,
+	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
 }
 
@@ -244,7 +244,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		let number_of_blocks = 0xffffffff;
 		log_debug!(self.logger, "Sending query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), first_blocknum, number_of_blocks);
 		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::MessageSendEvent::SendChannelRangeQuery {
+		pending_events.push(MessageSendEvent::SendChannelRangeQuery {
 			node_id: their_node_id.clone(),
 			msg: QueryChannelRange {
 				chain_hash: self.network_graph.read().unwrap().genesis_hash,
@@ -279,7 +279,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 
 		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), msg.short_channel_ids.len());
 		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::MessageSendEvent::SendShortIdsQuery {
+		pending_events.push(MessageSendEvent::SendShortIdsQuery {
 			node_id: their_node_id.clone(),
 			msg: QueryShortChannelIds {
 				chain_hash: msg.chain_hash,
@@ -327,12 +327,12 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	}
 }
 
-impl<C: Deref, L: Deref> events::MessageSendEventsProvider for NetGraphMsgHandler<C, L>
+impl<C: Deref, L: Deref> MessageSendEventsProvider for NetGraphMsgHandler<C, L>
 where
 	C::Target: chain::Access,
 	L::Target: Logger,
 {
-	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		std::mem::swap(&mut ret, &mut pending_events);

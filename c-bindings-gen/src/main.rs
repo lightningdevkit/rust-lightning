@@ -42,6 +42,10 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
 				writeln!(w, "#[no_mangle]").unwrap();
+				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", struct_for).unwrap();
+				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", struct_for).unwrap();
+				writeln!(w, "}}").unwrap();
+				writeln!(w, "#[no_mangle]").unwrap();
 				writeln!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> {} {{", struct_for, struct_for).unwrap();
 				writeln!(w, "\tif let Ok(res) = crate::c_types::deserialize_obj(ser) {{").unwrap();
 				writeln!(w, "\t\t{} {{ inner: Box::into_raw(Box::new(res)), is_owned: true }}", struct_for).unwrap();
@@ -65,6 +69,10 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, for_obj).unwrap();
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
+				writeln!(w, "#[no_mangle]").unwrap();
+				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
+				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
+				writeln!(w, "}}").unwrap();
 			},
 			"util::ser::Readable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
@@ -80,6 +88,48 @@ fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path
 	}
 }
 
+/// Convert "TraitA : TraitB" to a single function name and return type.
+///
+/// This is (obviously) somewhat over-specialized and only useful for TraitB's that only require a
+/// single function (eg for serialization).
+fn convert_trait_impl_field(trait_path: &str) -> (String, &'static str) {
+	match trait_path {
+		"util::ser::Writeable" => ("write".to_owned(), "crate::c_types::derived::CVec_u8Z"),
+		_ => unimplemented!(),
+	}
+}
+
+/// Companion to convert_trait_impl_field, write an assignment for the function defined by it for
+/// `for_obj` which implements the the trait at `trait_path`.
+fn write_trait_impl_field_assign<W: std::io::Write>(w: &mut W, trait_path: &str, for_obj: &syn::Ident) {
+	match trait_path {
+		"util::ser::Writeable" => {
+			writeln!(w, "\t\twrite: {}_write_void,", for_obj).unwrap();
+		},
+		_ => unimplemented!(),
+	}
+}
+
+/// Write out the impl block for a defined trait struct which has a supertrait
+fn do_write_impl_trait<W: std::io::Write>(w: &mut W, trait_path: &str, trait_name: &syn::Ident, for_obj: &str) {
+	match trait_path {
+		"util::events::MessageSendEventsProvider" => {
+			writeln!(w, "impl lightning::{} for {} {{", trait_path, for_obj).unwrap();
+			writeln!(w, "\tfn get_and_clear_pending_msg_events(&self) -> Vec<lightning::util::events::MessageSendEvent> {{").unwrap();
+			writeln!(w, "\t\t<crate::{} as lightning::{}>::get_and_clear_pending_msg_events(&self.{})", trait_path, trait_path, trait_name).unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
+		},
+		"util::ser::Writeable" => {
+			writeln!(w, "impl lightning::{} for {} {{", trait_path, for_obj).unwrap();
+			writeln!(w, "\tfn write<W: lightning::util::ser::Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {{").unwrap();
+			writeln!(w, "\t\tlet vec = (self.write)(self.this_arg);").unwrap();
+			writeln!(w, "\t\tw.write_all(vec.as_slice())").unwrap();
+			writeln!(w, "\t}}\n}}").unwrap();
+		},
+		_ => panic!(),
+	}
+}
+
 // *******************************
 // *** Per-Type Printing Logic ***
 // *******************************
@@ -92,15 +142,18 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 					if supertrait.paren_token.is_some() || supertrait.lifetimes.is_some() {
 						unimplemented!();
 					}
-					if let Some(ident) = supertrait.path.get_ident() {
+					// First try to resolve path to find in-crate traits, but if that doesn't work
+					// assume its a prelude trait (eg Clone, etc) and just use the single ident.
+					if let Some(path) = $types.maybe_resolve_path(&supertrait.path, None) {
+						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
+							$( $pat => $e, )*
+						}
+					} else if let Some(ident) = supertrait.path.get_ident() {
 						match (&format!("{}", ident) as &str, &ident) {
 							$( $pat => $e, )*
 						}
 					} else {
-						let path = $types.resolve_path(&supertrait.path, None);
-						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
-							$( $pat => $e, )*
-						}
+						panic!("Supertrait unresolvable and not single-ident");
 					}
 				},
 				syn::TypeParamBound::Lifetime(_) => unimplemented!(),
@@ -108,31 +161,6 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 		}
 	}
 } } }
-
-/// Gets a HashMap from name idents to the bounding trait for associated types.
-/// eg if a native trait has a "type T = TraitA", this will return a HashMap containing a mapping
-/// from "T" to "TraitA".
-fn learn_associated_types<'a>(t: &'a syn::ItemTrait) -> HashMap<&'a syn::Ident, &'a syn::Ident> {
-	let mut associated_types = HashMap::new();
-	for item in t.items.iter() {
-		match item {
-			&syn::TraitItem::Type(ref t) => {
-				if t.default.is_some() || t.generics.lt_token.is_some() { unimplemented!(); }
-				let mut bounds_iter = t.bounds.iter();
-				match bounds_iter.next().unwrap() {
-					syn::TypeParamBound::Trait(tr) => {
-						assert_simple_bound(&tr);
-						associated_types.insert(&t.ident, assert_single_path_seg(&tr.path));
-					},
-					_ => unimplemented!(),
-				}
-				if bounds_iter.next().is_some() { unimplemented!(); }
-			},
-			_ => {},
-		}
-	}
-	associated_types
-}
 
 /// Prints a C-mapped trait object containing a void pointer and a jump table for each function in
 /// the original trait.
@@ -150,10 +178,10 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 
 	let mut gen_types = GenericTypes::new();
 	assert!(gen_types.learn_generics(&t.generics, types));
+	gen_types.learn_associated_types(&t, types);
 
 	writeln!(w, "#[repr(C)]\npub struct {} {{", trait_name).unwrap();
 	writeln!(w, "\tpub this_arg: *mut c_void,").unwrap();
-	let associated_types = learn_associated_types(t);
 	let mut generated_fields = Vec::new(); // Every field's name except this_arg, used in Clone generation
 	for item in t.items.iter() {
 		match item {
@@ -210,7 +238,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 
 				write!(w, "\tpub {}: extern \"C\" fn (", m.sig.ident).unwrap();
 				generated_fields.push(format!("{}", m.sig.ident));
-				write_method_params(w, &m.sig, &associated_types, "c_void", types, Some(&gen_types), true, false);
+				write_method_params(w, &m.sig, "c_void", types, Some(&gen_types), true, false);
 				writeln!(w, ",").unwrap();
 
 				gen_types.pop_ctx();
@@ -236,10 +264,15 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 		},
 		("Send", _) => {}, ("Sync", _) => {},
 		(s, i) => {
-			// For in-crate supertraits, just store a C-mapped copy of the supertrait as a member.
-			if types.crate_types.traits.get(s).is_none() { unimplemented!(); }
-			writeln!(w, "\tpub {}: crate::{},", i, s).unwrap();
-			generated_fields.push(format!("{}", i));
+			generated_fields.push(if types.crate_types.traits.get(s).is_none() {
+				let (name, ret) = convert_trait_impl_field(s);
+				writeln!(w, "\tpub {}: extern \"C\" fn (this_arg: *const c_void) -> {},", name, ret).unwrap();
+				name
+			} else {
+				// For in-crate supertraits, just store a C-mapped copy of the supertrait as a member.
+				writeln!(w, "\tpub {}: crate::{},", i, s).unwrap();
+				format!("{}", i)
+			});
 		}
 	) );
 	writeln!(w, "\tpub free: Option<extern \"C\" fn(this_arg: *mut c_void)>,").unwrap();
@@ -273,13 +306,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 			writeln!(w, "\t}}\n}}").unwrap();
 		},
 		(s, i) => {
-			if s != "util::events::MessageSendEventsProvider" { unimplemented!(); }
-			// XXX: We straight-up cheat here - instead of bothering to get the trait object we
-			// just print what we need since this is only used in one place.
-			writeln!(w, "impl lightning::{} for {} {{", s, trait_name).unwrap();
-			writeln!(w, "\tfn get_and_clear_pending_msg_events(&self) -> Vec<lightning::util::events::MessageSendEvent> {{").unwrap();
-			writeln!(w, "\t\t<crate::{} as lightning::{}>::get_and_clear_pending_msg_events(&self.{})", s, s, i).unwrap();
-			writeln!(w, "\t}}\n}}").unwrap();
+			do_write_impl_trait(w, s, i, &trait_name);
 		}
 	) );
 
@@ -363,7 +390,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 				}
 				write_method_var_decl_body(w, &m.sig, "\t", types, Some(&gen_types), true);
 				write!(w, "(self.{})(", m.sig.ident).unwrap();
-				write_method_call_params(w, &m.sig, &associated_types, "\t", types, Some(&gen_types), "", true);
+				write_method_call_params(w, &m.sig, "\t", types, Some(&gen_types), "", true);
 
 				writeln!(w, "\n\t}}").unwrap();
 				gen_types.pop_ctx();
@@ -427,7 +454,7 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, "#[allow(unused)]").unwrap();
 	writeln!(w, "/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy").unwrap();
 	writeln!(w, "impl {} {{", struct_name).unwrap();
-	writeln!(w, "\tpub(crate) fn take_ptr(mut self) -> *mut native{} {{", struct_name).unwrap();
+	writeln!(w, "\tpub(crate) fn take_inner(mut self) -> *mut native{} {{", struct_name).unwrap();
 	writeln!(w, "\t\tassert!(self.is_owned);").unwrap();
 	writeln!(w, "\t\tlet ret = self.inner;").unwrap();
 	writeln!(w, "\t\tself.inner = std::ptr::null_mut();").unwrap();
@@ -473,21 +500,28 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	write_cpp_wrapper(cpp_headers, &format!("{}", ident), true);
 }
 
+fn declare_struct<'a, 'b>(s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>) -> bool {
+	let export = export_status(&s.attrs);
+	match export {
+		ExportStatus::Export => {},
+		ExportStatus::TestOnly => return false,
+		ExportStatus::NoExport => {
+			types.struct_ignored(&s.ident);
+			return false;
+		}
+	}
+
+	types.struct_imported(&s.ident, format!("{}", s.ident));
+	true
+}
+
 /// Writes out all the relevant mappings for a Rust struct, deferring to writeln_opaque to generate
 /// the struct itself, and then writing getters and setters for public, understood-type fields and
 /// a constructor if every field is public.
 fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>, extra_headers: &mut File, cpp_headers: &mut File) {
-	let struct_name = &format!("{}", s.ident);
-	let export = export_status(&s.attrs);
-	match export {
-		ExportStatus::Export => {},
-		ExportStatus::TestOnly => return,
-		ExportStatus::NoExport => {
-			types.struct_ignored(&s.ident);
-			return;
-		}
-	}
+	if !declare_struct(s, types) { return; }
 
+	let struct_name = &format!("{}", s.ident);
 	writeln_opaque(w, &s.ident, struct_name, &s.generics, &s.attrs, types, extra_headers, cpp_headers);
 
 	eprintln!("exporting fields for {}", struct_name);
@@ -571,8 +605,6 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 			writeln!(w, "\t}})), is_owned: true }}\n}}").unwrap();
 		}
 	}
-
-	types.struct_imported(&s.ident, struct_name.clone());
 }
 
 /// Prints a relevant conversion for impl *
@@ -605,7 +637,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						// That's great, except that they are unresolved idents, so if we learn
 						// mappings from a trai defined in a different file, we may mis-resolve or
 						// fail to resolve the mapped types.
-						let trait_associated_types = learn_associated_types(trait_obj);
+						gen_types.learn_associated_types(trait_obj, types);
 						let mut impl_associated_types = HashMap::new();
 						for item in i.items.iter() {
 							match item {
@@ -625,6 +657,21 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							ExportStatus::Export => {},
 							ExportStatus::NoExport|ExportStatus::TestOnly => return,
 						}
+
+						// For cases where we have a concrete native object which implements a
+						// trait and need to return the C-mapped version of the trait, provide a
+						// From<> implementation which does all the work to ensure free is handled
+						// properly. This way we can call this method from deep in the
+						// type-conversion logic without actually knowing the concrete native type.
+						writeln!(w, "impl From<native{}> for crate::{} {{", ident, full_trait_path).unwrap();
+						writeln!(w, "\tfn from(obj: native{}) -> Self {{", ident).unwrap();
+						writeln!(w, "\t\tlet mut rust_obj = {} {{ inner: Box::into_raw(Box::new(obj)), is_owned: true }};", ident).unwrap();
+						writeln!(w, "\t\tlet mut ret = {}_as_{}(&rust_obj);", ident, trait_obj.ident).unwrap();
+						writeln!(w, "\t\t// We want to free rust_obj when ret gets drop()'d, not rust_obj, so wipe rust_obj's pointer and set ret's free() fn").unwrap();
+						writeln!(w, "\t\trust_obj.inner = std::ptr::null_mut();").unwrap();
+						writeln!(w, "\t\tret.free = Some({}_free_void);", ident).unwrap();
+						writeln!(w, "\t\tret\n\t}}\n}}").unwrap();
+
 						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: *const {}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
 						writeln!(w, "\tcrate::{} {{", full_trait_path).unwrap();
 						writeln!(w, "\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
@@ -670,9 +717,10 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							("Clone", _) => {
 								writeln!(w, "\t\tclone: Some({}_clone_void),", ident).unwrap();
 							},
+							("Sync", _) => {}, ("Send", _) => {},
+							("std::marker::Sync", _) => {}, ("std::marker::Send", _) => {},
 							(s, t) => {
-								if s.starts_with("util::") {
-									let supertrait_obj = types.crate_types.traits.get(s).unwrap();
+								if let Some(supertrait_obj) = types.crate_types.traits.get(s) {
 									writeln!(w, "\t\t{}: crate::{} {{", t, s).unwrap();
 									writeln!(w, "\t\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
 									writeln!(w, "\t\t\tfree: None,").unwrap();
@@ -685,6 +733,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 										}
 									}
 									write!(w, "\t\t}},\n").unwrap();
+								} else {
+									write_trait_impl_field_assign(w, s, ident);
 								}
 							}
 						) );
@@ -706,7 +756,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								write!(w, "extern \"C\" fn {}_{}_{}(", ident, trait_obj.ident, $m.sig.ident).unwrap();
 								gen_types.push_ctx();
 								assert!(gen_types.learn_generics(&$m.sig.generics, types));
-								write_method_params(w, &$m.sig, &trait_associated_types, "c_void", types, Some(&gen_types), true, true);
+								write_method_params(w, &$m.sig, "c_void", types, Some(&gen_types), true, true);
 								write!(w, " {{\n\t").unwrap();
 								write_method_var_decl_body(w, &$m.sig, "", types, Some(&gen_types), false);
 								let mut takes_self = false;
@@ -732,7 +782,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									},
 									_ => {},
 								}
-								write_method_call_params(w, &$m.sig, &trait_associated_types, "", types, Some(&gen_types), &real_type, false);
+								write_method_call_params(w, &$m.sig, "", types, Some(&gen_types), &real_type, false);
 								gen_types.pop_ctx();
 								write!(w, "\n}}\n").unwrap();
 								if let syn::ReturnType::Type(_, rtype) = &$m.sig.output {
@@ -763,9 +813,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						}
 						walk_supertraits!(trait_obj, types, (
 							(s, t) => {
-								if s.starts_with("util::") {
+								if let Some(supertrait_obj) = types.crate_types.traits.get(s).cloned() {
 									writeln!(w, "use {}::{} as native{}Trait;", types.orig_crate, s, t).unwrap();
-									let supertrait_obj = *types.crate_types.traits.get(s).unwrap();
 									for item in supertrait_obj.items.iter() {
 										match item {
 											syn::TraitItem::Method(m) => {
@@ -819,7 +868,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									};
 									gen_types.push_ctx();
 									assert!(gen_types.learn_generics(&m.sig.generics, types));
-									write_method_params(w, &m.sig, &HashMap::new(), &ret_type, types, Some(&gen_types), false, true);
+									write_method_params(w, &m.sig, &ret_type, types, Some(&gen_types), false, true);
 									write!(w, " {{\n\t").unwrap();
 									write_method_var_decl_body(w, &m.sig, "", types, Some(&gen_types), false);
 									let mut takes_self = false;
@@ -837,7 +886,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									} else {
 										write!(w, "{}::{}::{}(", types.orig_crate, resolved_path, m.sig.ident).unwrap();
 									}
-									write_method_call_params(w, &m.sig, &HashMap::new(), "", types, Some(&gen_types), &ret_type, false);
+									write_method_call_params(w, &m.sig, "", types, Some(&gen_types), &ret_type, false);
 									gen_types.pop_ctx();
 									writeln!(w, "\n}}\n").unwrap();
 								}
@@ -872,6 +921,19 @@ fn is_enum_opaque(e: &syn::ItemEnum) -> bool {
 	false
 }
 
+fn declare_enum<'a, 'b>(e: &'a syn::ItemEnum, types: &mut TypeResolver<'b, 'a>) {
+	match export_status(&e.attrs) {
+		ExportStatus::Export => {},
+		ExportStatus::NoExport|ExportStatus::TestOnly => return,
+	}
+
+	if is_enum_opaque(e) {
+		types.enum_ignored(&e.ident);
+	} else {
+		types.mirrored_enum_declared(&e.ident);
+	}
+}
+
 /// Print a mapping of an enum. If all of the enum's fields are C-mapped in some form (or the enum
 /// is unitary), we generate an equivalent enum with all types replaced with their C mapped
 /// versions followed by conversion functions which map between the Rust version and the C mapped
@@ -885,7 +947,6 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if is_enum_opaque(e) {
 		eprintln!("Skipping enum {} as it contains non-unit fields", e.ident);
 		writeln_opaque(w, &e.ident, &format!("{}", e.ident), &e.generics, &e.attrs, types, extra_headers, cpp_headers);
-		types.enum_ignored(&e.ident);
 		return;
 	}
 	writeln_docs(w, &e.attrs, "");
@@ -893,7 +954,6 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 	if e.generics.lt_token.is_some() {
 		unimplemented!();
 	}
-	types.mirrored_enum_declared(&e.ident);
 
 	let mut needs_free = false;
 
@@ -1018,11 +1078,11 @@ fn writeln_fn<'a, 'b, W: std::io::Write>(w: &mut W, f: &'a syn::ItemFn, types: &
 	if !gen_types.learn_generics(&f.sig.generics, types) { return; }
 
 	write!(w, "#[no_mangle]\npub extern \"C\" fn {}(", f.sig.ident).unwrap();
-	write_method_params(w, &f.sig, &HashMap::new(), "", types, Some(&gen_types), false, true);
+	write_method_params(w, &f.sig, "", types, Some(&gen_types), false, true);
 	write!(w, " {{\n\t").unwrap();
 	write_method_var_decl_body(w, &f.sig, "", types, Some(&gen_types), false);
 	write!(w, "{}::{}::{}(", types.orig_crate, types.module_path, f.sig.ident).unwrap();
-	write_method_call_params(w, &f.sig, &HashMap::new(), "", types, Some(&gen_types), "", false);
+	write_method_call_params(w, &f.sig, "", types, Some(&gen_types), "", false);
 	writeln!(w, "\n}}\n").unwrap();
 }
 
@@ -1122,9 +1182,27 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 
 	let mut type_resolver = TypeResolver::new(orig_crate, module, crate_types);
 
+	// First pass over the items and fill in imports and file-declared objects in the type resolver
 	for item in syntax.items.iter() {
 		match item {
 			syn::Item::Use(u) => type_resolver.process_use(&mut out, &u),
+			syn::Item::Struct(s) => {
+				if let syn::Visibility::Public(_) = s.vis {
+					declare_struct(&s, &mut type_resolver);
+				}
+			},
+			syn::Item::Enum(e) => {
+				if let syn::Visibility::Public(_) = e.vis {
+					declare_enum(&e, &mut type_resolver);
+				}
+			},
+			_ => {},
+		}
+	}
+
+	for item in syntax.items.iter() {
+		match item {
+			syn::Item::Use(_) => {}, // Handled above
 			syn::Item::Static(_) => {},
 			syn::Item::Enum(e) => {
 				if let syn::Visibility::Public(_) = e.vis {
