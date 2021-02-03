@@ -38,7 +38,7 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 			if let Some(s) = types.maybe_resolve_ident(&struct_for) {
 				if !types.crate_types.opaques.get(&s).is_some() { return; }
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", struct_for, struct_for).unwrap();
+				writeln!(w, "pub extern \"C\" fn {}_write(obj: &{}) -> crate::c_types::derived::CVec_u8Z {{", struct_for, struct_for).unwrap();
 				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
 				writeln!(w, "}}").unwrap();
 				writeln!(w, "#[no_mangle]").unwrap();
@@ -58,30 +58,119 @@ fn convert_macro<W: std::io::Write>(w: &mut W, macro_path: &syn::Path, stream: &
 	}
 }
 
-/// Convert "impl trait_path for for_obj { .. }" for manually-mapped types (ie (de)serialization)
-fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_obj: &syn::Ident, types: &TypeResolver) {
-	if let Some(t) = types.maybe_resolve_path(&trait_path, None) {
-		let s = types.maybe_resolve_ident(for_obj).unwrap();
-		if !types.crate_types.opaques.get(&s).is_some() { return; }
+/// Convert "impl trait_path for for_ty { .. }" for manually-mapped types (ie (de)serialization)
+fn maybe_convert_trait_impl<W: std::io::Write>(w: &mut W, trait_path: &syn::Path, for_ty: &syn::Type, types: &mut TypeResolver, generics: &GenericTypes) {
+	if let Some(t) = types.maybe_resolve_path(&trait_path, Some(generics)) {
+		let for_obj;
+		let full_obj_path;
+		let mut has_inner = false;
+		if let syn::Type::Path(ref p) = for_ty {
+			if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
+				for_obj = format!("{}", ident);
+				full_obj_path = for_obj.clone();
+				has_inner = types.c_type_has_inner_from_path(&types.resolve_path(&p.path, Some(generics)));
+			} else { return; }
+		} else {
+			// We assume that anything that isn't a Path is somehow a generic that ends up in our
+			// derived-types module.
+			let mut for_obj_vec = Vec::new();
+			types.write_c_type(&mut for_obj_vec, for_ty, Some(generics), false);
+			full_obj_path = String::from_utf8(for_obj_vec).unwrap();
+			assert!(full_obj_path.starts_with(TypeResolver::generated_container_path()));
+			for_obj = full_obj_path[TypeResolver::generated_container_path().len() + 2..].into();
+		}
+
 		match &t as &str {
 			"util::ser::Writeable" => {
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_write(obj: *const {}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, for_obj).unwrap();
-				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &(*(*obj).inner) }})").unwrap();
+				writeln!(w, "pub extern \"C\" fn {}_write(obj: &{}) -> crate::c_types::derived::CVec_u8Z {{", for_obj, full_obj_path).unwrap();
+
+				let ref_type = syn::Type::Reference(syn::TypeReference {
+					and_token: syn::Token!(&)(Span::call_site()), lifetime: None, mutability: None,
+					elem: Box::new(for_ty.clone()) });
+				assert!(!types.write_from_c_conversion_new_var(w, &syn::Ident::new("obj", Span::call_site()), &ref_type, Some(generics)));
+
+				write!(w, "\tcrate::c_types::serialize_obj(").unwrap();
+				types.write_from_c_conversion_prefix(w, &ref_type, Some(generics));
+				write!(w, "unsafe {{ &*obj }}").unwrap();
+				types.write_from_c_conversion_suffix(w, &ref_type, Some(generics));
+				writeln!(w, ")").unwrap();
+
 				writeln!(w, "}}").unwrap();
-				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
-				writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
-				writeln!(w, "}}").unwrap();
+				if has_inner {
+					writeln!(w, "#[no_mangle]").unwrap();
+					writeln!(w, "pub(crate) extern \"C\" fn {}_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {{", for_obj).unwrap();
+					writeln!(w, "\tcrate::c_types::serialize_obj(unsafe {{ &*(obj as *const native{}) }})", for_obj).unwrap();
+					writeln!(w, "}}").unwrap();
+				}
 			},
-			"util::ser::Readable" => {
+			"util::ser::Readable"|"util::ser::ReadableArgs" => {
+				// Create the Result<Object, DecodeError> syn::Type
+				let mut err_segs = syn::punctuated::Punctuated::new();
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("ln", Span::call_site()), arguments: syn::PathArguments::None });
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("msgs", Span::call_site()), arguments: syn::PathArguments::None });
+				err_segs.push(syn::PathSegment { ident: syn::Ident::new("DecodeError", Span::call_site()), arguments: syn::PathArguments::None });
+				let mut args = syn::punctuated::Punctuated::new();
+				args.push(syn::GenericArgument::Type(for_ty.clone()));
+				args.push(syn::GenericArgument::Type(syn::Type::Path(syn::TypePath {
+					qself: None, path: syn::Path {
+						leading_colon: Some(syn::Token![::](Span::call_site())), segments: err_segs,
+					}
+				})));
+				let mut res_segs = syn::punctuated::Punctuated::new();
+				res_segs.push(syn::PathSegment {
+					ident: syn::Ident::new("Result", Span::call_site()),
+					arguments: syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+						colon2_token: None, lt_token: syn::Token![<](Span::call_site()), args, gt_token: syn::Token![>](Span::call_site()),
+					})
+				});
+				let res_ty = syn::Type::Path(syn::TypePath { qself: None, path: syn::Path {
+					leading_colon: None, segments: res_segs } });
+
 				writeln!(w, "#[no_mangle]").unwrap();
-				writeln!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice) -> {} {{", for_obj, for_obj).unwrap();
-				writeln!(w, "\tif let Ok(res) = crate::c_types::deserialize_obj(ser) {{").unwrap();
-				writeln!(w, "\t\t{} {{ inner: Box::into_raw(Box::new(res)), is_owned: true }}", for_obj).unwrap();
-				writeln!(w, "\t}} else {{").unwrap();
-				writeln!(w, "\t\t{} {{ inner: std::ptr::null_mut(), is_owned: true }}", for_obj).unwrap();
-				writeln!(w, "\t}}\n}}").unwrap();
+				write!(w, "pub extern \"C\" fn {}_read(ser: crate::c_types::u8slice", for_obj).unwrap();
+
+				let mut arg_conv = Vec::new();
+				if t == "util::ser::ReadableArgs" {
+					write!(w, ", arg: ").unwrap();
+					assert!(trait_path.leading_colon.is_none());
+					let args_seg = trait_path.segments.iter().last().unwrap();
+					assert_eq!(format!("{}", args_seg.ident), "ReadableArgs");
+					if let syn::PathArguments::AngleBracketed(args) = &args_seg.arguments {
+						assert_eq!(args.args.len(), 1);
+						if let syn::GenericArgument::Type(args_ty) = args.args.iter().next().unwrap() {
+							types.write_c_type(w, args_ty, Some(generics), false);
+
+							assert!(!types.write_from_c_conversion_new_var(&mut arg_conv, &syn::Ident::new("arg", Span::call_site()), &args_ty, Some(generics)));
+
+							write!(&mut arg_conv, "\tlet arg_conv = ").unwrap();
+							types.write_from_c_conversion_prefix(&mut arg_conv, &args_ty, Some(generics));
+							write!(&mut arg_conv, "arg").unwrap();
+							types.write_from_c_conversion_suffix(&mut arg_conv, &args_ty, Some(generics));
+						} else { unreachable!(); }
+					} else { unreachable!(); }
+				}
+				write!(w, ") -> ").unwrap();
+				types.write_c_type(w, &res_ty, Some(generics), false);
+				writeln!(w, " {{").unwrap();
+
+				if t == "util::ser::ReadableArgs" {
+					w.write(&arg_conv).unwrap();
+					write!(w, ";\n\tlet res: ").unwrap();
+					// At least in one case we need type annotations here, so provide them.
+					types.write_rust_type(w, Some(generics), &res_ty);
+					writeln!(w, " = crate::c_types::deserialize_obj_arg(ser, arg_conv);").unwrap();
+				} else {
+					writeln!(w, "\tlet res = crate::c_types::deserialize_obj(ser);").unwrap();
+				}
+				write!(w, "\t").unwrap();
+				if types.write_to_c_conversion_new_var(w, &syn::Ident::new("res", Span::call_site()), &res_ty, Some(generics), false) {
+					write!(w, "\n\t").unwrap();
+				}
+				types.write_to_c_conversion_inline_prefix(w, &res_ty, Some(generics), false);
+				write!(w, "res").unwrap();
+				types.write_to_c_conversion_inline_suffix(w, &res_ty, Some(generics), false);
+				writeln!(w, "\n}}").unwrap();
 			},
 			_ => {},
 		}
@@ -617,6 +706,36 @@ fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, 
 ///
 /// A few non-crate Traits are hard-coded including Default.
 fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut TypeResolver) {
+	match export_status(&i.attrs) {
+		ExportStatus::Export => {},
+		ExportStatus::NoExport|ExportStatus::TestOnly => return,
+	}
+
+	if let syn::Type::Tuple(_) = &*i.self_ty {
+		if types.understood_c_type(&*i.self_ty, None) {
+			let mut gen_types = GenericTypes::new();
+			if !gen_types.learn_generics(&i.generics, types) {
+				eprintln!("Not implementing anything for `impl (..)` due to not understood generics");
+				return;
+			}
+
+			if i.defaultness.is_some() || i.unsafety.is_some() { unimplemented!(); }
+			if let Some(trait_path) = i.trait_.as_ref() {
+				if trait_path.0.is_some() { unimplemented!(); }
+				if types.understood_c_path(&trait_path.1) {
+					eprintln!("Not implementing anything for `impl Trait for (..)` - we only support manual defines");
+					return;
+				} else {
+					// Just do a manual implementation:
+					maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
+				}
+			} else {
+				eprintln!("Not implementing anything for plain `impl (..)` block - we only support `impl Trait for (..)` blocks");
+				return;
+			}
+		}
+		return;
+	}
 	if let &syn::Type::Path(ref p) = &*i.self_ty {
 		if p.qself.is_some() { unimplemented!(); }
 		if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
@@ -672,7 +791,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						writeln!(w, "\t\tret.free = Some({}_free_void);", ident).unwrap();
 						writeln!(w, "\t\tret\n\t}}\n}}").unwrap();
 
-						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: *const {}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
+						write!(w, "#[no_mangle]\npub extern \"C\" fn {}_as_{}(this_arg: &{}) -> crate::{} {{\n", ident, trait_obj.ident, ident, full_trait_path).unwrap();
 						writeln!(w, "\tcrate::{} {{", full_trait_path).unwrap();
 						writeln!(w, "\t\tthis_arg: unsafe {{ (*this_arg).inner as *mut c_void }},").unwrap();
 						writeln!(w, "\t\tfree: None,").unwrap();
@@ -838,12 +957,11 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							},
 							"PartialEq" => {},
 							// If we have no generics, try a manual implementation:
-							_ if p.path.get_ident().is_some() => maybe_convert_trait_impl(w, &trait_path.1, &ident, types),
-							_ => {},
+							_ => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types),
 						}
-					} else if p.path.get_ident().is_some() {
+					} else {
 						// If we have no generics, try a manual implementation:
-						maybe_convert_trait_impl(w, &trait_path.1, &ident, types);
+						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
 					}
 				} else {
 					let declared_type = (*types.get_declared_type(&ident).unwrap()).clone();
@@ -1438,10 +1556,18 @@ fn main() {
 	let mut cpp_header_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
 		.open(&args[6]).expect("Unable to open new header file");
 
-	writeln!(header_file, "#if defined(__GNUC__)\n#define MUST_USE_STRUCT __attribute__((warn_unused))").unwrap();
-	writeln!(header_file, "#else\n#define MUST_USE_STRUCT\n#endif").unwrap();
-	writeln!(header_file, "#if defined(__GNUC__)\n#define MUST_USE_RES __attribute__((warn_unused_result))").unwrap();
-	writeln!(header_file, "#else\n#define MUST_USE_RES\n#endif").unwrap();
+	writeln!(header_file, "#if defined(__GNUC__)").unwrap();
+	writeln!(header_file, "#define MUST_USE_STRUCT __attribute__((warn_unused))").unwrap();
+	writeln!(header_file, "#define MUST_USE_RES __attribute__((warn_unused_result))").unwrap();
+	writeln!(header_file, "#else").unwrap();
+	writeln!(header_file, "#define MUST_USE_STRUCT").unwrap();
+	writeln!(header_file, "#define MUST_USE_RES").unwrap();
+	writeln!(header_file, "#endif").unwrap();
+	writeln!(header_file, "#if defined(__clang__)").unwrap();
+	writeln!(header_file, "#define NONNULL_PTR _Nonnull").unwrap();
+	writeln!(header_file, "#else").unwrap();
+	writeln!(header_file, "#define NONNULL_PTR").unwrap();
+	writeln!(header_file, "#endif").unwrap();
 	writeln!(cpp_header_file, "#include <string.h>\nnamespace LDK {{").unwrap();
 
 	// First parse the full crate's ASTs, caching them so that we can hold references to the AST

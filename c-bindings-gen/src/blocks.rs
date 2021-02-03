@@ -16,12 +16,15 @@ pub fn write_cpp_wrapper(cpp_header_file: &mut File, ty: &str, has_destructor: b
 	writeln!(cpp_header_file, "\tLDK{} self;", ty).unwrap();
 	writeln!(cpp_header_file, "public:").unwrap();
 	writeln!(cpp_header_file, "\t{}(const {}&) = delete;", ty, ty).unwrap();
-	if has_destructor {
-		writeln!(cpp_header_file, "\t~{}() {{ {}_free(self); }}", ty, ty).unwrap();
-	}
 	writeln!(cpp_header_file, "\t{}({}&& o) : self(o.self) {{ memset(&o, 0, sizeof({})); }}", ty, ty, ty).unwrap();
 	writeln!(cpp_header_file, "\t{}(LDK{}&& m_self) : self(m_self) {{ memset(&m_self, 0, sizeof(LDK{})); }}", ty, ty, ty).unwrap();
-	writeln!(cpp_header_file, "\toperator LDK{}() {{ LDK{} res = self; memset(&self, 0, sizeof(LDK{})); return res; }}", ty, ty, ty).unwrap();
+	writeln!(cpp_header_file, "\toperator LDK{}() && {{ LDK{} res = self; memset(&self, 0, sizeof(LDK{})); return res; }}", ty, ty, ty).unwrap();
+	if has_destructor {
+		writeln!(cpp_header_file, "\t~{}() {{ {}_free(self); }}", ty, ty).unwrap();
+		writeln!(cpp_header_file, "\t{}& operator=({}&& o) {{ {}_free(self); self = o.self; memset(&o, 0, sizeof({})); return *this; }}", ty, ty, ty, ty).unwrap();
+	} else {
+		writeln!(cpp_header_file, "\t{}& operator=({}&& o) {{ self = o.self; memset(&o, 0, sizeof({})); return *this; }}", ty, ty, ty).unwrap();
+	}
 	writeln!(cpp_header_file, "\tLDK{}* operator &() {{ return &self; }}", ty).unwrap();
 	writeln!(cpp_header_file, "\tLDK{}* operator ->() {{ return &self; }}", ty).unwrap();
 	writeln!(cpp_header_file, "\tconst LDK{}* operator &() const {{ return &self; }}", ty).unwrap();

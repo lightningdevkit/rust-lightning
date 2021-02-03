@@ -177,7 +177,7 @@ impl From<nativeNetGraphMsgHandler> for crate::ln::msgs::RoutingMessageHandler {
 	}
 }
 #[no_mangle]
-pub extern "C" fn NetGraphMsgHandler_as_RoutingMessageHandler(this_arg: *const NetGraphMsgHandler) -> crate::ln::msgs::RoutingMessageHandler {
+pub extern "C" fn NetGraphMsgHandler_as_RoutingMessageHandler(this_arg: &NetGraphMsgHandler) -> crate::ln::msgs::RoutingMessageHandler {
 	crate::ln::msgs::RoutingMessageHandler {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -280,7 +280,7 @@ impl From<nativeNetGraphMsgHandler> for crate::util::events::MessageSendEventsPr
 	}
 }
 #[no_mangle]
-pub extern "C" fn NetGraphMsgHandler_as_MessageSendEventsProvider(this_arg: *const NetGraphMsgHandler) -> crate::util::events::MessageSendEventsProvider {
+pub extern "C" fn NetGraphMsgHandler_as_MessageSendEventsProvider(this_arg: &NetGraphMsgHandler) -> crate::util::events::MessageSendEventsProvider {
 	crate::util::events::MessageSendEventsProvider {
 		this_arg: unsafe { (*this_arg).inner as *mut c_void },
 		free: None,
@@ -411,7 +411,7 @@ pub extern "C" fn DirectionalChannelInfo_set_last_update_message(this_ptr: &mut 
 	unsafe { &mut *this_ptr.inner }.last_update_message = local_val;
 }
 #[no_mangle]
-pub extern "C" fn DirectionalChannelInfo_write(obj: *const DirectionalChannelInfo) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn DirectionalChannelInfo_write(obj: &DirectionalChannelInfo) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -544,7 +544,7 @@ pub extern "C" fn ChannelInfo_set_announcement_message(this_ptr: &mut ChannelInf
 	unsafe { &mut *this_ptr.inner }.announcement_message = local_val;
 }
 #[no_mangle]
-pub extern "C" fn ChannelInfo_write(obj: *const ChannelInfo) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn ChannelInfo_write(obj: &ChannelInfo) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -647,16 +647,14 @@ pub extern "C" fn RoutingFees_new(mut base_msat_arg: u32, mut proportional_milli
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn RoutingFees_read(ser: crate::c_types::u8slice) -> RoutingFees {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		RoutingFees { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		RoutingFees { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn RoutingFees_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_RoutingFeesDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::RoutingFees { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn RoutingFees_write(obj: *const RoutingFees) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn RoutingFees_write(obj: &RoutingFees) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn RoutingFees_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
@@ -790,20 +788,18 @@ pub extern "C" fn NodeAnnouncementInfo_new(mut features_arg: crate::ln::features
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn NodeAnnouncementInfo_write(obj: *const NodeAnnouncementInfo) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn NodeAnnouncementInfo_write(obj: &NodeAnnouncementInfo) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn NodeAnnouncementInfo_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeNodeAnnouncementInfo) })
 }
 #[no_mangle]
-pub extern "C" fn NodeAnnouncementInfo_read(ser: crate::c_types::u8slice) -> NodeAnnouncementInfo {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		NodeAnnouncementInfo { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		NodeAnnouncementInfo { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn NodeAnnouncementInfo_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_NodeAnnouncementInfoDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::NodeAnnouncementInfo { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 
 use lightning::routing::network_graph::NodeInfo as nativeNodeInfoImport;
@@ -896,36 +892,32 @@ pub extern "C" fn NodeInfo_new(mut channels_arg: crate::c_types::derived::CVec_u
 	})), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn NodeInfo_write(obj: *const NodeInfo) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn NodeInfo_write(obj: &NodeInfo) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn NodeInfo_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeNodeInfo) })
 }
 #[no_mangle]
-pub extern "C" fn NodeInfo_read(ser: crate::c_types::u8slice) -> NodeInfo {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		NodeInfo { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		NodeInfo { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn NodeInfo_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_NodeInfoDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::NodeInfo { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 #[no_mangle]
-pub extern "C" fn NetworkGraph_write(obj: *const NetworkGraph) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn NetworkGraph_write(obj: &NetworkGraph) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn NetworkGraph_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeNetworkGraph) })
 }
 #[no_mangle]
-pub extern "C" fn NetworkGraph_read(ser: crate::c_types::u8slice) -> NetworkGraph {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		NetworkGraph { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		NetworkGraph { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn NetworkGraph_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_NetworkGraphDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::NetworkGraph { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 /// Creates a new, empty, network graph.
 #[must_use]

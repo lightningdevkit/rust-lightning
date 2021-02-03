@@ -112,20 +112,18 @@ pub extern "C" fn ChannelMonitorUpdate_set_update_id(this_ptr: &mut ChannelMonit
 #[no_mangle]
 pub static CLOSED_CHANNEL_UPDATE_ID: u64 = lightning::chain::channelmonitor::CLOSED_CHANNEL_UPDATE_ID;
 #[no_mangle]
-pub extern "C" fn ChannelMonitorUpdate_write(obj: *const ChannelMonitorUpdate) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+pub extern "C" fn ChannelMonitorUpdate_write(obj: &ChannelMonitorUpdate) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelMonitorUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelMonitorUpdate) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelMonitorUpdate_read(ser: crate::c_types::u8slice) -> ChannelMonitorUpdate {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelMonitorUpdate { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelMonitorUpdate { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelMonitorUpdate_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelMonitorUpdateDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::chain::channelmonitor::ChannelMonitorUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
 /// An error enum representing a failure to persist a channel monitor update.
 #[must_use]
@@ -381,7 +379,7 @@ pub extern "C" fn HTLCUpdate_clone(orig: &HTLCUpdate) -> HTLCUpdate {
 	HTLCUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
 }
 #[no_mangle]
-pub extern "C" fn HTLCUpdate_write(obj: *const HTLCUpdate) -> crate::c_types::derived::CVec_u8Z {
+pub extern "C" fn HTLCUpdate_write(obj: &HTLCUpdate) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
 }
 #[no_mangle]
@@ -448,6 +446,14 @@ impl ChannelMonitor {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
+}
+#[no_mangle]
+pub extern "C" fn ChannelMonitor_write(obj: &ChannelMonitor) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
+}
+#[no_mangle]
+pub(crate) extern "C" fn ChannelMonitor_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelMonitor) })
 }
 /// Updates a ChannelMonitor on the basis of some new information provided by the Channel
 /// itself.
@@ -641,4 +647,11 @@ impl Drop for Persist {
 			f(self.this_arg);
 		}
 	}
+}
+#[no_mangle]
+pub extern "C" fn C2Tuple_BlockHashChannelMonitorZ_read(ser: crate::c_types::u8slice, arg: &crate::chain::keysinterface::KeysInterface) -> crate::c_types::derived::CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ {
+	let arg_conv = arg;
+	let res: Result<(bitcoin::hash_types::BlockHash, lightning::chain::channelmonitor::ChannelMonitor<crate::chain::keysinterface::ChannelKeys>), lightning::ln::msgs::DecodeError> = crate::c_types::deserialize_obj_arg(ser, arg_conv);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_res_0_0, mut orig_res_0_1) = o; let mut local_res_0 = (crate::c_types::ThirtyTwoBytes { data: orig_res_0_0.into_inner() }, crate::chain::channelmonitor::ChannelMonitor { inner: Box::into_raw(Box::new(orig_res_0_1)), is_owned: true }).into(); local_res_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	local_res
 }
