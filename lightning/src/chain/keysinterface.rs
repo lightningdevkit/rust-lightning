@@ -723,9 +723,10 @@ impl KeysManager {
 	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
 	/// versions. Once the library is more fully supported, the docs will be updated to include a
 	/// detailed description of the guarantee.
-	pub fn new(seed: &[u8; 32], network: Network, starting_time_secs: u64, starting_time_nanos: u32) -> Self {
+	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
 		let secp_ctx = Secp256k1::signing_only();
-		match ExtendedPrivKey::new_master(network.clone(), seed) {
+		// Note that when we aren't serializing the key, network doesn't matter
+		match ExtendedPrivKey::new_master(Network::Testnet, seed) {
 			Ok(master_key) => {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0).unwrap()).expect("Your RNG is busted").private_key.key;
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1).unwrap()) {
