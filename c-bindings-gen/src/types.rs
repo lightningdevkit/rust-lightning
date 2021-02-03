@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::hash;
@@ -37,6 +37,30 @@ pub fn single_ident_generic_path_to_ident(p: &syn::Path) -> Option<&syn::Ident> 
 	if p.segments.len() == 1 {
 		Some(&p.segments.iter().next().unwrap().ident)
 	} else { None }
+}
+
+pub fn attrs_derives_clone(attrs: &[syn::Attribute]) -> bool {
+	for attr in attrs.iter() {
+		let tokens_clone = attr.tokens.clone();
+		let mut token_iter = tokens_clone.into_iter();
+		if let Some(token) = token_iter.next() {
+			match token {
+				TokenTree::Group(g) => {
+					if format!("{}", single_ident_generic_path_to_ident(&attr.path).unwrap()) == "derive" {
+						for id in g.stream().into_iter() {
+							if let TokenTree::Ident(i) = id {
+								if i == "Clone" {
+									return true;
+								}
+							}
+						}
+					}
+				},
+				_ => {},
+			}
+		}
+	}
+	false
 }
 
 #[derive(Debug, PartialEq)]
@@ -293,6 +317,8 @@ pub struct CrateTypes<'a> {
 	/// The output file for any created template container types, written to as we find new
 	/// template containers which need to be defined.
 	pub template_file: &'a mut File,
+	/// Set of containers which are clonable
+	pub clonable_types: HashSet<String>,
 }
 
 /// A struct which tracks resolving rust types into C-mapped equivalents, exists for one specific
@@ -365,6 +391,16 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"u16" => true,
 			"u8" => true,
 			"usize" => true,
+			_ => false,
+		}
+	}
+	pub fn is_clonable(&self, ty: &str) -> bool {
+		if self.crate_types.clonable_types.contains(ty) { return true; }
+		if self.is_primitive(ty) { return true; }
+		match ty {
+			"()" => true,
+			"crate::c_types::Signature" => true,
+			"crate::c_types::TxOut" => true,
 			_ => false,
 		}
 	}
