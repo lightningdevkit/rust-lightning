@@ -264,18 +264,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 	/// does not match our chain_hash will be rejected when the announcement is
 	/// processed.
 	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError> {
-		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, full_information={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.full_information, msg.short_channel_ids.len(),);
-
-		// Validate that the remote node maintains up-to-date channel
-		// information for chain_hash. Some nodes use the full_information
-		// flag to indicate multi-part messages so we must check whether
-		// we received SCIDs as well.
-		if !msg.full_information && msg.short_channel_ids.len() == 0 {
-			return Err(LightningError {
-				err: String::from("Received reply_channel_range with no information available"),
-				action: ErrorAction::IgnoreError,
-			});
-		}
+		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, sync_complete={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.sync_complete, msg.short_channel_ids.len(),);
 
 		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), msg.short_channel_ids.len());
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -2015,7 +2004,7 @@ mod tests {
 		{
 			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
 				chain_hash,
-				full_information: true,
+				sync_complete: true,
 				first_blocknum: 0,
 				number_of_blocks: 2000,
 				short_channel_ids: vec![
@@ -2047,22 +2036,6 @@ mod tests {
 				},
 				_ => panic!("expected MessageSendEvent::SendShortIdsQuery"),
 			}
-		}
-
-		// Test receipt of a reply that indicates the remote node does not maintain up-to-date
-		// information for the chain_hash. Because of discrepancies in implementation we use
-		// full_information=false and short_channel_ids=[] as the signal.
-		{
-			// Handle the reply indicating the peer was unable to fulfill our request.
-			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
-				chain_hash,
-				full_information: false,
-				first_blocknum: 1000,
-				number_of_blocks: 100,
-				short_channel_ids: vec![],
-			});
-			assert!(result.is_err());
-			assert_eq!(result.err().unwrap().err, "Received reply_channel_range with no information available");
 		}
 	}
 

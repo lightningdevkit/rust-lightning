@@ -602,9 +602,8 @@ pub struct ReplyChannelRange {
 	pub first_blocknum: u32,
 	/// The number of blocks included in the range of the reply
 	pub number_of_blocks: u32,
-	/// Indicates if the query recipient maintains up-to-date channel
-	/// information for the chain_hash
-	pub full_information: bool,
+	/// True when this is the final reply for a query
+	pub sync_complete: bool,
 	/// The short_channel_ids in the channel range
 	pub short_channel_ids: Vec<u64>,
 }
@@ -1727,7 +1726,7 @@ impl Readable for ReplyChannelRange {
 		let chain_hash: BlockHash = Readable::read(r)?;
 		let first_blocknum: u32 = Readable::read(r)?;
 		let number_of_blocks: u32 = Readable::read(r)?;
-		let full_information: bool = Readable::read(r)?;
+		let sync_complete: bool = Readable::read(r)?;
 
 		// We expect the encoding_len to always includes the 1-byte
 		// encoding_type and that short_channel_ids are 8-bytes each
@@ -1755,7 +1754,7 @@ impl Readable for ReplyChannelRange {
 			chain_hash,
 			first_blocknum,
 			number_of_blocks,
-			full_information,
+			sync_complete,
 			short_channel_ids
 		})
 	}
@@ -1768,7 +1767,7 @@ impl Writeable for ReplyChannelRange {
 		self.chain_hash.write(w)?;
 		self.first_blocknum.write(w)?;
 		self.number_of_blocks.write(w)?;
-		self.full_information.write(w)?;
+		self.sync_complete.write(w)?;
 
 		encoding_len.write(w)?;
 		(EncodingType::Uncompressed as u8).write(w)?;
@@ -2569,7 +2568,7 @@ mod tests {
 			chain_hash: expected_chain_hash,
 			first_blocknum: 756230,
 			number_of_blocks: 1500,
-			full_information: true,
+			sync_complete: true,
 			short_channel_ids: vec![0x000000000000008e, 0x0000000000003c69, 0x000000000045a6c4],
 		};
 
@@ -2582,7 +2581,7 @@ mod tests {
 			assert_eq!(reply_channel_range.chain_hash, expected_chain_hash);
 			assert_eq!(reply_channel_range.first_blocknum, 756230);
 			assert_eq!(reply_channel_range.number_of_blocks, 1500);
-			assert_eq!(reply_channel_range.full_information, true);
+			assert_eq!(reply_channel_range.sync_complete, true);
 			assert_eq!(reply_channel_range.short_channel_ids[0], 0x000000000000008e);
 			assert_eq!(reply_channel_range.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
