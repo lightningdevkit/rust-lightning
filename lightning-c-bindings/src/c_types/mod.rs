@@ -298,56 +298,6 @@ impl<O, E> Drop for CResultTempl<O, E> {
 	}
 }
 
-#[repr(C)]
-pub struct C2TupleTempl<A, B> {
-	pub a: A,
-	pub b: B,
-}
-impl<A, B> From<(A, B)> for C2TupleTempl<A, B> {
-	fn from(tup: (A, B)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-		}
-	}
-}
-impl<A, B> C2TupleTempl<A, B> {
-	pub(crate) fn to_rust(mut self) -> (A, B) {
-		(self.a, self.b)
-	}
-}
-pub extern "C" fn C2TupleTempl_free<A, B>(_res: C2TupleTempl<A, B>) { }
-impl <A: Clone, B: Clone> Clone for C2TupleTempl<A, B> {
-	fn clone(&self) -> Self {
-		Self {
-			a: self.a.clone(),
-			b: self.b.clone()
-		}
-	}
-}
-
-#[repr(C)]
-pub struct C3TupleTempl<A, B, C> {
-	pub a: A,
-	pub b: B,
-	pub c: C,
-}
-impl<A, B, C> From<(A, B, C)> for C3TupleTempl<A, B, C> {
-	fn from(tup: (A, B, C)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-			c: tup.2,
-		}
-	}
-}
-impl<A, B, C> C3TupleTempl<A, B, C> {
-	pub(crate) fn to_rust(mut self) -> (A, B, C) {
-		(self.a, self.b, self.c)
-	}
-}
-pub extern "C" fn C3TupleTempl_free<A, B, C>(_res: C3TupleTempl<A, B, C>) { }
-
 /// Utility to make it easy to set a pointer to null and get its original value in line.
 pub(crate) trait TakePointer<T> {
 	fn take_ptr(&mut self) -> T;

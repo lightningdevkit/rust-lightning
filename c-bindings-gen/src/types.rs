@@ -1786,9 +1786,11 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if tup.elems.is_empty() {
 					write!(w, "u8").unwrap();
 				} else {
-					write!(w, "{}::C{}TupleTempl<", Self::container_templ_path(), tup.elems.len()).unwrap();
-					self.write_template_generics(w, &mut tup.elems.iter(), generics, is_ref, in_crate);
-					write!(w, ">").unwrap();
+					let mut inner_args = Vec::new();
+					for arg in tup.elems.iter() {
+						inner_args.push(arg);
+					}
+					assert!(self.write_c_mangled_container_path(w, inner_args, generics, &format!("{}Tuple", tup.elems.len()), is_ref, false, false));
 				}
 			} else if let syn::Type::Path(p_arg) = t {
 				let resolved_generic = self.resolve_path(&p_arg.path, generics);
@@ -1896,20 +1898,24 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if is_clonable {
 					self.crate_types.clonable_types.insert(Self::generated_container_path().to_owned() + "::" + &mangled_container);
 				}
-			} else {
-				write!(&mut created_container, "pub type {} = ", mangled_container).unwrap();
-				write!(&mut created_container, "{}::C{}Templ<", Self::container_templ_path(), container_type).unwrap();
-				self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
-				writeln!(&mut created_container, ">;").unwrap();
-
-				write!(&mut created_container, "#[no_mangle]\npub static {}_free: extern \"C\" fn({}) = ", mangled_container, mangled_container).unwrap();
-				write!(&mut created_container, "{}::C{}Templ_free::<", Self::container_templ_path(), container_type).unwrap();
-				self.write_template_generics(&mut created_container, &mut args.iter().map(|t| *t), generics, is_ref, true);
-				writeln!(&mut created_container, ">;").unwrap();
-
-				if !self.write_template_constructor(&mut created_container, container_type, &mangled_container, &args, generics, is_ref) {
-					return false;
+			} else if container_type.ends_with("Tuple") {
+				let mut tuple_args = Vec::new();
+				let mut is_clonable = true;
+				for arg in args.iter() {
+					let mut ty: Vec<u8> = Vec::new();
+					self.write_template_generics(&mut ty, &mut [arg].iter().map(|t| **t), generics, is_ref, true);
+					let ty_str = String::from_utf8(ty).unwrap();
+					if !self.is_clonable(&ty_str) {
+						is_clonable = false;
+					}
+					tuple_args.push(ty_str);
 				}
+				write_tuple_block(&mut created_container, &mangled_container, &tuple_args, is_clonable);
+				if is_clonable {
+					self.crate_types.clonable_types.insert(Self::generated_container_path().to_owned() + "::" + &mangled_container);
+				}
+			} else {
+				unreachable!();
 			}
 			self.crate_types.templates_defined.insert(mangled_container.clone(), true);
 
@@ -2008,7 +2014,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			} else if let syn::Type::Path(p_arg) = arg {
 				write_path!(p_arg, None);
 			} else if let syn::Type::Reference(refty) = arg {
-				if args.len() != 1 { return false; }
 				if let syn::Type::Path(p_arg) = &*refty.elem {
 					write_path!(p_arg, None);
 				} else if let syn::Type::Slice(_) = &*refty.elem {
@@ -2016,6 +2021,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					// make it a pointer so that its an option. Note that we cannot always convert
 					// the Vec-as-slice (ie non-ref types) containers, so sometimes need to be able
 					// to edit it, hence we use *mut here instead of *const.
+					if args.len() != 1 { return false; }
 					write!(w, "*mut ").unwrap();
 					self.write_c_type(w, arg, None, true);
 				} else { return false; }

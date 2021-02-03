@@ -221,6 +221,72 @@ pub fn write_vec_block<W: std::io::Write>(w: &mut W, mangled_container: &str, in
 	}
 }
 
+/// Writes out a C-callable concrete (A, B, ...) struct and utility methods
+pub fn write_tuple_block<W: std::io::Write>(w: &mut W, mangled_container: &str, types: &[String], clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	for (idx, ty) in types.iter().enumerate() {
+		writeln!(w, "\tpub {}: {},", ('a' as u8 + idx as u8) as char, ty).unwrap();
+	}
+	writeln!(w, "}}").unwrap();
+
+	let mut tuple_str = "(".to_owned();
+	for (idx, ty) in types.iter().enumerate() {
+		if idx != 0 { tuple_str += ", "; }
+		tuple_str += ty;
+	}
+	tuple_str += ")";
+
+	writeln!(w, "impl From<{}> for {} {{", tuple_str, mangled_container).unwrap();
+	writeln!(w, "\tfn from (tup: {}) -> Self {{", tuple_str).unwrap();
+	writeln!(w, "\t\tSelf {{").unwrap();
+	for idx in 0..types.len() {
+		writeln!(w, "\t\t\t{}: tup.{},", ('a' as u8 + idx as u8) as char, idx).unwrap();
+	}
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+	writeln!(w, "impl {} {{", mangled_container).unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn to_rust(mut self) -> {} {{", tuple_str).unwrap();
+	write!(w, "\t\t(").unwrap();
+	for idx in 0..types.len() {
+		write!(w, "{}self.{}", if idx != 0 {", "} else {""}, ('a' as u8 + idx as u8) as char).unwrap();
+	}
+	writeln!(w, ")").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tSelf {{").unwrap();
+		for idx in 0..types.len() {
+			writeln!(w, "\t\t\t{}: self.{}.clone(),", ('a' as u8 + idx as u8) as char, ('a' as u8 + idx as u8) as char).unwrap();
+		}
+		writeln!(w, "\t\t}}").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+		writeln!(w, "#[no_mangle]").unwrap();
+		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{ orig.clone() }}", mangled_container, mangled_container, mangled_container).unwrap();
+	}
+
+	write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
+	for (idx, gen) in types.iter().enumerate() {
+		write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
+		//if !self.write_c_type_intern(&mut created_container, gen, generics, false, false, false) { return false; }
+		write!(w, "{}", gen).unwrap();
+	}
+	writeln!(w, ") -> {} {{", mangled_container).unwrap();
+	write!(w, "\t{} {{ ", mangled_container).unwrap();
+	for idx in 0..types.len() {
+		write!(w, "{}, ", ('a' as u8 + idx as u8) as char).unwrap();
+	}
+	writeln!(w, "}}\n}}\n").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+}
+
 /// Prints the docs from a given attribute list unless its tagged no export
 pub fn writeln_docs<W: std::io::Write>(w: &mut W, attrs: &[syn::Attribute], prefix: &str) {
 	for attr in attrs.iter() {
