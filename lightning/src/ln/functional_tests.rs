@@ -5372,6 +5372,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000).0;
 	let local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
+	assert_eq!(local_txn.len(), 1);
 	assert_eq!(local_txn[0].input.len(), 1);
 	check_spends!(local_txn[0], chan_1.3);
 
@@ -5392,10 +5393,13 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	}
 	let node_txn = {
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 3);
+		assert_eq!(node_txn[0], node_txn[2]);
+		assert_eq!(node_txn[1], local_txn[0]);
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		check_spends!(node_txn[0], local_txn[0]);
-		vec![node_txn[0].clone(), node_txn[2].clone()]
+		vec![node_txn[0].clone()]
 	};
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -5404,9 +5408,8 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
+	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
-	check_spends!(spend_txn[1], node_txn[1]);
 }
 
 fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, announce_latest: bool) {
