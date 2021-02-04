@@ -2,6 +2,7 @@
 
 members = [
     "lightning",
+    "lightning-block-sync",
     "lightning-net-tokio",
     "lightning-persister",
 ]
