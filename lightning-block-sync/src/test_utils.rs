@@ -160,6 +160,13 @@ impl BlockSource for Blockchain {
 	}
 }
 
+pub struct NullChainListener;
+
+impl ChainListener for NullChainListener {
+	fn block_connected(&mut self, _block: &Block, _height: u32) {}
+	fn block_disconnected(&mut self, _header: &BlockHeader, _height: u32) {}
+}
+
 pub struct MockChainListener {
 	expected_blocks_connected: VecDeque<BlockHeaderData>,
 	expected_blocks_disconnected: VecDeque<BlockHeaderData>,
