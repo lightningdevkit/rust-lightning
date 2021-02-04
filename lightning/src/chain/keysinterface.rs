@@ -11,7 +11,7 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, TxOut, SigHashType};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
@@ -28,7 +28,7 @@ use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
 use bitcoin::secp256k1;
 
-use util::byte_utils;
+use util::{byte_utils, transaction_utils};
 use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
@@ -36,9 +36,10 @@ use ln::chan_utils;
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
-use ln::msgs::DecodeError;
+use ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 
 /// Information about a spendable output to a P2WSH script. See
 /// SpendableOutputDescriptor::DynamicOutputP2WSH for more details on how to spend this.
@@ -498,6 +499,63 @@ impl InMemoryChannelKeys {
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
+
+	/// Sign the single input of spend_tx at index `input_idx` which spends the output
+	/// described by descriptor, returning the witness stack for the input.
+	///
+	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
+	/// or is not spending the outpoint described by `descriptor.outpoint`.
+	pub fn sign_counterparty_payment_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &StaticCounterpartyPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
+		// TODO: We really should be taking the SigHashCache as a parameter here instead of
+		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
+		// so that we can check them. This requires upstream rust-bitcoin changes (as well as
+		// bindings updates to support SigHashCache objects).
+		if spend_tx.input.len() <= input_idx { return Err(()); }
+		if !spend_tx.input[input_idx].script_sig.is_empty() { return Err(()); }
+		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
+
+		let remotepubkey = self.pubkeys().payment_point;
+		let witness_script = bitcoin::Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
+		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
+		let remotesig = secp_ctx.sign(&sighash, &self.payment_key);
+
+		let mut witness = Vec::with_capacity(2);
+		witness.push(remotesig.serialize_der().to_vec());
+		witness[0].push(SigHashType::All as u8);
+		witness.push(remotepubkey.serialize().to_vec());
+		Ok(witness)
+	}
+
+	/// Sign the single input of spend_tx at index `input_idx` which spends the output
+	/// described by descriptor, returning the witness stack for the input.
+	///
+	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
+	/// is not spending the outpoint described by `descriptor.outpoint`, or does not have a
+	/// sequence set to `descriptor.to_self_delay`.
+	pub fn sign_dynamic_p2wsh_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &DynamicP2WSHOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
+		// TODO: We really should be taking the SigHashCache as a parameter here instead of
+		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
+		// so that we can check them. This requires upstream rust-bitcoin changes (as well as
+		// bindings updates to support SigHashCache objects).
+		if spend_tx.input.len() <= input_idx { return Err(()); }
+		if !spend_tx.input[input_idx].script_sig.is_empty() { return Err(()); }
+		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
+		if spend_tx.input[input_idx].sequence != descriptor.to_self_delay as u32 { return Err(()); }
+
+		let delayed_payment_key = chan_utils::derive_private_key(&secp_ctx, &descriptor.per_commitment_point, &self.delayed_payment_base_key)
+			.expect("We constructed the payment_base_key, so we can only fail here if the RNG is busted.");
+		let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
+		let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
+		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
+		let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
+
+		let mut witness = Vec::with_capacity(3);
+		witness.push(local_delayedsig.serialize_der().to_vec());
+		witness[0].push(SigHashType::All as u8);
+		witness.push(vec!()); //MINIMALIF
+		witness.push(witness_script.clone().into_bytes());
+		Ok(witness)
+	}
 }
 
 impl ChannelKeys for InMemoryChannelKeys {
@@ -822,6 +880,123 @@ impl KeysManager {
 			channel_value_satoshis,
 			params.clone()
 		)
+	}
+
+	/// Creates a Transaction which spends the given descriptors to the given outputs, plus an
+	/// output to the given change destination (if sufficient change value remains). The
+	/// transaction will have a feerate, at least, of the given value.
+	///
+	/// Returns `Err(())` if the output value is greater than the input value minus required fee or
+	/// if a descriptor was duplicated.
+	///
+	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
+	///
+	/// May panic if the `SpendableOutputDescriptor`s were not generated by Channels which used
+	/// this KeysManager or one of the `InMemoryChannelKeys` created by this KeysManager.
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+		let mut input = Vec::new();
+		let mut input_value = 0;
+		let mut witness_weight = 0;
+		let mut output_set = HashSet::with_capacity(descriptors.len());
+		for outp in descriptors {
+			match outp {
+				SpendableOutputDescriptor::StaticOutputCounterpartyPayment(descriptor) => {
+					input.push(TxIn {
+						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: 0,
+						witness: Vec::new(),
+					});
+					witness_weight += StaticCounterpartyPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					input_value += descriptor.output.value;
+					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+				},
+				SpendableOutputDescriptor::DynamicOutputP2WSH(descriptor) => {
+					input.push(TxIn {
+						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: descriptor.to_self_delay as u32,
+						witness: Vec::new(),
+					});
+					witness_weight += DynamicP2WSHOutputDescriptor::MAX_WITNESS_LENGTH;
+					input_value += descriptor.output.value;
+					if !output_set.insert(descriptor.outpoint) { return Err(()); }
+				},
+				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
+					input.push(TxIn {
+						previous_output: outpoint.into_bitcoin_outpoint(),
+						script_sig: Script::new(),
+						sequence: 0,
+						witness: Vec::new(),
+					});
+					witness_weight += 1 + 73 + 34;
+					input_value += output.value;
+					if !output_set.insert(*outpoint) { return Err(()); }
+				}
+			}
+			if input_value > MAX_VALUE_MSAT / 1000 { return Err(()); }
+		}
+		let mut spend_tx = Transaction {
+			version: 2,
+			lock_time: 0,
+			input,
+			output: outputs,
+		};
+		transaction_utils::maybe_add_change_output(&mut spend_tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
+
+		let mut keys_cache: Option<(InMemoryChannelKeys, [u8; 32])> = None;
+		let mut input_idx = 0;
+		for outp in descriptors {
+			match outp {
+				SpendableOutputDescriptor::StaticOutputCounterpartyPayment(descriptor) => {
+					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
+						keys_cache = Some((
+							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
+							descriptor.channel_keys_id));
+					}
+					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&spend_tx, input_idx, &descriptor, &secp_ctx).unwrap();
+				},
+				SpendableOutputDescriptor::DynamicOutputP2WSH(descriptor) => {
+					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
+						keys_cache = Some((
+							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
+							descriptor.channel_keys_id));
+					}
+					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&spend_tx, input_idx, &descriptor, &secp_ctx).unwrap();
+				},
+				SpendableOutputDescriptor::StaticOutput { ref output, .. } => {
+					let derivation_idx = if output.script_pubkey == self.destination_script {
+						1
+					} else {
+						2
+					};
+					let secret = {
+						// Note that when we aren't serializing the key, network doesn't matter
+						match ExtendedPrivKey::new_master(Network::Testnet, &self.seed) {
+							Ok(master_key) => {
+								match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(derivation_idx).expect("key space exhausted")) {
+									Ok(key) => key,
+									Err(_) => panic!("Your RNG is busted"),
+								}
+							}
+							Err(_) => panic!("Your rng is busted"),
+						}
+					};
+					let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
+					if derivation_idx == 2 {
+						assert_eq!(pubkey.key, self.shutdown_pubkey);
+					}
+					let witness_script = bitcoin::Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
+					let sighash = hash_to_message!(&bip143::SigHashCache::new(&spend_tx).signature_hash(input_idx, &witness_script, output.value, SigHashType::All)[..]);
+					let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
+					spend_tx.input[input_idx].witness.push(sig.serialize_der().to_vec());
+					spend_tx.input[input_idx].witness[0].push(SigHashType::All as u8);
+					spend_tx.input[input_idx].witness.push(pubkey.key.serialize().to_vec());
+				},
+			}
+			input_idx += 1;
+		}
+		Ok(spend_tx)
 	}
 }
 
