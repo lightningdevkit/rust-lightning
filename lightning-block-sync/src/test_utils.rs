@@ -1,4 +1,4 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainListener, UnboundedCache};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
 use crate::poll::{Validate, ValidatedBlockHeader};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -7,6 +7,9 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use bitcoin::util::uint::Uint256;
 
+use lightning::chain;
+
+use std::cell::RefCell;
 use std::collections::VecDeque;
 
 #[derive(Default)]
@@ -162,38 +165,38 @@ impl BlockSource for Blockchain {
 
 pub struct NullChainListener;
 
-impl ChainListener for NullChainListener {
-	fn block_connected(&mut self, _block: &Block, _height: u32) {}
-	fn block_disconnected(&mut self, _header: &BlockHeader, _height: u32) {}
+impl chain::Listen for NullChainListener {
+	fn block_connected(&self, _block: &Block, _height: u32) {}
+	fn block_disconnected(&self, _header: &BlockHeader, _height: u32) {}
 }
 
 pub struct MockChainListener {
-	expected_blocks_connected: VecDeque<BlockHeaderData>,
-	expected_blocks_disconnected: VecDeque<BlockHeaderData>,
+	expected_blocks_connected: RefCell<VecDeque<BlockHeaderData>>,
+	expected_blocks_disconnected: RefCell<VecDeque<BlockHeaderData>>,
 }
 
 impl MockChainListener {
 	pub fn new() -> Self {
 		Self {
-			expected_blocks_connected: VecDeque::new(),
-			expected_blocks_disconnected: VecDeque::new(),
+			expected_blocks_connected: RefCell::new(VecDeque::new()),
+			expected_blocks_disconnected: RefCell::new(VecDeque::new()),
 		}
 	}
 
-	pub fn expect_block_connected(mut self, block: BlockHeaderData) -> Self {
-		self.expected_blocks_connected.push_back(block);
+	pub fn expect_block_connected(self, block: BlockHeaderData) -> Self {
+		self.expected_blocks_connected.borrow_mut().push_back(block);
 		self
 	}
 
-	pub fn expect_block_disconnected(mut self, block: BlockHeaderData) -> Self {
-		self.expected_blocks_disconnected.push_back(block);
+	pub fn expect_block_disconnected(self, block: BlockHeaderData) -> Self {
+		self.expected_blocks_disconnected.borrow_mut().push_back(block);
 		self
 	}
 }
 
-impl ChainListener for MockChainListener {
-	fn block_connected(&mut self, block: &Block, height: u32) {
-		match self.expected_blocks_connected.pop_front() {
+impl chain::Listen for MockChainListener {
+	fn block_connected(&self, block: &Block, height: u32) {
+		match self.expected_blocks_connected.borrow_mut().pop_front() {
 			None => {
 				panic!("Unexpected block connected: {:?}", block.block_hash());
 			},
@@ -204,8 +207,8 @@ impl ChainListener for MockChainListener {
 		}
 	}
 
-	fn block_disconnected(&mut self, header: &BlockHeader, height: u32) {
-		match self.expected_blocks_disconnected.pop_front() {
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		match self.expected_blocks_disconnected.borrow_mut().pop_front() {
 			None => {
 				panic!("Unexpected block disconnected: {:?}", header.block_hash());
 			},
@@ -222,11 +225,15 @@ impl Drop for MockChainListener {
 		if std::thread::panicking() {
 			return;
 		}
-		if !self.expected_blocks_connected.is_empty() {
-			panic!("Expected blocks connected: {:?}", self.expected_blocks_connected);
+
+		let expected_blocks_connected = self.expected_blocks_connected.borrow();
+		if !expected_blocks_connected.is_empty() {
+			panic!("Expected blocks connected: {:?}", expected_blocks_connected);
 		}
-		if !self.expected_blocks_disconnected.is_empty() {
-			panic!("Expected blocks disconnected: {:?}", self.expected_blocks_disconnected);
+
+		let expected_blocks_disconnected = self.expected_blocks_disconnected.borrow();
+		if !expected_blocks_disconnected.is_empty() {
+			panic!("Expected blocks disconnected: {:?}", expected_blocks_disconnected);
 		}
 	}
 }

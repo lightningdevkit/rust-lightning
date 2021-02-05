@@ -29,7 +29,7 @@
 //! [`ChannelMonitor`]: ../channelmonitor/struct.ChannelMonitor.html
 //! [`MonitorEvent`]: ../channelmonitor/enum.MonitorEvent.html
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 
 use chain;
 use chain::Filter;
@@ -137,6 +137,26 @@ where C::Target: chain::Filter,
 			fee_estimator: feeest,
 			persister,
 		}
+	}
+}
+
+impl<ChannelSigner: Sign, C: Deref + Send + Sync, T: Deref + Send + Sync, F: Deref + Send + Sync, L: Deref + Send + Sync, P: Deref + Send + Sync>
+chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where
+	ChannelSigner: Sign,
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: channelmonitor::Persist<ChannelSigner>,
+{
+	fn block_connected(&self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		ChainMonitor::block_connected(self, &block.header, &txdata, height);
+	}
+
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		ChainMonitor::block_disconnected(self, header, height);
 	}
 }
 

@@ -18,7 +18,7 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 //!
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
@@ -3136,6 +3136,24 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvi
 		let mut pending_events = self.pending_events.lock().unwrap();
 		mem::swap(&mut ret, &mut *pending_events);
 		ret
+	}
+}
+
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Listen for ChannelManager<Signer, M, T, K, F, L>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	fn block_connected(&self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		ChannelManager::block_connected(self, &block.header, &txdata, height);
+	}
+
+	fn block_disconnected(&self, header: &BlockHeader, _height: u32) {
+		ChannelManager::block_disconnected(self, header);
 	}
 }
 
