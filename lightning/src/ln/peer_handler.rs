@@ -763,7 +763,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			},
 
 			wire::Message::Shutdown(msg) => {
-				self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), &msg);
+				self.message_handler.chan_handler.handle_shutdown(&peer.their_node_id.unwrap(), peer.their_features.as_ref().unwrap(), &msg);
 			},
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&peer.their_node_id.unwrap(), &msg);

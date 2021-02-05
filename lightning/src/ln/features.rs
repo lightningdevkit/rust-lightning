@@ -100,6 +100,8 @@ mod sealed {
 			StaticRemoteKey,
 			// Byte 2
 			,
+			// Byte 3
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -108,6 +110,8 @@ mod sealed {
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
 			BasicMPP,
+			// Byte 3
+			ShutdownAnySegwit,
 		],
 	});
 	define_context!(NodeContext {
@@ -118,6 +122,8 @@ mod sealed {
 			StaticRemoteKey,
 			// Byte 2
 			,
+			// Byte 3
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -126,6 +132,8 @@ mod sealed {
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
 			BasicMPP,
+			// Byte 3
+			ShutdownAnySegwit,
 		],
 	});
 	define_context!(ChannelContext {
@@ -252,6 +260,8 @@ mod sealed {
 		"Feature flags for `payment_secret`.");
 	define_feature!(17, BasicMPP, [InitContext, NodeContext],
 		"Feature flags for `basic_mpp`.");
+	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
+		"Feature flags for `opt_shutdown_anysegwit`.");
 
 	#[cfg(test)]
 	define_context!(TestingContext {
@@ -549,6 +559,17 @@ impl<T: sealed::BasicMPP> Features<T> {
 	}
 }
 
+impl<T: sealed::ShutdownAnySegwit> Features<T> {
+	pub(crate) fn supports_shutdown_anysegwit(&self) -> bool {
+		<T as sealed::ShutdownAnySegwit>::supports_feature(&self.flags)
+	}
+	#[cfg(test)]
+	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
+		<T as sealed::ShutdownAnySegwit>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
 impl<T: sealed::Context> Writeable for Features<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		w.size_hint(self.flags.len() + 2);
@@ -619,6 +640,9 @@ mod tests {
 		assert!(!InitFeatures::known().requires_basic_mpp());
 		assert!(!NodeFeatures::known().requires_basic_mpp());
 
+		assert!(InitFeatures::known().supports_shutdown_anysegwit());
+		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
+
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
@@ -657,10 +681,12 @@ mod tests {
 			// - option_data_loss_protect
 			// - var_onion_optin | static_remote_key (req) | payment_secret
 			// - basic_mpp
-			assert_eq!(node_features.flags.len(), 3);
+			// - opt_shutdown_anysegwit
+			assert_eq!(node_features.flags.len(), 4);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b10010010);
 			assert_eq!(node_features.flags[2], 0b00000010);
+			assert_eq!(node_features.flags[3], 0b00001000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:

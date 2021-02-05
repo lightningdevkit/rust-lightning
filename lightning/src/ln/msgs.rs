@@ -752,7 +752,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider + Send + Sync {
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
+	fn handle_shutdown(&self, their_node_id: &PublicKey, their_features: &InitFeatures, msg: &Shutdown);
 	/// Handle an incoming closing_signed message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 

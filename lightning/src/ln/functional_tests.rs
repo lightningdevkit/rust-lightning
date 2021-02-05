@@ -55,6 +55,7 @@ use std::mem;
 
 use ln::functional_test_utils::*;
 use ln::chan_utils::CommitmentTransaction;
+use ln::msgs::OptionalField::Present;
 
 #[test]
 fn test_insane_channel_opens() {
@@ -832,9 +833,9 @@ fn pre_funding_lock_shutdown_test() {
 
 	nodes[0].node.close_channel(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
@@ -862,9 +863,9 @@ fn updates_shutdown_wait() {
 
 	nodes[0].node.close_channel(&chan_1.2).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -949,13 +950,13 @@ fn htlc_fail_async_shutdown() {
 
 	nodes[1].node.close_channel(&chan_1.2).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
 
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -1017,10 +1018,10 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[1].node.close_channel(&chan_1.2).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	if recv_count > 0 {
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
 		let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 		if recv_count > 1 {
-			nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+			nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 		}
 	}
 
@@ -1039,14 +1040,14 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish);
 	let node_0_2nd_shutdown = if recv_count > 0 {
 		let node_0_2nd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_2nd_shutdown);
 		node_0_2nd_shutdown
 	} else {
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_2nd_shutdown);
 		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
 	};
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_2nd_shutdown);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1106,10 +1107,10 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		let node_1_3rd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 		assert!(node_1_3rd_shutdown == node_1_2nd_shutdown);
 
-		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_3rd_shutdown);
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_3rd_shutdown);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_3rd_shutdown);
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_3rd_shutdown);
 		let node_0_2nd_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 		assert!(node_0_closing_signed == node_0_2nd_closing_signed);
 
@@ -7195,7 +7196,7 @@ fn test_upfront_shutdown_script() {
 	let mut node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
 	// Test we enforce upfront_scriptpbukey if by providing a diffrent one at closing that  we disconnect peer
-	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
     assert!(regex::Regex::new(r"Got shutdown request with a scriptpubkey \([A-Fa-f0-9]+\) which did not match their previous scriptpubkey.").unwrap().is_match(check_closed_broadcast!(nodes[2], true).unwrap().data.as_str()));
 	check_added_monitors!(nodes[2], 1);
 
@@ -7204,7 +7205,7 @@ fn test_upfront_shutdown_script() {
 	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
 	// We test that in case of peer committing upfront to a script, if it oesn't change at closing, we sign
-	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -7218,7 +7219,7 @@ fn test_upfront_shutdown_script() {
 	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	node_1_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_1_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -7232,7 +7233,7 @@ fn test_upfront_shutdown_script() {
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -7246,7 +7247,7 @@ fn test_upfront_shutdown_script() {
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
@@ -7257,6 +7258,136 @@ fn test_upfront_shutdown_script() {
 		MessageSendEvent::SendClosingSigned { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
 		_ => panic!("Unexpected event"),
 	}
+}
+
+#[test]
+fn test_upfront_shutdown_script_unsupport_segwit() {
+	// We test that channel is closed early
+	// if a segwit program is passed as upfront shutdown script,
+	// but the peer does not support segwit.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	open_channel.shutdown_scriptpubkey = Present(Builder::new().push_int(16)
+		.push_slice(&[0, 0])
+		.into_script());
+
+	let features = InitFeatures::known().clear_shutdown_anysegwit();
+	nodes[0].node.handle_open_channel(&nodes[0].node.get_our_node_id(), features, &open_channel);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+			assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			assert!(regex::Regex::new(r"Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: (\([A-Fa-f0-9]+\))").unwrap().is_match(&*msg.data));
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
+fn test_shutdown_script_any_segwit_allowed() {
+	let mut config = UserConfig::default();
+	config.channel_options.announced_channel = true;
+	config.peer_channel_config_limits.force_announced_channel_preference = false;
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	let user_cfgs = [None, Some(config), None];
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	//// We test if the remote peer accepts opt_shutdown_anysegwit, a witness program can be used on shutdown
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	node_0_shutdown.scriptpubkey = Builder::new().push_int(16)
+		.push_slice(&[0, 0])
+		.into_script();
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		MessageSendEvent::SendShutdown { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::SendClosingSigned { node_id, .. } => { assert_eq!(node_id, nodes[1].node.get_our_node_id()) }
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
+fn test_shutdown_script_any_segwit_not_allowed() {
+	let mut config = UserConfig::default();
+	config.channel_options.announced_channel = true;
+	config.peer_channel_config_limits.force_announced_channel_preference = false;
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	let user_cfgs = [None, Some(config), None];
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	//// We test that if the remote peer does not accept opt_shutdown_anysegwit, the witness program cannot be used on shutdown
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	// Make an any segwit version script
+	node_0_shutdown.scriptpubkey = Builder::new().push_int(16)
+		.push_slice(&[0, 0])
+		.into_script();
+	let flags_no = InitFeatures::known().clear_shutdown_anysegwit();
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &flags_no, &node_0_shutdown);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[1] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(msg.data, "Got a nonstandard scriptpubkey (60020000) from remote peer".to_owned())
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
+fn test_shutdown_script_segwit_but_not_anysegwit() {
+	let mut config = UserConfig::default();
+	config.channel_options.announced_channel = true;
+	config.peer_channel_config_limits.force_announced_channel_preference = false;
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	let user_cfgs = [None, Some(config), None];
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	//// We test that if shutdown any segwit is supported and we send a witness script with 0 version, this is not accepted
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, InitFeatures::known(), InitFeatures::known());
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	// Make a segwit script that is not a valid as any segwit
+	node_0_shutdown.scriptpubkey = Builder::new().push_int(0)
+		.push_slice(&[0, 0])
+		.into_script();
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[1] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			assert_eq!(msg.data, "Got a nonstandard scriptpubkey (00020000) from remote peer".to_owned())
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_added_monitors!(nodes[0], 1);
 }
 
 #[test]
