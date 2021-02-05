@@ -678,11 +678,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			// Setup and Control messages:
 			wire::Message::Init(msg) => {
 				if msg.features.requires_unknown_bits() {
-					log_info!(self.logger, "Peer global features required unknown version bits");
-					return Err(PeerHandleError{ no_connection_possible: true }.into());
-				}
-				if msg.features.requires_unknown_bits() {
-					log_info!(self.logger, "Peer local features required unknown version bits");
+					log_info!(self.logger, "Peer features required unknown version bits");
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
 				if peer.their_features.is_some() {
