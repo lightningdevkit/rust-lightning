@@ -179,7 +179,7 @@ impl KeysInterface for KeyProvider {
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
 			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
 			channel_value_satoshis,
-			(0, 0),
+			[0; 32],
 		);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
 		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, false)

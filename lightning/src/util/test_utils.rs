@@ -482,8 +482,8 @@ impl TestKeysInterface {
 			revoked_commitments: Mutex::new(HashMap::new()),
 		}
 	}
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, user_id_1: u64, user_id_2: u64) -> EnforcingChannelKeys {
-		let keys = self.backing.derive_channel_keys(channel_value_satoshis, user_id_1, user_id_2);
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingChannelKeys {
+		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
 		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
 	}
