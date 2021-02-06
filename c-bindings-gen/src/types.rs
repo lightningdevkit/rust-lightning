@@ -1878,7 +1878,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 									generics, &subtype, is_ref, is_mut, ptr_for_ref, true);
 							}
 						} else {
-							let id = &&$p_arg.path.segments.iter().rev().next().unwrap().ident;
+							let id = subtype.rsplitn(2, ':').next().unwrap(); // Get the "Base" name of the resolved type
 							write!(w, "{}", id).unwrap();
 							write!(mangled_type, "{}", id).unwrap();
 							if let Some(w2) = $extra_write as Option<&mut Vec<u8>> {
