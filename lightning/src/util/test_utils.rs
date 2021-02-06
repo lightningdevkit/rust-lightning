@@ -419,7 +419,7 @@ impl Logger for TestLogger {
 }
 
 pub struct TestKeysInterface {
-	backing: keysinterface::KeysManager,
+	pub backing: keysinterface::KeysManager,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,

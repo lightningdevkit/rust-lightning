@@ -15,7 +15,7 @@ use chain::Watch;
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
-use chain::keysinterface::{ChannelKeys, KeysInterface, SpendableOutputDescriptor};
+use chain::keysinterface::{ChannelKeys, KeysInterface};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channel::{Channel, ChannelError};
@@ -33,12 +33,8 @@ use util::config::UserConfig;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
-use bitcoin::util::bip143;
-use bitcoin::util::address::Address;
-use bitcoin::util::bip32::{ChildNumber, ExtendedPubKey, ExtendedPrivKey};
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, SigHashType};
-use bitcoin::blockdata::script::{Builder, Script};
+use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
@@ -4655,121 +4651,26 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 macro_rules! check_spendable_outputs {
 	($node: expr, $der_idx: expr, $keysinterface: expr, $chan_value: expr) => {
 		{
-			let events = $node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+			let mut events = $node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 			let mut txn = Vec::new();
-			for event in events {
+			let mut all_outputs = Vec::new();
+			let secp_ctx = Secp256k1::new();
+			for event in events.drain(..) {
 				match event {
-					Event::SpendableOutputs { ref outputs } => {
-						for outp in outputs {
-							match *outp {
-								SpendableOutputDescriptor::StaticOutputCounterpartyPayment(ref descriptor) => {
-									assert_eq!(descriptor.channel_value_satoshis, $chan_value);
-									let input = TxIn {
-										previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-										script_sig: Script::new(),
-										sequence: 0,
-										witness: Vec::new(),
-									};
-									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: descriptor.output.value,
-									};
-									let mut spend_tx = Transaction {
-										version: 2,
-										lock_time: 0,
-										input: vec![input],
-										output: vec![outp],
-									};
-									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 35 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
-									let secp_ctx = Secp256k1::new();
-									let keys = $keysinterface.derive_channel_keys($chan_value, &descriptor.channel_keys_id);
-									let remotepubkey = keys.pubkeys().payment_point;
-									let witness_script = Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
-									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, descriptor.output.value, SigHashType::All)[..]).unwrap();
-									let remotesig = secp_ctx.sign(&sighash, &keys.inner.payment_key);
-									spend_tx.input[0].witness.push(remotesig.serialize_der().to_vec());
-									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-									spend_tx.input[0].witness.push(remotepubkey.serialize().to_vec());
-									txn.push(spend_tx);
-								},
-								SpendableOutputDescriptor::DynamicOutputP2WSH(ref descriptor) => {
-									assert_eq!(descriptor.channel_value_satoshis, $chan_value);
-									let input = TxIn {
-										previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
-										script_sig: Script::new(),
-										sequence: descriptor.to_self_delay as u32,
-										witness: Vec::new(),
-									};
-									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: descriptor.output.value,
-									};
-									let mut spend_tx = Transaction {
-										version: 2,
-										lock_time: 0,
-										input: vec![input],
-										output: vec![outp],
-									};
-									let secp_ctx = Secp256k1::new();
-									let keys = $keysinterface.derive_channel_keys($chan_value, &descriptor.channel_keys_id);
-									if let Ok(delayed_payment_key) = chan_utils::derive_private_key(&secp_ctx, &descriptor.per_commitment_point, &keys.inner.delayed_payment_base_key) {
-
-										let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
-										let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
-										spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 1 + witness_script.len() + 1 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
-										let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, descriptor.output.value, SigHashType::All)[..]).unwrap();
-										let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
-										spend_tx.input[0].witness.push(local_delayedsig.serialize_der().to_vec());
-										spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-										spend_tx.input[0].witness.push(vec!()); //MINIMALIF
-										spend_tx.input[0].witness.push(witness_script.clone().into_bytes());
-									} else { panic!() }
-									txn.push(spend_tx);
-								},
-								SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
-									let secp_ctx = Secp256k1::new();
-									let input = TxIn {
-										previous_output: outpoint.into_bitcoin_outpoint(),
-										script_sig: Script::new(),
-										sequence: 0,
-										witness: Vec::new(),
-									};
-									let outp = TxOut {
-										script_pubkey: Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(),
-										value: output.value,
-									};
-									let mut spend_tx = Transaction {
-										version: 2,
-										lock_time: 0,
-										input: vec![input],
-										output: vec![outp.clone()],
-									};
-									spend_tx.output[0].value -= (spend_tx.get_weight() + 2 + 1 + 73 + 34 + 3) as u64 / 4; // (Max weight + 3 (to round up)) / 4
-									let secret = {
-										match ExtendedPrivKey::new_master(Network::Testnet, &$node.node_seed) {
-											Ok(master_key) => {
-												match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx($der_idx).expect("key space exhausted")) {
-													Ok(key) => key,
-													Err(_) => panic!("Your RNG is busted"),
-												}
-											}
-											Err(_) => panic!("Your rng is busted"),
-										}
-									};
-									let pubkey = ExtendedPubKey::from_private(&secp_ctx, &secret).public_key;
-									let witness_script = Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
-									let sighash = Message::from_slice(&bip143::SigHashCache::new(&spend_tx).signature_hash(0, &witness_script, output.value, SigHashType::All)[..]).unwrap();
-									let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
-									spend_tx.input[0].witness.push(sig.serialize_der().to_vec());
-									spend_tx.input[0].witness[0].push(SigHashType::All as u8);
-									spend_tx.input[0].witness.push(pubkey.key.serialize().to_vec());
-									txn.push(spend_tx);
-								},
-							}
+					Event::SpendableOutputs { mut outputs } => {
+						for outp in outputs.drain(..) {
+							let mut outputs = vec![outp];
+							txn.push($keysinterface.backing.spend_spendable_outputs(&outputs, Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &secp_ctx).unwrap());
+							all_outputs.push(outputs.pop().unwrap());
 						}
 					},
 					_ => panic!("Unexpected event"),
 				};
+			}
+			if all_outputs.len() > 1 {
+				if let Ok(tx) = $keysinterface.backing.spend_spendable_outputs(&all_outputs, Vec::new(), Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &secp_ctx) {
+					txn.push(tx);
+				}
 			}
 			txn
 		}
@@ -4860,9 +4761,10 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
+	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // to_remote output on revoked remote commitment_tx
 	check_spends!(spend_txn[1], node_txn[0]);
+	check_spends!(spend_txn[2], revoked_local_txn[0], node_txn[0]); // Both outputs
 }
 
 #[test]
@@ -4957,8 +4859,10 @@ fn test_static_spendable_outputs_timeout_tx() {
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
+	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
+	check_spends!(spend_txn[0], commitment_tx[0]);
 	check_spends!(spend_txn[1], node_txn[0]);
+	check_spends!(spend_txn[2], node_txn[0], commitment_tx[0]); // All outputs
 }
 
 #[test]
@@ -5135,11 +5039,12 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
+	assert_eq!(spend_txn.len(), 3);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
 	assert_ne!(spend_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 	check_spends!(spend_txn[1], node_txn[1]); // spending justice tx output on the htlc success tx
+	check_spends!(spend_txn[2], revoked_local_txn[0], node_txn[1]); // Both outputs
 }
 
 #[test]
@@ -5704,9 +5609,10 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
+	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn[0]);
 	check_spends!(spend_txn[1], htlc_timeout);
+	check_spends!(spend_txn[2], local_txn[0], htlc_timeout);
 }
 
 #[test]
@@ -5774,9 +5680,10 @@ fn test_key_derivation_params() {
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
-	assert_eq!(spend_txn.len(), 2);
+	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn_1[0]);
 	check_spends!(spend_txn[1], htlc_timeout);
+	check_spends!(spend_txn[2], local_txn_1[0], htlc_timeout);
 }
 
 #[test]
