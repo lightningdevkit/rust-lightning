@@ -47,9 +47,9 @@ use ln::msgs::DecodeError;
 /// that txid/index, and any keys or other information required to sign.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpendableOutputDescriptor {
-	/// An output to a script which was provided via KeysInterface, thus you should already know
-	/// how to spend it. No keys are provided as rust-lightning was never given any keys - only the
-	/// script_pubkey as it appears in the output.
+	/// An output to a script which was provided via KeysInterface directly, either from
+	/// `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
+	/// spend it. No secret keys are provided as rust-lightning was never given any key.
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
 	/// on-chain using the payment preimage or after it has timed out.
 	StaticOutput {
@@ -98,11 +98,14 @@ pub enum SpendableOutputDescriptor {
 		to_self_delay: u16,
 		/// The output which is referenced by the given outpoint
 		output: TxOut,
-		/// The channel keys state used to proceed to derivation of signing key. Must
-		/// be pass to KeysInterface::derive_channel_keys.
-		channel_keys_id: [u8; 32],
 		/// The revocation_pubkey used to derive witnessScript
-		revocation_pubkey: PublicKey
+		revocation_pubkey: PublicKey,
+		/// Arbitrary identification information returned by a call to
+		/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+		/// the channel to spend the output.
+		channel_keys_id: [u8; 32],
+		/// The value of the channel which this output originated from, possibly indirectly.
+		channel_value_satoshis: u64,
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -116,9 +119,12 @@ pub enum SpendableOutputDescriptor {
 		outpoint: OutPoint,
 		/// The output which is reference by the given outpoint
 		output: TxOut,
-		/// The channel keys state used to proceed to derivation of signing key. Must
-		/// be pass to KeysInterface::derive_channel_keys.
+		/// Arbitrary identification information returned by a call to
+		/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+		/// the channel to spend the output.
 		channel_keys_id: [u8; 32],
+		/// The value of the channel which this transactions spends.
+		channel_value_satoshis: u64,
 	}
 }
 
@@ -130,20 +136,22 @@ impl Writeable for SpendableOutputDescriptor {
 				outpoint.write(writer)?;
 				output.write(writer)?;
 			},
-			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref channel_keys_id, ref revocation_pubkey } => {
+			&SpendableOutputDescriptor::DynamicOutputP2WSH { ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, channel_value_satoshis } => {
 				1u8.write(writer)?;
 				outpoint.write(writer)?;
 				per_commitment_point.write(writer)?;
 				to_self_delay.write(writer)?;
 				output.write(writer)?;
-				channel_keys_id.write(writer)?;
 				revocation_pubkey.write(writer)?;
+				channel_keys_id.write(writer)?;
+				channel_value_satoshis.write(writer)?;
 			},
-			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref channel_keys_id } => {
+			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment { ref outpoint, ref output, ref channel_keys_id, channel_value_satoshis } => {
 				2u8.write(writer)?;
 				outpoint.write(writer)?;
 				output.write(writer)?;
 				channel_keys_id.write(writer)?;
+				channel_value_satoshis.write(writer)?;
 			},
 		}
 		Ok(())
@@ -162,13 +170,15 @@ impl Readable for SpendableOutputDescriptor {
 				per_commitment_point: Readable::read(reader)?,
 				to_self_delay: Readable::read(reader)?,
 				output: Readable::read(reader)?,
-				channel_keys_id: Readable::read(reader)?,
 				revocation_pubkey: Readable::read(reader)?,
+				channel_keys_id: Readable::read(reader)?,
+				channel_value_satoshis: Readable::read(reader)?,
 			}),
 			2u8 => Ok(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 				outpoint: Readable::read(reader)?,
 				output: Readable::read(reader)?,
 				channel_keys_id: Readable::read(reader)?,
+				channel_value_satoshis: Readable::read(reader)?,
 			}),
 			_ => Err(DecodeError::InvalidValue),
 		}

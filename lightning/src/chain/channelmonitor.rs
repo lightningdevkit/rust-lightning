@@ -2206,8 +2206,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						per_commitment_point: broadcasted_holder_revokable_script.1,
 						to_self_delay: self.on_holder_tx_csv,
 						output: outp.clone(),
-						channel_keys_id: self.channel_keys_id,
 						revocation_pubkey: broadcasted_holder_revokable_script.2.clone(),
+						channel_keys_id: self.channel_keys_id,
+						channel_value_satoshis: self.channel_value_satoshis,
 					});
 					break;
 				}
@@ -2216,6 +2217,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: self.channel_keys_id,
+					channel_value_satoshis: self.channel_value_satoshis,
 				});
 				break;
 			} else if outp.script_pubkey == self.shutdown_script {
