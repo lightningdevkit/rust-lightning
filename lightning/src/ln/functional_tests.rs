@@ -8836,3 +8836,66 @@ fn test_duplicate_chan_id() {
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
 }
+
+#[test]
+fn test_error_chans_closed() {
+	// Test that we properly handle error messages, closing appropriate channels.
+	//
+	// Prior to #787 we'd allow a peer to make us force-close a channel we had with a different
+	// peer. The "real" fix for that is to index channels with peers_ids, however in the mean time
+	// we can test various edge cases around it to ensure we don't regress.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create some initial channels
+	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+	let chan_3 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 3);
+	assert_eq!(nodes[1].node.list_usable_channels().len(), 2);
+	assert_eq!(nodes[2].node.list_usable_channels().len(), 1);
+
+	// Closing a channel from a different peer has no effect
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: chan_3.2, data: "ERR".to_owned() });
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 3);
+
+	// Closing one channel doesn't impact others
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: chan_2.2, data: "ERR".to_owned() });
+	check_added_monitors!(nodes[0], 1);
+	check_closed_broadcast!(nodes[0], false);
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 2);
+	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_1.2 || nodes[0].node.list_usable_channels()[1].channel_id == chan_1.2);
+	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2 || nodes[0].node.list_usable_channels()[1].channel_id == chan_3.2);
+
+	// A null channel ID should close all channels
+	let _chan_4 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: [0; 32], data: "ERR".to_owned() });
+	check_added_monitors!(nodes[0], 2);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			assert_eq!(msg.contents.flags & 2, 2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			assert_eq!(msg.contents.flags & 2, 2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	// Note that at this point users of a standard PeerHandler will end up calling
+	// peer_disconnected with no_connection_possible set to false, duplicating the
+	// close-all-channels logic. That's OK, we don't want to end up not force-closing channels for
+	// users with their own peer handling logic. We duplicate the call here, however.
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), true);
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
+}
