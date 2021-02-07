@@ -41,28 +41,13 @@ pub fn single_ident_generic_path_to_ident(p: &syn::Path) -> Option<&syn::Ident> 
 	} else { None }
 }
 
-pub fn attrs_derives_clone(attrs: &[syn::Attribute]) -> bool {
-	for attr in attrs.iter() {
-		let tokens_clone = attr.tokens.clone();
-		let mut token_iter = tokens_clone.into_iter();
-		if let Some(token) = token_iter.next() {
-			match token {
-				TokenTree::Group(g) => {
-					if format!("{}", single_ident_generic_path_to_ident(&attr.path).unwrap()) == "derive" {
-						for id in g.stream().into_iter() {
-							if let TokenTree::Ident(i) = id {
-								if i == "Clone" {
-									return true;
-								}
-							}
-						}
-					}
-				},
-				_ => {},
-			}
-		}
+pub fn path_matches_nongeneric(p: &syn::Path, exp: &[&str]) -> bool {
+	if p.segments.len() != exp.len() { return false; }
+	for (seg, e) in p.segments.iter().zip(exp.iter()) {
+		if seg.arguments != syn::PathArguments::None { return false; }
+		if &format!("{}", seg.ident) != *e { return false; }
 	}
-	false
+	true
 }
 
 #[derive(Debug, PartialEq)]
@@ -165,6 +150,7 @@ impl<'a> GenericTypes<'a> {
 							if let Some(ident) = single_ident_generic_path_to_ident(&trait_bound.path) {
 								match &format!("{}", ident) as &str { "Send" => continue, "Sync" => continue, _ => {} }
 							}
+							if path_matches_nongeneric(&trait_bound.path, &["core", "clone", "Clone"]) { continue; }
 
 							assert_simple_bound(&trait_bound);
 							if let Some(mut path) = types.maybe_resolve_path(&trait_bound.path, None) {
@@ -298,7 +284,7 @@ pub enum DeclType<'a> {
 // the sorting is stable across runs. It is deprecated, but the "replacement" doesn't actually
 // accomplish the same goals, so we just ignore it.
 #[allow(deprecated)]
-type NonRandomHash = hash::BuildHasherDefault<hash::SipHasher>;
+pub type NonRandomHash = hash::BuildHasherDefault<hash::SipHasher>;
 
 /// Top-level struct tracking everything which has been defined while walking the crate.
 pub struct CrateTypes<'a> {
@@ -900,6 +886,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			eprintln!("Ignoring pub(use) tree!");
 			return;
 		}
+		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
 		match &u.tree {
 			syn::UseTree::Path(p) => {
 				let new_path = format!("{}", p.ident);
@@ -911,7 +898,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			},
 			_ => unimplemented!(),
 		}
-		if u.leading_colon.is_some() { unimplemented!() }
 	}
 
 	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
