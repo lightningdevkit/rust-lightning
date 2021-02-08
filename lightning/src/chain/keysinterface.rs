@@ -54,7 +54,8 @@ pub struct DynamicP2WSHOutputDescriptor {
 	pub to_self_delay: u16,
 	/// The output which is referenced by the given outpoint
 	pub output: TxOut,
-	/// The revocation_pubkey used to derive witnessScript
+	/// The revocation point specific to the commitment transaction which was broadcast. Used to
+	/// derive the witnessScript for this output.
 	pub revocation_pubkey: PublicKey,
 	/// Arbitrary identification information returned by a call to
 	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
