@@ -279,6 +279,153 @@ pub enum DeclType<'a> {
 	EnumIgnored,
 }
 
+pub struct ImportResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
+	module_path: &'mod_lifetime str,
+	imports: HashMap<syn::Ident, String>,
+	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
+}
+impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'crate_lft> {
+	pub fn new(module_path: &'mod_lifetime str) -> Self {
+		let mut imports = HashMap::new();
+		// Add primitives to the "imports" list:
+		imports.insert(syn::Ident::new("bool", Span::call_site()), "bool".to_string());
+		imports.insert(syn::Ident::new("u64", Span::call_site()), "u64".to_string());
+		imports.insert(syn::Ident::new("u32", Span::call_site()), "u32".to_string());
+		imports.insert(syn::Ident::new("u16", Span::call_site()), "u16".to_string());
+		imports.insert(syn::Ident::new("u8", Span::call_site()), "u8".to_string());
+		imports.insert(syn::Ident::new("usize", Span::call_site()), "usize".to_string());
+		imports.insert(syn::Ident::new("str", Span::call_site()), "str".to_string());
+		imports.insert(syn::Ident::new("String", Span::call_site()), "String".to_string());
+
+		// These are here to allow us to print native Rust types in trait fn impls even if we don't
+		// have C mappings:
+		imports.insert(syn::Ident::new("Result", Span::call_site()), "Result".to_string());
+		imports.insert(syn::Ident::new("Vec", Span::call_site()), "Vec".to_string());
+		imports.insert(syn::Ident::new("Option", Span::call_site()), "Option".to_string());
+		Self { module_path, imports, declared: HashMap::new() }
+	}
+
+	fn process_use_intern(&mut self, u: &syn::UseTree, partial_path: &str) {
+		match u {
+			syn::UseTree::Path(p) => {
+				let new_path = format!("{}::{}", partial_path, p.ident);
+				self.process_use_intern(&p.tree, &new_path);
+			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}::{}", partial_path, n.ident);
+				self.imports.insert(n.ident.clone(), full_path);
+			},
+			syn::UseTree::Group(g) => {
+				for i in g.items.iter() {
+					self.process_use_intern(i, partial_path);
+				}
+			},
+			syn::UseTree::Rename(r) => {
+				let full_path = format!("{}::{}", partial_path, r.ident);
+				self.imports.insert(r.rename.clone(), full_path);
+			},
+			syn::UseTree::Glob(_) => {
+				eprintln!("Ignoring * use for {} - this may result in resolution failures", partial_path);
+			},
+		}
+	}
+
+	pub fn process_use(&mut self, u: &syn::ItemUse) {
+		if let syn::Visibility::Public(_) = u.vis {
+			// We actually only use these for #[cfg(fuzztarget)]
+			eprintln!("Ignoring pub(use) tree!");
+			return;
+		}
+		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
+		match &u.tree {
+			syn::UseTree::Path(p) => {
+				let new_path = format!("{}", p.ident);
+				self.process_use_intern(&p.tree, &new_path);
+			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}", n.ident);
+				self.imports.insert(n.ident.clone(), full_path);
+			},
+			_ => unimplemented!(),
+		}
+	}
+
+	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
+		self.declared.insert(ident.clone(), DeclType::MirroredEnum);
+	}
+	pub fn enum_ignored(&mut self, ident: &'crate_lft syn::Ident) {
+		self.declared.insert(ident.clone(), DeclType::EnumIgnored);
+	}
+	pub fn struct_imported(&mut self, ident: &'crate_lft syn::Ident) {
+		self.declared.insert(ident.clone(), DeclType::StructImported);
+	}
+	pub fn struct_ignored(&mut self, ident: &syn::Ident) {
+		self.declared.insert(ident.clone(), DeclType::StructIgnored);
+	}
+	pub fn trait_declared(&mut self, ident: &syn::Ident, t: &'crate_lft syn::ItemTrait) {
+		self.declared.insert(ident.clone(), DeclType::Trait(t));
+	}
+	pub fn get_declared_type(&self, ident: &syn::Ident) -> Option<&DeclType<'crate_lft>> {
+		self.declared.get(ident)
+	}
+
+	pub fn maybe_resolve_declared(&self, id: &syn::Ident) -> Option<&DeclType<'crate_lft>> {
+		self.declared.get(id)
+	}
+
+	pub fn maybe_resolve_ident(&self, id: &syn::Ident) -> Option<String> {
+		if let Some(imp) = self.imports.get(id) {
+			Some(imp.clone())
+		} else if self.declared.get(id).is_some() {
+			Some(self.module_path.to_string() + "::" + &format!("{}", id))
+		} else { None }
+	}
+
+	pub fn maybe_resolve_non_ignored_ident(&self, id: &syn::Ident) -> Option<String> {
+		if let Some(imp) = self.imports.get(id) {
+			Some(imp.clone())
+		} else if let Some(decl_type) = self.declared.get(id) {
+			match decl_type {
+				DeclType::StructIgnored => None,
+				_ => Some(self.module_path.to_string() + "::" + &format!("{}", id)),
+			}
+		} else { None }
+	}
+
+	pub fn maybe_resolve_path(&self, p_arg: &syn::Path, generics: Option<&GenericTypes>) -> Option<String> {
+		let p = if let Some(gen_types) = generics {
+			if let Some((_, synpath)) = gen_types.maybe_resolve_path(p_arg) {
+				synpath
+			} else { p_arg }
+		} else { p_arg };
+
+		if p.leading_colon.is_some() {
+			Some(p.segments.iter().enumerate().map(|(idx, seg)| {
+				format!("{}{}", if idx == 0 { "" } else { "::" }, seg.ident)
+			}).collect())
+		} else if let Some(id) = p.get_ident() {
+			self.maybe_resolve_ident(id)
+		} else {
+			if p.segments.len() == 1 {
+				let seg = p.segments.iter().next().unwrap();
+				return self.maybe_resolve_ident(&seg.ident);
+			}
+			let mut seg_iter = p.segments.iter();
+			let first_seg = seg_iter.next().unwrap();
+			let remaining: String = seg_iter.map(|seg| {
+				format!("::{}", seg.ident)
+			}).collect();
+			if let Some(imp) = self.imports.get(&first_seg.ident) {
+				if remaining != "" {
+					Some(imp.clone() + &remaining)
+				} else {
+					Some(imp.clone())
+				}
+			} else { None }
+		}
+	}
+}
+
 // templates_defined is walked to write the C++ header, so if we use the default hashing it get
 // reordered on each genbindings run. Instead, we use SipHasher (which defaults to 0-keys) so that
 // the sorting is stable across runs. It is deprecated, but the "replacement" doesn't actually
@@ -314,10 +461,8 @@ pub struct CrateTypes<'a> {
 pub struct TypeResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	pub orig_crate: &'mod_lifetime str,
 	pub module_path: &'mod_lifetime str,
-	imports: HashMap<syn::Ident, String>,
-	// ident -> is-mirrored-enum
-	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
 	pub crate_types: &'mod_lifetime mut CrateTypes<'crate_lft>,
+	types: ImportResolver<'mod_lifetime, 'crate_lft>,
 }
 
 /// Returned by write_empty_rust_val_check_suffix to indicate what type of dereferencing needs to
@@ -333,23 +478,7 @@ enum EmptyValExpectedTy {
 
 impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	pub fn new(orig_crate: &'a str, module_path: &'a str, crate_types: &'a mut CrateTypes<'c>) -> Self {
-		let mut imports = HashMap::new();
-		// Add primitives to the "imports" list:
-		imports.insert(syn::Ident::new("bool", Span::call_site()), "bool".to_string());
-		imports.insert(syn::Ident::new("u64", Span::call_site()), "u64".to_string());
-		imports.insert(syn::Ident::new("u32", Span::call_site()), "u32".to_string());
-		imports.insert(syn::Ident::new("u16", Span::call_site()), "u16".to_string());
-		imports.insert(syn::Ident::new("u8", Span::call_site()), "u8".to_string());
-		imports.insert(syn::Ident::new("usize", Span::call_site()), "usize".to_string());
-		imports.insert(syn::Ident::new("str", Span::call_site()), "str".to_string());
-		imports.insert(syn::Ident::new("String", Span::call_site()), "String".to_string());
-
-		// These are here to allow us to print native Rust types in trait fn impls even if we don't
-		// have C mappings:
-		imports.insert(syn::Ident::new("Result", Span::call_site()), "Result".to_string());
-		imports.insert(syn::Ident::new("Vec", Span::call_site()), "Vec".to_string());
-		imports.insert(syn::Ident::new("Option", Span::call_site()), "Option".to_string());
-		Self { orig_crate, module_path, imports, declared: HashMap::new(), crate_types }
+		Self { orig_crate, module_path, types: ImportResolver::new(module_path), crate_types }
 	}
 
 	// *************************************************
@@ -856,68 +985,27 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// *** Type definition during main.rs processing ***
 	// *************************************************
 
-	fn process_use_intern<W: std::io::Write>(&mut self, w: &mut W, u: &syn::UseTree, partial_path: &str) {
-		match u {
-			syn::UseTree::Path(p) => {
-				let new_path = format!("{}::{}", partial_path, p.ident);
-				self.process_use_intern(w, &p.tree, &new_path);
-			},
-			syn::UseTree::Name(n) => {
-				let full_path = format!("{}::{}", partial_path, n.ident);
-				self.imports.insert(n.ident.clone(), full_path);
-			},
-			syn::UseTree::Group(g) => {
-				for i in g.items.iter() {
-					self.process_use_intern(w, i, partial_path);
-				}
-			},
-			syn::UseTree::Rename(r) => {
-				let full_path = format!("{}::{}", partial_path, r.ident);
-				self.imports.insert(r.rename.clone(), full_path);
-			},
-			syn::UseTree::Glob(_) => {
-				eprintln!("Ignoring * use for {} - this may result in resolution failures", partial_path);
-			},
-		}
-	}
 	pub fn process_use<W: std::io::Write>(&mut self, w: &mut W, u: &syn::ItemUse) {
-		if let syn::Visibility::Public(_) = u.vis {
-			// We actually only use these for #[cfg(fuzztarget)]
-			eprintln!("Ignoring pub(use) tree!");
-			return;
-		}
-		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
-		match &u.tree {
-			syn::UseTree::Path(p) => {
-				let new_path = format!("{}", p.ident);
-				self.process_use_intern(w, &p.tree, &new_path);
-			},
-			syn::UseTree::Name(n) => {
-				let full_path = format!("{}", n.ident);
-				self.imports.insert(n.ident.clone(), full_path);
-			},
-			_ => unimplemented!(),
-		}
+		self.types.process_use(u);
 	}
 
 	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::MirroredEnum);
+		self.types.mirrored_enum_declared(ident);
 	}
 	pub fn enum_ignored(&mut self, ident: &'c syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::EnumIgnored);
+		self.types.enum_ignored(ident);
 	}
 	pub fn struct_imported(&mut self, ident: &'c syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::StructImported);
+		self.types.struct_imported(ident);
 	}
 	pub fn struct_ignored(&mut self, ident: &syn::Ident) {
-		eprintln!("Not importing {}", ident);
-		self.declared.insert(ident.clone(), DeclType::StructIgnored);
+		self.types.struct_ignored(ident);
 	}
 	pub fn trait_declared(&mut self, ident: &syn::Ident, t: &'c syn::ItemTrait) {
-		self.declared.insert(ident.clone(), DeclType::Trait(t));
+		self.types.trait_declared(ident, t);
 	}
 	pub fn get_declared_type(&'a self, ident: &syn::Ident) -> Option<&'a DeclType<'c>> {
-		self.declared.get(ident)
+		self.types.get_declared_type(ident)
 	}
 	/// Returns true if the object at the given path is mapped as X { inner: *mut origX, .. }.
 	pub fn c_type_has_inner_from_path(&self, full_path: &str) -> bool{
@@ -925,55 +1013,15 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	}
 
 	pub fn maybe_resolve_ident(&self, id: &syn::Ident) -> Option<String> {
-		if let Some(imp) = self.imports.get(id) {
-			Some(imp.clone())
-		} else if self.declared.get(id).is_some() {
-			Some(self.module_path.to_string() + "::" + &format!("{}", id))
-		} else { None }
+		self.types.maybe_resolve_ident(id)
 	}
 
 	pub fn maybe_resolve_non_ignored_ident(&self, id: &syn::Ident) -> Option<String> {
-		if let Some(imp) = self.imports.get(id) {
-			Some(imp.clone())
-		} else if let Some(decl_type) = self.declared.get(id) {
-			match decl_type {
-				DeclType::StructIgnored => None,
-				_ => Some(self.module_path.to_string() + "::" + &format!("{}", id)),
-			}
-		} else { None }
+		self.types.maybe_resolve_non_ignored_ident(id)
 	}
 
 	pub fn maybe_resolve_path(&self, p_arg: &syn::Path, generics: Option<&GenericTypes>) -> Option<String> {
-		let p = if let Some(gen_types) = generics {
-			if let Some((_, synpath)) = gen_types.maybe_resolve_path(p_arg) {
-				synpath
-			} else { p_arg }
-		} else { p_arg };
-
-		if p.leading_colon.is_some() {
-			Some(p.segments.iter().enumerate().map(|(idx, seg)| {
-				format!("{}{}", if idx == 0 { "" } else { "::" }, seg.ident)
-			}).collect())
-		} else if let Some(id) = p.get_ident() {
-			self.maybe_resolve_ident(id)
-		} else {
-			if p.segments.len() == 1 {
-				let seg = p.segments.iter().next().unwrap();
-				return self.maybe_resolve_ident(&seg.ident);
-			}
-			let mut seg_iter = p.segments.iter();
-			let first_seg = seg_iter.next().unwrap();
-			let remaining: String = seg_iter.map(|seg| {
-				format!("::{}", seg.ident)
-			}).collect();
-			if let Some(imp) = self.imports.get(&first_seg.ident) {
-				if remaining != "" {
-					Some(imp.clone() + &remaining)
-				} else {
-					Some(imp.clone())
-				}
-			} else { None }
-		}
+		self.types.maybe_resolve_path(p_arg, generics)
 	}
 	pub fn resolve_path(&self, p: &syn::Path, generics: Option<&GenericTypes>) -> String {
 		self.maybe_resolve_path(p, generics).unwrap()
@@ -1263,10 +1311,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				} else if let Some(t) = self.crate_types.traits.get(&resolved_path) {
 					decl_lookup(w, &DeclType::Trait(t), &resolved_path, is_ref, is_mut);
 				} else if let Some(ident) = single_ident_generic_path_to_ident(&p.path) {
-					if let Some(_) = self.imports.get(ident) {
-						// crate_types lookup has to have succeeded:
-						panic!("Failed to print inline conversion for {}", ident);
-					} else if let Some(decl_type) = self.declared.get(ident) {
+					if let Some(decl_type) = self.types.maybe_resolve_declared(ident) {
 						decl_lookup(w, decl_type, &self.maybe_resolve_ident(ident).unwrap(), is_ref, is_mut);
 					} else { unimplemented!(); }
 				} else { unimplemented!(); }
@@ -1591,7 +1636,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 					if let Some((prefix, suffix)) = path_lookup(&resolved_path, is_ref) {
 						write!(w, "let mut local_{} = {}{}{};", ident, prefix, var, suffix).unwrap();
 						true
-					} else if self.declared.get(ty_ident).is_some() {
+					} else if self.types.maybe_resolve_declared(ty_ident).is_some() {
 						false
 					} else { false }
 				} else { false }
