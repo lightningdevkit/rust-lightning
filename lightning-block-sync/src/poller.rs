@@ -1,21 +1,23 @@
-use crate::{AsyncBlockSourceResult, BlockSource, BlockSourceError, ChainTip, Poll, Validate, ValidatedBlock, ValidatedBlockHeader};
+use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, ChainTip, Poll, Validate, ValidatedBlock, ValidatedBlockHeader};
 
+use bitcoin::blockdata::block::Block;
+use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 
 use std::ops::DerefMut;
 
-pub struct ChainPoller<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
+pub struct ChainPoller<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> {
 	block_source: B,
 	network: Network,
 }
 
-impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainPoller<'b, B> {
+impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> ChainPoller<B, T> {
 	pub fn new(block_source: B, network: Network) -> Self {
 		Self { block_source, network }
 	}
 }
 
-impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll for ChainPoller<'b, B> {
+impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> Poll for ChainPoller<B, T> {
 	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>
 	{
@@ -67,26 +69,47 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll fo
 }
 
 pub struct ChainMultiplexer<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> {
-	block_sources: Vec<(ChainPoller<'b, B>, BlockSourceError)>,
-	backup_block_sources: Vec<(ChainPoller<'b, B>, BlockSourceError)>,
+	network: Network,
+	block_sources: Vec<(B, BlockSourceError)>,
+	backup_block_sources: Vec<(B, BlockSourceError)>,
 	best_block_source: usize,
+}
+
+struct DynamicBlockSource<'b>(&'b mut dyn BlockSource);
+
+impl<'b> BlockSource for DynamicBlockSource<'b>{
+	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+		Box::pin(async move {
+			self.0.get_header(header_hash, height_hint).await
+		})
+	}
+	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+		Box::pin(async move {
+			self.0.get_block(header_hash).await
+		})
+	}
+	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
+		Box::pin(async move {
+			self.0.get_best_block().await
+		})
+	}
 }
 
 impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainMultiplexer<'b, B> {
 	pub fn new(mut block_sources: Vec<B>, mut backup_block_sources: Vec<B>, network: Network) -> Self {
 		assert!(!block_sources.is_empty());
 		let block_sources = block_sources.drain(..).map(|block_source| {
-			(ChainPoller::new(block_source, network), BlockSourceError::Transient)
+			(block_source, BlockSourceError::Transient)
 		}).collect();
 
 		let backup_block_sources = backup_block_sources.drain(..).map(|block_source| {
-			(ChainPoller::new(block_source, network), BlockSourceError::Transient)
+			(block_source, BlockSourceError::Transient)
 		}).collect();
 
-		Self { block_sources, backup_block_sources, best_block_source: 0 }
+		Self { network, block_sources, backup_block_sources, best_block_source: 0 }
 	}
 
-	fn best_and_backup_block_sources(&mut self) -> Vec<&mut (ChainPoller<'b, B>, BlockSourceError)> {
+	fn best_and_backup_block_sources(&mut self) -> Vec<&mut (B, BlockSourceError)> {
 		let best_block_source = self.block_sources.get_mut(self.best_block_source).unwrap();
 		let backup_block_sources = self.backup_block_sources.iter_mut();
 		std::iter::once(best_block_source)
@@ -96,18 +119,21 @@ impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> ChainMu
 	}
 }
 
-impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll for ChainMultiplexer<'b, B> {
-	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ChainTip>
-	{
+impl<'b, B: DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Poll for ChainMultiplexer<'b, B> {
+	fn poll_chain_tip<'a>(
+		&'a mut self,
+		best_known_chain_tip: ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ChainTip> {
 		Box::pin(async move {
 			let mut heaviest_chain_tip = best_known_chain_tip;
 			let mut best_result = Err(BlockSourceError::Persistent);
-			for (i, (poller, error)) in self.block_sources.iter_mut().enumerate() {
+			for (i, (block_source, error)) in self.block_sources.iter_mut().enumerate() {
 				if let BlockSourceError::Persistent = error {
 					continue;
 				}
 
+				let mut block_source = DynamicBlockSource(&mut **block_source);
+				let mut poller = ChainPoller::new(&mut block_source, self.network);
 				let result = poller.poll_chain_tip(heaviest_chain_tip).await;
 				match result {
 					Err(BlockSourceError::Persistent) => {
@@ -140,11 +166,15 @@ impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Po
 		})
 	}
 
-	fn look_up_previous_header<'a>(&'a mut self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlockHeader>
-	{
+	fn look_up_previous_header<'a>(
+		&'a mut self,
+		header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlockHeader> {
 		Box::pin(async move {
-			for (poller, error) in self.best_and_backup_block_sources() {
+			let network = self.network;
+			for (block_source, error) in self.best_and_backup_block_sources() {
+				let mut block_source = DynamicBlockSource(&mut **block_source);
+				let mut poller = ChainPoller::new(&mut block_source, network);
 				let result = poller.look_up_previous_header(header).await;
 				match result {
 					Err(e) => *error = e,
@@ -155,11 +185,15 @@ impl<'b, B: 'b + DerefMut<Target=dyn BlockSource + 'b> + Sized + Sync + Send> Po
 		})
 	}
 
-	fn fetch_block<'a>(&'a mut self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlock>
-	{
+	fn fetch_block<'a>(
+		&'a mut self,
+		header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlock> {
 		Box::pin(async move {
-			for (poller, error) in self.best_and_backup_block_sources() {
+			let network = self.network;
+			for (block_source, error) in self.best_and_backup_block_sources() {
+				let mut block_source = DynamicBlockSource(&mut **block_source);
+				let mut poller = ChainPoller::new(&mut block_source, network);
 				let result = poller.fetch_block(header).await;
 				match result {
 					Err(e) => *error = e,
@@ -184,7 +218,7 @@ mod tests {
 		let best_known_chain_tip = chain.tip();
 		chain.disconnect_tip();
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Transient),
 			Ok(_) => panic!("Expected error"),
@@ -196,7 +230,7 @@ mod tests {
 		let mut chain = Blockchain::default().with_height(1).without_headers();
 		let best_known_chain_tip = chain.at_height(0);
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
@@ -212,7 +246,7 @@ mod tests {
 		chain.blocks.last_mut().unwrap().header.bits =
 			BlockHeader::compact_target_from_u256(&Uint256::from_be_bytes([0; 32]));
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
@@ -224,7 +258,7 @@ mod tests {
 		let mut chain = Blockchain::default().with_height(1).malformed_headers();
 		let best_known_chain_tip = chain.at_height(0);
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
@@ -236,7 +270,7 @@ mod tests {
 		let mut chain = Blockchain::default().with_height(0);
 		let best_known_chain_tip = chain.tip();
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Common),
@@ -256,7 +290,7 @@ mod tests {
 		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
 		assert_eq!(best_known_chain_tip.chainwork, worse_chain_tip.chainwork);
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
@@ -273,7 +307,7 @@ mod tests {
 		let worse_chain_tip_hash = worse_chain_tip.header.block_hash();
 		let worse_chain_tip = worse_chain_tip.validate(worse_chain_tip_hash).unwrap();
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Worse(worse_chain_tip)),
@@ -289,7 +323,7 @@ mod tests {
 		let better_chain_tip_hash = better_chain_tip.header.block_hash();
 		let better_chain_tip = better_chain_tip.validate(better_chain_tip_hash).unwrap();
 
-		let mut poller = ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Bitcoin);
+		let mut poller = ChainPoller::new(&mut chain, Network::Bitcoin);
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(tip) => assert_eq!(tip, ChainTip::Better(better_chain_tip)),

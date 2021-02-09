@@ -402,7 +402,7 @@ pub async fn init_sync_listener<CL: ChainListener, B: BlockSource>(new_block: Bl
 	let old_header = block_source
 		.get_header(&old_block, None).await.unwrap()
 		.validate(old_block).unwrap();
-	let mut chain_poller = poller::ChainPoller::new(block_source as &mut dyn BlockSource, network);
+	let mut chain_poller = poller::ChainPoller::new(block_source, network);
 	let mut chain_notifier = ChainNotifier { header_cache: HeaderCache::new() };
 	chain_notifier.sync_listener(new_header, &old_header, &mut chain_poller, chain_listener).await.unwrap();
 }
@@ -505,7 +505,7 @@ mod spv_client_tests {
 		let mut chain = Blockchain::default().with_height(3).without_headers();
 		let best_tip = chain.at_height(1);
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(best_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => assert_eq!(e, BlockSourceError::Persistent),
@@ -519,7 +519,7 @@ mod spv_client_tests {
 		let mut chain = Blockchain::default().with_height(3);
 		let common_tip = chain.tip();
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(common_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -537,7 +537,7 @@ mod spv_client_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -555,7 +555,7 @@ mod spv_client_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -573,7 +573,7 @@ mod spv_client_tests {
 		let new_tip = chain.tip();
 		let old_tip = chain.at_height(1);
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(old_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -592,7 +592,7 @@ mod spv_client_tests {
 		chain.disconnect_tip();
 		let worse_tip = chain.tip();
 
-		let poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		let mut client = MicroSPVClient::new(best_tip, poller, NullChainListener {});
 		match client.poll_best_tip().await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -622,7 +622,7 @@ mod chain_notifier_tests {
 			.expect_block_connected(*chain.at_height(2))
 			.expect_block_connected(*new_tip);
 		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=1) };
-		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
@@ -638,7 +638,7 @@ mod chain_notifier_tests {
 		let old_tip = main_chain.tip();
 		let mut listener = MockChainListener::new();
 		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=1) };
-		let mut poller = poller::ChainPoller::new(&mut test_chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut test_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => assert_eq!(e, BlockSourceError::Persistent),
 			Ok(_) => panic!("Expected error"),
@@ -656,7 +656,7 @@ mod chain_notifier_tests {
 			.expect_block_disconnected(*old_tip)
 			.expect_block_connected(*new_tip);
 		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=2) };
-		let mut poller = poller::ChainPoller::new(&mut fork_chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
@@ -676,7 +676,7 @@ mod chain_notifier_tests {
 			.expect_block_disconnected(*main_chain.at_height(2))
 			.expect_block_connected(*new_tip);
 		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=3) };
-		let mut poller = poller::ChainPoller::new(&mut fork_chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
@@ -696,7 +696,7 @@ mod chain_notifier_tests {
 			.expect_block_connected(*fork_chain.at_height(2))
 			.expect_block_connected(*new_tip);
 		let mut notifier = ChainNotifier { header_cache: main_chain.header_cache(0..=2) };
-		let mut poller = poller::ChainPoller::new(&mut fork_chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut fork_chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
@@ -711,7 +711,7 @@ mod chain_notifier_tests {
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new();
 		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=1) };
-		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, None),
 			Ok(_) => panic!("Expected error"),
@@ -726,7 +726,7 @@ mod chain_notifier_tests {
 		let old_tip = chain.at_height(1);
 		let mut listener = MockChainListener::new();
 		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
-		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, Some(old_tip)),
 			Ok(_) => panic!("Expected error"),
@@ -742,7 +742,7 @@ mod chain_notifier_tests {
 		let mut listener = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(2));
 		let mut notifier = ChainNotifier { header_cache: chain.header_cache(0..=3) };
-		let mut poller = poller::ChainPoller::new(&mut chain as &mut dyn BlockSource, Network::Testnet);
+		let mut poller = poller::ChainPoller::new(&mut chain, Network::Testnet);
 		match notifier.sync_listener(new_tip, &old_tip, &mut poller, &mut listener).await {
 			Err((_, tip)) => assert_eq!(tip, Some(chain.at_height(2))),
 			Ok(_) => panic!("Expected error"),
