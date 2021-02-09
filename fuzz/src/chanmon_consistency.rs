@@ -30,9 +30,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
-use lightning::chain::Confirm;
-use lightning::chain::chainmonitor;
-use lightning::chain::channelmonitor;
+use lightning::chain::{chainmonitor, channelmonitor, Confirm, Watch};
 use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
@@ -48,7 +46,6 @@ use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider, MessageSendEventsProvider};
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use lightning::util::test_utils::OnlyReadsKeysInterface;
 use lightning::routing::router::{Route, RouteHop};
 
 
@@ -91,6 +88,7 @@ impl Writer for VecWriter {
 
 struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
+	pub keys: Arc<KeyProvider>,
 	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	pub update_ret: Mutex<Result<(), channelmonitor::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
@@ -102,10 +100,11 @@ struct TestChainMonitor {
 	pub should_update_manager: atomic::AtomicBool,
 }
 impl TestChainMonitor {
-	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>, persister: Arc<TestPersister>) -> Self {
+	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>, persister: Arc<TestPersister>, keys: Arc<KeyProvider>) -> Self {
 		Self {
 			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest, persister)),
 			logger,
+			keys,
 			update_ret: Mutex::new(Ok(())),
 			latest_monitors: Mutex::new(HashMap::new()),
 			should_update_manager: atomic::AtomicBool::new(false),
@@ -131,12 +130,13 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
 		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
-			read(&mut Cursor::new(&map_entry.get().1), &OnlyReadsKeysInterface {}).unwrap().1;
+			read(&mut Cursor::new(&map_entry.get().1), &*self.keys).unwrap().1;
 		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &&FuzzEstimator{}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
+		assert!(self.chain_monitor.update_channel(funding_txo, update).is_ok());
 		self.update_ret.lock().unwrap().clone()
 	}
 
@@ -334,9 +334,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! make_node {
 		($node_id: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{})));
-
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{}), Arc::clone(&keys_manager)));
+
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
@@ -354,7 +354,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr) => { {
 		    let keys_manager = Arc::clone(& $keys_manager);
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{})));
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{}), Arc::clone(& $keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
@@ -363,7 +363,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
-				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), &OnlyReadsKeysInterface {}).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), &*$keys_manager).expect("Failed to read monitor").1);
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
@@ -381,7 +381,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
+			let res = (<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor.clone());
+			for (funding_txo, mon) in monitors.drain() {
+				assert!(chain_monitor.chain_monitor.watch_channel(funding_txo, mon).is_ok());
+			}
+			res
 		} }
 	}
 
