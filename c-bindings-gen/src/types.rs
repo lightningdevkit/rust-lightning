@@ -300,28 +300,31 @@ pub enum DeclType<'a> {
 
 pub struct ImportResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	module_path: &'mod_lifetime str,
-	imports: HashMap<syn::Ident, String>,
+	imports: HashMap<syn::Ident, (String, syn::Path)>,
 	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
 }
 impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'crate_lft> {
-	fn process_use_intern(imports: &mut HashMap<syn::Ident, String>, u: &syn::UseTree, partial_path: &str) {
+	fn process_use_intern(imports: &mut HashMap<syn::Ident, (String, syn::Path)>, u: &syn::UseTree, partial_path: &str, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>) {
 		match u {
 			syn::UseTree::Path(p) => {
-				let new_path = format!("{}::{}", partial_path, p.ident);
-				Self::process_use_intern(imports, &p.tree, &new_path);
+				let new_path = format!("{}{}::", partial_path, p.ident);
+				path.push(syn::PathSegment { ident: p.ident.clone(), arguments: syn::PathArguments::None });
+				Self::process_use_intern(imports, &p.tree, &new_path, path);
 			},
 			syn::UseTree::Name(n) => {
-				let full_path = format!("{}::{}", partial_path, n.ident);
-				imports.insert(n.ident.clone(), full_path);
+				let full_path = format!("{}{}", partial_path, n.ident);
+				path.push(syn::PathSegment { ident: n.ident.clone(), arguments: syn::PathArguments::None });
+				imports.insert(n.ident.clone(), (full_path, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path }));
 			},
 			syn::UseTree::Group(g) => {
 				for i in g.items.iter() {
-					Self::process_use_intern(imports, i, partial_path);
+					Self::process_use_intern(imports, i, partial_path, path.clone());
 				}
 			},
 			syn::UseTree::Rename(r) => {
-				let full_path = format!("{}::{}", partial_path, r.ident);
-				imports.insert(r.rename.clone(), full_path);
+				let full_path = format!("{}{}", partial_path, r.ident);
+				path.push(syn::PathSegment { ident: r.ident.clone(), arguments: syn::PathArguments::None });
+				imports.insert(r.rename.clone(), (full_path, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path }));
 			},
 			syn::UseTree::Glob(_) => {
 				eprintln!("Ignoring * use for {} - this may result in resolution failures", partial_path);
@@ -329,43 +332,40 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 		}
 	}
 
-	pub fn process_use(imports: &mut HashMap<syn::Ident, String>, u: &syn::ItemUse) {
+	fn process_use(imports: &mut HashMap<syn::Ident, (String, syn::Path)>, u: &syn::ItemUse) {
 		if let syn::Visibility::Public(_) = u.vis {
 			// We actually only use these for #[cfg(fuzztarget)]
 			eprintln!("Ignoring pub(use) tree!");
 			return;
 		}
 		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
-		match &u.tree {
-			syn::UseTree::Path(p) => {
-				let new_path = format!("{}", p.ident);
-				Self::process_use_intern(imports, &p.tree, &new_path);
-			},
-			syn::UseTree::Name(n) => {
-				let full_path = format!("{}", n.ident);
-				imports.insert(n.ident.clone(), full_path);
-			},
-			_ => unimplemented!(),
-		}
+		Self::process_use_intern(imports, &u.tree, "", syn::punctuated::Punctuated::new());
+	}
+
+	fn insert_primitive(imports: &mut HashMap<syn::Ident, (String, syn::Path)>, id: &str) {
+		let ident = syn::Ident::new(id, Span::call_site());
+		let mut path = syn::punctuated::Punctuated::new();
+		path.push(syn::PathSegment { ident: ident.clone(), arguments: syn::PathArguments::None });
+		imports.insert(ident, (id.to_owned(), syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path }));
 	}
 
 	pub fn new(module_path: &'mod_lifetime str, contents: &'crate_lft [syn::Item]) -> Self {
 		let mut imports = HashMap::new();
 		// Add primitives to the "imports" list:
-		imports.insert(syn::Ident::new("bool", Span::call_site()), "bool".to_string());
-		imports.insert(syn::Ident::new("u64", Span::call_site()), "u64".to_string());
-		imports.insert(syn::Ident::new("u32", Span::call_site()), "u32".to_string());
-		imports.insert(syn::Ident::new("u16", Span::call_site()), "u16".to_string());
-		imports.insert(syn::Ident::new("u8", Span::call_site()), "u8".to_string());
-		imports.insert(syn::Ident::new("usize", Span::call_site()), "usize".to_string());
-		imports.insert(syn::Ident::new("str", Span::call_site()), "str".to_string());
-		imports.insert(syn::Ident::new("String", Span::call_site()), "String".to_string());
+		Self::insert_primitive(&mut imports, "bool");
+		Self::insert_primitive(&mut imports, "u64");
+		Self::insert_primitive(&mut imports, "u32");
+		Self::insert_primitive(&mut imports, "u16");
+		Self::insert_primitive(&mut imports, "u8");
+		Self::insert_primitive(&mut imports, "usize");
+		Self::insert_primitive(&mut imports, "str");
+		Self::insert_primitive(&mut imports, "String");
 
 		// These are here to allow us to print native Rust types in trait fn impls even if we don't
 		// have C mappings:
-		imports.insert(syn::Ident::new("Result", Span::call_site()), "Result".to_string());
-		imports.insert(syn::Ident::new("Vec", Span::call_site()), "Vec".to_string());
-		imports.insert(syn::Ident::new("Option", Span::call_site()), "Option".to_string());
+		Self::insert_primitive(&mut imports, "Result");
+		Self::insert_primitive(&mut imports, "Vec");
+		Self::insert_primitive(&mut imports, "Option");
 
 		let mut declared = HashMap::new();
 
@@ -411,7 +411,7 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 	}
 
 	pub fn maybe_resolve_ident(&self, id: &syn::Ident) -> Option<String> {
-		if let Some(imp) = self.imports.get(id) {
+		if let Some((imp, _)) = self.imports.get(id) {
 			Some(imp.clone())
 		} else if self.declared.get(id).is_some() {
 			Some(self.module_path.to_string() + "::" + &format!("{}", id))
@@ -419,7 +419,7 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 	}
 
 	pub fn maybe_resolve_non_ignored_ident(&self, id: &syn::Ident) -> Option<String> {
-		if let Some(imp) = self.imports.get(id) {
+		if let Some((imp, _)) = self.imports.get(id) {
 			Some(imp.clone())
 		} else if let Some(decl_type) = self.declared.get(id) {
 			match decl_type {
@@ -452,7 +452,7 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 			let remaining: String = seg_iter.map(|seg| {
 				format!("::{}", seg.ident)
 			}).collect();
-			if let Some(imp) = self.imports.get(&first_seg.ident) {
+			if let Some((imp, _)) = self.imports.get(&first_seg.ident) {
 				if remaining != "" {
 					Some(imp.clone() + &remaining)
 				} else {
@@ -460,6 +460,32 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 				}
 			} else { None }
 		}
+	}
+
+	/// Map all the Paths in a Type into absolute paths given a set of imports (generated via process_use_intern)
+	pub fn resolve_imported_refs(&self, mut ty: syn::Type) -> syn::Type {
+		match &mut ty {
+			syn::Type::Path(p) => {
+				if let Some(ident) = p.path.get_ident() {
+					if let Some((_, newpath)) = self.imports.get(ident) {
+						p.path = newpath.clone();
+					}
+				} else { unimplemented!(); }
+			},
+			syn::Type::Reference(r) => {
+				r.elem = Box::new(self.resolve_imported_refs((*r.elem).clone()));
+			},
+			syn::Type::Slice(s) => {
+				s.elem = Box::new(self.resolve_imported_refs((*s.elem).clone()));
+			},
+			syn::Type::Tuple(t) => {
+				for e in t.elems.iter_mut() {
+					*e = self.resolve_imported_refs(e.clone());
+				}
+			},
+			_ => unimplemented!(),
+		}
+		ty
 	}
 }
 

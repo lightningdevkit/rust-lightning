@@ -1306,64 +1306,15 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 	}
 }
 
-/// Insert ident -> absolute Path resolutions into imports from the given UseTree and path-prefix.
-fn process_use_intern<'a>(u: &'a syn::UseTree, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>, imports: &mut HashMap<&'a syn::Ident, syn::Path>) {
-	match u {
-		syn::UseTree::Path(p) => {
-			path.push(syn::PathSegment { ident: p.ident.clone(), arguments: syn::PathArguments::None });
-			process_use_intern(&p.tree, path, imports);
-		},
-		syn::UseTree::Name(n) => {
-			path.push(syn::PathSegment { ident: n.ident.clone(), arguments: syn::PathArguments::None });
-			imports.insert(&n.ident, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path });
-		},
-		syn::UseTree::Group(g) => {
-			for i in g.items.iter() {
-				process_use_intern(i, path.clone(), imports);
-			}
-		},
-		_ => {}
-	}
-}
-
-/// Map all the Paths in a Type into absolute paths given a set of imports (generated via process_use_intern)
-fn resolve_imported_refs(imports: &HashMap<&syn::Ident, syn::Path>, mut ty: syn::Type) -> syn::Type {
-	match &mut ty {
-		syn::Type::Path(p) => {
-			if let Some(ident) = p.path.get_ident() {
-				if let Some(newpath) = imports.get(ident) {
-					p.path = newpath.clone();
-				}
-			} else { unimplemented!(); }
-		},
-		syn::Type::Reference(r) => {
-			r.elem = Box::new(resolve_imported_refs(imports, (*r.elem).clone()));
-		},
-		syn::Type::Slice(s) => {
-			s.elem = Box::new(resolve_imported_refs(imports, (*s.elem).clone()));
-		},
-		syn::Type::Tuple(t) => {
-			for e in t.elems.iter_mut() {
-				*e = resolve_imported_refs(imports, e.clone());
-			}
-		},
-		_ => unimplemented!(),
-	}
-	ty
-}
-
 /// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
 fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
 	for (module, astmod) in ast_storage.modules.iter() {
 		let ASTModule { ref attrs, ref items, submods: _ } = astmod;
 		assert_eq!(export_status(&attrs), ExportStatus::Export);
-		let mut import_maps = HashMap::new();
+		let import_resolver = ImportResolver::new(module, items);
 
 		for item in items.iter() {
 			match item {
-				syn::Item::Use(u) => {
-					process_use_intern(&u.tree, syn::punctuated::Punctuated::new(), &mut import_maps);
-				},
 				syn::Item::Struct(s) => {
 					if let syn::Visibility::Public(_) = s.vis {
 						match export_status(&s.attrs) {
@@ -1409,7 +1360,7 @@ fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a
 									crate_types.opaques.insert(type_path, &t.ident);
 								},
 								_ => {
-									crate_types.type_aliases.insert(type_path, resolve_imported_refs(&import_maps, (*t.ty).clone()));
+									crate_types.type_aliases.insert(type_path, import_resolver.resolve_imported_refs((*t.ty).clone()));
 								}
 							}
 						}
@@ -1439,11 +1390,9 @@ fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a
 					if let &syn::Type::Path(ref p) = &*i.self_ty {
 						if let Some(trait_path) = i.trait_.as_ref() {
 							if path_matches_nongeneric(&trait_path.1, &["core", "clone", "Clone"]) {
-								// Note, we should probably have more full-featured type resolution here,
-								// but for now we don't have any cases where we impl X for A::B.
-								let ident = single_ident_generic_path_to_ident(&p.path).expect("impl X for A::B currently unsupported");
-								assert!(import_maps.get(&ident).is_none());
-								crate_types.clonable_types.insert(format!("crate::{}::{}", module, ident));
+								if let Some(full_path) = import_resolver.maybe_resolve_path(&p.path, None) {
+									crate_types.clonable_types.insert("crate::".to_owned() + &full_path);
+								}
 							}
 						}
 					}
