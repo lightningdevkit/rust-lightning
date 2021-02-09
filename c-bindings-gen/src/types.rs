@@ -110,6 +110,25 @@ pub fn assert_simple_bound(bound: &syn::TraitBound) {
 	if let syn::TraitBoundModifier::Maybe(_) = bound.modifier { unimplemented!(); }
 }
 
+/// Returns true if the enum will be mapped as an opaue (ie struct with a pointer to the underlying
+/// type), otherwise it is mapped into a transparent, C-compatible version of itself.
+pub fn is_enum_opaque(e: &syn::ItemEnum) -> bool {
+	for var in e.variants.iter() {
+		if let syn::Fields::Unit = var.fields {
+		} else if let syn::Fields::Named(fields) = &var.fields {
+			for field in fields.named.iter() {
+				match export_status(&field.attrs) {
+					ExportStatus::Export|ExportStatus::TestOnly => {},
+					ExportStatus::NoExport => return true,
+				}
+			}
+		} else {
+			return true;
+		}
+	}
+	false
+}
+
 /// A stack of sets of generic resolutions.
 ///
 /// This tracks the template parameters for a function, struct, or trait, allowing resolution into
@@ -285,7 +304,52 @@ pub struct ImportResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
 }
 impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'crate_lft> {
-	pub fn new(module_path: &'mod_lifetime str) -> Self {
+	fn process_use_intern(imports: &mut HashMap<syn::Ident, String>, u: &syn::UseTree, partial_path: &str) {
+		match u {
+			syn::UseTree::Path(p) => {
+				let new_path = format!("{}::{}", partial_path, p.ident);
+				Self::process_use_intern(imports, &p.tree, &new_path);
+			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}::{}", partial_path, n.ident);
+				imports.insert(n.ident.clone(), full_path);
+			},
+			syn::UseTree::Group(g) => {
+				for i in g.items.iter() {
+					Self::process_use_intern(imports, i, partial_path);
+				}
+			},
+			syn::UseTree::Rename(r) => {
+				let full_path = format!("{}::{}", partial_path, r.ident);
+				imports.insert(r.rename.clone(), full_path);
+			},
+			syn::UseTree::Glob(_) => {
+				eprintln!("Ignoring * use for {} - this may result in resolution failures", partial_path);
+			},
+		}
+	}
+
+	pub fn process_use(imports: &mut HashMap<syn::Ident, String>, u: &syn::ItemUse) {
+		if let syn::Visibility::Public(_) = u.vis {
+			// We actually only use these for #[cfg(fuzztarget)]
+			eprintln!("Ignoring pub(use) tree!");
+			return;
+		}
+		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
+		match &u.tree {
+			syn::UseTree::Path(p) => {
+				let new_path = format!("{}", p.ident);
+				Self::process_use_intern(imports, &p.tree, &new_path);
+			},
+			syn::UseTree::Name(n) => {
+				let full_path = format!("{}", n.ident);
+				imports.insert(n.ident.clone(), full_path);
+			},
+			_ => unimplemented!(),
+		}
+	}
+
+	pub fn new(module_path: &'mod_lifetime str, contents: &'crate_lft [syn::Item]) -> Self {
 		let mut imports = HashMap::new();
 		// Add primitives to the "imports" list:
 		imports.insert(syn::Ident::new("bool", Span::call_site()), "bool".to_string());
@@ -302,69 +366,42 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 		imports.insert(syn::Ident::new("Result", Span::call_site()), "Result".to_string());
 		imports.insert(syn::Ident::new("Vec", Span::call_site()), "Vec".to_string());
 		imports.insert(syn::Ident::new("Option", Span::call_site()), "Option".to_string());
-		Self { module_path, imports, declared: HashMap::new() }
+
+		let mut declared = HashMap::new();
+
+		for item in contents.iter() {
+			match item {
+				syn::Item::Use(u) => Self::process_use(&mut imports, &u),
+				syn::Item::Struct(s) => {
+					if let syn::Visibility::Public(_) = s.vis {
+						match export_status(&s.attrs) {
+							ExportStatus::Export => { declared.insert(s.ident.clone(), DeclType::StructImported); },
+							ExportStatus::NoExport => { declared.insert(s.ident.clone(), DeclType::StructIgnored); },
+							ExportStatus::TestOnly => continue,
+						}
+					}
+				},
+				syn::Item::Enum(e) => {
+					if let syn::Visibility::Public(_) = e.vis {
+						match export_status(&e.attrs) {
+							ExportStatus::Export if is_enum_opaque(e) => { declared.insert(e.ident.clone(), DeclType::EnumIgnored); },
+							ExportStatus::Export => { declared.insert(e.ident.clone(), DeclType::MirroredEnum); },
+							_ => continue,
+						}
+					}
+				},
+				syn::Item::Trait(t) if export_status(&t.attrs) == ExportStatus::Export => {
+					if let syn::Visibility::Public(_) = t.vis {
+						declared.insert(t.ident.clone(), DeclType::Trait(t));
+					}
+				},
+				_ => {},
+			}
+		}
+
+		Self { module_path, imports, declared }
 	}
 
-	fn process_use_intern(&mut self, u: &syn::UseTree, partial_path: &str) {
-		match u {
-			syn::UseTree::Path(p) => {
-				let new_path = format!("{}::{}", partial_path, p.ident);
-				self.process_use_intern(&p.tree, &new_path);
-			},
-			syn::UseTree::Name(n) => {
-				let full_path = format!("{}::{}", partial_path, n.ident);
-				self.imports.insert(n.ident.clone(), full_path);
-			},
-			syn::UseTree::Group(g) => {
-				for i in g.items.iter() {
-					self.process_use_intern(i, partial_path);
-				}
-			},
-			syn::UseTree::Rename(r) => {
-				let full_path = format!("{}::{}", partial_path, r.ident);
-				self.imports.insert(r.rename.clone(), full_path);
-			},
-			syn::UseTree::Glob(_) => {
-				eprintln!("Ignoring * use for {} - this may result in resolution failures", partial_path);
-			},
-		}
-	}
-
-	pub fn process_use(&mut self, u: &syn::ItemUse) {
-		if let syn::Visibility::Public(_) = u.vis {
-			// We actually only use these for #[cfg(fuzztarget)]
-			eprintln!("Ignoring pub(use) tree!");
-			return;
-		}
-		if u.leading_colon.is_some() { eprintln!("Ignoring leading-colon use!"); return; }
-		match &u.tree {
-			syn::UseTree::Path(p) => {
-				let new_path = format!("{}", p.ident);
-				self.process_use_intern(&p.tree, &new_path);
-			},
-			syn::UseTree::Name(n) => {
-				let full_path = format!("{}", n.ident);
-				self.imports.insert(n.ident.clone(), full_path);
-			},
-			_ => unimplemented!(),
-		}
-	}
-
-	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::MirroredEnum);
-	}
-	pub fn enum_ignored(&mut self, ident: &'crate_lft syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::EnumIgnored);
-	}
-	pub fn struct_imported(&mut self, ident: &'crate_lft syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::StructImported);
-	}
-	pub fn struct_ignored(&mut self, ident: &syn::Ident) {
-		self.declared.insert(ident.clone(), DeclType::StructIgnored);
-	}
-	pub fn trait_declared(&mut self, ident: &syn::Ident, t: &'crate_lft syn::ItemTrait) {
-		self.declared.insert(ident.clone(), DeclType::Trait(t));
-	}
 	pub fn get_declared_type(&self, ident: &syn::Ident) -> Option<&DeclType<'crate_lft>> {
 		self.declared.get(ident)
 	}
@@ -477,8 +514,8 @@ enum EmptyValExpectedTy {
 }
 
 impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
-	pub fn new(orig_crate: &'a str, module_path: &'a str, crate_types: &'a mut CrateTypes<'c>) -> Self {
-		Self { orig_crate, module_path, types: ImportResolver::new(module_path), crate_types }
+	pub fn new(orig_crate: &'a str, module_path: &'a str, types: ImportResolver<'a, 'c>, crate_types: &'a mut CrateTypes<'c>) -> Self {
+		Self { orig_crate, module_path, types, crate_types }
 	}
 
 	// *************************************************
@@ -985,25 +1022,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	// *** Type definition during main.rs processing ***
 	// *************************************************
 
-	pub fn process_use<W: std::io::Write>(&mut self, w: &mut W, u: &syn::ItemUse) {
-		self.types.process_use(u);
-	}
-
-	pub fn mirrored_enum_declared(&mut self, ident: &syn::Ident) {
-		self.types.mirrored_enum_declared(ident);
-	}
-	pub fn enum_ignored(&mut self, ident: &'c syn::Ident) {
-		self.types.enum_ignored(ident);
-	}
-	pub fn struct_imported(&mut self, ident: &'c syn::Ident) {
-		self.types.struct_imported(ident);
-	}
-	pub fn struct_ignored(&mut self, ident: &syn::Ident) {
-		self.types.struct_ignored(ident);
-	}
-	pub fn trait_declared(&mut self, ident: &syn::Ident, t: &'c syn::ItemTrait) {
-		self.types.trait_declared(ident, t);
-	}
 	pub fn get_declared_type(&'a self, ident: &syn::Ident) -> Option<&'a DeclType<'c>> {
 		self.types.get_declared_type(ident)
 	}
