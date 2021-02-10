@@ -88,10 +88,8 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 }
 
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
-/// generate no further read_event/write_buffer_space_avail calls for the descriptor, only
-/// triggering a single socket_disconnected call (unless it was provided in response to a
-/// new_*_connection event, in which case no such socket_disconnected() must be called and the
-/// socket silently disconencted).
+/// generate no further read_event/write_buffer_space_avail/socket_disconnected calls for the
+/// descriptor.
 pub struct PeerHandleError {
 	/// Used to indicate that we probably can't make any future connections to this peer, implying
 	/// we should go ahead and force-close any channels we have with it.
