@@ -529,6 +529,8 @@ pub struct CrateTypes<'a> {
 	pub traits: HashMap<String, &'a syn::ItemTrait>,
 	/// Aliases from paths to some other Type
 	pub type_aliases: HashMap<String, syn::Type>,
+	/// Value is an alias to Key (maybe with some generics)
+	pub reverse_alias_map: HashMap<String, Vec<(syn::Path, syn::PathArguments)>>,
 	/// Template continer types defined, map from mangled type name -> whether a destructor fn
 	/// exists.
 	///

@@ -10,7 +10,7 @@
 //! It also generates relevant memory-management functions and free-standing functions with
 //! parameters mapped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, hash_map, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -975,8 +975,62 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						}
 					}
 				}
+			} else if let Some(resolved_path) = types.maybe_resolve_ident(&ident) {
+				if let Some(aliases) = types.crate_types.reverse_alias_map.get(&resolved_path).cloned() {
+					'alias_impls: for (alias, arguments) in aliases {
+						let alias_resolved = types.resolve_path(&alias, None);
+						for (idx, gen) in i.generics.params.iter().enumerate() {
+							match gen {
+								syn::GenericParam::Type(type_param) => {
+									'bounds_check: for bound in type_param.bounds.iter() {
+										if let syn::TypeParamBound::Trait(trait_bound) = bound {
+											if let syn::PathArguments::AngleBracketed(ref t) = &arguments {
+												assert!(idx < t.args.len());
+												if let syn::GenericArgument::Type(syn::Type::Path(p)) = &t.args[idx] {
+													let generic_arg = types.resolve_path(&p.path, None);
+													let generic_bound = types.resolve_path(&trait_bound.path, None);
+													if let Some(traits_impld) = types.crate_types.trait_impls.get(&generic_arg) {
+														for trait_impld in traits_impld {
+															if *trait_impld == generic_bound { continue 'bounds_check; }
+														}
+														eprintln!("struct {}'s generic arg {} didn't match bound {}", alias_resolved, generic_arg, generic_bound);
+														continue 'alias_impls;
+													} else {
+														eprintln!("struct {}'s generic arg {} didn't match bound {}", alias_resolved, generic_arg, generic_bound);
+														continue 'alias_impls;
+													}
+												} else { unimplemented!(); }
+											} else { unimplemented!(); }
+										} else { unimplemented!(); }
+									}
+								},
+								syn::GenericParam::Lifetime(_) => {},
+								syn::GenericParam::Const(_) => unimplemented!(),
+							}
+						}
+						let aliased_impl = syn::ItemImpl {
+							attrs: i.attrs.clone(),
+							brace_token: syn::token::Brace(Span::call_site()),
+							defaultness: None,
+							generics: syn::Generics {
+								lt_token: None,
+								params: syn::punctuated::Punctuated::new(),
+								gt_token: None,
+								where_clause: None,
+							},
+							impl_token: syn::Token![impl](Span::call_site()),
+							items: i.items.clone(),
+							self_ty: Box::new(syn::Type::Path(syn::TypePath { qself: None, path: alias.clone() })),
+							trait_: i.trait_.clone(),
+							unsafety: None,
+						};
+						writeln_impl(w, &aliased_impl, types);
+					}
+				} else {
+					eprintln!("Not implementing anything for {} due to it being marked not exported", ident);
+				}
 			} else {
-				eprintln!("Not implementing anything for {} due to no-resolve (probably the type isn't pub or its marked not exported)", ident);
+				eprintln!("Not implementing anything for {} due to no-resolve (probably the type isn't pub)", ident);
 			}
 		}
 	}
@@ -1382,9 +1436,21 @@ fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a
 						}
 						if process_alias {
 							match &*t.ty {
-								syn::Type::Path(_) => {
+								syn::Type::Path(p) => {
 									// If its a path with no generics, assume we don't map the aliased type and map it opaque
-									crate_types.opaques.insert(type_path, &t.ident);
+									let mut segments = syn::punctuated::Punctuated::new();
+									segments.push(syn::PathSegment {
+										ident: t.ident.clone(),
+										arguments: syn::PathArguments::None,
+									});
+									let path_obj = syn::Path { leading_colon: None, segments };
+									let args_obj = p.path.segments.last().unwrap().arguments.clone();
+									match crate_types.reverse_alias_map.entry(import_resolver.maybe_resolve_path(&p.path, None).unwrap()) {
+										hash_map::Entry::Occupied(mut e) => { e.get_mut().push((path_obj, args_obj)); },
+										hash_map::Entry::Vacant(e) => { e.insert(vec![(path_obj, args_obj)]); },
+									}
+
+									crate_types.opaques.insert(type_path.clone(), &t.ident);
 								},
 								_ => {
 									crate_types.type_aliases.insert(type_path, import_resolver.resolve_imported_refs((*t.ty).clone()));
@@ -1477,7 +1543,8 @@ fn main() {
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates,
+		type_aliases: HashMap::new(), reverse_alias_map: HashMap::new(), templates_defined: HashMap::default(),
+		template_file: &mut derived_templates,
 		clonable_types: HashSet::new(), trait_impls: HashMap::new() };
 	walk_ast(&libast, &mut libtypes);
 
