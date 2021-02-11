@@ -383,6 +383,21 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 						}
 					}
 				},
+				syn::Item::Type(t) if export_status(&t.attrs) == ExportStatus::Export => {
+					if let syn::Visibility::Public(_) = t.vis {
+						let mut process_alias = true;
+						for tok in t.generics.params.iter() {
+							if let syn::GenericParam::Lifetime(_) = tok {}
+							else { process_alias = false; }
+						}
+						if process_alias {
+							match &*t.ty {
+								syn::Type::Path(_) => { declared.insert(t.ident.clone(), DeclType::StructImported); },
+								_ => {},
+							}
+						}
+					}
+				},
 				syn::Item::Enum(e) => {
 					if let syn::Visibility::Public(_) = e.vis {
 						match export_status(&e.attrs) {
