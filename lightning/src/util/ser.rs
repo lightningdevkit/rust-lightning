@@ -718,7 +718,7 @@ macro_rules! impl_consensus_ser {
 				match consensus::encode::Decodable::consensus_decode(r) {
 					Ok(t) => Ok(t),
 					Err(consensus::encode::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => Err(DecodeError::ShortRead),
-					Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e)),
+					Err(consensus::encode::Error::Io(e)) => Err(DecodeError::Io(e.kind())),
 					Err(_) => Err(DecodeError::InvalidValue),
 				}
 			}

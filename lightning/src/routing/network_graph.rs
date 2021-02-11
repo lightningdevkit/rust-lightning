@@ -329,7 +329,7 @@ where
 	}
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 /// Details about one direction of a channel. Received
 /// within a channel update.
 pub struct DirectionalChannelInfo {
@@ -441,7 +441,7 @@ impl Writeable for RoutingFees {
 	}
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 /// Information received in the latest node_announcement from this node.
 pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
@@ -507,7 +507,7 @@ impl Readable for NodeAnnouncementInfo {
 	}
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 /// Details about a node in the network, known from the network announcement.
 pub struct NodeInfo {
 	/// All valid channels a node has announced

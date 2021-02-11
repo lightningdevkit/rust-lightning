@@ -45,6 +45,7 @@ impl SecretKey {
 }
 
 #[repr(C)]
+#[derive(Clone)]
 pub struct Signature {
 	pub compact_form: [u8; 64],
 }
@@ -127,7 +128,7 @@ impl Transaction {
 impl Drop for Transaction {
 	fn drop(&mut self) {
 		if self.data_is_owned && self.datalen != 0 {
-			let _ = CVecTempl { data: self.data as *mut u8, datalen: self.datalen };
+			let _ = derived::CVec_u8Z { data: self.data as *mut u8, datalen: self.datalen };
 		}
 	}
 }
@@ -156,13 +157,15 @@ impl TxOut {
 	}
 	pub(crate) fn from_rust(txout: ::bitcoin::blockdata::transaction::TxOut) -> Self {
 		Self {
-			script_pubkey: CVecTempl::from(txout.script_pubkey.into_bytes()),
+			script_pubkey: derived::CVec_u8Z::from(txout.script_pubkey.into_bytes()),
 			value: txout.value
 		}
 	}
 }
 #[no_mangle]
 pub extern "C" fn TxOut_free(_res: TxOut) { }
+#[no_mangle]
+pub extern "C" fn TxOut_clone(orig: &TxOut) -> TxOut { orig.clone() }
 
 #[repr(C)]
 pub struct u8slice {
@@ -220,7 +223,7 @@ impl lightning::util::ser::Writer for VecWriter {
 pub(crate) fn serialize_obj<I: lightning::util::ser::Writeable>(i: &I) -> derived::CVec_u8Z {
 	let mut out = VecWriter(Vec::new());
 	i.write(&mut out).unwrap();
-	CVecTempl::from(out.0)
+	derived::CVec_u8Z::from(out.0)
 }
 pub(crate) fn deserialize_obj<I: lightning::util::ser::Readable>(s: u8slice) -> Result<I, lightning::ln::msgs::DecodeError> {
 	I::read(&mut s.to_slice())
@@ -256,14 +259,14 @@ impl Into<&'static str> for Str {
 // everywhere in the containers.
 
 #[repr(C)]
-pub union CResultPtr<O, E> {
-	pub result: *mut O,
-	pub err: *mut E,
+pub(crate) union CResultPtr<O, E> {
+	pub(crate) result: *mut O,
+	pub(crate) err: *mut E,
 }
 #[repr(C)]
-pub struct CResultTempl<O, E> {
-	pub contents: CResultPtr<O, E>,
-	pub result_ok: bool,
+pub(crate) struct CResultTempl<O, E> {
+	pub(crate) contents: CResultPtr<O, E>,
+	pub(crate) result_ok: bool,
 }
 impl<O, E> CResultTempl<O, E> {
 	pub(crate) extern "C" fn ok(o: O) -> Self {
@@ -283,7 +286,6 @@ impl<O, E> CResultTempl<O, E> {
 		}
 	}
 }
-pub extern "C" fn CResultTempl_free<O, E>(_res: CResultTempl<O, E>) { }
 impl<O, E> Drop for CResultTempl<O, E> {
 	fn drop(&mut self) {
 		if self.result_ok {
@@ -295,96 +297,6 @@ impl<O, E> Drop for CResultTempl<O, E> {
 		}
 	}
 }
-
-#[repr(C)]
-pub struct CVecTempl<T> {
-	pub data: *mut T,
-	pub datalen: usize
-}
-impl<T> CVecTempl<T> {
-	pub(crate) fn into_rust(&mut self) -> Vec<T> {
-		if self.datalen == 0 { return Vec::new(); }
-		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
-		self.data = std::ptr::null_mut();
-		self.datalen = 0;
-		ret
-	}
-	pub(crate) fn as_slice(&self) -> &[T] {
-		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
-	}
-}
-impl<T> From<Vec<T>> for CVecTempl<T> {
-	fn from(v: Vec<T>) -> Self {
-		let datalen = v.len();
-		let data = Box::into_raw(v.into_boxed_slice());
-		CVecTempl { datalen, data: unsafe { (*data).as_mut_ptr() } }
-	}
-}
-pub extern "C" fn CVecTempl_free<T>(_res: CVecTempl<T>) { }
-impl<T> Drop for CVecTempl<T> {
-	fn drop(&mut self) {
-		if self.datalen == 0 { return; }
-		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
-	}
-}
-impl<T: Clone> Clone for CVecTempl<T> {
-	fn clone(&self) -> Self {
-		let mut res = Vec::new();
-		if self.datalen == 0 { return Self::from(res); }
-		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
-		Self::from(res)
-	}
-}
-
-#[repr(C)]
-pub struct C2TupleTempl<A, B> {
-	pub a: A,
-	pub b: B,
-}
-impl<A, B> From<(A, B)> for C2TupleTempl<A, B> {
-	fn from(tup: (A, B)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-		}
-	}
-}
-impl<A, B> C2TupleTempl<A, B> {
-	pub(crate) fn to_rust(mut self) -> (A, B) {
-		(self.a, self.b)
-	}
-}
-pub extern "C" fn C2TupleTempl_free<A, B>(_res: C2TupleTempl<A, B>) { }
-impl <A: Clone, B: Clone> Clone for C2TupleTempl<A, B> {
-	fn clone(&self) -> Self {
-		Self {
-			a: self.a.clone(),
-			b: self.b.clone()
-		}
-	}
-}
-
-#[repr(C)]
-pub struct C3TupleTempl<A, B, C> {
-	pub a: A,
-	pub b: B,
-	pub c: C,
-}
-impl<A, B, C> From<(A, B, C)> for C3TupleTempl<A, B, C> {
-	fn from(tup: (A, B, C)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-			c: tup.2,
-		}
-	}
-}
-impl<A, B, C> C3TupleTempl<A, B, C> {
-	pub(crate) fn to_rust(mut self) -> (A, B, C) {
-		(self.a, self.b, self.c)
-	}
-}
-pub extern "C" fn C3TupleTempl_free<A, B, C>(_res: C3TupleTempl<A, B, C>) { }
 
 /// Utility to make it easy to set a pointer to null and get its original value in line.
 pub(crate) trait TakePointer<T> {

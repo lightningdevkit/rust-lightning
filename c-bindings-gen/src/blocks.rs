@@ -32,6 +32,261 @@ pub fn write_cpp_wrapper(cpp_header_file: &mut File, ty: &str, has_destructor: b
 	writeln!(cpp_header_file, "}};").unwrap();
 }
 
+/// Writes out a C-callable concrete Result<A, B> struct and utility methods
+pub fn write_result_block<W: std::io::Write>(w: &mut W, mangled_container: &str, ok_type: &str, err_type: &str, clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub union {}Ptr {{", mangled_container).unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\tpub result: *mut {},", ok_type).unwrap();
+	} else {
+		writeln!(w, "\t/// Note that this value is always NULL, as there are no contents in the OK variant").unwrap();
+		writeln!(w, "\tpub result: *mut std::ffi::c_void,").unwrap();
+	}
+	if err_type != "()" {
+		writeln!(w, "\tpub err: *mut {},", err_type).unwrap();
+	} else {
+		writeln!(w, "\t/// Note that this value is always NULL, as there are no contents in the Err variant").unwrap();
+		writeln!(w, "\tpub err: *mut std::ffi::c_void,").unwrap();
+	}
+	writeln!(w, "}}").unwrap();
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	writeln!(w, "\tpub contents: {}Ptr,", mangled_container).unwrap();
+	writeln!(w, "\tpub result_ok: bool,").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "pub extern \"C\" fn {}_ok(o: {}) -> {} {{", mangled_container, ok_type, mangled_container).unwrap();
+	} else {
+		writeln!(w, "pub extern \"C\" fn {}_ok() -> {} {{", mangled_container, mangled_container).unwrap();
+	}
+	writeln!(w, "\t{} {{", mangled_container).unwrap();
+	writeln!(w, "\t\tcontents: {}Ptr {{", mangled_container).unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tresult: Box::into_raw(Box::new(o)),").unwrap();
+	} else {
+		writeln!(w, "\t\t\tresult: std::ptr::null_mut(),").unwrap();
+	}
+	writeln!(w, "\t\t}},").unwrap();
+	writeln!(w, "\t\tresult_ok: true,").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	if err_type != "()" {
+		writeln!(w, "pub extern \"C\" fn {}_err(e: {}) -> {} {{", mangled_container, err_type, mangled_container).unwrap();
+	} else {
+		writeln!(w, "pub extern \"C\" fn {}_err() -> {} {{", mangled_container, mangled_container).unwrap();
+	}
+	writeln!(w, "\t{} {{", mangled_container).unwrap();
+	writeln!(w, "\t\tcontents: {}Ptr {{", mangled_container).unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\terr: Box::into_raw(Box::new(e)),").unwrap();
+	} else {
+		writeln!(w, "\t\t\terr: std::ptr::null_mut(),").unwrap();
+	}
+	writeln!(w, "\t\t}},").unwrap();
+	writeln!(w, "\t\tresult_ok: false,").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+	writeln!(w, "impl Drop for {} {{", mangled_container).unwrap();
+	writeln!(w, "\tfn drop(&mut self) {{").unwrap();
+	writeln!(w, "\t\tif self.result_ok {{").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tif unsafe {{ !(self.contents.result as *mut ()).is_null() }} {{").unwrap();
+		writeln!(w, "\t\t\t\tlet _ = unsafe {{ Box::from_raw(self.contents.result) }};").unwrap();
+		writeln!(w, "\t\t\t}}").unwrap();
+	}
+	writeln!(w, "\t\t}} else {{").unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\tif unsafe {{ !(self.contents.err as *mut ()).is_null() }} {{").unwrap();
+		writeln!(w, "\t\t\t\tlet _ = unsafe {{ Box::from_raw(self.contents.err) }};").unwrap();
+		writeln!(w, "\t\t\t}}").unwrap();
+	}
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	// TODO: Templates should use () now that they can, too
+	let templ_ok_type = if ok_type != "()" { ok_type } else { "u8" };
+	let templ_err_type = if err_type != "()" { err_type } else { "u8" };
+
+	writeln!(w, "impl From<crate::c_types::CResultTempl<{}, {}>> for {} {{", templ_ok_type, templ_err_type, mangled_container).unwrap();
+	writeln!(w, "\tfn from(mut o: crate::c_types::CResultTempl<{}, {}>) -> Self {{", templ_ok_type, templ_err_type).unwrap();
+	writeln!(w, "\t\tlet contents = if o.result_ok {{").unwrap();
+	if ok_type != "()" {
+		writeln!(w, "\t\t\tlet result = unsafe {{ o.contents.result }};").unwrap();
+		writeln!(w, "\t\t\tunsafe {{ o.contents.result = std::ptr::null_mut() }};").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ result }}", mangled_container).unwrap();
+	} else {
+		writeln!(w, "\t\t\tlet _ = unsafe {{ Box::from_raw(o.contents.result) }};").unwrap();
+		writeln!(w, "\t\t\to.contents.result = std::ptr::null_mut();").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ result: std::ptr::null_mut() }}", mangled_container).unwrap();
+	}
+	writeln!(w, "\t\t}} else {{").unwrap();
+	if err_type != "()" {
+		writeln!(w, "\t\t\tlet err = unsafe {{ o.contents.err }};").unwrap();
+		writeln!(w, "\t\t\tunsafe {{ o.contents.err = std::ptr::null_mut(); }}").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ err }}", mangled_container).unwrap();
+	} else {
+		writeln!(w, "\t\t\tlet _ = unsafe {{ Box::from_raw(o.contents.err) }};").unwrap();
+		writeln!(w, "\t\t\to.contents.err = std::ptr::null_mut();").unwrap();
+		writeln!(w, "\t\t\t{}Ptr {{ err: std::ptr::null_mut() }}", mangled_container).unwrap();
+	}
+	writeln!(w, "\t\t}};").unwrap();
+	writeln!(w, "\t\tSelf {{").unwrap();
+	writeln!(w, "\t\t\tcontents,").unwrap();
+	writeln!(w, "\t\t\tresult_ok: o.result_ok,").unwrap();
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tif self.result_ok {{").unwrap();
+		writeln!(w, "\t\t\tSelf {{ result_ok: true, contents: {}Ptr {{", mangled_container).unwrap();
+		if ok_type != "()" {
+			writeln!(w, "\t\t\t\tresult: Box::into_raw(Box::new(<{}>::clone(unsafe {{ &*self.contents.result }})))", ok_type).unwrap();
+		} else {
+			writeln!(w, "\t\t\t\tresult: std::ptr::null_mut()").unwrap();
+		}
+		writeln!(w, "\t\t\t}} }}").unwrap();
+		writeln!(w, "\t\t}} else {{").unwrap();
+		writeln!(w, "\t\t\tSelf {{ result_ok: false, contents: {}Ptr {{", mangled_container).unwrap();
+		if err_type != "()" {
+			writeln!(w, "\t\t\t\terr: Box::into_raw(Box::new(<{}>::clone(unsafe {{ &*self.contents.err }})))", err_type).unwrap();
+		} else {
+			writeln!(w, "\t\t\t\terr: std::ptr::null_mut()").unwrap();
+		}
+		writeln!(w, "\t\t\t}} }}").unwrap();
+		writeln!(w, "\t\t}}").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+		writeln!(w, "#[no_mangle]").unwrap();
+		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{ orig.clone() }}", mangled_container, mangled_container, mangled_container).unwrap();
+	}
+}
+
+/// Writes out a C-callable concrete Vec<A> struct and utility methods
+pub fn write_vec_block<W: std::io::Write>(w: &mut W, mangled_container: &str, inner_type: &str, clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	writeln!(w, "\tpub data: *mut {},", inner_type).unwrap();
+	writeln!(w, "\tpub datalen: usize").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "impl {} {{", mangled_container).unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<{}> {{", inner_type).unwrap();
+	writeln!(w, "\t\tif self.datalen == 0 {{ return Vec::new(); }}").unwrap();
+	writeln!(w, "\t\tlet ret = unsafe {{ Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }}.into();").unwrap();
+	writeln!(w, "\t\tself.data = std::ptr::null_mut();").unwrap();
+	writeln!(w, "\t\tself.datalen = 0;").unwrap();
+	writeln!(w, "\t\tret").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn as_slice(&self) -> &[{}] {{", inner_type).unwrap();
+	writeln!(w, "\t\tunsafe {{ std::slice::from_raw_parts_mut(self.data, self.datalen) }}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "impl From<Vec<{}>> for {} {{", inner_type, mangled_container).unwrap();
+	writeln!(w, "\tfn from(v: Vec<{}>) -> Self {{", inner_type).unwrap();
+	writeln!(w, "\t\tlet datalen = v.len();").unwrap();
+	writeln!(w, "\t\tlet data = Box::into_raw(v.into_boxed_slice());").unwrap();
+	writeln!(w, "\t\tSelf {{ datalen, data: unsafe {{ (*data).as_mut_ptr() }} }}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+	writeln!(w, "impl Drop for {} {{", mangled_container).unwrap();
+	writeln!(w, "\tfn drop(&mut self) {{").unwrap();
+	writeln!(w, "\t\tif self.datalen == 0 {{ return; }}").unwrap();
+	writeln!(w, "\t\tunsafe {{ Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }};").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tlet mut res = Vec::new();").unwrap();
+		writeln!(w, "\t\tif self.datalen == 0 {{ return Self::from(res); }}").unwrap();
+		writeln!(w, "\t\tres.extend_from_slice(unsafe {{ std::slice::from_raw_parts_mut(self.data, self.datalen) }});").unwrap();
+		writeln!(w, "\t\tSelf::from(res)").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+	}
+}
+
+/// Writes out a C-callable concrete (A, B, ...) struct and utility methods
+pub fn write_tuple_block<W: std::io::Write>(w: &mut W, mangled_container: &str, types: &[String], clonable: bool) {
+	writeln!(w, "#[repr(C)]").unwrap();
+	writeln!(w, "pub struct {} {{", mangled_container).unwrap();
+	for (idx, ty) in types.iter().enumerate() {
+		writeln!(w, "\tpub {}: {},", ('a' as u8 + idx as u8) as char, ty).unwrap();
+	}
+	writeln!(w, "}}").unwrap();
+
+	let mut tuple_str = "(".to_owned();
+	for (idx, ty) in types.iter().enumerate() {
+		if idx != 0 { tuple_str += ", "; }
+		tuple_str += ty;
+	}
+	tuple_str += ")";
+
+	writeln!(w, "impl From<{}> for {} {{", tuple_str, mangled_container).unwrap();
+	writeln!(w, "\tfn from (tup: {}) -> Self {{", tuple_str).unwrap();
+	writeln!(w, "\t\tSelf {{").unwrap();
+	for idx in 0..types.len() {
+		writeln!(w, "\t\t\t{}: tup.{},", ('a' as u8 + idx as u8) as char, idx).unwrap();
+	}
+	writeln!(w, "\t\t}}").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+	writeln!(w, "impl {} {{", mangled_container).unwrap();
+	writeln!(w, "\t#[allow(unused)] pub(crate) fn to_rust(mut self) -> {} {{", tuple_str).unwrap();
+	write!(w, "\t\t(").unwrap();
+	for idx in 0..types.len() {
+		write!(w, "{}self.{}", if idx != 0 {", "} else {""}, ('a' as u8 + idx as u8) as char).unwrap();
+	}
+	writeln!(w, ")").unwrap();
+	writeln!(w, "\t}}").unwrap();
+	writeln!(w, "}}").unwrap();
+
+	if clonable {
+		writeln!(w, "impl Clone for {} {{", mangled_container).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tSelf {{").unwrap();
+		for idx in 0..types.len() {
+			writeln!(w, "\t\t\t{}: self.{}.clone(),", ('a' as u8 + idx as u8) as char, ('a' as u8 + idx as u8) as char).unwrap();
+		}
+		writeln!(w, "\t\t}}").unwrap();
+		writeln!(w, "\t}}").unwrap();
+		writeln!(w, "}}").unwrap();
+		writeln!(w, "#[no_mangle]").unwrap();
+		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{ orig.clone() }}", mangled_container, mangled_container, mangled_container).unwrap();
+	}
+
+	write!(w, "#[no_mangle]\npub extern \"C\" fn {}_new(", mangled_container).unwrap();
+	for (idx, gen) in types.iter().enumerate() {
+		write!(w, "{}{}: ", if idx != 0 { ", " } else { "" }, ('a' as u8 + idx as u8) as char).unwrap();
+		//if !self.write_c_type_intern(&mut created_container, gen, generics, false, false, false) { return false; }
+		write!(w, "{}", gen).unwrap();
+	}
+	writeln!(w, ") -> {} {{", mangled_container).unwrap();
+	write!(w, "\t{} {{ ", mangled_container).unwrap();
+	for idx in 0..types.len() {
+		write!(w, "{}, ", ('a' as u8 + idx as u8) as char).unwrap();
+	}
+	writeln!(w, "}}\n}}\n").unwrap();
+
+	writeln!(w, "#[no_mangle]").unwrap();
+	writeln!(w, "pub extern \"C\" fn {}_free(_res: {}) {{ }}", mangled_container, mangled_container).unwrap();
+}
+
 /// Prints the docs from a given attribute list unless its tagged no export
 pub fn writeln_docs<W: std::io::Write>(w: &mut W, attrs: &[syn::Attribute], prefix: &str) {
 	for attr in attrs.iter() {

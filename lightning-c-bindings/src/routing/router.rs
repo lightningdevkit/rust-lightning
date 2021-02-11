@@ -48,7 +48,8 @@ impl RouteHop {
 impl Clone for RouteHop {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -60,7 +61,7 @@ pub(crate) extern "C" fn RouteHop_clone_void(this_ptr: *const c_void) -> *mut c_
 }
 #[no_mangle]
 pub extern "C" fn RouteHop_clone(orig: &RouteHop) -> RouteHop {
-	RouteHop { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The node_id of the node at this hop.
 #[no_mangle]
@@ -188,7 +189,8 @@ impl Route {
 impl Clone for Route {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -200,7 +202,7 @@ pub(crate) extern "C" fn Route_clone_void(this_ptr: *const c_void) -> *mut c_voi
 }
 #[no_mangle]
 pub extern "C" fn Route_clone(orig: &Route) -> Route {
-	Route { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
 /// last RouteHop in each path must be the same.
@@ -232,7 +234,7 @@ pub(crate) extern "C" fn Route_write_void(obj: *const c_void) -> crate::c_types:
 #[no_mangle]
 pub extern "C" fn Route_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_RouteDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 
@@ -276,7 +278,8 @@ impl RouteHint {
 impl Clone for RouteHint {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -288,7 +291,7 @@ pub(crate) extern "C" fn RouteHint_clone_void(this_ptr: *const c_void) -> *mut c
 }
 #[no_mangle]
 pub extern "C" fn RouteHint_clone(orig: &RouteHint) -> RouteHint {
-	RouteHint { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The node_id of the non-target end of the route
 #[no_mangle]
@@ -377,7 +380,7 @@ pub extern "C" fn get_route(mut our_node_id: crate::c_types::PublicKey, network:
 	let mut local_first_hops_base = if first_hops == std::ptr::null_mut() { None } else { Some( { let mut local_first_hops_0 = Vec::new(); for mut item in unsafe { &mut *first_hops }.as_slice().iter() { local_first_hops_0.push( { unsafe { &*item.inner } }); }; local_first_hops_0 }) }; let mut local_first_hops = local_first_hops_base.as_ref().map(|a| &a[..]);
 	let mut local_last_hops = Vec::new(); for mut item in last_hops.as_slice().iter() { local_last_hops.push( { unsafe { &*item.inner } }); };
 	let mut ret = lightning::routing::router::get_route(&our_node_id.into_rust(), unsafe { &*network.inner }, &target.into_rust(), local_first_hops, &local_last_hops[..], final_value_msat, final_cltv, logger);
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 

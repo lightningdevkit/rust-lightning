@@ -449,19 +449,19 @@ int main() {
 			std::this_thread::yield();
 		}
 
-		LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		LDKCVec_C2Tuple_usizeTransactionZZ txdata { .data = (LDKC2Tuple_usizeTransactionZ*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
 		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 		ChannelManager_block_connected(&cm1, &channel_open_header, txdata, 1);
 
-		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2Tuple_usizeTransactionZ*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
 		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 		ChannelManager_block_connected(&cm2, &channel_open_header, txdata, 1);
 
-		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2Tuple_usizeTransactionZ*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
 		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 		mons1.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 
-		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2TupleTempl_usize__Transaction*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
+		txdata = LDKCVec_C2Tuple_usizeTransactionZZ { .data = (LDKC2Tuple_usizeTransactionZ*)malloc(sizeof(LDKC2Tuple_usizeTransactionZ)), .datalen = 1 };
 		*txdata.data = C2Tuple_usizeTransactionZ_new(0, LDKTransaction { .data = (uint8_t*)channel_open_tx, .datalen = sizeof(channel_open_tx), .data_is_owned = false });
 		mons2.ConnectBlock(&channel_open_header, 1, txdata, broadcast, fee_est);
 

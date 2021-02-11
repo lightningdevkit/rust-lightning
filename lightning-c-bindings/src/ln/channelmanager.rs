@@ -127,7 +127,8 @@ impl ChannelDetails {
 impl Clone for ChannelDetails {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -139,7 +140,7 @@ pub(crate) extern "C" fn ChannelDetails_clone_void(this_ptr: *const c_void) -> *
 }
 #[no_mangle]
 pub extern "C" fn ChannelDetails_clone(orig: &ChannelDetails) -> ChannelDetails {
-	ChannelDetails { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 /// thereafter this is the txid of the funding transaction xor the funding transaction output).
@@ -295,6 +296,24 @@ impl PaymentSendFailure {
 		ret
 	}
 }
+impl Clone for PaymentSendFailure {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn PaymentSendFailure_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePaymentSendFailure)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn PaymentSendFailure_clone(orig: &PaymentSendFailure) -> PaymentSendFailure {
+	orig.clone()
+}
 /// Constructs a new ChannelManager to hold several channels and route between them.
 ///
 /// This is the main \"logic hub\" for all channel-related actions, and implements
@@ -333,7 +352,7 @@ pub extern "C" fn ChannelManager_new(mut network: crate::bitcoin::network::Netwo
 pub extern "C" fn ChannelManager_create_channel(this_arg: &ChannelManager, mut their_network_key: crate::c_types::PublicKey, mut channel_value_satoshis: u64, mut push_msat: u64, mut user_id: u64, mut override_config: crate::util::config::UserConfig) -> crate::c_types::derived::CResult_NoneAPIErrorZ {
 	let mut local_override_config = if override_config.inner.is_null() { None } else { Some( { *unsafe { Box::from_raw(override_config.take_inner()) } }) };
 	let mut ret = unsafe { &*this_arg.inner }.create_channel(their_network_key.into_rust(), channel_value_satoshis, push_msat, user_id, local_override_config);
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }) };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() };
 	local_ret
 }
 
@@ -369,7 +388,7 @@ pub extern "C" fn ChannelManager_list_usable_channels(this_arg: &ChannelManager)
 #[no_mangle]
 pub extern "C" fn ChannelManager_close_channel(this_arg: &ChannelManager, channel_id: *const [u8; 32]) -> crate::c_types::derived::CResult_NoneAPIErrorZ {
 	let mut ret = unsafe { &*this_arg.inner }.close_channel(unsafe { &*channel_id});
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }) };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() };
 	local_ret
 }
 
@@ -379,7 +398,7 @@ pub extern "C" fn ChannelManager_close_channel(this_arg: &ChannelManager, channe
 #[no_mangle]
 pub extern "C" fn ChannelManager_force_close_channel(this_arg: &ChannelManager, channel_id: *const [u8; 32]) -> crate::c_types::derived::CResult_NoneAPIErrorZ {
 	let mut ret = unsafe { &*this_arg.inner }.force_close_channel(unsafe { &*channel_id});
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }) };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() };
 	local_ret
 }
 
@@ -434,7 +453,7 @@ pub extern "C" fn ChannelManager_force_close_all_channels(this_arg: &ChannelMana
 pub extern "C" fn ChannelManager_send_payment(this_arg: &ChannelManager, route: &crate::routing::router::Route, mut payment_hash: crate::c_types::ThirtyTwoBytes, mut payment_secret: crate::c_types::ThirtyTwoBytes) -> crate::c_types::derived::CResult_NonePaymentSendFailureZ {
 	let mut local_payment_secret = if payment_secret.data == [0; 32] { None } else { Some( { ::lightning::ln::channelmanager::PaymentSecret(payment_secret.data) }) };
 	let mut ret = unsafe { &*this_arg.inner }.send_payment(unsafe { &*route.inner }, ::lightning::ln::channelmanager::PaymentHash(payment_hash.data), &local_payment_secret);
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::channelmanager::PaymentSendFailure { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::channelmanager::PaymentSendFailure { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 
@@ -898,6 +917,6 @@ pub extern "C" fn ChannelManagerReadArgs_new(mut keys_manager: crate::chain::key
 pub extern "C" fn C2Tuple_BlockHashChannelManagerZ_read(ser: crate::c_types::u8slice, arg: crate::ln::channelmanager::ChannelManagerReadArgs) -> crate::c_types::derived::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ {
 	let arg_conv = *unsafe { Box::from_raw(arg.take_inner()) };
 	let res: Result<(bitcoin::hash_types::BlockHash, lightning::ln::channelmanager::ChannelManager<crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>), lightning::ln::msgs::DecodeError> = crate::c_types::deserialize_obj_arg(ser, arg_conv);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_res_0_0, mut orig_res_0_1) = o; let mut local_res_0 = (crate::c_types::ThirtyTwoBytes { data: orig_res_0_0.into_inner() }, crate::ln::channelmanager::ChannelManager { inner: Box::into_raw(Box::new(orig_res_0_1)), is_owned: true }).into(); local_res_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_res_0_0, mut orig_res_0_1) = o; let mut local_res_0 = (crate::c_types::ThirtyTwoBytes { data: orig_res_0_0.into_inner() }, crate::ln::channelmanager::ChannelManager { inner: Box::into_raw(Box::new(orig_res_0_1)), is_owned: true }).into(); local_res_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }

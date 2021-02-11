@@ -33,6 +33,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
 use std::{cmp, fmt};
+use std::fmt::Debug;
 use std::io::Read;
 
 use util::events::MessageSendEventsProvider;
@@ -44,7 +45,7 @@ use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
 /// An error in decoding a message or struct.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DecodeError {
 	/// A version byte specified something we don't know how to handle.
 	/// Includes unknown realm byte in an OnionHopData packet
@@ -60,7 +61,7 @@ pub enum DecodeError {
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
-	Io(::std::io::Error),
+	Io(::std::io::ErrorKind),
 }
 
 /// An init message to be sent or received from a peer
@@ -674,6 +675,7 @@ pub enum ErrorAction {
 }
 
 /// An Err type for failure to process messages.
+#[derive(Clone)]
 pub struct LightningError {
 	/// A human-readable message describing the error
 	pub err: String,
@@ -949,7 +951,7 @@ impl From<::std::io::Error> for DecodeError {
 		if e.kind() == ::std::io::ErrorKind::UnexpectedEof {
 			DecodeError::ShortRead
 		} else {
-			DecodeError::Io(e)
+			DecodeError::Io(e.kind())
 		}
 	}
 }

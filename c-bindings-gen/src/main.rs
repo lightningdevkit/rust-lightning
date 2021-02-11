@@ -10,7 +10,7 @@
 //! It also generates relevant memory-management functions and free-standing functions with
 //! parameters mapped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -233,15 +233,20 @@ macro_rules! walk_supertraits { ($t: expr, $types: expr, ($( $pat: pat => $e: ex
 					}
 					// First try to resolve path to find in-crate traits, but if that doesn't work
 					// assume its a prelude trait (eg Clone, etc) and just use the single ident.
-					if let Some(path) = $types.maybe_resolve_path(&supertrait.path, None) {
-						match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
-							$( $pat => $e, )*
+					let types_opt: Option<&TypeResolver> = $types;
+					if let Some(types) = types_opt {
+						if let Some(path) = types.maybe_resolve_path(&supertrait.path, None) {
+							match (&path as &str, &supertrait.path.segments.iter().last().unwrap().ident) {
+								$( $pat => $e, )*
+							}
+							continue;
 						}
-					} else if let Some(ident) = supertrait.path.get_ident() {
+					}
+					if let Some(ident) = supertrait.path.get_ident() {
 						match (&format!("{}", ident) as &str, &ident) {
 							$( $pat => $e, )*
 						}
-					} else {
+					} else if types_opt.is_some() {
 						panic!("Supertrait unresolvable and not single-ident");
 					}
 				},
@@ -337,7 +342,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 		}
 	}
 	// Add functions which may be required for supertrait implementations.
-	walk_supertraits!(t, types, (
+	walk_supertraits!(t, Some(&types), (
 		("Clone", _) => {
 			writeln!(w, "\tpub clone: Option<extern \"C\" fn (this_arg: *const c_void) -> *mut c_void>,").unwrap();
 			generated_fields.push("clone".to_owned());
@@ -368,7 +373,7 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 	generated_fields.push("free".to_owned());
 	writeln!(w, "}}").unwrap();
 	// Implement supertraits for the C-mapped struct.
-	walk_supertraits!(t, types, (
+	walk_supertraits!(t, Some(&types), (
 		("Send", _) => writeln!(w, "unsafe impl Send for {} {{}}", trait_name).unwrap(),
 		("Sync", _) => writeln!(w, "unsafe impl Sync for {} {{}}", trait_name).unwrap(),
 		("std::cmp::Eq", _) => {
@@ -550,40 +555,23 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, "\t\tret").unwrap();
 	writeln!(w, "\t}}\n}}").unwrap();
 
-	'attr_loop: for attr in attrs.iter() {
-		let tokens_clone = attr.tokens.clone();
-		let mut token_iter = tokens_clone.into_iter();
-		if let Some(token) = token_iter.next() {
-			match token {
-				TokenTree::Group(g) => {
-					if format!("{}", single_ident_generic_path_to_ident(&attr.path).unwrap()) == "derive" {
-						for id in g.stream().into_iter() {
-							if let TokenTree::Ident(i) = id {
-								if i == "Clone" {
-									writeln!(w, "impl Clone for {} {{", struct_name).unwrap();
-									writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
-									writeln!(w, "\t\tSelf {{").unwrap();
-									writeln!(w, "\t\t\tinner: Box::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())),").unwrap();
-									writeln!(w, "\t\t\tis_owned: true,").unwrap();
-									writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
-									writeln!(w, "#[allow(unused)]").unwrap();
-									writeln!(w, "/// Used only if an object of this type is returned as a trait impl by a method").unwrap();
-									writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", struct_name).unwrap();
-									writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", struct_name).unwrap();
-									writeln!(w, "}}").unwrap();
-									writeln!(w, "#[no_mangle]").unwrap();
-									writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
-									writeln!(w, "\t{} {{ inner: Box::into_raw(Box::new(unsafe {{ &*orig.inner }}.clone())), is_owned: true }}", struct_name).unwrap();
-									writeln!(w, "}}").unwrap();
-									break 'attr_loop;
-								}
-							}
-						}
-					}
-				},
-				_ => {},
-			}
-		}
+	if attrs_derives_clone(attrs) {
+		writeln!(w, "impl Clone for {} {{", struct_name).unwrap();
+		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+		writeln!(w, "\t\tSelf {{").unwrap();
+		writeln!(w, "\t\t\tinner: if self.inner.is_null() {{ std::ptr::null_mut() }} else {{").unwrap();
+		writeln!(w, "\t\t\t\tBox::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())) }},").unwrap();
+		writeln!(w, "\t\t\tis_owned: true,").unwrap();
+		writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
+		writeln!(w, "#[allow(unused)]").unwrap();
+		writeln!(w, "/// Used only if an object of this type is returned as a trait impl by a method").unwrap();
+		writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", struct_name).unwrap();
+		writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", struct_name).unwrap();
+		writeln!(w, "}}").unwrap();
+		writeln!(w, "#[no_mangle]").unwrap();
+		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
+		writeln!(w, "\torig.clone()").unwrap();
+		writeln!(w, "}}").unwrap();
 	}
 
 	write_cpp_wrapper(cpp_headers, &format!("{}", ident), true);
@@ -832,7 +820,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								_ => {},
 							}
 						}
-						walk_supertraits!(trait_obj, types, (
+						walk_supertraits!(trait_obj, Some(&types), (
 							("Clone", _) => {
 								writeln!(w, "\t\tclone: Some({}_clone_void),", ident).unwrap();
 							},
@@ -930,7 +918,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								_ => unimplemented!(),
 							}
 						}
-						walk_supertraits!(trait_obj, types, (
+						walk_supertraits!(trait_obj, Some(&types), (
 							(s, t) => {
 								if let Some(supertrait_obj) = types.crate_types.traits.get(s).cloned() {
 									writeln!(w, "use {}::{} as native{}Trait;", types.orig_crate, s, t).unwrap();
@@ -1479,6 +1467,10 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
 					let struct_path = format!("{}::{}", module, s.ident);
+					if attrs_derives_clone(&s.attrs) {
+						crate_types.clonable_types.insert("crate::".to_owned() + &struct_path);
+					}
+
 					crate_types.opaques.insert(struct_path, &s.ident);
 				}
 			},
@@ -1489,6 +1481,12 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
 					let trait_path = format!("{}::{}", module, t.ident);
+					walk_supertraits!(t, None, (
+						("Clone", _) => {
+							crate_types.clonable_types.insert("crate::".to_owned() + &trait_path);
+						},
+						(_, _) => {}
+					) );
 					crate_types.traits.insert(trait_path, &t);
 				}
 			},
@@ -1524,6 +1522,9 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
 					let enum_path = format!("{}::{}", module, e.ident);
+					if attrs_derives_clone(&e.attrs) {
+						crate_types.clonable_types.insert("crate::".to_owned() + &enum_path);
+					}
 					crate_types.opaques.insert(enum_path, &e.ident);
 				}
 			},
@@ -1534,6 +1535,9 @@ fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullL
 						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
 					}
 					let enum_path = format!("{}::{}", module, e.ident);
+					if attrs_derives_clone(&e.attrs) {
+						crate_types.clonable_types.insert("crate::".to_owned() + &enum_path);
+					}
 					crate_types.mirrored_enums.insert(enum_path, &e);
 				}
 			},
@@ -1578,7 +1582,8 @@ fn main() {
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates };
+		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates,
+		clonable_types: HashSet::new() };
 	walk_ast(&args[1], "/lib.rs", "".to_string(), &libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.
