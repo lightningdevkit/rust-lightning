@@ -26,7 +26,6 @@
 //! [`Context`]: sealed/trait.Context.html
 
 use std::{cmp, fmt};
-use std::result::Result;
 use std::marker::PhantomData;
 
 use ln::msgs::DecodeError;
@@ -352,7 +351,7 @@ impl InitFeatures {
 
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
-	pub fn empty() -> Features<T> {
+	pub fn empty() -> Self {
 		Features {
 			flags: Vec::new(),
 			mark: PhantomData,
@@ -362,7 +361,7 @@ impl<T: sealed::Context> Features<T> {
 	/// Creates features known by the implementation as defined by [`T::KNOWN_FEATURE_FLAGS`].
 	///
 	/// [`T::KNOWN_FEATURE_FLAGS`]: sealed/trait.Context.html#associatedconstant.KNOWN_FEATURE_FLAGS
-	pub fn known() -> Features<T> {
+	pub fn known() -> Self {
 		Self {
 			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),
 			mark: PhantomData,
