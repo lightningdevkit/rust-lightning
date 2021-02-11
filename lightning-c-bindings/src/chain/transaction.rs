@@ -48,7 +48,8 @@ impl OutPoint {
 impl Clone for OutPoint {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -60,7 +61,7 @@ pub(crate) extern "C" fn OutPoint_clone_void(this_ptr: *const c_void) -> *mut c_
 }
 #[no_mangle]
 pub extern "C" fn OutPoint_clone(orig: &OutPoint) -> OutPoint {
-	OutPoint { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The referenced transaction's txid.
 #[no_mangle]

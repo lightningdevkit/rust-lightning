@@ -48,7 +48,8 @@ impl ChannelHandshakeConfig {
 impl Clone for ChannelHandshakeConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -60,7 +61,7 @@ pub(crate) extern "C" fn ChannelHandshakeConfig_clone_void(this_ptr: *const c_vo
 }
 #[no_mangle]
 pub extern "C" fn ChannelHandshakeConfig_clone(orig: &ChannelHandshakeConfig) -> ChannelHandshakeConfig {
-	ChannelHandshakeConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Confirmations we will wait for before considering the channel locked in.
 /// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
@@ -202,7 +203,8 @@ impl ChannelHandshakeLimits {
 impl Clone for ChannelHandshakeLimits {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -214,7 +216,7 @@ pub(crate) extern "C" fn ChannelHandshakeLimits_clone_void(this_ptr: *const c_vo
 }
 #[no_mangle]
 pub extern "C" fn ChannelHandshakeLimits_clone(orig: &ChannelHandshakeLimits) -> ChannelHandshakeLimits {
-	ChannelHandshakeLimits { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
 /// only applies to inbound channels.
@@ -475,7 +477,8 @@ impl ChannelConfig {
 impl Clone for ChannelConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -487,7 +490,7 @@ pub(crate) extern "C" fn ChannelConfig_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn ChannelConfig_clone(orig: &ChannelConfig) -> ChannelConfig {
-	ChannelConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
 /// This may be allowed to change at runtime in a later update, however doing so must result in
@@ -644,7 +647,8 @@ impl UserConfig {
 impl Clone for UserConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -656,7 +660,7 @@ pub(crate) extern "C" fn UserConfig_clone_void(this_ptr: *const c_void) -> *mut 
 }
 #[no_mangle]
 pub extern "C" fn UserConfig_clone(orig: &UserConfig) -> UserConfig {
-	UserConfig { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Channel config that we propose to our counterparty.
 #[no_mangle]

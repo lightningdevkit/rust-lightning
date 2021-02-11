@@ -57,6 +57,24 @@ impl DecodeError {
 		ret
 	}
 }
+impl Clone for DecodeError {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn DecodeError_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDecodeError)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn DecodeError_clone(orig: &DecodeError) -> DecodeError {
+	orig.clone()
+}
 
 use lightning::ln::msgs::Init as nativeInitImport;
 type nativeInit = nativeInitImport;
@@ -98,7 +116,8 @@ impl Init {
 impl Clone for Init {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -110,7 +129,7 @@ pub(crate) extern "C" fn Init_clone_void(this_ptr: *const c_void) -> *mut c_void
 }
 #[no_mangle]
 pub extern "C" fn Init_clone(orig: &Init) -> Init {
-	Init { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 
 use lightning::ln::msgs::ErrorMessage as nativeErrorMessageImport;
@@ -153,7 +172,8 @@ impl ErrorMessage {
 impl Clone for ErrorMessage {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -165,7 +185,7 @@ pub(crate) extern "C" fn ErrorMessage_clone_void(this_ptr: *const c_void) -> *mu
 }
 #[no_mangle]
 pub extern "C" fn ErrorMessage_clone(orig: &ErrorMessage) -> ErrorMessage {
-	ErrorMessage { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID involved in the error
 #[no_mangle]
@@ -244,7 +264,8 @@ impl Ping {
 impl Clone for Ping {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -256,7 +277,7 @@ pub(crate) extern "C" fn Ping_clone_void(this_ptr: *const c_void) -> *mut c_void
 }
 #[no_mangle]
 pub extern "C" fn Ping_clone(orig: &Ping) -> Ping {
-	Ping { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The desired response length
 #[no_mangle]
@@ -331,7 +352,8 @@ impl Pong {
 impl Clone for Pong {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -343,7 +365,7 @@ pub(crate) extern "C" fn Pong_clone_void(this_ptr: *const c_void) -> *mut c_void
 }
 #[no_mangle]
 pub extern "C" fn Pong_clone(orig: &Pong) -> Pong {
-	Pong { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The pong packet size.
 /// This field is not sent on the wire. byteslen zeros are sent.
@@ -406,7 +428,8 @@ impl OpenChannel {
 impl Clone for OpenChannel {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -418,7 +441,7 @@ pub(crate) extern "C" fn OpenChannel_clone_void(this_ptr: *const c_void) -> *mut
 }
 #[no_mangle]
 pub extern "C" fn OpenChannel_clone(orig: &OpenChannel) -> OpenChannel {
-	OpenChannel { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -659,7 +682,8 @@ impl AcceptChannel {
 impl Clone for AcceptChannel {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -671,7 +695,7 @@ pub(crate) extern "C" fn AcceptChannel_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn AcceptChannel_clone(orig: &AcceptChannel) -> AcceptChannel {
-	AcceptChannel { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// A temporary channel ID, until the funding outpoint is announced
 #[no_mangle]
@@ -868,7 +892,8 @@ impl FundingCreated {
 impl Clone for FundingCreated {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -880,7 +905,7 @@ pub(crate) extern "C" fn FundingCreated_clone_void(this_ptr: *const c_void) -> *
 }
 #[no_mangle]
 pub extern "C" fn FundingCreated_clone(orig: &FundingCreated) -> FundingCreated {
-	FundingCreated { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// A temporary channel ID, until the funding is established
 #[no_mangle]
@@ -977,7 +1002,8 @@ impl FundingSigned {
 impl Clone for FundingSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -989,7 +1015,7 @@ pub(crate) extern "C" fn FundingSigned_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn FundingSigned_clone(orig: &FundingSigned) -> FundingSigned {
-	FundingSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1062,7 +1088,8 @@ impl FundingLocked {
 impl Clone for FundingLocked {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1074,7 +1101,7 @@ pub(crate) extern "C" fn FundingLocked_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn FundingLocked_clone(orig: &FundingLocked) -> FundingLocked {
-	FundingLocked { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1147,7 +1174,8 @@ impl Shutdown {
 impl Clone for Shutdown {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1159,7 +1187,7 @@ pub(crate) extern "C" fn Shutdown_clone_void(this_ptr: *const c_void) -> *mut c_
 }
 #[no_mangle]
 pub extern "C" fn Shutdown_clone(orig: &Shutdown) -> Shutdown {
-	Shutdown { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1234,7 +1262,8 @@ impl ClosingSigned {
 impl Clone for ClosingSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1246,7 +1275,7 @@ pub(crate) extern "C" fn ClosingSigned_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn ClosingSigned_clone(orig: &ClosingSigned) -> ClosingSigned {
-	ClosingSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1331,7 +1360,8 @@ impl UpdateAddHTLC {
 impl Clone for UpdateAddHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1343,7 +1373,7 @@ pub(crate) extern "C" fn UpdateAddHTLC_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn UpdateAddHTLC_clone(orig: &UpdateAddHTLC) -> UpdateAddHTLC {
-	UpdateAddHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1441,7 +1471,8 @@ impl UpdateFulfillHTLC {
 impl Clone for UpdateFulfillHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1453,7 +1484,7 @@ pub(crate) extern "C" fn UpdateFulfillHTLC_clone_void(this_ptr: *const c_void) -
 }
 #[no_mangle]
 pub extern "C" fn UpdateFulfillHTLC_clone(orig: &UpdateFulfillHTLC) -> UpdateFulfillHTLC {
-	UpdateFulfillHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1538,7 +1569,8 @@ impl UpdateFailHTLC {
 impl Clone for UpdateFailHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1550,7 +1582,7 @@ pub(crate) extern "C" fn UpdateFailHTLC_clone_void(this_ptr: *const c_void) -> *
 }
 #[no_mangle]
 pub extern "C" fn UpdateFailHTLC_clone(orig: &UpdateFailHTLC) -> UpdateFailHTLC {
-	UpdateFailHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1615,7 +1647,8 @@ impl UpdateFailMalformedHTLC {
 impl Clone for UpdateFailMalformedHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1627,7 +1660,7 @@ pub(crate) extern "C" fn UpdateFailMalformedHTLC_clone_void(this_ptr: *const c_v
 }
 #[no_mangle]
 pub extern "C" fn UpdateFailMalformedHTLC_clone(orig: &UpdateFailMalformedHTLC) -> UpdateFailMalformedHTLC {
-	UpdateFailMalformedHTLC { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1703,7 +1736,8 @@ impl CommitmentSigned {
 impl Clone for CommitmentSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1715,7 +1749,7 @@ pub(crate) extern "C" fn CommitmentSigned_clone_void(this_ptr: *const c_void) ->
 }
 #[no_mangle]
 pub extern "C" fn CommitmentSigned_clone(orig: &CommitmentSigned) -> CommitmentSigned {
-	CommitmentSigned { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1796,7 +1830,8 @@ impl RevokeAndACK {
 impl Clone for RevokeAndACK {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1808,7 +1843,7 @@ pub(crate) extern "C" fn RevokeAndACK_clone_void(this_ptr: *const c_void) -> *mu
 }
 #[no_mangle]
 pub extern "C" fn RevokeAndACK_clone(orig: &RevokeAndACK) -> RevokeAndACK {
-	RevokeAndACK { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1893,7 +1928,8 @@ impl UpdateFee {
 impl Clone for UpdateFee {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1905,7 +1941,7 @@ pub(crate) extern "C" fn UpdateFee_clone_void(this_ptr: *const c_void) -> *mut c
 }
 #[no_mangle]
 pub extern "C" fn UpdateFee_clone(orig: &UpdateFee) -> UpdateFee {
-	UpdateFee { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1981,7 +2017,8 @@ impl DataLossProtect {
 impl Clone for DataLossProtect {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -1993,7 +2030,7 @@ pub(crate) extern "C" fn DataLossProtect_clone_void(this_ptr: *const c_void) -> 
 }
 #[no_mangle]
 pub extern "C" fn DataLossProtect_clone(orig: &DataLossProtect) -> DataLossProtect {
-	DataLossProtect { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Proof that the sender knows the per-commitment secret of a specific commitment transaction
 /// belonging to the recipient
@@ -2068,7 +2105,8 @@ impl ChannelReestablish {
 impl Clone for ChannelReestablish {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2080,7 +2118,7 @@ pub(crate) extern "C" fn ChannelReestablish_clone_void(this_ptr: *const c_void) 
 }
 #[no_mangle]
 pub extern "C" fn ChannelReestablish_clone(orig: &ChannelReestablish) -> ChannelReestablish {
-	ChannelReestablish { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -2156,7 +2194,8 @@ impl AnnouncementSignatures {
 impl Clone for AnnouncementSignatures {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2168,7 +2207,7 @@ pub(crate) extern "C" fn AnnouncementSignatures_clone_void(this_ptr: *const c_vo
 }
 #[no_mangle]
 pub extern "C" fn AnnouncementSignatures_clone(orig: &AnnouncementSignatures) -> AnnouncementSignatures {
-	AnnouncementSignatures { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -2414,7 +2453,7 @@ pub extern "C" fn NetAddress_write(obj: &NetAddress) -> crate::c_types::derived:
 #[no_mangle]
 pub extern "C" fn Result_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_CResult_NetAddressu8ZDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_res_0 = match o { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::NetAddress::native_into(o) }), Err(mut e) => crate::c_types::CResultTempl::err( { e }) }; local_res_0 }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_res_0 = match o { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::NetAddress::native_into(o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { e }).into() }; local_res_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 
@@ -2458,7 +2497,8 @@ impl UnsignedNodeAnnouncement {
 impl Clone for UnsignedNodeAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2470,7 +2510,7 @@ pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_
 }
 #[no_mangle]
 pub extern "C" fn UnsignedNodeAnnouncement_clone(orig: &UnsignedNodeAnnouncement) -> UnsignedNodeAnnouncement {
-	UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The advertised features
 #[no_mangle]
@@ -2578,7 +2618,8 @@ impl NodeAnnouncement {
 impl Clone for NodeAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2590,7 +2631,7 @@ pub(crate) extern "C" fn NodeAnnouncement_clone_void(this_ptr: *const c_void) ->
 }
 #[no_mangle]
 pub extern "C" fn NodeAnnouncement_clone(orig: &NodeAnnouncement) -> NodeAnnouncement {
-	NodeAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The signature by the node key
 #[no_mangle]
@@ -2663,7 +2704,8 @@ impl UnsignedChannelAnnouncement {
 impl Clone for UnsignedChannelAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2675,7 +2717,7 @@ pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const
 }
 #[no_mangle]
 pub extern "C" fn UnsignedChannelAnnouncement_clone(orig: &UnsignedChannelAnnouncement) -> UnsignedChannelAnnouncement {
-	UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The advertised channel features
 #[no_mangle]
@@ -2795,7 +2837,8 @@ impl ChannelAnnouncement {
 impl Clone for ChannelAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2807,7 +2850,7 @@ pub(crate) extern "C" fn ChannelAnnouncement_clone_void(this_ptr: *const c_void)
 }
 #[no_mangle]
 pub extern "C" fn ChannelAnnouncement_clone(orig: &ChannelAnnouncement) -> ChannelAnnouncement {
-	ChannelAnnouncement { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// Authentication of the announcement by the first public node
 #[no_mangle]
@@ -2916,7 +2959,8 @@ impl UnsignedChannelUpdate {
 impl Clone for UnsignedChannelUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -2928,7 +2972,7 @@ pub(crate) extern "C" fn UnsignedChannelUpdate_clone_void(this_ptr: *const c_voi
 }
 #[no_mangle]
 pub extern "C" fn UnsignedChannelUpdate_clone(orig: &UnsignedChannelUpdate) -> UnsignedChannelUpdate {
-	UnsignedChannelUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -3059,7 +3103,8 @@ impl ChannelUpdate {
 impl Clone for ChannelUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3071,7 +3116,7 @@ pub(crate) extern "C" fn ChannelUpdate_clone_void(this_ptr: *const c_void) -> *m
 }
 #[no_mangle]
 pub extern "C" fn ChannelUpdate_clone(orig: &ChannelUpdate) -> ChannelUpdate {
-	ChannelUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// A signature of the channel update
 #[no_mangle]
@@ -3147,7 +3192,8 @@ impl QueryChannelRange {
 impl Clone for QueryChannelRange {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3159,7 +3205,7 @@ pub(crate) extern "C" fn QueryChannelRange_clone_void(this_ptr: *const c_void) -
 }
 #[no_mangle]
 pub extern "C" fn QueryChannelRange_clone(orig: &QueryChannelRange) -> QueryChannelRange {
-	QueryChannelRange { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3250,7 +3296,8 @@ impl ReplyChannelRange {
 impl Clone for ReplyChannelRange {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3262,7 +3309,7 @@ pub(crate) extern "C" fn ReplyChannelRange_clone_void(this_ptr: *const c_void) -
 }
 #[no_mangle]
 pub extern "C" fn ReplyChannelRange_clone(orig: &ReplyChannelRange) -> ReplyChannelRange {
-	ReplyChannelRange { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3297,18 +3344,16 @@ pub extern "C" fn ReplyChannelRange_get_number_of_blocks(this_ptr: &ReplyChannel
 pub extern "C" fn ReplyChannelRange_set_number_of_blocks(this_ptr: &mut ReplyChannelRange, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.number_of_blocks = val;
 }
-/// Indicates if the query recipient maintains up-to-date channel
-/// information for the chain_hash
+/// True when this is the final reply for a query
 #[no_mangle]
-pub extern "C" fn ReplyChannelRange_get_full_information(this_ptr: &ReplyChannelRange) -> bool {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.full_information;
+pub extern "C" fn ReplyChannelRange_get_sync_complete(this_ptr: &ReplyChannelRange) -> bool {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.sync_complete;
 	(*inner_val)
 }
-/// Indicates if the query recipient maintains up-to-date channel
-/// information for the chain_hash
+/// True when this is the final reply for a query
 #[no_mangle]
-pub extern "C" fn ReplyChannelRange_set_full_information(this_ptr: &mut ReplyChannelRange, mut val: bool) {
-	unsafe { &mut *this_ptr.inner }.full_information = val;
+pub extern "C" fn ReplyChannelRange_set_sync_complete(this_ptr: &mut ReplyChannelRange, mut val: bool) {
+	unsafe { &mut *this_ptr.inner }.sync_complete = val;
 }
 /// The short_channel_ids in the channel range
 #[no_mangle]
@@ -3318,13 +3363,13 @@ pub extern "C" fn ReplyChannelRange_set_short_channel_ids(this_ptr: &mut ReplyCh
 }
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ReplyChannelRange_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut first_blocknum_arg: u32, mut number_of_blocks_arg: u32, mut full_information_arg: bool, mut short_channel_ids_arg: crate::c_types::derived::CVec_u64Z) -> ReplyChannelRange {
+pub extern "C" fn ReplyChannelRange_new(mut chain_hash_arg: crate::c_types::ThirtyTwoBytes, mut first_blocknum_arg: u32, mut number_of_blocks_arg: u32, mut sync_complete_arg: bool, mut short_channel_ids_arg: crate::c_types::derived::CVec_u64Z) -> ReplyChannelRange {
 	let mut local_short_channel_ids_arg = Vec::new(); for mut item in short_channel_ids_arg.into_rust().drain(..) { local_short_channel_ids_arg.push( { item }); };
 	ReplyChannelRange { inner: Box::into_raw(Box::new(nativeReplyChannelRange {
 		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
 		first_blocknum: first_blocknum_arg,
 		number_of_blocks: number_of_blocks_arg,
-		full_information: full_information_arg,
+		sync_complete: sync_complete_arg,
 		short_channel_ids: local_short_channel_ids_arg,
 	})), is_owned: true }
 }
@@ -3376,7 +3421,8 @@ impl QueryShortChannelIds {
 impl Clone for QueryShortChannelIds {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3388,7 +3434,7 @@ pub(crate) extern "C" fn QueryShortChannelIds_clone_void(this_ptr: *const c_void
 }
 #[no_mangle]
 pub extern "C" fn QueryShortChannelIds_clone(orig: &QueryShortChannelIds) -> QueryShortChannelIds {
-	QueryShortChannelIds { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3460,7 +3506,8 @@ impl ReplyShortChannelIdsEnd {
 impl Clone for ReplyShortChannelIdsEnd {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3472,7 +3519,7 @@ pub(crate) extern "C" fn ReplyShortChannelIdsEnd_clone_void(this_ptr: *const c_v
 }
 #[no_mangle]
 pub extern "C" fn ReplyShortChannelIdsEnd_clone(orig: &ReplyShortChannelIdsEnd) -> ReplyShortChannelIdsEnd {
-	ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain that was queried
 #[no_mangle]
@@ -3549,7 +3596,8 @@ impl GossipTimestampFilter {
 impl Clone for GossipTimestampFilter {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3561,7 +3609,7 @@ pub(crate) extern "C" fn GossipTimestampFilter_clone_void(this_ptr: *const c_voi
 }
 #[no_mangle]
 pub extern "C" fn GossipTimestampFilter_clone(orig: &GossipTimestampFilter) -> GossipTimestampFilter {
-	GossipTimestampFilter { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// The genesis hash of the blockchain for channel and node information
 #[no_mangle]
@@ -3740,6 +3788,24 @@ impl LightningError {
 		ret
 	}
 }
+impl Clone for LightningError {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn LightningError_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeLightningError)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn LightningError_clone(orig: &LightningError) -> LightningError {
+	orig.clone()
+}
 /// A human-readable message describing the error
 #[no_mangle]
 pub extern "C" fn LightningError_get_err(this_ptr: &LightningError) -> crate::c_types::Str {
@@ -3812,7 +3878,8 @@ impl CommitmentUpdate {
 impl Clone for CommitmentUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: Box::into_raw(Box::new(unsafe { &*self.inner }.clone())),
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
 	}
@@ -3824,7 +3891,7 @@ pub(crate) extern "C" fn CommitmentUpdate_clone_void(this_ptr: *const c_void) ->
 }
 #[no_mangle]
 pub extern "C" fn CommitmentUpdate_clone(orig: &CommitmentUpdate) -> CommitmentUpdate {
-	CommitmentUpdate { inner: Box::into_raw(Box::new(unsafe { &*orig.inner }.clone())), is_owned: true }
+	orig.clone()
 }
 /// update_add_htlc messages which should be sent
 #[no_mangle]
@@ -4344,7 +4411,7 @@ pub(crate) extern "C" fn ChannelReestablish_write_void(obj: *const c_void) -> cr
 #[no_mangle]
 pub extern "C" fn ChannelReestablish_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelReestablishDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ChannelReestablish { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ChannelReestablish { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4438,7 +4505,7 @@ pub(crate) extern "C" fn Init_write_void(obj: *const c_void) -> crate::c_types::
 #[no_mangle]
 pub extern "C" fn Init_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_InitDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Init { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Init { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4580,7 +4647,7 @@ pub(crate) extern "C" fn Ping_write_void(obj: *const c_void) -> crate::c_types::
 #[no_mangle]
 pub extern "C" fn Ping_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_PingDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Ping { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Ping { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4594,7 +4661,7 @@ pub(crate) extern "C" fn Pong_write_void(obj: *const c_void) -> crate::c_types::
 #[no_mangle]
 pub extern "C" fn Pong_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_PongDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Pong { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Pong { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4608,7 +4675,7 @@ pub(crate) extern "C" fn UnsignedChannelAnnouncement_write_void(obj: *const c_vo
 #[no_mangle]
 pub extern "C" fn UnsignedChannelAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedChannelAnnouncementDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4638,7 +4705,7 @@ pub(crate) extern "C" fn UnsignedChannelUpdate_write_void(obj: *const c_void) ->
 #[no_mangle]
 pub extern "C" fn UnsignedChannelUpdate_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedChannelUpdateDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedChannelUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4668,7 +4735,7 @@ pub(crate) extern "C" fn ErrorMessage_write_void(obj: *const c_void) -> crate::c
 #[no_mangle]
 pub extern "C" fn ErrorMessage_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ErrorMessageDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ErrorMessage { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ErrorMessage { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4682,7 +4749,7 @@ pub(crate) extern "C" fn UnsignedNodeAnnouncement_write_void(obj: *const c_void)
 #[no_mangle]
 pub extern "C" fn UnsignedNodeAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UnsignedNodeAnnouncementDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UnsignedNodeAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4704,7 +4771,7 @@ pub extern "C" fn NodeAnnouncement_read(ser: crate::c_types::u8slice) -> NodeAnn
 #[no_mangle]
 pub extern "C" fn QueryShortChannelIds_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_QueryShortChannelIdsDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryShortChannelIds { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryShortChannelIds { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4718,7 +4785,7 @@ pub(crate) extern "C" fn QueryShortChannelIds_write_void(obj: *const c_void) -> 
 #[no_mangle]
 pub extern "C" fn ReplyShortChannelIdsEnd_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ReplyShortChannelIdsEndDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyShortChannelIdsEnd { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4732,7 +4799,7 @@ pub(crate) extern "C" fn ReplyShortChannelIdsEnd_write_void(obj: *const c_void) 
 #[no_mangle]
 pub extern "C" fn QueryChannelRange_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_QueryChannelRangeDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::QueryChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4746,7 +4813,7 @@ pub(crate) extern "C" fn QueryChannelRange_write_void(obj: *const c_void) -> cra
 #[no_mangle]
 pub extern "C" fn ReplyChannelRange_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ReplyChannelRangeDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ReplyChannelRange { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
@@ -4760,7 +4827,7 @@ pub(crate) extern "C" fn ReplyChannelRange_write_void(obj: *const c_void) -> cra
 #[no_mangle]
 pub extern "C" fn GossipTimestampFilter_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_GossipTimestampFilterDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::GossipTimestampFilter { inner: Box::into_raw(Box::new(o)), is_owned: true } }), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }) };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::GossipTimestampFilter { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 #[no_mangle]
