@@ -903,7 +903,8 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						write!(w, "\t{} {{ inner: Box::into_raw(Box::new(Default::default())), is_owned: true }}\n", ident).unwrap();
 						write!(w, "}}\n").unwrap();
 					} else if path_matches_nongeneric(&trait_path.1, &["core", "cmp", "PartialEq"]) {
-					} else if path_matches_nongeneric(&trait_path.1, &["core", "clone", "Clone"]) && types.c_type_has_inner_from_path(&resolved_path) {
+					} else if (path_matches_nongeneric(&trait_path.1, &["core", "clone", "Clone"]) || path_matches_nongeneric(&trait_path.1, &["Clone"])) &&
+							types.c_type_has_inner_from_path(&resolved_path) {
 						writeln!(w, "impl Clone for {} {{", ident).unwrap();
 						writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
 						writeln!(w, "\t\tSelf {{").unwrap();
