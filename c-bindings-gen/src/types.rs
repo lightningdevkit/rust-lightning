@@ -666,10 +666,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			// Override the default since Records contain an fmt with a lifetime:
 			"util::logger::Record" => Some("*const std::os::raw::c_char"),
 
-			// List of structs we map that aren't detected:
-			"ln::features::InitFeatures" if is_ref && ptr_for_ref => Some("crate::ln::features::InitFeatures"),
-			"ln::features::InitFeatures" if is_ref => Some("*const crate::ln::features::InitFeatures"),
-			"ln::features::InitFeatures" => Some("crate::ln::features::InitFeatures"),
 			_ => None,
 		}
 	}
@@ -729,9 +725,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"ln::channelmanager::PaymentPreimage" if is_ref => Some("&::lightning::ln::channelmanager::PaymentPreimage(unsafe { *"),
 			"ln::channelmanager::PaymentSecret" => Some("::lightning::ln::channelmanager::PaymentSecret("),
 
-			// List of structs we map (possibly during processing of other files):
-			"ln::features::InitFeatures" if !is_ref => Some("*unsafe { Box::from_raw("),
-
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
 
@@ -783,10 +776,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"ln::channelmanager::PaymentPreimage" if !is_ref => Some(".data)"),
 			"ln::channelmanager::PaymentPreimage" if is_ref => Some(" })"),
 			"ln::channelmanager::PaymentSecret" => Some(".data)"),
-
-			// List of structs we map (possibly during processing of other files):
-			"ln::features::InitFeatures" if is_ref => Some(".inner) }"),
-			"ln::features::InitFeatures" if !is_ref => Some(".take_inner()) }"),
 
 			// List of traits we map (possibly during processing of other files):
 			"crate::util::logger::Logger" => Some(""),
@@ -868,11 +857,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			// Override the default since Records contain an fmt with a lifetime:
 			"util::logger::Record" => Some("local_"),
 
-			// List of structs we map (possibly during processing of other files):
-			"ln::features::InitFeatures" if is_ref && ptr_for_ref => Some("crate::ln::features::InitFeatures { inner: &mut "),
-			"ln::features::InitFeatures" if is_ref => Some("Box::into_raw(Box::new(crate::ln::features::InitFeatures { inner: &mut "),
-			"ln::features::InitFeatures" if !is_ref => Some("crate::ln::features::InitFeatures { inner: Box::into_raw(Box::new("),
-
 			_ => None,
 		}.map(|s| s.to_owned())
 	}
@@ -929,11 +913,6 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 
 			// Override the default since Records contain an fmt with a lifetime:
 			"util::logger::Record" => Some(".as_ptr()"),
-
-			// List of structs we map (possibly during processing of other files):
-			"ln::features::InitFeatures" if is_ref && ptr_for_ref => Some(", is_owned: false }"),
-			"ln::features::InitFeatures" if is_ref => Some(", is_owned: false }))"),
-			"ln::features::InitFeatures" => Some(")), is_owned: true }"),
 
 			_ => None,
 		}.map(|s| s.to_owned())
