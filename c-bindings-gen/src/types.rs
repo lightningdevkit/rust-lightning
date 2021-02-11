@@ -302,6 +302,7 @@ pub struct ImportResolver<'mod_lifetime, 'crate_lft: 'mod_lifetime> {
 	module_path: &'mod_lifetime str,
 	imports: HashMap<syn::Ident, (String, syn::Path)>,
 	declared: HashMap<syn::Ident, DeclType<'crate_lft>>,
+	priv_modules: HashSet<syn::Ident>,
 }
 impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'crate_lft> {
 	fn process_use_intern(imports: &mut HashMap<syn::Ident, (String, syn::Path)>, u: &syn::UseTree, partial_path: &str, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>) {
@@ -368,6 +369,7 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 		Self::insert_primitive(&mut imports, "Option");
 
 		let mut declared = HashMap::new();
+		let mut priv_modules = HashSet::new();
 
 		for item in contents.iter() {
 			match item {
@@ -395,11 +397,14 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 						declared.insert(t.ident.clone(), DeclType::Trait(t));
 					}
 				},
+				syn::Item::Mod(m) => {
+					priv_modules.insert(m.ident.clone());
+				},
 				_ => {},
 			}
 		}
 
-		Self { module_path, imports, declared }
+		Self { module_path, imports, declared, priv_modules }
 	}
 
 	pub fn get_declared_type(&self, ident: &syn::Ident) -> Option<&DeclType<'crate_lft>> {
@@ -458,6 +463,8 @@ impl<'mod_lifetime, 'crate_lft: 'mod_lifetime> ImportResolver<'mod_lifetime, 'cr
 				} else {
 					Some(imp.clone())
 				}
+			} else if let Some(_) = self.priv_modules.get(&first_seg.ident) {
+				Some(format!("{}::{}{}", self.module_path, first_seg.ident, remaining))
 			} else { None }
 		}
 	}

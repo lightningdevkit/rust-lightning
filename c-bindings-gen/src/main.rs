@@ -1165,9 +1165,12 @@ impl FullLibraryAST {
 							};
 							self.load_module(modname, m.attrs, m.content.unwrap().1);
 							submods.push(modident);
+						} else {
+							non_mod_items.push(syn::Item::Mod(m));
 						}
 					}
 				},
+				syn::Item::Mod(_) => panic!("--pretty=expanded output should never have non-body modules"),
 				_ => { non_mod_items.push(item); }
 			}
 		}
