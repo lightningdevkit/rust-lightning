@@ -174,7 +174,7 @@ pub enum ChannelMonitorUpdateErr {
 /// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
 /// corrupted.
 /// Contains a developer-readable error message.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MonitorUpdateError(pub &'static str);
 
 /// An event to be processed by the ChannelManager.

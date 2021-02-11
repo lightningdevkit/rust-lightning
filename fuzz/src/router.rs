@@ -130,7 +130,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					msgs::DecodeError::InvalidValue => return,
 					msgs::DecodeError::BadLengthDescriptor => return,
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
-					msgs::DecodeError::Io(e) => panic!(format!("{}", e)),
+					msgs::DecodeError::Io(e) => panic!(format!("{:?}", e)),
 				}
 			}
 		}}

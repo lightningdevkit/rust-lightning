@@ -514,7 +514,7 @@ pub struct ChannelDetails {
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
 /// Err() type describing which state the payment is in, see the description of individual enum
 /// states for more.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
 	/// send the payment at all. No channel state has been changed or messages sent to peers, and
