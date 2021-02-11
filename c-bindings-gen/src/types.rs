@@ -612,7 +612,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	}
 	/// Gets the C-mapped type for types which are outside of the crate, or which are manually
 	/// ignored by for some reason need mapping anyway.
-	fn c_type_from_path<'b>(&self, full_path: &'b str, is_ref: bool, ptr_for_ref: bool) -> Option<&'b str> {
+	fn c_type_from_path<'b>(&self, full_path: &'b str, is_ref: bool, _ptr_for_ref: bool) -> Option<&'b str> {
 		if self.is_primitive(full_path) {
 			return Some(full_path);
 		}
@@ -804,7 +804,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			_ => None,
 		}.map(|s| s.to_owned())
 	}
-	fn to_c_conversion_inline_prefix_from_path(&self, full_path: &str, is_ref: bool, ptr_for_ref: bool) -> Option<String> {
+	fn to_c_conversion_inline_prefix_from_path(&self, full_path: &str, is_ref: bool, _ptr_for_ref: bool) -> Option<String> {
 		if self.is_primitive(full_path) {
 			return Some("".to_owned());
 		}
@@ -860,7 +860,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			_ => None,
 		}.map(|s| s.to_owned())
 	}
-	fn to_c_conversion_inline_suffix_from_path(&self, full_path: &str, is_ref: bool, ptr_for_ref: bool) -> Option<String> {
+	fn to_c_conversion_inline_suffix_from_path(&self, full_path: &str, is_ref: bool, _ptr_for_ref: bool) -> Option<String> {
 		if self.is_primitive(full_path) {
 			return Some("".to_owned());
 		}
