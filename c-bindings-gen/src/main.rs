@@ -1309,6 +1309,30 @@ fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes
 	}
 }
 
+fn walk_private_mod<'a>(module: String, items: &'a syn::ItemMod, crate_types: &mut CrateTypes<'a>) {
+	let import_resolver = ImportResolver::new(&module, &items.content.as_ref().unwrap().1);
+	for item in items.content.as_ref().unwrap().1.iter() {
+		match item {
+			syn::Item::Mod(m) => walk_private_mod(format!("{}::{}", module, m.ident), m, crate_types),
+			syn::Item::Impl(i) => {
+				if let &syn::Type::Path(ref p) = &*i.self_ty {
+					if let Some(trait_path) = i.trait_.as_ref() {
+						if let Some(tp) = import_resolver.maybe_resolve_path(&trait_path.1, None) {
+							if let Some(sp) = import_resolver.maybe_resolve_path(&p.path, None) {
+								match crate_types.trait_impls.entry(sp) {
+									hash_map::Entry::Occupied(mut e) => { e.get_mut().push(tp); },
+									hash_map::Entry::Vacant(e) => { e.insert(vec![tp]); },
+								}
+							}
+						}
+					}
+				}
+			},
+			_ => {},
+		}
+	}
+}
+
 /// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
 fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
 	for (module, astmod) in ast_storage.modules.iter() {
@@ -1397,9 +1421,18 @@ fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a
 									crate_types.clonable_types.insert("crate::".to_owned() + &full_path);
 								}
 							}
+							if let Some(tp) = import_resolver.maybe_resolve_path(&trait_path.1, None) {
+								if let Some(sp) = import_resolver.maybe_resolve_path(&p.path, None) {
+									match crate_types.trait_impls.entry(sp) {
+										hash_map::Entry::Occupied(mut e) => { e.get_mut().push(tp); },
+										hash_map::Entry::Vacant(e) => { e.insert(vec![tp]); },
+									}
+								}
+							}
 						}
 					}
 				},
+				syn::Item::Mod(m) => walk_private_mod(format!("{}::{}", module, m.ident), m, crate_types),
 				_ => {},
 			}
 		}
@@ -1445,7 +1478,7 @@ fn main() {
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
 		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates,
-		clonable_types: HashSet::new() };
+		clonable_types: HashSet::new(), trait_impls: HashMap::new() };
 	walk_ast(&libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.

@@ -524,6 +524,8 @@ pub struct CrateTypes<'a> {
 	pub template_file: &'a mut File,
 	/// Set of containers which are clonable
 	pub clonable_types: HashSet<String>,
+	/// Key impls Value
+	pub trait_impls: HashMap<String, Vec<String>>,
 }
 
 /// A struct which tracks resolving rust types into C-mapped equivalents, exists for one specific
