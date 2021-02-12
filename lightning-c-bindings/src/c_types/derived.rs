@@ -711,41 +711,6 @@ impl From<crate::c_types::CResultTempl<crate::c_types::derived::C2Tuple_BlockHas
 	}
 }
 #[repr(C)]
-pub struct C2Tuple_u64u64Z {
-	pub a: u64,
-	pub b: u64,
-}
-impl From<(u64, u64)> for C2Tuple_u64u64Z {
-	fn from (tup: (u64, u64)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-		}
-	}
-}
-impl C2Tuple_u64u64Z {
-	#[allow(unused)] pub(crate) fn to_rust(mut self) -> (u64, u64) {
-		(self.a, self.b)
-	}
-}
-impl Clone for C2Tuple_u64u64Z {
-	fn clone(&self) -> Self {
-		Self {
-			a: self.a.clone(),
-			b: self.b.clone(),
-		}
-	}
-}
-#[no_mangle]
-pub extern "C" fn C2Tuple_u64u64Z_clone(orig: &C2Tuple_u64u64Z) -> C2Tuple_u64u64Z { orig.clone() }
-#[no_mangle]
-pub extern "C" fn C2Tuple_u64u64Z_new(a: u64, b: u64) -> C2Tuple_u64u64Z {
-	C2Tuple_u64u64Z { a, b, }
-}
-
-#[no_mangle]
-pub extern "C" fn C2Tuple_u64u64Z_free(_res: C2Tuple_u64u64Z) { }
-#[repr(C)]
 pub union CResult_SpendableOutputDescriptorDecodeErrorZPtr {
 	pub result: *mut crate::chain::keysinterface::SpendableOutputDescriptor,
 	pub err: *mut crate::ln::msgs::DecodeError,

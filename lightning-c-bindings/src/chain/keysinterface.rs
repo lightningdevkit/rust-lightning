@@ -15,9 +15,9 @@ use crate::c_types::*;
 #[derive(Clone)]
 #[repr(C)]
 pub enum SpendableOutputDescriptor {
-	/// An output to a script which was provided via KeysInterface, thus you should already know
-	/// how to spend it. No keys are provided as rust-lightning was never given any keys - only the
-	/// script_pubkey as it appears in the output.
+	/// An output to a script which was provided via KeysInterface directly, either from
+	/// `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
+	/// spend it. No secret keys are provided as rust-lightning was never given any key.
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
 	/// on-chain using the payment preimage or after it has timed out.
 	StaticOutput {
@@ -57,8 +57,9 @@ pub enum SpendableOutputDescriptor {
 		per_commitment_point: crate::c_types::PublicKey,
 		to_self_delay: u16,
 		output: crate::c_types::TxOut,
-		key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z,
 		revocation_pubkey: crate::c_types::PublicKey,
+		channel_keys_id: crate::c_types::ThirtyTwoBytes,
+		channel_value_satoshis: u64,
 	},
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
 	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
@@ -70,7 +71,8 @@ pub enum SpendableOutputDescriptor {
 	StaticOutputCounterpartyPayment {
 		outpoint: crate::chain::transaction::OutPoint,
 		output: crate::c_types::TxOut,
-		key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z,
+		channel_keys_id: crate::c_types::ThirtyTwoBytes,
+		channel_value_satoshis: u64,
 	},
 }
 use lightning::chain::keysinterface::SpendableOutputDescriptor as nativeSpendableOutputDescriptor;
@@ -86,32 +88,34 @@ impl SpendableOutputDescriptor {
 					output: output_nonref.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey, } => {
+			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, ref channel_value_satoshis, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
-				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
-				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref.to_rust(); let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1);
 				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
+				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
+				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_inner()) },
 					per_commitment_point: per_commitment_point_nonref.into_rust(),
 					to_self_delay: to_self_delay_nonref,
 					output: output_nonref.into_rust(),
-					key_derivation_params: local_key_derivation_params_nonref,
 					revocation_pubkey: revocation_pubkey_nonref.into_rust(),
+					channel_keys_id: channel_keys_id_nonref.data,
+					channel_value_satoshis: channel_value_satoshis_nonref,
 				}
 			},
-			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
+			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref channel_keys_id, ref channel_value_satoshis, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut output_nonref = (*output).clone();
-				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
-				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref.to_rust(); let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1);
+				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
+				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
 				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_inner()) },
 					output: output_nonref.into_rust(),
-					key_derivation_params: local_key_derivation_params_nonref,
+					channel_keys_id: channel_keys_id_nonref.data,
+					channel_value_satoshis: channel_value_satoshis_nonref,
 				}
 			},
 		}
@@ -125,23 +129,23 @@ impl SpendableOutputDescriptor {
 					output: output.into_rust(),
 				}
 			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut revocation_pubkey, } => {
-				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
+			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut revocation_pubkey, mut channel_keys_id, mut channel_value_satoshis, } => {
 				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: *unsafe { Box::from_raw(outpoint.take_inner()) },
 					per_commitment_point: per_commitment_point.into_rust(),
 					to_self_delay: to_self_delay,
 					output: output.into_rust(),
-					key_derivation_params: local_key_derivation_params,
 					revocation_pubkey: revocation_pubkey.into_rust(),
+					channel_keys_id: channel_keys_id.data,
+					channel_value_satoshis: channel_value_satoshis,
 				}
 			},
-			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
-				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
+			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut channel_keys_id, mut channel_value_satoshis, } => {
 				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: *unsafe { Box::from_raw(outpoint.take_inner()) },
 					output: output.into_rust(),
-					key_derivation_params: local_key_derivation_params,
+					channel_keys_id: channel_keys_id.data,
+					channel_value_satoshis: channel_value_satoshis,
 				}
 			},
 		}
@@ -157,32 +161,34 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output_nonref),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref key_derivation_params, ref revocation_pubkey, } => {
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, ref channel_value_satoshis, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
 				let mut to_self_delay_nonref = (*to_self_delay).clone();
 				let mut output_nonref = (*output).clone();
-				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
-				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref; let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1).into();
 				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
+				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
+				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
 					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point_nonref),
 					to_self_delay: to_self_delay_nonref,
 					output: crate::c_types::TxOut::from_rust(output_nonref),
-					key_derivation_params: local_key_derivation_params_nonref,
 					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey_nonref),
+					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id_nonref },
+					channel_value_satoshis: channel_value_satoshis_nonref,
 				}
 			},
-			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref key_derivation_params, } => {
+			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref channel_keys_id, ref channel_value_satoshis, } => {
 				let mut outpoint_nonref = (*outpoint).clone();
 				let mut output_nonref = (*output).clone();
-				let mut key_derivation_params_nonref = (*key_derivation_params).clone();
-				let (mut orig_key_derivation_params_nonref_0, mut orig_key_derivation_params_nonref_1) = key_derivation_params_nonref; let mut local_key_derivation_params_nonref = (orig_key_derivation_params_nonref_0, orig_key_derivation_params_nonref_1).into();
+				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
+				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
 				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
 					output: crate::c_types::TxOut::from_rust(output_nonref),
-					key_derivation_params: local_key_derivation_params_nonref,
+					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id_nonref },
+					channel_value_satoshis: channel_value_satoshis_nonref,
 				}
 			},
 		}
@@ -196,23 +202,23 @@ impl SpendableOutputDescriptor {
 					output: crate::c_types::TxOut::from_rust(output),
 				}
 			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut key_derivation_params, mut revocation_pubkey, } => {
-				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params; let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1).into();
+			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut revocation_pubkey, mut channel_keys_id, mut channel_value_satoshis, } => {
 				SpendableOutputDescriptor::DynamicOutputP2WSH {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
 					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point),
 					to_self_delay: to_self_delay,
 					output: crate::c_types::TxOut::from_rust(output),
-					key_derivation_params: local_key_derivation_params,
 					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey),
+					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id },
+					channel_value_satoshis: channel_value_satoshis,
 				}
 			},
-			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut key_derivation_params, } => {
-				let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params; let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1).into();
+			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut channel_keys_id, mut channel_value_satoshis, } => {
 				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
 					output: crate::c_types::TxOut::from_rust(output),
-					key_derivation_params: local_key_derivation_params,
+					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id },
+					channel_value_satoshis: channel_value_satoshis,
 				}
 			},
 		}
@@ -281,11 +287,11 @@ pub struct ChannelKeys {
 	/// Note that this takes a pointer to this object, not the this_ptr like other methods do
 	/// This function pointer may be NULL if pubkeys is filled in when this object is created and never needs updating.
 	pub set_pubkeys: Option<extern "C" fn(&ChannelKeys)>,
-	/// Gets arbitrary identifiers describing the set of keys which are provided back to you in
-	/// some SpendableOutputDescriptor types. These should be sufficient to identify this
+	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
+	/// some SpendableOutputDescriptor types. This should be sufficient to identify this
 	/// ChannelKeys object uniquely and lookup or re-derive its keys.
 	#[must_use]
-	pub key_derivation_params: extern "C" fn (this_arg: *const c_void) -> crate::c_types::derived::C2Tuple_u64u64Z,
+	pub channel_keys_id: extern "C" fn (this_arg: *const c_void) -> crate::c_types::ThirtyTwoBytes,
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
@@ -381,7 +387,7 @@ pub extern "C" fn ChannelKeys_clone(orig: &ChannelKeys) -> ChannelKeys {
 		release_commitment_secret: orig.release_commitment_secret.clone(),
 		pubkeys: orig.pubkeys.clone(),
 		set_pubkeys: orig.set_pubkeys.clone(),
-		key_derivation_params: orig.key_derivation_params.clone(),
+		channel_keys_id: orig.channel_keys_id.clone(),
 		sign_counterparty_commitment: orig.sign_counterparty_commitment.clone(),
 		sign_holder_commitment_and_htlcs: orig.sign_holder_commitment_and_htlcs.clone(),
 		sign_justice_transaction: orig.sign_justice_transaction.clone(),
@@ -422,10 +428,9 @@ impl rustChannelKeys for ChannelKeys {
 		}
 		unsafe { &*self.pubkeys.inner }
 	}
-	fn key_derivation_params(&self) -> (u64, u64) {
-		let mut ret = (self.key_derivation_params)(self.this_arg);
-		let (mut orig_ret_0, mut orig_ret_1) = ret.to_rust(); let mut local_ret = (orig_ret_0, orig_ret_1);
-		local_ret
+	fn channel_keys_id(&self) -> [u8; 32] {
+		let mut ret = (self.channel_keys_id)(self.this_arg);
+		ret.data
 	}
 	fn sign_counterparty_commitment<T:bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification>(&self, commitment_tx: &lightning::ln::chan_utils::CommitmentTransaction, _secp_ctx: &bitcoin::secp256k1::Secp256k1<T>) -> Result<(bitcoin::secp256k1::Signature, Vec<bitcoin::secp256k1::Signature>), ()> {
 		let mut ret = (self.sign_counterparty_commitment)(self.this_arg, &crate::ln::chan_utils::CommitmentTransaction { inner: unsafe { (commitment_tx as *const _) as *mut _ }, is_owned: false });
@@ -488,22 +493,35 @@ impl Drop for ChannelKeys {
 #[repr(C)]
 pub struct KeysInterface {
 	pub this_arg: *mut c_void,
-	/// Get node secret key (aka node_id or network_key)
+	/// Get node secret key (aka node_id or network_key).
+	///
+	/// This method must return the same value each time it is called.
 	#[must_use]
 	pub get_node_secret: extern "C" fn (this_arg: *const c_void) -> crate::c_types::SecretKey,
-	/// Get destination redeemScript to encumber static protocol exit points.
+	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
 	#[must_use]
 	pub get_destination_script: extern "C" fn (this_arg: *const c_void) -> crate::c_types::derived::CVec_u8Z,
-	/// Get shutdown_pubkey to use as PublicKey at channel closure
+	/// Get a public key which we will send funds to (in the form of a P2WPKH output) when closing
+	/// a channel.
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
 	#[must_use]
 	pub get_shutdown_pubkey: extern "C" fn (this_arg: *const c_void) -> crate::c_types::PublicKey,
 	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
+	///
+	/// This method must return a different value each time it is called.
 	#[must_use]
 	pub get_channel_keys: extern "C" fn (this_arg: *const c_void, inbound: bool, channel_value_satoshis: u64) -> crate::chain::keysinterface::ChannelKeys,
 	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
 	/// onion packets and for temporary channel IDs. There is no requirement that these be
 	/// persisted anywhere, though they must be unique across restarts.
+	///
+	/// This method must return a different value each time it is called.
 	#[must_use]
 	pub get_secure_random_bytes: extern "C" fn (this_arg: *const c_void) -> crate::c_types::ThirtyTwoBytes,
 	/// Reads a `ChanKeySigner` for this `KeysInterface` from the given input stream.
@@ -696,9 +714,8 @@ pub extern "C" fn InMemoryChannelKeys_set_commitment_seed(this_ptr: &mut InMemor
 /// Create a new InMemoryChannelKeys
 #[must_use]
 #[no_mangle]
-pub extern "C" fn InMemoryChannelKeys_new(mut funding_key: crate::c_types::SecretKey, mut revocation_base_key: crate::c_types::SecretKey, mut payment_key: crate::c_types::SecretKey, mut delayed_payment_base_key: crate::c_types::SecretKey, mut htlc_base_key: crate::c_types::SecretKey, mut commitment_seed: crate::c_types::ThirtyTwoBytes, mut channel_value_satoshis: u64, mut key_derivation_params: crate::c_types::derived::C2Tuple_u64u64Z) -> crate::chain::keysinterface::InMemoryChannelKeys {
-	let (mut orig_key_derivation_params_0, mut orig_key_derivation_params_1) = key_derivation_params.to_rust(); let mut local_key_derivation_params = (orig_key_derivation_params_0, orig_key_derivation_params_1);
-	let mut ret = lightning::chain::keysinterface::InMemoryChannelKeys::new(&bitcoin::secp256k1::Secp256k1::new(), funding_key.into_rust(), revocation_base_key.into_rust(), payment_key.into_rust(), delayed_payment_base_key.into_rust(), htlc_base_key.into_rust(), commitment_seed.data, channel_value_satoshis, local_key_derivation_params);
+pub extern "C" fn InMemoryChannelKeys_new(mut funding_key: crate::c_types::SecretKey, mut revocation_base_key: crate::c_types::SecretKey, mut payment_key: crate::c_types::SecretKey, mut delayed_payment_base_key: crate::c_types::SecretKey, mut htlc_base_key: crate::c_types::SecretKey, mut commitment_seed: crate::c_types::ThirtyTwoBytes, mut channel_value_satoshis: u64, mut channel_keys_id: crate::c_types::ThirtyTwoBytes) -> crate::chain::keysinterface::InMemoryChannelKeys {
+	let mut ret = lightning::chain::keysinterface::InMemoryChannelKeys::new(&bitcoin::secp256k1::Secp256k1::new(), funding_key.into_rust(), revocation_base_key.into_rust(), payment_key.into_rust(), delayed_payment_base_key.into_rust(), htlc_base_key.into_rust(), commitment_seed.data, channel_value_satoshis, channel_keys_id.data);
 	crate::chain::keysinterface::InMemoryChannelKeys { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -782,7 +799,7 @@ pub extern "C" fn InMemoryChannelKeys_as_ChannelKeys(this_arg: &InMemoryChannelK
 
 		pubkeys: crate::ln::chan_utils::ChannelPublicKeys { inner: std::ptr::null_mut(), is_owned: true },
 		set_pubkeys: Some(InMemoryChannelKeys_ChannelKeys_set_pubkeys),
-		key_derivation_params: InMemoryChannelKeys_ChannelKeys_key_derivation_params,
+		channel_keys_id: InMemoryChannelKeys_ChannelKeys_channel_keys_id,
 		sign_counterparty_commitment: InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment,
 		sign_holder_commitment_and_htlcs: InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_and_htlcs,
 		sign_justice_transaction: InMemoryChannelKeys_ChannelKeys_sign_justice_transaction,
@@ -818,10 +835,9 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_set_pubkeys(trait_self_arg: &Chann
 	}
 }
 #[must_use]
-extern "C" fn InMemoryChannelKeys_ChannelKeys_key_derivation_params(this_arg: *const c_void) -> crate::c_types::derived::C2Tuple_u64u64Z {
-	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.key_derivation_params();
-	let (mut orig_ret_0, mut orig_ret_1) = ret; let mut local_ret = (orig_ret_0, orig_ret_1).into();
-	local_ret
+extern "C" fn InMemoryChannelKeys_ChannelKeys_channel_keys_id(this_arg: *const c_void) -> crate::c_types::ThirtyTwoBytes {
+	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.channel_keys_id();
+	crate::c_types::ThirtyTwoBytes { data: ret }
 }
 #[must_use]
 extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment(this_arg: *const c_void, commitment_tx: &crate::ln::chan_utils::CommitmentTransaction) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ {
@@ -951,12 +967,12 @@ pub extern "C" fn KeysManager_new(seed: *const [u8; 32], mut network: crate::bit
 /// Derive an old set of ChannelKeys for per-channel secrets based on a key derivation
 /// parameters.
 /// Key derivation parameters are accessible through a per-channel secrets
-/// ChannelKeys::key_derivation_params and is provided inside DynamicOuputP2WSH in case of
+/// ChannelKeys::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
 /// onchain output detection for which a corresponding delayed_payment_key must be derived.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn KeysManager_derive_channel_keys(this_arg: &KeysManager, mut channel_value_satoshis: u64, mut params_1: u64, mut params_2: u64) -> crate::chain::keysinterface::InMemoryChannelKeys {
-	let mut ret = unsafe { &*this_arg.inner }.derive_channel_keys(channel_value_satoshis, params_1, params_2);
+pub extern "C" fn KeysManager_derive_channel_keys(this_arg: &KeysManager, mut channel_value_satoshis: u64, params: *const [u8; 32]) -> crate::chain::keysinterface::InMemoryChannelKeys {
+	let mut ret = unsafe { &*this_arg.inner }.derive_channel_keys(channel_value_satoshis, unsafe { &*params});
 	crate::chain::keysinterface::InMemoryChannelKeys { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
