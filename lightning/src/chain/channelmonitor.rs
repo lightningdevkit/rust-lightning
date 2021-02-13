@@ -951,7 +951,7 @@ impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
 }
 
 impl<Signer: Sign> ChannelMonitor<Signer> {
-	pub(crate) fn new(keys: Signer, shutdown_pubkey: &PublicKey,
+	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_pubkey: &PublicKey,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
 	                  channel_parameters: &ChannelTransactionParameters,
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
@@ -971,8 +971,6 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 		let channel_keys_id = keys.channel_keys_id();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
-
-		let secp_ctx = Secp256k1::new();
 
 		// block for Rust 1.34 compat
 		let (holder_commitment_tx, current_holder_commitment_number) = {
@@ -994,7 +992,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		};
 
 		let onchain_tx_handler =
-			OnchainTxHandler::new(destination_script.clone(), keys, channel_parameters.clone(), initial_holder_commitment_tx);
+			OnchainTxHandler::new(destination_script.clone(), keys,
+			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx.clone());
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
@@ -2558,6 +2557,9 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+
 		Ok((last_block_hash.clone(), ChannelMonitor {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -2603,7 +2605,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			holder_tx_signed,
 
 			last_block_hash,
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 		}))
 	}
 }
@@ -2718,7 +2720,7 @@ mod tests {
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
-		let mut monitor = ChannelMonitor::new(keys,
+		let mut monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 		                                      &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
 		                                      (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                      &channel_parameters,

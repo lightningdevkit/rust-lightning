@@ -406,6 +406,9 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 		}
 		let latest_height = Readable::read(reader)?;
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+
 		Ok(OnchainTxHandler {
 			destination_script,
 			holder_commitment,
@@ -418,13 +421,13 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			pending_claim_requests,
 			onchain_events_waiting_threshold_conf,
 			latest_height,
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 		})
 	}
 }
 
 impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
-	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
+	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>) -> Self {
 		OnchainTxHandler {
 			destination_script,
 			holder_commitment,
@@ -438,7 +441,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			onchain_events_waiting_threshold_conf: HashMap::new(),
 			latest_height: 0,
 
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 		}
 	}
 

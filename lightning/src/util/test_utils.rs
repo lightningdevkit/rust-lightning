@@ -69,7 +69,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_pubkey(&self) -> PublicKey { unreachable!(); }
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
-	fn get_secure_random_bytes(&self) -> [u8; 32] { unreachable!(); }
+	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		EnforcingSigner::read(&mut std::io::Cursor::new(reader))

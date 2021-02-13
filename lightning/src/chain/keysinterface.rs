@@ -744,8 +744,10 @@ pub struct KeysManager {
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
+
 	rand_bytes_master_key: ExtendedPrivKey,
 	rand_bytes_child_index: AtomicUsize,
+	rand_bytes_unique_start: Sha256State,
 
 	seed: [u8; 32],
 	starting_time_secs: u64,
@@ -794,30 +796,35 @@ impl KeysManager {
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
 				let rand_bytes_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
 
-				KeysManager {
+				let mut rand_bytes_unique_start = Sha256::engine();
+				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
+				rand_bytes_unique_start.input(&byte_utils::be32_to_array(starting_time_nanos));
+				rand_bytes_unique_start.input(seed);
+
+				let mut res = KeysManager {
 					secp_ctx,
 					node_secret,
+
 					destination_script,
 					shutdown_pubkey,
+
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
+
 					rand_bytes_master_key,
 					rand_bytes_child_index: AtomicUsize::new(0),
+					rand_bytes_unique_start,
 
 					seed: *seed,
 					starting_time_secs,
 					starting_time_nanos,
-				}
+				};
+				let secp_seed = res.get_secure_random_bytes();
+				res.secp_ctx.seeded_randomize(&secp_seed);
+				res
 			},
 			Err(_) => panic!("Your rng is busted"),
 		}
-	}
-	fn derive_unique_start(&self) -> Sha256State {
-		let mut unique_start = Sha256::engine();
-		unique_start.input(&byte_utils::be64_to_array(self.starting_time_secs));
-		unique_start.input(&byte_utils::be32_to_array(self.starting_time_nanos));
-		unique_start.input(&self.seed);
-		unique_start
 	}
 	/// Derive an old set of Sign for per-channel secrets based on a key derivation
 	/// parameters.
@@ -1017,7 +1024,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let mut sha = self.derive_unique_start();
+		let mut sha = self.rand_bytes_unique_start.clone();
 
 		let child_ix = self.rand_bytes_child_index.fetch_add(1, Ordering::AcqRel);
 		let child_privkey = self.rand_bytes_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
