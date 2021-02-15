@@ -40,6 +40,10 @@ use std::collections::btree_map::Entry as BtreeEntry;
 use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
+/// The maximum number of extra bytes which we do not understand in a gossip message before we will
+/// refuse to relay the message.
+const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
+
 /// Represents the network as nodes and channels between them
 #[derive(PartialEq)]
 pub struct NetworkGraph {
@@ -139,13 +143,15 @@ macro_rules! secp_verify_sig {
 impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_node_from_announcement(msg, &self.secp_ctx)?;
-		Ok(msg.contents.excess_data.is_empty() && msg.contents.excess_address_data.is_empty())
+		Ok(msg.contents.excess_data.len() <=  MAX_EXCESS_BYTES_FOR_RELAY &&
+		   msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
+		   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
-		Ok(msg.contents.excess_data.is_empty())
+		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
@@ -164,7 +170,7 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
 		self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx)?;
-		Ok(msg.contents.excess_data.is_empty())
+		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
@@ -680,7 +686,10 @@ impl NetworkGraph {
 					}
 				}
 
-				let should_relay = msg.excess_data.is_empty() && msg.excess_address_data.is_empty();
+				let should_relay =
+					msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
+					msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
+					msg.excess_data.len() + msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY;
 				node.announcement_info = Some(NodeAnnouncementInfo {
 					features: msg.features.clone(),
 					last_update: msg.timestamp,
@@ -773,7 +782,8 @@ impl NetworkGraph {
 				node_two: msg.node_id_2.clone(),
 				two_to_one: None,
 				capacity_sats: utxo_value,
-				announcement_message: if msg.excess_data.is_empty() { full_msg.cloned() } else { None },
+				announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
+					{ full_msg.cloned() } else { None },
 			};
 
 		match self.channels.entry(msg.short_channel_id) {
@@ -902,7 +912,8 @@ impl NetworkGraph {
 							chan_was_enabled = false;
 						}
 
-						let last_update_message = if msg.excess_data.is_empty() { full_msg.cloned() } else { None };
+						let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
+							{ full_msg.cloned() } else { None };
 
 						let updated_channel_dir_info = DirectionalChannelInfo {
 							enabled: chan_enabled,
@@ -1002,7 +1013,7 @@ impl NetworkGraph {
 mod tests {
 	use chain;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
 		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
@@ -1124,7 +1135,7 @@ mod tests {
 		};
 
 		unsigned_announcement.timestamp += 1000;
-		unsigned_announcement.excess_data.push(1);
+		unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let announcement_with_data = NodeAnnouncement {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
@@ -1292,7 +1303,7 @@ mod tests {
 
 		// Don't relay valid channels with excess data
 		unsigned_announcement.short_channel_id += 1;
-		unsigned_announcement.excess_data.push(1);
+		unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
 			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
@@ -1422,7 +1433,7 @@ mod tests {
 		}
 
 		unsigned_channel_update.timestamp += 100;
-		unsigned_channel_update.excess_data.push(1);
+		unsigned_channel_update.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
 			signature: secp_ctx.sign(&msghash, node_1_privkey),
@@ -1722,7 +1733,7 @@ mod tests {
 				htlc_maximum_msat: OptionalField::Absent,
 				fee_base_msat: 10000,
 				fee_proportional_millionths: 20,
-				excess_data: [1; 3].to_vec()
+				excess_data: [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec()
 			};
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 			let valid_channel_update = ChannelUpdate {
@@ -1851,7 +1862,7 @@ mod tests {
 				alias: [0; 32],
 				addresses: Vec::new(),
 				excess_address_data: Vec::new(),
-				excess_data: [1; 3].to_vec(),
+				excess_data: [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec(),
 			};
 			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 			let valid_announcement = NodeAnnouncement {
