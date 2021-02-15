@@ -1583,7 +1583,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
-	};
+	}
 
 	let (route, payment_hash, _) = get_route_and_payment_hash!(3460001);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
@@ -1722,7 +1722,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 			let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.first().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
-	};
+	}
 
 	let (route, our_payment_hash, _) = get_route_and_payment_hash!(1000);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
@@ -1754,7 +1754,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 			let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.first().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
-	};
+	}
 
 	let (route, payment_hash, _) = get_route_and_payment_hash!(1000);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
@@ -1799,7 +1799,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 			let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
-	};
+	}
 
 	let feemsat = 239;
 	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
@@ -1900,7 +1900,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
 			(route, payment_hash, payment_preimage)
 		}}
-	};
+	}
 
 	macro_rules! expect_forward {
 		($node: expr) => {{

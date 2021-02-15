@@ -126,6 +126,39 @@ jobs:
           token: f421b687-4dc2-4387-ac3d-dc3b2528af57
           fail_ci_if_error: true
 
+  benchmark:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: nightly
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          override: true
+          profile: minimal
+      - name: Cache routing graph snapshot
+        id: cache-graph
+        uses: actions/cache@v2
+        with:
+          path: lightning/net_graph-2021-02-12.bin
+          key: net_graph-2021-02-12
+      - name: Fetch routing graph snapshot
+        if: steps.cache-graph.outputs.cache-hit != 'true'
+        run: |
+          wget -O lightning/net_graph-2021-02-12.bin https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin
+          if [ "$(sha256sum lightning/net_graph-2021-02-12.bin | awk '{ print $1 }')" != "890a1f80dfb6ef674a1e4ff0f23cd73d740731c395f99d85abbede0cfbb701ab" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+      - name: Run benchmarks on Rust ${{ matrix.toolchain }}
+        run: |
+          cd lightning
+          cargo bench --features unstable
+          cd ..
+
   check_commits:
     runs-on: ubuntu-latest
     env:
