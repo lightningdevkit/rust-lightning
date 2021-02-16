@@ -138,10 +138,10 @@ impl<'a> std::fmt::Display for DebugSpendable<'a> {
 			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
 				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.index)?;
 			}
-			&SpendableOutputDescriptor::DynamicOutputP2WSH(ref descriptor) => {
-				write!(f, "DynamicOutputP2WSH {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
+			&SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) => {
+				write!(f, "DelayedPaymentOutput {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
 			}
-			&SpendableOutputDescriptor::StaticOutputCounterpartyPayment(ref descriptor) => {
+			&SpendableOutputDescriptor::StaticPaymentOutput(ref descriptor) => {
 				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
 			}
 		}
