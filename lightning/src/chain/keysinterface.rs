@@ -64,7 +64,7 @@ pub struct DynamicP2WSHOutputDescriptor {
 }
 impl DynamicP2WSHOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
-	// Calculated as 1 byte legnth + 73 byte signature, 1 byte empty vec push, 1 byte length plus
+	// Calculated as 1 byte length + 73 byte signature, 1 byte empty vec push, 1 byte length plus
 	// redeemscript push length.
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH + 1;
 }
@@ -75,7 +75,7 @@ impl DynamicP2WSHOutputDescriptor {
 pub struct StaticCounterpartyPaymentOutputDescriptor {
 	/// The outpoint which is spendable
 	pub outpoint: OutPoint,
-	/// The output which is reference by the given outpoint
+	/// The output which is referenced by the given outpoint
 	pub output: TxOut,
 	/// Arbitrary identification information returned by a call to
 	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
