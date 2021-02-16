@@ -391,15 +391,6 @@ pub enum NetAddress {
 	},
 }
 impl NetAddress {
-	fn get_id(&self) -> u8 {
-		match self {
-			&NetAddress::IPv4 {..} => { 1 },
-			&NetAddress::IPv6 {..} => { 2 },
-			&NetAddress::OnionV2 {..} => { 3 },
-			&NetAddress::OnionV3 {..} => { 4 },
-		}
-	}
-
 	/// Strict byte-length of address descriptor, 1-byte type not recorded
 	fn len(&self) -> u16 {
 		match self {
@@ -1535,14 +1526,12 @@ impl Writeable for UnsignedNodeAnnouncement {
 		w.write_all(&self.rgb)?;
 		self.alias.write(w)?;
 
-		let mut addrs_to_encode = self.addresses.clone();
-		addrs_to_encode.sort_by(|a, b| { a.get_id().cmp(&b.get_id()) });
 		let mut addr_len = 0;
-		for addr in &addrs_to_encode {
+		for addr in self.addresses.iter() {
 			addr_len += 1 + addr.len();
 		}
 		(addr_len + self.excess_address_data.len() as u16).write(w)?;
-		for addr in addrs_to_encode {
+		for addr in self.addresses.iter() {
 			addr.write(w)?;
 		}
 		w.write_all(&self.excess_address_data[..])?;
@@ -1562,7 +1551,6 @@ impl Readable for UnsignedNodeAnnouncement {
 
 		let addr_len: u16 = Readable::read(r)?;
 		let mut addresses: Vec<NetAddress> = Vec::new();
-		let mut highest_addr_type = 0;
 		let mut addr_readpos = 0;
 		let mut excess = false;
 		let mut excess_byte = 0;
@@ -1570,11 +1558,6 @@ impl Readable for UnsignedNodeAnnouncement {
 			if addr_len <= addr_readpos { break; }
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
-					if addr.get_id() < highest_addr_type {
-						// Addresses must be sorted in increasing order
-						return Err(DecodeError::InvalidValue);
-					}
-					highest_addr_type = addr.get_id();
 					if addr_len < addr_readpos + 1 + addr.len() {
 						return Err(DecodeError::BadLengthDescriptor);
 					}
