@@ -43,7 +43,7 @@ use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ChannelKeys, KeysInterface};
+use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
@@ -623,7 +623,7 @@ impl Readable for ChannelMonitorUpdateStep {
 /// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
 /// best chain) upon deserializing the object!
-pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
+pub struct ChannelMonitor<Signer: Sign> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
@@ -691,9 +691,9 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	outputs_to_watch: HashMap<Txid, Vec<(u32, Script)>>,
 
 	#[cfg(test)]
-	pub onchain_tx_handler: OnchainTxHandler<ChanSigner>,
+	pub onchain_tx_handler: OnchainTxHandler<Signer>,
 	#[cfg(not(test))]
-	onchain_tx_handler: OnchainTxHandler<ChanSigner>,
+	onchain_tx_handler: OnchainTxHandler<Signer>,
 
 	// This is set when the Channel[Manager] generated a ChannelMonitorUpdate which indicated the
 	// channel has been force-closed. After this is set, no further holder commitment transaction
@@ -721,7 +721,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
 /// underlying object
-impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
+impl<Signer: Sign> PartialEq for ChannelMonitor<Signer> {
 	fn eq(&self, other: &Self) -> bool {
 		if self.latest_update_id != other.latest_update_id ||
 			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
@@ -761,7 +761,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys> Writeable for ChannelMonitor<ChanSigner> {
+impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		//TODO: We still write out all the serialization here manually instead of using the fancy
 		//serialization framework we have, we should migrate things over to it.
@@ -948,13 +948,13 @@ impl<ChanSigner: ChannelKeys> Writeable for ChannelMonitor<ChanSigner> {
 	}
 }
 
-impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
-	pub(crate) fn new(keys: ChanSigner, shutdown_pubkey: &PublicKey,
+impl<Signer: Sign> ChannelMonitor<Signer> {
+	pub(crate) fn new(keys: Signer, shutdown_pubkey: &PublicKey,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
 	                  channel_parameters: &ChannelTransactionParameters,
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
-	                  initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<ChanSigner> {
+	                  initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
@@ -2253,7 +2253,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 /// transaction and losing money. This is a risk because previous channel states
 /// are toxic, so it's important that whatever channel state is persisted is
 /// kept up-to-date.
-pub trait Persist<Keys: ChannelKeys>: Send + Sync {
+pub trait Persist<ChannelSigner: Sign>: Send + Sync {
 	/// Persist a new channel's data. The data can be stored any way you want, but
 	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
 	/// it is up to you to maintain a correct mapping between the outpoint and the
@@ -2265,7 +2265,7 @@ pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 	///
 	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
 	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
-	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<Keys>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Update one channel's data. The provided `ChannelMonitor` has already
 	/// applied the given update.
@@ -2294,13 +2294,13 @@ pub trait Persist<Keys: ChannelKeys>: Send + Sync {
 	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
 	/// [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
 	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
-	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<Keys>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, ChanSigner: ChannelKeys, K: KeysInterface<ChanKeySigner = ChanSigner>> ReadableArgs<&'a K>
-		for (BlockHash, ChannelMonitor<ChanSigner>) {
+impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -2612,7 +2612,7 @@ mod tests {
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
 	use std::sync::{Arc, Mutex};
-	use chain::keysinterface::InMemoryChannelKeys;
+	use chain::keysinterface::InMemorySigner;
 
 	#[test]
 	fn test_prune_preimages() {
@@ -2668,7 +2668,7 @@ mod tests {
 			}
 		}
 
-		let keys = InMemoryChannelKeys::new(
+		let keys = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -2818,7 +2818,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemorySigner>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -2842,7 +2842,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemorySigner>::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -2864,7 +2864,7 @@ mod tests {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
 			}
 		}
-		assert_eq!(base_weight + OnchainTxHandler::<InMemoryChannelKeys>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + OnchainTxHandler::<InMemorySigner>::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.

@@ -10,7 +10,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr};
 use lightning::chain::channelmonitor;
-use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::util::logger::Logger;
@@ -44,19 +44,18 @@ pub struct FilesystemPersister {
 	path_to_channel_data: String,
 }
 
-impl<ChanSigner: ChannelKeys> DiskWriteable for ChannelMonitor<ChanSigner> {
+impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), Error> {
 		self.write(writer)
 	}
 }
 
-impl<ChanSigner, M, T, K, F, L> DiskWriteable for ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
-where ChanSigner: ChannelKeys + Writeable,
-	    M: chain::Watch<Keys=ChanSigner>,
-	    T: BroadcasterInterface,
-	    K: KeysInterface<ChanKeySigner=ChanSigner>,
-	    F: FeeEstimator,
-	    L: Logger,
+impl<Signer: Sign, M, T, K, F, L> DiskWriteable for ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+where M: chain::Watch<ChanSigner=Signer>,
+      T: BroadcasterInterface,
+      K: KeysInterface<Signer=Signer>,
+      F: FeeEstimator,
+      L: Logger,
 {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
 		self.write(writer)
@@ -78,23 +77,23 @@ impl FilesystemPersister {
 
 	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
 	/// initialization, within a file called "manager".
-	pub fn persist_manager<ChanSigner, M, T, K, F, L>(
+	pub fn persist_manager<Signer, M, T, K, F, L>(
 		data_dir: String,
-		manager: &ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+		manager: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
 	) -> Result<(), std::io::Error>
-	where ChanSigner: ChannelKeys + Writeable,
-        M: chain::Watch<Keys=ChanSigner>,
-        T: BroadcasterInterface,
-        K: KeysInterface<ChanKeySigner=ChanSigner>,
-        F: FeeEstimator,
-        L: Logger
+	where Signer: Sign,
+	      M: chain::Watch<ChanSigner=Signer>,
+	      T: BroadcasterInterface,
+	      K: KeysInterface<Signer=Signer>,
+	      F: FeeEstimator,
+	      L: Logger
 	{
 		util::write_to_file(data_dir, "manager".to_string(), manager)
 	}
 
 	#[cfg(test)]
 	fn load_channel_data<Keys: KeysInterface>(&self, keys: &Keys) ->
-		Result<HashMap<OutPoint, ChannelMonitor<Keys::ChanKeySigner>>, ChannelMonitorUpdateErr> {
+		Result<HashMap<OutPoint, ChannelMonitor<Keys::Signer>>, ChannelMonitorUpdateErr> {
 		if let Err(_) = fs::create_dir_all(&self.path_to_channel_data) {
 			return Err(ChannelMonitorUpdateErr::PermanentFailure);
 		}
@@ -117,7 +116,7 @@ impl FilesystemPersister {
 			if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
 			if let Ok((_, loaded_monitor)) =
-				<(BlockHash, ChannelMonitor<Keys::ChanKeySigner>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
+				<(BlockHash, ChannelMonitor<Keys::Signer>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
 				res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
 			} else {
 				return Err(ChannelMonitorUpdateErr::PermanentFailure);
@@ -127,7 +126,7 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChanSigner: ChannelKeys + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
+impl<ChanSigner: Sign + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)

@@ -37,7 +37,7 @@ use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::ChannelKeys;
+use chain::keysinterface::Sign;
 use util::logger::Logger;
 use util::events;
 use util::events::Event;
@@ -56,7 +56,7 @@ use std::ops::Deref;
 /// [`chain::Watch`]: ../trait.Watch.html
 /// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
 /// [module-level documentation]: index.html
-pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+pub struct ChainMonitor<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
@@ -72,7 +72,7 @@ pub struct ChainMonitor<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L
 	persister: P,
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChanSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
@@ -140,14 +140,14 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChanSigner: Sign, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
 	    P::Target: channelmonitor::Persist<ChanSigner>,
 {
-	type Keys = ChanSigner;
+	type ChanSigner = ChanSigner;
 
 	/// Adds the monitor that watches the channel referred to by the given outpoint.
 	///
@@ -233,7 +233,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChanSigner: ChannelKeys, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,

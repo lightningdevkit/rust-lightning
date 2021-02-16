@@ -2,10 +2,9 @@
 
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{ChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::util::logger::Logger;
-use lightning::util::ser::Writeable;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -53,14 +52,14 @@ impl BackgroundProcessor {
 	/// [`thread_handle`]: struct.BackgroundProcessor.html#structfield.thread_handle
 	/// [`ChannelManager::write`]: ../lightning/ln/channelmanager/struct.ChannelManager.html#method.write
 	/// [`FilesystemPersister::persist_manager`]: ../lightning_persister/struct.FilesystemPersister.html#impl
-	pub fn start<PM, ChanSigner, M, T, K, F, L>(persist_manager: PM, manager: Arc<ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>>, logger: Arc<L>) -> Self
-	where ChanSigner: 'static + ChannelKeys + Writeable,
-	      M: 'static + chain::Watch<Keys=ChanSigner>,
+	pub fn start<PM, Signer, M, T, K, F, L>(persist_manager: PM, manager: Arc<ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>>, logger: Arc<L>) -> Self
+	where Signer: 'static + Sign,
+	      M: 'static + chain::Watch<ChanSigner=Signer>,
 	      T: 'static + BroadcasterInterface,
-	      K: 'static + KeysInterface<ChanKeySigner=ChanSigner>,
+	      K: 'static + KeysInterface<Signer=Signer>,
 	      F: 'static + FeeEstimator,
 	      L: 'static + Logger,
-	      PM: 'static + Send + Fn(&ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>) -> Result<(), std::io::Error>,
+	      PM: 'static + Send + Fn(&ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>) -> Result<(), std::io::Error>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -104,7 +103,7 @@ mod tests {
 	use lightning::chain;
 	use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 	use lightning::chain::chainmonitor;
-	use lightning::chain::keysinterface::{ChannelKeys, InMemoryChannelKeys, KeysInterface, KeysManager};
+	use lightning::chain::keysinterface::{Sign, InMemorySigner, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
 	use lightning::ln::channelmanager::{ChannelManager, SimpleArcChannelManager};
@@ -122,7 +121,7 @@ mod tests {
 	use std::time::Duration;
 	use super::BackgroundProcessor;
 
-	type ChainMonitor = chainmonitor::ChainMonitor<InMemoryChannelKeys, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
+	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
 
 	struct Node {
 		node: SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>,
@@ -203,7 +202,7 @@ mod tests {
 
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].persister.get_data_dir();
-		let callback = move |node: &ChannelManager<InMemoryChannelKeys, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
+		let callback = move |node: &ChannelManager<InMemorySigner, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
 		let bg_processor = BackgroundProcessor::start(callback, nodes[0].node.clone(), nodes[0].logger.clone());
 
 		// Go through the channel creation process until each node should have something persisted.
@@ -258,7 +257,7 @@ mod tests {
 		// `CHAN_FRESHNESS_TIMER`.
 		let nodes = create_nodes(1, "test_chan_freshness_called".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
-		let callback = move |node: &ChannelManager<InMemoryChannelKeys, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
+		let callback = move |node: &ChannelManager<InMemorySigner, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
 		let bg_processor = BackgroundProcessor::start(callback, nodes[0].node.clone(), nodes[0].logger.clone());
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -274,11 +273,11 @@ mod tests {
 	#[test]
 	fn test_persist_error() {
 		// Test that if we encounter an error during manager persistence, the thread panics.
-		fn persist_manager<ChanSigner, M, T, K, F, L>(_data: &ChannelManager<ChanSigner, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>) -> Result<(), std::io::Error>
-		where ChanSigner: 'static + ChannelKeys + Writeable,
-		      M: 'static + chain::Watch<Keys=ChanSigner>,
+		fn persist_manager<Signer, M, T, K, F, L>(_data: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>) -> Result<(), std::io::Error>
+		where Signer: 'static + Sign,
+		      M: 'static + chain::Watch<ChanSigner=Signer>,
 		      T: 'static + BroadcasterInterface,
-		      K: 'static + KeysInterface<ChanKeySigner=ChanSigner>,
+		      K: 'static + KeysInterface<Signer=Signer>,
 		      F: 'static + FeeEstimator,
 		      L: 'static + Logger,
 		{

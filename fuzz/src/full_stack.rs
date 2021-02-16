@@ -30,7 +30,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
+use lightning::chain::keysinterface::{InMemorySigner, KeysInterface};
 use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::msgs::DecodeError;
@@ -38,7 +38,7 @@ use lightning::routing::router::get_route;
 use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::config::UserConfig;
 use lightning::util::events::{EventsProvider,Event};
-use lightning::util::enforcing_trait_impls::EnforcingChannelKeys;
+use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
@@ -148,14 +148,14 @@ impl<'a> std::hash::Hash for Peer<'a> {
 }
 
 type ChannelMan = ChannelManager<
-	EnforcingChannelKeys,
-	Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	EnforcingSigner,
+	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
 type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
-	monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
@@ -169,7 +169,7 @@ struct MoneyLossDetector<'a> {
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
 	           manager: Arc<ChannelMan>,
-	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingChannelKeys, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
 			manager,
@@ -248,7 +248,7 @@ struct KeyProvider {
 	counter: AtomicU64,
 }
 impl KeysInterface for KeyProvider {
-	type ChanKeySigner = EnforcingChannelKeys;
+	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
@@ -266,11 +266,11 @@ impl KeysInterface for KeyProvider {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap())
 	}
 
-	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
+	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		let secp_ctx = Secp256k1::signing_only();
-		EnforcingChannelKeys::new(if inbound {
-			InMemoryChannelKeys::new(
+		EnforcingSigner::new(if inbound {
+			InMemorySigner::new(
 				&secp_ctx,
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, ctr]).unwrap(),
@@ -282,7 +282,7 @@ impl KeysInterface for KeyProvider {
 				[0; 32]
 			)
 		} else {
-			InMemoryChannelKeys::new(
+			InMemorySigner::new(
 				&secp_ctx,
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ctr]).unwrap(),
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, ctr]).unwrap(),
@@ -302,8 +302,8 @@ impl KeysInterface for KeyProvider {
 		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
 	}
 
-	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingChannelKeys, DecodeError> {
-		EnforcingChannelKeys::read(&mut std::io::Cursor::new(data))
+	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
+		EnforcingSigner::read(&mut std::io::Cursor::new(data))
 	}
 }
 

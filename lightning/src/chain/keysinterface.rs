@@ -58,7 +58,7 @@ pub struct DelayedPaymentOutputDescriptor {
 	/// derive the witnessScript for this output.
 	pub revocation_pubkey: PublicKey,
 	/// Arbitrary identification information returned by a call to
-	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+	/// `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
 	/// the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
@@ -80,7 +80,7 @@ pub struct StaticPaymentOutputDescriptor {
 	/// The output which is referenced by the given outpoint
 	pub output: TxOut,
 	/// Arbitrary identification information returned by a call to
-	/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+	/// `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
 	/// the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this transactions spends.
@@ -125,14 +125,14 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the delayed_payment key which is used to sign for this input, you must pass the
 	/// holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
-	/// ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
+	/// Sign::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
 	/// chan_utils::derive_private_key. The public key can be generated without the secret key
 	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
-	/// ChannelKeys::pubkeys().
+	/// Sign::pubkeys().
 	///
 	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to ChannelKeys::ready_channel) and the provided per_commitment point
+	/// call to Sign::ready_channel) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
 	/// The witness script which is hashed and included in the output script_pubkey may be
@@ -141,7 +141,7 @@ pub enum SpendableOutputDescriptor {
 	/// chan_utils::get_revokeable_redeemscript.
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
-	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
+	/// corresponds to the public key in Sign::pubkeys().payment_point).
 	/// The witness in the spending input, is, thus, simply:
 	/// <BIP 143 signature> <payment key>
 	///
@@ -207,10 +207,10 @@ impl Readable for SpendableOutputDescriptor {
 	}
 }
 
-/// Set of lightning keys needed to operate a channel as described in BOLT 3.
+/// A trait to sign lightning channel transactions as described in BOLT 3.
 ///
 /// Signing services could be implemented on a hardware wallet. In this case,
-/// the current ChannelKeys would be a front-end on top of a communication
+/// the current Sign would be a front-end on top of a communication
 /// channel connected to your secure device and lightning key material wouldn't
 /// reside on a hot server. Nevertheless, a this deployment would still need
 /// to trust the ChannelManager to avoid loss of funds as this latest component
@@ -224,9 +224,9 @@ impl Readable for SpendableOutputDescriptor {
 /// In any case, ChannelMonitor or fallback watchtowers are always going to be trusted
 /// to act, as liveness and breach reply correctness are always going to be hard requirements
 /// of LN security model, orthogonal of key management issues.
-// TODO: We should remove Clone by instead requesting a new ChannelKeys copy when we create
+// TODO: We should remove Clone by instead requesting a new Sign copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
-pub trait ChannelKeys : Send+Clone + Writeable {
+pub trait Sign : Send+Clone + Writeable {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
@@ -245,7 +245,7 @@ pub trait ChannelKeys : Send+Clone + Writeable {
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
 	/// some SpendableOutputDescriptor types. This should be sufficient to identify this
-	/// ChannelKeys object uniquely and lookup or re-derive its keys.
+	/// Sign object uniquely and lookup or re-derive its keys.
 	fn channel_keys_id(&self) -> [u8; 32];
 
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
@@ -346,8 +346,8 @@ pub trait ChannelKeys : Send+Clone + Writeable {
 
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface: Send + Sync {
-	/// A type which implements ChannelKeys which will be returned by get_channel_keys.
-	type ChanKeySigner : ChannelKeys;
+	/// A type which implements Sign which will be returned by get_channel_signer.
+	type Signer : Sign;
 
 	/// Get node secret key (aka node_id or network_key).
 	///
@@ -364,11 +364,11 @@ pub trait KeysInterface: Send + Sync {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_pubkey(&self) -> PublicKey;
-	/// Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
+	/// Get a new set of Sign for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
 	///
 	/// This method must return a different value each time it is called.
-	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner;
+	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> Self::Signer;
 	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
 	/// onion packets and for temporary channel IDs. There is no requirement that these be
 	/// persisted anywhere, though they must be unique across restarts.
@@ -376,21 +376,21 @@ pub trait KeysInterface: Send + Sync {
 	/// This method must return a different value each time it is called.
 	fn get_secure_random_bytes(&self) -> [u8; 32];
 
-	/// Reads a `ChanKeySigner` for this `KeysInterface` from the given input stream.
+	/// Reads a `Signer` for this `KeysInterface` from the given input stream.
 	/// This is only called during deserialization of other objects which contain
-	/// `ChannelKeys`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
-	/// The bytes are exactly those which `<Self::ChanKeySigner as Writeable>::write()` writes, and
+	/// `Sign`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
+	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, DecodeError>;
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
 }
 
 #[derive(Clone)]
-/// A simple implementation of ChannelKeys that just keeps the private keys in memory.
+/// A simple implementation of Sign that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
-pub struct InMemoryChannelKeys {
+pub struct InMemorySigner {
 	/// Private key of anchor tx
 	pub funding_key: SecretKey,
 	/// Holder secret key for blinded revocation pubkey
@@ -413,8 +413,8 @@ pub struct InMemoryChannelKeys {
 	channel_keys_id: [u8; 32],
 }
 
-impl InMemoryChannelKeys {
-	/// Create a new InMemoryChannelKeys
+impl InMemorySigner {
+	/// Create a new InMemorySigner
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>,
 		funding_key: SecretKey,
@@ -424,12 +424,12 @@ impl InMemoryChannelKeys {
 		htlc_base_key: SecretKey,
 		commitment_seed: [u8; 32],
 		channel_value_satoshis: u64,
-		channel_keys_id: [u8; 32]) -> InMemoryChannelKeys {
+		channel_keys_id: [u8; 32]) -> InMemorySigner {
 		let holder_channel_pubkeys =
-			InMemoryChannelKeys::make_holder_keys(secp_ctx, &funding_key, &revocation_base_key,
+			InMemorySigner::make_holder_keys(secp_ctx, &funding_key, &revocation_base_key,
 			                                     &payment_key, &delayed_payment_base_key,
 			                                     &htlc_base_key);
-		InMemoryChannelKeys {
+		InMemorySigner {
 			funding_key,
 			revocation_base_key,
 			payment_key,
@@ -549,7 +549,7 @@ impl InMemoryChannelKeys {
 	}
 }
 
-impl ChannelKeys for InMemoryChannelKeys {
+impl Sign for InMemorySigner {
 	fn get_per_commitment_point<T: secp256k1::Signing + secp256k1::Verification>(&self, idx: u64, secp_ctx: &Secp256k1<T>) -> PublicKey {
 		let commitment_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&self.commitment_seed, idx)).unwrap();
 		PublicKey::from_secret_key(secp_ctx, &commitment_secret)
@@ -682,7 +682,7 @@ impl ChannelKeys for InMemoryChannelKeys {
 	}
 }
 
-impl Writeable for InMemoryChannelKeys {
+impl Writeable for InMemorySigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.funding_key.write(writer)?;
 		self.revocation_base_key.write(writer)?;
@@ -698,7 +698,7 @@ impl Writeable for InMemoryChannelKeys {
 	}
 }
 
-impl Readable for InMemoryChannelKeys {
+impl Readable for InMemorySigner {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let funding_key = Readable::read(reader)?;
 		let revocation_base_key = Readable::read(reader)?;
@@ -710,12 +710,12 @@ impl Readable for InMemoryChannelKeys {
 		let channel_value_satoshis = Readable::read(reader)?;
 		let secp_ctx = Secp256k1::signing_only();
 		let holder_channel_pubkeys =
-			InMemoryChannelKeys::make_holder_keys(&secp_ctx, &funding_key, &revocation_base_key,
+			InMemorySigner::make_holder_keys(&secp_ctx, &funding_key, &revocation_base_key,
 			                                     &payment_key, &delayed_payment_base_key,
 			                                     &htlc_base_key);
 		let keys_id = Readable::read(reader)?;
 
-		Ok(InMemoryChannelKeys {
+		Ok(InMemorySigner {
 			funding_key,
 			revocation_base_key,
 			payment_key,
@@ -819,12 +819,12 @@ impl KeysManager {
 		unique_start.input(&self.seed);
 		unique_start
 	}
-	/// Derive an old set of ChannelKeys for per-channel secrets based on a key derivation
+	/// Derive an old set of Sign for per-channel secrets based on a key derivation
 	/// parameters.
 	/// Key derivation parameters are accessible through a per-channel secrets
-	/// ChannelKeys::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
+	/// Sign::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
 	/// onchain output detection for which a corresponding delayed_payment_key must be derived.
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemoryChannelKeys {
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = byte_utils::slice_to_be64(&params[0..8]);
 		assert!(chan_id <= std::u32::MAX as u64); // Otherwise the params field wasn't created by us
 		let mut unique_start = Sha256::engine();
@@ -860,7 +860,7 @@ impl KeysManager {
 		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
 
-		InMemoryChannelKeys::new(
+		InMemorySigner::new(
 			&self.secp_ctx,
 			funding_key,
 			revocation_base_key,
@@ -883,7 +883,7 @@ impl KeysManager {
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
 	///
 	/// May panic if the `SpendableOutputDescriptor`s were not generated by Channels which used
-	/// this KeysManager or one of the `InMemoryChannelKeys` created by this KeysManager.
+	/// this KeysManager or one of the `InMemorySigner` created by this KeysManager.
 	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let mut input = Vec::new();
 		let mut input_value = 0;
@@ -935,7 +935,7 @@ impl KeysManager {
 		};
 		transaction_utils::maybe_add_change_output(&mut spend_tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
 
-		let mut keys_cache: Option<(InMemoryChannelKeys, [u8; 32])> = None;
+		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
 		let mut input_idx = 0;
 		for outp in descriptors {
 			match outp {
@@ -992,7 +992,7 @@ impl KeysManager {
 }
 
 impl KeysInterface for KeysManager {
-	type ChanKeySigner = InMemoryChannelKeys;
+	type Signer = InMemorySigner;
 
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
@@ -1006,7 +1006,7 @@ impl KeysInterface for KeysManager {
 		self.shutdown_pubkey.clone()
 	}
 
-	fn get_channel_keys(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::ChanKeySigner {
+	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		assert!(child_ix <= std::u32::MAX as usize);
 		let mut id = [0; 32];
@@ -1027,7 +1027,7 @@ impl KeysInterface for KeysManager {
 		Sha256::from_engine(sha).into_inner()
 	}
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> {
-		InMemoryChannelKeys::read(&mut std::io::Cursor::new(reader))
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
+		InMemorySigner::read(&mut std::io::Cursor::new(reader))
 	}
 }

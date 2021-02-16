@@ -31,7 +31,7 @@ use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{ChannelKeys, KeysInterface};
+use chain::keysinterface::{Sign, KeysInterface};
 use util::transaction_utils;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
@@ -288,7 +288,7 @@ impl HTLCCandidate {
 //
 // Holder designates channel data owned for the benefice of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
-pub(super) struct Channel<ChanSigner: ChannelKeys> {
+pub(super) struct Channel<Signer: Sign> {
 	config: ChannelConfig,
 
 	user_id: u64,
@@ -301,9 +301,9 @@ pub(super) struct Channel<ChanSigner: ChannelKeys> {
 	latest_monitor_update_id: u64,
 
 	#[cfg(not(test))]
-	holder_keys: ChanSigner,
+	holder_keys: Signer,
 	#[cfg(test)]
-	pub(super) holder_keys: ChanSigner,
+	pub(super) holder_keys: Signer,
 	shutdown_pubkey: PublicKey,
 	destination_script: Script,
 
@@ -478,7 +478,7 @@ macro_rules! secp_check {
 	};
 }
 
-impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
+impl<Signer: Sign> Channel<Signer> {
 	// Convert constants + channel value to limits:
 	fn get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
 		channel_value_satoshis * 1000 / 10 //TODO
@@ -498,12 +498,12 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<ChanSigner>, APIError>
-	where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
+	where K::Target: KeysInterface<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
 		let holder_selected_contest_delay = config.own_channel_config.our_to_self_delay;
-		let chan_keys = keys_provider.get_channel_keys(false, channel_value_satoshis);
+		let chan_keys = keys_provider.get_channel_signer(false, channel_value_satoshis);
 		let pubkeys = chan_keys.pubkeys().clone();
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
@@ -517,7 +517,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		if Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis) < Channel::<ChanSigner>::derive_holder_dust_limit_satoshis(background_feerate) {
+		if Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis) < Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate) {
 			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
 		}
 
@@ -573,7 +573,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
-			holder_dust_limit_satoshis: Channel::<ChanSigner>::derive_holder_dust_limit_satoshis(background_feerate),
+			holder_dust_limit_satoshis: Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate),
 			counterparty_max_htlc_value_in_flight_msat: 0,
 			counterparty_selected_channel_reserve_satoshis: 0,
 			counterparty_htlc_minimum_msat: 0,
@@ -622,11 +622,11 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<ChanSigner>, ChannelError>
-		where K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
+		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
-		let chan_keys = keys_provider.get_channel_keys(true, msg.funding_satoshis);
+		let chan_keys = keys_provider.get_channel_signer(true, msg.funding_satoshis);
 		let pubkeys = chan_keys.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -662,7 +662,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.peer_channel_config_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
@@ -711,8 +711,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
-		let holder_dust_limit_satoshis = Channel::<ChanSigner>::derive_holder_dust_limit_satoshis(background_feerate);
-		let holder_selected_channel_reserve_satoshis = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
+		let holder_dust_limit_satoshis = Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate);
+		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
 		if holder_selected_channel_reserve_satoshis < holder_dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, holder_dust_limit_satoshis)));
 		}
@@ -987,7 +987,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			};
 			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.counterparty_selected_channel_reserve_satoshis as i64);
 			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
-			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
+			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
@@ -1397,7 +1397,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if msg.channel_reserve_satoshis < self.holder_dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Peer never wants payout outputs? channel_reserve_satoshis was ({}). dust_limit is ({})", msg.channel_reserve_satoshis, self.holder_dust_limit_satoshis)));
 		}
-		let remote_reserve = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
+		let remote_reserve = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
 		if msg.dust_limit_satoshis > remote_reserve {
 			return Err(ChannelError::Close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.dust_limit_satoshis, remote_reserve)));
 		}
@@ -1520,7 +1520,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<ChanSigner>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError> where L::Target: Logger {
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -1591,7 +1591,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, logger: &L) -> Result<ChannelMonitor<ChanSigner>, ChannelError> where L::Target: Logger {
+	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, logger: &L) -> Result<ChannelMonitor<Signer>, ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -1932,7 +1932,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if inbound_htlc_count + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", OUR_MAX_HTLCS)));
 		}
-		let holder_max_htlc_value_in_flight_msat = Channel::<ChanSigner>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis);
+		let holder_max_htlc_value_in_flight_msat = Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis);
 		if htlc_inbound_value_msat + msg.amount_msat > holder_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close(format!("Remote HTLC add would put them over our max HTLC value ({})", holder_max_htlc_value_in_flight_msat)));
 		}
@@ -1976,7 +1976,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		};
 
 		let chan_reserve_msat =
-			Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
+			Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
 		if pending_remote_value_msat - msg.amount_msat - remote_commit_tx_fee_msat < chan_reserve_msat {
 			return Err(ChannelError::Close("Remote HTLC add would put them under remote reserve value".to_owned()));
 		}
@@ -2140,7 +2140,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
-			let counterparty_reserve_we_require = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
+			let counterparty_reserve_we_require = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
 			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + counterparty_reserve_we_require {
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee".to_owned())));
 			}
@@ -2814,7 +2814,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
-		Channel::<ChanSigner>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
 		self.pending_update_fee = Some(msg.feerate_per_kw);
 		self.update_time_counter += 1;
 		Ok(())
@@ -3332,7 +3332,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			// channel might have been used to route very small values (either by honest users or as DoS).
 			self.channel_value_satoshis * 9 / 10,
 
-			Channel::<ChanSigner>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
+			Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
 		);
 	}
 
@@ -3367,7 +3367,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 	}
 
 	#[cfg(test)]
-	pub fn get_keys(&self) -> &ChanSigner {
+	pub fn get_keys(&self) -> &Signer {
 		&self.holder_keys
 	}
 
@@ -3661,8 +3661,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 			funding_satoshis: self.channel_value_satoshis,
 			push_msat: self.channel_value_satoshis * 1000 - self.value_to_self_msat,
 			dust_limit_satoshis: self.holder_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
+			max_htlc_value_in_flight_msat: Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
+			channel_reserve_satoshis: Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			feerate_per_kw: self.feerate_per_kw as u32,
 			to_self_delay: self.get_holder_selected_contest_delay(),
@@ -3695,8 +3695,8 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		msgs::AcceptChannel {
 			temporary_channel_id: self.channel_id,
 			dust_limit_satoshis: self.holder_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: Channel::<ChanSigner>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
-			channel_reserve_satoshis: Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
+			max_htlc_value_in_flight_msat: Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
+			channel_reserve_satoshis: Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth,
 			to_self_delay: self.get_holder_selected_contest_delay(),
@@ -3904,7 +3904,7 @@ impl<ChanSigner: ChannelKeys> Channel<ChanSigner> {
 		if !self.is_outbound() {
 			// Check that we won't violate the remote channel reserve by adding this HTLC.
 			let counterparty_balance_msat = self.channel_value_satoshis * 1000 - self.value_to_self_msat;
-			let holder_selected_chan_reserve_msat = Channel::<ChanSigner>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
+			let holder_selected_chan_reserve_msat = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat {
@@ -4255,7 +4255,7 @@ impl Readable for InboundHTLCRemovalReason {
 	}
 }
 
-impl<ChanSigner: ChannelKeys> Writeable for Channel<ChanSigner> {
+impl<Signer: Sign> Writeable for Channel<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called but include holding cell updates (and obviously we don't modify self).
@@ -4444,8 +4444,8 @@ impl<ChanSigner: ChannelKeys> Writeable for Channel<ChanSigner> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, ChanSigner: ChannelKeys, K: Deref> ReadableArgs<&'a K> for Channel<ChanSigner>
-		where K::Target: KeysInterface<ChanKeySigner = ChanSigner> {
+impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
+		where K::Target: KeysInterface<Signer = Signer> {
 	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
@@ -4692,17 +4692,17 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use hex;
 	use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
-	use ln::channel::{Channel,ChannelKeys,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
+	use ln::channel::{Channel,Sign,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
 	use ln::msgs::{OptionalField, DataLossProtect, DecodeError};
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-	use chain::keysinterface::{InMemoryChannelKeys, KeysInterface};
+	use chain::keysinterface::{InMemorySigner, KeysInterface};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
-	use util::enforcing_trait_impls::EnforcingChannelKeys;
+	use util::enforcing_trait_impls::EnforcingSigner;
 	use util::test_utils;
 	use util::logger::Logger;
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
@@ -4728,10 +4728,10 @@ mod tests {
 	}
 
 	struct Keys {
-		chan_keys: InMemoryChannelKeys,
+		chan_keys: InMemorySigner,
 	}
 	impl KeysInterface for Keys {
-		type ChanKeySigner = InMemoryChannelKeys;
+		type Signer = InMemorySigner;
 
 		fn get_node_secret(&self) -> SecretKey { panic!(); }
 		fn get_destination_script(&self) -> Script {
@@ -4747,11 +4747,11 @@ mod tests {
 			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
 		}
 
-		fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemoryChannelKeys {
+		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {
 			self.chan_keys.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
-		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::ChanKeySigner, DecodeError> { panic!(); }
+		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
@@ -4771,7 +4771,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -4796,14 +4796,14 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		assert_eq!(open_channel_msg.dust_limit_satoshis, 1560);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
@@ -4863,7 +4863,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingChannelKeys>::new_outbound(&&fee_est, &&keys_provider, node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, 10000000, 100000, 42, &config).unwrap();
 
 		let commitment_tx_fee_0_htlcs = chan.commit_tx_fee_msat(0);
 		let commitment_tx_fee_1_htlc = chan.commit_tx_fee_msat(1);
@@ -4910,12 +4910,12 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingChannelKeys>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingChannelKeys>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
@@ -4967,7 +4967,7 @@ mod tests {
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
-		let mut chan_keys = InMemoryChannelKeys::new(
+		let mut chan_keys = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
@@ -4988,7 +4988,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemoryChannelKeys>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 
 		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };

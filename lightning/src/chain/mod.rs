@@ -14,7 +14,7 @@ use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent};
-use chain::keysinterface::ChannelKeys;
+use chain::keysinterface::Sign;
 use chain::transaction::OutPoint;
 
 pub mod chaininterface;
@@ -69,7 +69,7 @@ pub trait Access: Send + Sync {
 /// [`PermanentFailure`]: channelmonitor/enum.ChannelMonitorUpdateErr.html#variant.PermanentFailure
 pub trait Watch: Send + Sync {
 	/// Keys needed by monitors for creating and signing transactions.
-	type Keys: ChannelKeys;
+	type ChanSigner: Sign;
 
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
@@ -80,7 +80,7 @@ pub trait Watch: Send + Sync {
 	/// [`get_outputs_to_watch`]: channelmonitor/struct.ChannelMonitor.html#method.get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor/struct.ChannelMonitor.html#method.block_connected
 	/// [`block_disconnected`]: channelmonitor/struct.ChannelMonitor.html#method.block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<Self::Keys>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<Self::ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///

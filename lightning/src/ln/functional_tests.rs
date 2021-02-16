@@ -15,7 +15,7 @@ use chain::Watch;
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
-use chain::keysinterface::{ChannelKeys, KeysInterface};
+use chain::keysinterface::{Sign, KeysInterface};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channel::{Channel, ChannelError};
@@ -24,7 +24,7 @@ use routing::router::{Route, RouteHop, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
-use util::enforcing_trait_impls::EnforcingChannelKeys;
+use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -67,7 +67,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::<EnforcingChannelKeys>::get_holder_selected_channel_reserve_satoshis(channel_value_sat);
+	let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -1610,7 +1610,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
-	// Get the EnforcingChannelKeys for each channel, which will be used to (1) get the keys
+	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
@@ -4304,7 +4304,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
@@ -4322,7 +4322,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
@@ -4331,7 +4331,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager,
 			fee_estimator: &fee_estimator,
@@ -4380,7 +4380,7 @@ fn test_manager_serialize_deserialize_events() {
 	let persister: test_utils::TestPersister;
 	let logger: test_utils::TestLogger;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Start creating a channel, but stop right before broadcasting the event message FundingBroadcastSafe
@@ -4431,7 +4431,7 @@ fn test_manager_serialize_deserialize_events() {
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
@@ -4440,7 +4440,7 @@ fn test_manager_serialize_deserialize_events() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: config,
 			keys_manager,
 			fee_estimator: &fee_estimator,
@@ -4503,7 +4503,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
@@ -4523,7 +4523,7 @@ fn test_simple_manager_serialize_deserialize() {
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
 	nodes[0].chain_monitor = &new_chain_monitor;
 	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 		&mut chan_0_monitor_read, keys_manager).unwrap();
 	assert!(chan_0_monitor_read.is_empty());
 
@@ -4531,7 +4531,7 @@ fn test_simple_manager_serialize_deserialize() {
 	let (_, nodes_0_deserialized_tmp) = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 			default_config: UserConfig::default(),
 			keys_manager,
 			fee_estimator: &fee_estimator,
@@ -4564,7 +4564,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
-	let nodes_0_deserialized: ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 2, 0, InitFeatures::known(), InitFeatures::known());
@@ -4607,7 +4607,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, keys_manager).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -4615,14 +4615,14 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut read, keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, keys_manager).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	if let Err(msgs::DecodeError::InvalidValue) =
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager,
 		fee_estimator: &fee_estimator,
@@ -4636,7 +4636,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
 	let (_, nodes_0_deserialized_tmp) =
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		keys_manager,
 		fee_estimator: &fee_estimator,
@@ -7358,7 +7358,7 @@ fn test_data_loss_protect() {
 
 	// Restore node A from previous state
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
-	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
+	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
@@ -7367,7 +7367,7 @@ fn test_data_loss_protect() {
 	node_state_0 = {
 		let mut channel_monitors = HashMap::new();
 		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chain_monitor);
-		<(BlockHash, ChannelManager<EnforcingChannelKeys, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
 			keys_manager: keys_manager,
 			fee_estimator: &fee_estimator,
 			chain_monitor: &monitor,
@@ -8026,7 +8026,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	// commitment transaction, we would have happily carried on and provided them the next
 	// commitment transaction based on one RAA forward. This would probably eventually have led to
 	// channel closure, but it would not have resulted in funds loss. Still, our
-	// EnforcingChannelKeys would have paniced as it doesn't like jumps into the future. Here, we
+	// EnforcingSigner would have paniced as it doesn't like jumps into the future. Here, we
 	// check simply that the channel is closed in response to such an RAA, but don't check whether
 	// we decide to punish our counterparty for revoking their funds (as we don't currently
 	// implement that).
@@ -8233,7 +8233,7 @@ fn test_update_err_monitor_lockdown() {
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
@@ -8292,7 +8292,7 @@ fn test_concurrent_monitor_claim() {
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
@@ -8318,7 +8318,7 @@ fn test_concurrent_monitor_claim() {
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 				&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);

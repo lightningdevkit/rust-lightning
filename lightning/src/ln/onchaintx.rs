@@ -27,7 +27,7 @@ use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use chain::keysinterface::{ChannelKeys, KeysInterface};
+use chain::keysinterface::{Sign, KeysInterface};
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
@@ -240,7 +240,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
+pub struct OnchainTxHandler<ChanSigner: Sign> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
@@ -287,7 +287,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
+impl<ChanSigner: Sign> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;
@@ -340,7 +340,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 }
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySigner> {
+impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 
@@ -423,7 +423,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySi
 	}
 }
 
-impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
+impl<ChanSigner: Sign> OnchainTxHandler<ChanSigner> {
 	pub(crate) fn new(destination_script: Script, keys: ChanSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
 
 		let key_storage = keys;
