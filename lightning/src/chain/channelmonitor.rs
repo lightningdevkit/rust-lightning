@@ -632,7 +632,7 @@ pub struct ChannelMonitor<ChanSigner: ChannelKeys> {
 	counterparty_payment_script: Script,
 	shutdown_script: Script,
 
-	key_derivation_params: (u64, u64),
+	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: PublicKey,
 	funding_info: (OutPoint, Script),
 	current_counterparty_commitment_txid: Option<Txid>,
@@ -728,7 +728,7 @@ impl<ChanSigner: ChannelKeys> PartialEq for ChannelMonitor<ChanSigner> {
 			self.destination_script != other.destination_script ||
 			self.broadcasted_holder_revokable_script != other.broadcasted_holder_revokable_script ||
 			self.counterparty_payment_script != other.counterparty_payment_script ||
-			self.key_derivation_params != other.key_derivation_params ||
+			self.channel_keys_id != other.channel_keys_id ||
 			self.holder_revocation_basepoint != other.holder_revocation_basepoint ||
 			self.funding_info != other.funding_info ||
 			self.current_counterparty_commitment_txid != other.current_counterparty_commitment_txid ||
@@ -786,7 +786,7 @@ impl<ChanSigner: ChannelKeys> Writeable for ChannelMonitor<ChanSigner> {
 		self.counterparty_payment_script.write(writer)?;
 		self.shutdown_script.write(writer)?;
 
-		self.key_derivation_params.write(writer)?;
+		self.channel_keys_id.write(writer)?;
 		self.holder_revocation_basepoint.write(writer)?;
 		writer.write_all(&self.funding_info.0.txid[..])?;
 		writer.write_all(&byte_utils::be16_to_array(self.funding_info.0.index))?;
@@ -967,7 +967,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
 		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv, per_htlc: HashMap::new() };
 
-		let key_derivation_params = keys.key_derivation_params();
+		let channel_keys_id = keys.channel_keys_id();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
 
 		let secp_ctx = Secp256k1::new();
@@ -1006,7 +1006,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 			counterparty_payment_script,
 			shutdown_script,
 
-			key_derivation_params,
+			channel_keys_id,
 			holder_revocation_basepoint,
 			funding_info,
 			current_counterparty_commitment_txid: None,
@@ -2206,8 +2206,9 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						per_commitment_point: broadcasted_holder_revokable_script.1,
 						to_self_delay: self.on_holder_tx_csv,
 						output: outp.clone(),
-						key_derivation_params: self.key_derivation_params,
 						revocation_pubkey: broadcasted_holder_revokable_script.2.clone(),
+						channel_keys_id: self.channel_keys_id,
+						channel_value_satoshis: self.channel_value_satoshis,
 					});
 					break;
 				}
@@ -2215,7 +2216,8 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				spendable_output = Some(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
-					key_derivation_params: self.key_derivation_params,
+					channel_keys_id: self.channel_keys_id,
+					channel_value_satoshis: self.channel_value_satoshis,
 				});
 				break;
 			} else if outp.script_pubkey == self.shutdown_script {
@@ -2332,7 +2334,7 @@ impl<'a, ChanSigner: ChannelKeys, K: KeysInterface<ChanKeySigner = ChanSigner>> 
 		let counterparty_payment_script = Readable::read(reader)?;
 		let shutdown_script = Readable::read(reader)?;
 
-		let key_derivation_params = Readable::read(reader)?;
+		let channel_keys_id = Readable::read(reader)?;
 		let holder_revocation_basepoint = Readable::read(reader)?;
 		// Technically this can fail and serialize fail a round-trip, but only for serialization of
 		// barely-init'd ChannelMonitors that we can't do anything with.
@@ -2547,7 +2549,7 @@ impl<'a, ChanSigner: ChannelKeys, K: KeysInterface<ChanKeySigner = ChanSigner>> 
 			counterparty_payment_script,
 			shutdown_script,
 
-			key_derivation_params,
+			channel_keys_id,
 			holder_revocation_basepoint,
 			funding_info,
 			current_counterparty_commitment_txid,
@@ -2675,7 +2677,7 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
 			0,
-			(0, 0)
+			[0; 32]
 		);
 
 		let counterparty_pubkeys = ChannelPublicKeys {

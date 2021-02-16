@@ -241,10 +241,13 @@ typedef struct LDKPublicKey {
    uint8_t compressed_form[33];
 } LDKPublicKey;
 
-typedef struct LDKC2Tuple_u64u64Z {
-   uint64_t a;
-   uint64_t b;
-} LDKC2Tuple_u64u64Z;
+/**
+ * Arbitrary 32 bytes, which could represent one of a few different things. You probably want to
+ * look up the corresponding function in rust-lightning's docs.
+ */
+typedef struct LDKThirtyTwoBytes {
+   uint8_t data[32];
+} LDKThirtyTwoBytes;
 
 /**
  * When on-chain outputs are created by rust-lightning (which our counterparty is not able to
@@ -255,9 +258,9 @@ typedef struct LDKC2Tuple_u64u64Z {
  */
 typedef enum LDKSpendableOutputDescriptor_Tag {
    /**
-    * An output to a script which was provided via KeysInterface, thus you should already know
-    * how to spend it. No keys are provided as rust-lightning was never given any keys - only the
-    * script_pubkey as it appears in the output.
+    * An output to a script which was provided via KeysInterface directly, either from
+    * `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
+    * spend it. No secret keys are provided as rust-lightning was never given any key.
     * These may include outputs from a transaction punishing our counterparty or claiming an HTLC
     * on-chain using the payment preimage or after it has timed out.
     */
@@ -319,14 +322,16 @@ typedef struct LDKSpendableOutputDescriptor_LDKDynamicOutputP2WSH_Body {
    struct LDKPublicKey per_commitment_point;
    uint16_t to_self_delay;
    struct LDKTxOut output;
-   struct LDKC2Tuple_u64u64Z key_derivation_params;
    struct LDKPublicKey revocation_pubkey;
+   struct LDKThirtyTwoBytes channel_keys_id;
+   uint64_t channel_value_satoshis;
 } LDKSpendableOutputDescriptor_LDKDynamicOutputP2WSH_Body;
 
 typedef struct LDKSpendableOutputDescriptor_LDKStaticOutputCounterpartyPayment_Body {
    struct LDKOutPoint outpoint;
    struct LDKTxOut output;
-   struct LDKC2Tuple_u64u64Z key_derivation_params;
+   struct LDKThirtyTwoBytes channel_keys_id;
+   uint64_t channel_value_satoshis;
 } LDKSpendableOutputDescriptor_LDKStaticOutputCounterpartyPayment_Body;
 
 typedef struct MUST_USE_STRUCT LDKSpendableOutputDescriptor {
@@ -890,14 +895,6 @@ typedef struct LDKCVec_MessageSendEventZ {
 } LDKCVec_MessageSendEventZ;
 
 /**
- * Arbitrary 32 bytes, which could represent one of a few different things. You probably want to
- * look up the corresponding function in rust-lightning's docs.
- */
-typedef struct LDKThirtyTwoBytes {
-   uint8_t data[32];
-} LDKThirtyTwoBytes;
-
-/**
  * An Event which you should probably take some action in response to.
  *
  * Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
@@ -1349,11 +1346,11 @@ typedef struct LDKChannelKeys {
     */
    void (*set_pubkeys)(const struct LDKChannelKeys*NONNULL_PTR );
    /**
-    * Gets arbitrary identifiers describing the set of keys which are provided back to you in
-    * some SpendableOutputDescriptor types. These should be sufficient to identify this
+    * Gets an arbitrary identifier describing the set of keys which are provided back to you in
+    * some SpendableOutputDescriptor types. This should be sufficient to identify this
     * ChannelKeys object uniquely and lookup or re-derive its keys.
     */
-   struct LDKC2Tuple_u64u64Z (*key_derivation_params)(const void *this_arg);
+   struct LDKThirtyTwoBytes (*channel_keys_id)(const void *this_arg);
    /**
     * Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
     *
@@ -1849,26 +1846,39 @@ typedef struct LDKu8slice {
 typedef struct LDKKeysInterface {
    void *this_arg;
    /**
-    * Get node secret key (aka node_id or network_key)
+    * Get node secret key (aka node_id or network_key).
+    *
+    * This method must return the same value each time it is called.
     */
    struct LDKSecretKey (*get_node_secret)(const void *this_arg);
    /**
-    * Get destination redeemScript to encumber static protocol exit points.
+    * Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
+    *
+    * This method should return a different value each time it is called, to avoid linking
+    * on-chain funds across channels as controlled to the same user.
     */
    struct LDKCVec_u8Z (*get_destination_script)(const void *this_arg);
    /**
-    * Get shutdown_pubkey to use as PublicKey at channel closure
+    * Get a public key which we will send funds to (in the form of a P2WPKH output) when closing
+    * a channel.
+    *
+    * This method should return a different value each time it is called, to avoid linking
+    * on-chain funds across channels as controlled to the same user.
     */
    struct LDKPublicKey (*get_shutdown_pubkey)(const void *this_arg);
    /**
     * Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
     * restarted with some stale data!
+    *
+    * This method must return a different value each time it is called.
     */
    struct LDKChannelKeys (*get_channel_keys)(const void *this_arg, bool inbound, uint64_t channel_value_satoshis);
    /**
     * Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
     * onion packets and for temporary channel IDs. There is no requirement that these be
     * persisted anywhere, though they must be unique across restarts.
+    *
+    * This method must return a different value each time it is called.
     */
    struct LDKThirtyTwoBytes (*get_secure_random_bytes)(const void *this_arg);
    /**
@@ -3548,12 +3558,6 @@ struct LDKCResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ CResult_C2Tuple_B
 
 void CResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ_free(struct LDKCResult_C2Tuple_BlockHashChannelMonitorZDecodeErrorZ _res);
 
-struct LDKC2Tuple_u64u64Z C2Tuple_u64u64Z_clone(const struct LDKC2Tuple_u64u64Z *NONNULL_PTR orig);
-
-struct LDKC2Tuple_u64u64Z C2Tuple_u64u64Z_new(uint64_t a, uint64_t b);
-
-void C2Tuple_u64u64Z_free(struct LDKC2Tuple_u64u64Z _res);
-
 struct LDKCResult_SpendableOutputDescriptorDecodeErrorZ CResult_SpendableOutputDescriptorDecodeErrorZ_ok(struct LDKSpendableOutputDescriptor o);
 
 struct LDKCResult_SpendableOutputDescriptorDecodeErrorZ CResult_SpendableOutputDescriptorDecodeErrorZ_err(struct LDKDecodeError e);
@@ -4686,7 +4690,7 @@ void InMemoryChannelKeys_set_commitment_seed(struct LDKInMemoryChannelKeys *NONN
 /**
  * Create a new InMemoryChannelKeys
  */
-MUST_USE_RES struct LDKInMemoryChannelKeys InMemoryChannelKeys_new(struct LDKSecretKey funding_key, struct LDKSecretKey revocation_base_key, struct LDKSecretKey payment_key, struct LDKSecretKey delayed_payment_base_key, struct LDKSecretKey htlc_base_key, struct LDKThirtyTwoBytes commitment_seed, uint64_t channel_value_satoshis, struct LDKC2Tuple_u64u64Z key_derivation_params);
+MUST_USE_RES struct LDKInMemoryChannelKeys InMemoryChannelKeys_new(struct LDKSecretKey funding_key, struct LDKSecretKey revocation_base_key, struct LDKSecretKey payment_key, struct LDKSecretKey delayed_payment_base_key, struct LDKSecretKey htlc_base_key, struct LDKThirtyTwoBytes commitment_seed, uint64_t channel_value_satoshis, struct LDKThirtyTwoBytes channel_keys_id);
 
 /**
  * Counterparty pubkeys.
@@ -4765,10 +4769,10 @@ MUST_USE_RES struct LDKKeysManager KeysManager_new(const uint8_t (*seed)[32], en
  * Derive an old set of ChannelKeys for per-channel secrets based on a key derivation
  * parameters.
  * Key derivation parameters are accessible through a per-channel secrets
- * ChannelKeys::key_derivation_params and is provided inside DynamicOuputP2WSH in case of
+ * ChannelKeys::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
  * onchain output detection for which a corresponding delayed_payment_key must be derived.
  */
-MUST_USE_RES struct LDKInMemoryChannelKeys KeysManager_derive_channel_keys(const struct LDKKeysManager *NONNULL_PTR this_arg, uint64_t channel_value_satoshis, uint64_t params_1, uint64_t params_2);
+MUST_USE_RES struct LDKInMemoryChannelKeys KeysManager_derive_channel_keys(const struct LDKKeysManager *NONNULL_PTR this_arg, uint64_t channel_value_satoshis, const uint8_t (*params)[32]);
 
 struct LDKKeysInterface KeysManager_as_KeysInterface(const struct LDKKeysManager *NONNULL_PTR this_arg);
 

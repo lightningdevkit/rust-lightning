@@ -89,7 +89,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
-	fn key_derivation_params(&self) -> (u64, u64) { self.inner.key_derivation_params() }
+	fn channel_keys_id(&self) -> [u8; 32] { self.inner.channel_keys_id() }
 
 	fn sign_counterparty_commitment<T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> Result<(Signature, Vec<Signature>), ()> {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
