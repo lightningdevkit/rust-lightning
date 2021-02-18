@@ -51,7 +51,7 @@ impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
 }
 
 impl<Signer: Sign, M, T, K, F, L> DiskWriteable for ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
-where M: chain::Watch<ChanSigner=Signer>,
+where M: chain::Watch<Signer>,
       T: BroadcasterInterface,
       K: KeysInterface<Signer=Signer>,
       F: FeeEstimator,
@@ -82,7 +82,7 @@ impl FilesystemPersister {
 		manager: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
 	) -> Result<(), std::io::Error>
 	where Signer: Sign,
-	      M: chain::Watch<ChanSigner=Signer>,
+	      M: chain::Watch<Signer>,
 	      T: BroadcasterInterface,
 	      K: KeysInterface<Signer=Signer>,
 	      F: FeeEstimator,

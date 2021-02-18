@@ -67,10 +67,7 @@ pub trait Access: Send + Sync {
 /// [`ChannelMonitor`]: channelmonitor/struct.ChannelMonitor.html
 /// [`ChannelMonitorUpdateErr`]: channelmonitor/enum.ChannelMonitorUpdateErr.html
 /// [`PermanentFailure`]: channelmonitor/enum.ChannelMonitorUpdateErr.html#variant.PermanentFailure
-pub trait Watch: Send + Sync {
-	/// Keys needed by monitors for creating and signing transactions.
-	type ChanSigner: Sign;
-
+pub trait Watch<ChanSigner: Sign>: Send + Sync {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
@@ -80,7 +77,7 @@ pub trait Watch: Send + Sync {
 	/// [`get_outputs_to_watch`]: channelmonitor/struct.ChannelMonitor.html#method.get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor/struct.ChannelMonitor.html#method.block_connected
 	/// [`block_disconnected`]: channelmonitor/struct.ChannelMonitor.html#method.block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<Self::ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///

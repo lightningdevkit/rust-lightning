@@ -98,9 +98,7 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 }
-impl<'a> chain::Watch for TestChainMonitor<'a> {
-	type ChanSigner = EnforcingSigner;
-
+impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...

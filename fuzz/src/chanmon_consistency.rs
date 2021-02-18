@@ -108,9 +108,7 @@ impl TestChainMonitor {
 		}
 	}
 }
-impl chain::Watch for TestChainMonitor {
-	type ChanSigner = EnforcingSigner;
-
+impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();

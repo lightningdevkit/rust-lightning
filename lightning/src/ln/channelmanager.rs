@@ -398,7 +398,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
 pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -745,7 +745,7 @@ macro_rules! maybe_break_monitor_err {
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3102,7 +3102,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3121,7 +3121,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3140,7 +3140,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvi
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3320,7 +3320,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
 	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3833,7 +3833,7 @@ impl Readable for HTLCForwardInfo {
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3916,7 +3916,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// 5) Move the ChannelMonitors into your local chain::Watch.
 /// 6) Disconnect/connect blocks on the ChannelManager.
 pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -3966,7 +3966,7 @@ pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: 
 
 impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
 		T::Target: BroadcasterInterface,
 		K::Target: KeysInterface<Signer = Signer>,
 		F::Target: FeeEstimator,
@@ -3988,7 +3988,7 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 // SipmleArcChannelManager type:
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
@@ -4002,7 +4002,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
-	where M::Target: chain::Watch<ChanSigner=Signer>,
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,

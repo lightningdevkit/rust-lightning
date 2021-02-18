@@ -54,7 +54,7 @@ impl BackgroundProcessor {
 	/// [`FilesystemPersister::persist_manager`]: ../lightning_persister/struct.FilesystemPersister.html#impl
 	pub fn start<PM, Signer, M, T, K, F, L>(persist_manager: PM, manager: Arc<ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>>, logger: Arc<L>) -> Self
 	where Signer: 'static + Sign,
-	      M: 'static + chain::Watch<ChanSigner=Signer>,
+	      M: 'static + chain::Watch<Signer>,
 	      T: 'static + BroadcasterInterface,
 	      K: 'static + KeysInterface<Signer=Signer>,
 	      F: 'static + FeeEstimator,
@@ -275,7 +275,7 @@ mod tests {
 		// Test that if we encounter an error during manager persistence, the thread panics.
 		fn persist_manager<Signer, M, T, K, F, L>(_data: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>) -> Result<(), std::io::Error>
 		where Signer: 'static + Sign,
-		      M: 'static + chain::Watch<ChanSigner=Signer>,
+		      M: 'static + chain::Watch<Signer>,
 		      T: 'static + BroadcasterInterface,
 		      K: 'static + KeysInterface<Signer=Signer>,
 		      F: 'static + FeeEstimator,

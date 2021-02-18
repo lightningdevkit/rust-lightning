@@ -140,15 +140,14 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChanSigner: Sign, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send> chain::Watch for ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChanSigner: Sign, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send>
+chain::Watch<ChanSigner> for ChainMonitor<ChanSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
 	    P::Target: channelmonitor::Persist<ChanSigner>,
 {
-	type ChanSigner = ChanSigner;
-
 	/// Adds the monitor that watches the channel referred to by the given outpoint.
 	///
 	/// Calls back to [`chain::Filter`] with the funding transaction and outputs to watch.
