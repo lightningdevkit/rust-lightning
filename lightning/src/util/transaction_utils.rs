@@ -7,7 +7,12 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::transaction::TxOut;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::script::Script;
+use bitcoin::consensus::Encodable;
+use bitcoin::consensus::encode::VarInt;
+
+use ln::msgs::MAX_VALUE_MSAT;
 
 use std::cmp::Ordering;
 
@@ -21,12 +26,60 @@ pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>
 	});
 }
 
+fn get_dust_value(output_script: &Script) -> u64 {
+	//TODO: This belongs in rust-bitcoin (https://github.com/rust-bitcoin/rust-bitcoin/pull/566)
+	if output_script.is_op_return() {
+		0
+	} else if output_script.is_witness_program() {
+		294
+	} else {
+		546
+	}
+}
+
+/// Possibly adds a change output to the given transaction, always doing so if there are excess
+/// funds available beyond the requested feerate.
+/// Assumes at least one input will have a witness (ie spends a segwit output).
+/// Returns an Err(()) if the requested feerate cannot be met.
+pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, witness_max_weight: usize, feerate_sat_per_1000_weight: u32, change_destination_script: Script) -> Result<(), ()> {
+	if input_value > MAX_VALUE_MSAT / 1000 { return Err(()); }
+
+	let mut output_value = 0;
+	for output in tx.output.iter() {
+		output_value += output.value;
+		if output_value >= input_value { return Err(()); }
+	}
+
+	let dust_value = get_dust_value(&change_destination_script);
+	let mut change_output = TxOut {
+		script_pubkey: change_destination_script,
+		value: 0,
+	};
+	let change_len = change_output.consensus_encode(&mut std::io::sink()).unwrap();
+	let mut weight_with_change: i64 = tx.get_weight() as i64 + 2 + witness_max_weight as i64 + change_len as i64 * 4;
+	// Include any extra bytes required to push an extra output.
+	weight_with_change += (VarInt(tx.output.len() as u64 + 1).len() - VarInt(tx.output.len() as u64).len()) as i64 * 4;
+	// When calculating weight, add two for the flag bytes
+	let change_value: i64 = (input_value - output_value) as i64 - weight_with_change * feerate_sat_per_1000_weight as i64 / 1000;
+	if change_value >= dust_value as i64 {
+		change_output.value = change_value as u64;
+		tx.output.push(change_output);
+	} else if (input_value - output_value) as i64 - (tx.get_weight() as i64 + 2 + witness_max_weight as i64) * feerate_sat_per_1000_weight as i64 / 1000 < 0 {
+		return Err(());
+	}
+
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 
+	use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, OutPoint};
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::TxOut;
+	use bitcoin::hash_types::Txid;
+
+	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
 	use hex::decode;
 
@@ -157,5 +210,79 @@ mod tests {
 	bip_txout_tests! {
 		bip69_txout_test_1: TXOUT1.to_vec(),
 		bip69_txout_test_2: TXOUT2.to_vec(),
+	}
+
+	#[test]
+	fn test_tx_value_overrun() {
+		// If we have a bogus input amount or outputs valued more than inputs, we should fail
+		let mut tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			script_pubkey: Script::new(), value: 1000
+		}] };
+		assert!(maybe_add_change_output(&mut tx, 21_000_000_0000_0001, 0, 253, Script::new()).is_err());
+		assert!(maybe_add_change_output(&mut tx, 400, 0, 253, Script::new()).is_err());
+		assert!(maybe_add_change_output(&mut tx, 4000, 0, 253, Script::new()).is_ok());
+	}
+
+	#[test]
+	fn test_tx_change_edge() {
+		// Check that we never add dust outputs
+		let mut tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
+		let orig_wtxid = tx.wtxid();
+		// 9 sats isn't enough to pay fee on a dummy transaction...
+		assert_eq!(tx.get_weight() as u64, 40); // ie 10 vbytes
+		assert!(maybe_add_change_output(&mut tx, 9, 0, 253, Script::new()).is_err());
+		assert_eq!(tx.wtxid(), orig_wtxid); // Failure doesn't change the transaction
+		// but 10-564 is, just not enough to add a change output...
+		assert!(maybe_add_change_output(&mut tx, 10, 0, 253, Script::new()).is_ok());
+		assert_eq!(tx.output.len(), 0);
+		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert!(maybe_add_change_output(&mut tx, 564, 0, 253, Script::new()).is_ok());
+		assert_eq!(tx.output.len(), 0);
+		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		// 565 is also not enough, if we anticipate 2 more weight units pushing us up to the next vbyte
+		// (considering the two bytes for segwit flags)
+		assert!(maybe_add_change_output(&mut tx, 565, 2, 253, Script::new()).is_ok());
+		assert_eq!(tx.output.len(), 0);
+		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		// at 565 we can afford the change output at the dust limit (546)
+		assert!(maybe_add_change_output(&mut tx, 565, 0, 253, Script::new()).is_ok());
+		assert_eq!(tx.output.len(), 1);
+		assert_eq!(tx.output[0].value, 546);
+		assert_eq!(tx.output[0].script_pubkey, Script::new());
+		assert_eq!(tx.get_weight() / 4, 565-546); // New weight is exactly the fee we wanted.
+
+		tx.output.pop();
+		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
+	}
+
+	#[test]
+	fn test_tx_extra_outputs() {
+		// Check that we correctly handle existing outputs
+		let mut tx = Transaction { version: 2, lock_time: 0, input: vec![TxIn {
+			previous_output: OutPoint::new(Txid::from_hash(Sha256dHash::default()), 0), script_sig: Script::new(), witness: Vec::new(), sequence: 0,
+		}], output: vec![TxOut {
+			script_pubkey: Builder::new().push_int(1).into_script(), value: 1000
+		}] };
+		let orig_wtxid = tx.wtxid();
+		let orig_weight = tx.get_weight();
+		assert_eq!(orig_weight / 4, 61);
+
+		// Input value of the output value + fee - 1 should fail:
+		assert!(maybe_add_change_output(&mut tx, 1000 + 61 + 100 - 1, 400, 250, Builder::new().push_int(2).into_script()).is_err());
+		assert_eq!(tx.wtxid(), orig_wtxid); // Failure doesn't change the transaction
+		// but one more input sat should succeed, without changing the transaction
+		assert!(maybe_add_change_output(&mut tx, 1000 + 61 + 100, 400, 250, Builder::new().push_int(2).into_script()).is_ok());
+		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		// In order to get a change output, we need to add 546 plus the output's weight / 4 (10)...
+		assert!(maybe_add_change_output(&mut tx, 1000 + 61 + 100 + 546 + 9, 400, 250, Builder::new().push_int(2).into_script()).is_ok());
+		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+
+		assert!(maybe_add_change_output(&mut tx, 1000 + 61 + 100 + 546 + 10, 400, 250, Builder::new().push_int(2).into_script()).is_ok());
+		assert_eq!(tx.output.len(), 2);
+		assert_eq!(tx.output[1].value, 546);
+		assert_eq!(tx.output[1].script_pubkey, Builder::new().push_int(2).into_script());
+		assert_eq!(tx.get_weight() - orig_weight, 40); // Weight difference matches what we had to add above
+		tx.output.pop();
+		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
 	}
 }

@@ -43,7 +43,7 @@ use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{SpendableOutputDescriptor, ChannelKeys, KeysInterface};
+use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ChannelKeys, KeysInterface};
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
@@ -2201,7 +2201,7 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 				break;
 			} else if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
 				if broadcasted_holder_revokable_script.0 == outp.script_pubkey {
-					spendable_output =  Some(SpendableOutputDescriptor::DynamicOutputP2WSH {
+					spendable_output =  Some(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
 						outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 						per_commitment_point: broadcasted_holder_revokable_script.1,
 						to_self_delay: self.on_holder_tx_csv,
@@ -2209,16 +2209,16 @@ impl<ChanSigner: ChannelKeys> ChannelMonitor<ChanSigner> {
 						revocation_pubkey: broadcasted_holder_revokable_script.2.clone(),
 						channel_keys_id: self.channel_keys_id,
 						channel_value_satoshis: self.channel_value_satoshis,
-					});
+					}));
 					break;
 				}
 			} else if self.counterparty_payment_script == outp.script_pubkey {
-				spendable_output = Some(SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
+				spendable_output = Some(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: self.channel_keys_id,
 					channel_value_satoshis: self.channel_value_satoshis,
-				});
+				}));
 				break;
 			} else if outp.script_pubkey == self.shutdown_script {
 				spendable_output = Some(SpendableOutputDescriptor::StaticOutput {
