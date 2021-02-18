@@ -45,24 +45,6 @@ impl ChannelHandshakeConfig {
 		ret
 	}
 }
-impl Clone for ChannelHandshakeConfig {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelHandshakeConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeConfig)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelHandshakeConfig_clone(orig: &ChannelHandshakeConfig) -> ChannelHandshakeConfig {
-	orig.clone()
-}
 /// Confirmations we will wait for before considering the channel locked in.
 /// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
 /// equivalent limit applied to outbound channels).
@@ -147,6 +129,24 @@ pub extern "C" fn ChannelHandshakeConfig_new(mut minimum_depth_arg: u32, mut our
 		our_htlc_minimum_msat: our_htlc_minimum_msat_arg,
 	})), is_owned: true }
 }
+impl Clone for ChannelHandshakeConfig {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelHandshakeConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeConfig)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelHandshakeConfig_clone(orig: &ChannelHandshakeConfig) -> ChannelHandshakeConfig {
+	orig.clone()
+}
 #[must_use]
 #[no_mangle]
 pub extern "C" fn ChannelHandshakeConfig_default() -> ChannelHandshakeConfig {
@@ -199,24 +199,6 @@ impl ChannelHandshakeLimits {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ChannelHandshakeLimits {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelHandshakeLimits_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeLimits)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelHandshakeLimits_clone(orig: &ChannelHandshakeLimits) -> ChannelHandshakeLimits {
-	orig.clone()
 }
 /// Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
 /// only applies to inbound channels.
@@ -430,6 +412,24 @@ pub extern "C" fn ChannelHandshakeLimits_new(mut min_funding_satoshis_arg: u64, 
 		their_to_self_delay: their_to_self_delay_arg,
 	})), is_owned: true }
 }
+impl Clone for ChannelHandshakeLimits {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelHandshakeLimits_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelHandshakeLimits)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelHandshakeLimits_clone(orig: &ChannelHandshakeLimits) -> ChannelHandshakeLimits {
+	orig.clone()
+}
 #[must_use]
 #[no_mangle]
 pub extern "C" fn ChannelHandshakeLimits_default() -> ChannelHandshakeLimits {
@@ -473,24 +473,6 @@ impl ChannelConfig {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ChannelConfig {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelConfig)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelConfig_clone(orig: &ChannelConfig) -> ChannelConfig {
-	orig.clone()
 }
 /// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
 /// This may be allowed to change at runtime in a later update, however doing so must result in
@@ -582,6 +564,24 @@ pub extern "C" fn ChannelConfig_new(mut fee_proportional_millionths_arg: u32, mu
 		commit_upfront_shutdown_pubkey: commit_upfront_shutdown_pubkey_arg,
 	})), is_owned: true }
 }
+impl Clone for ChannelConfig {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelConfig)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelConfig_clone(orig: &ChannelConfig) -> ChannelConfig {
+	orig.clone()
+}
 #[must_use]
 #[no_mangle]
 pub extern "C" fn ChannelConfig_default() -> ChannelConfig {
@@ -589,19 +589,17 @@ pub extern "C" fn ChannelConfig_default() -> ChannelConfig {
 }
 #[no_mangle]
 pub extern "C" fn ChannelConfig_write(obj: &ChannelConfig) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelConfig_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelConfig) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelConfig_read(ser: crate::c_types::u8slice) -> ChannelConfig {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelConfig { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelConfig { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelConfig_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelConfigDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::util::config::ChannelConfig { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::util::config::UserConfig as nativeUserConfigImport;
@@ -644,24 +642,6 @@ impl UserConfig {
 		ret
 	}
 }
-impl Clone for UserConfig {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UserConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUserConfig)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UserConfig_clone(orig: &UserConfig) -> UserConfig {
-	orig.clone()
-}
 /// Channel config that we propose to our counterparty.
 #[no_mangle]
 pub extern "C" fn UserConfig_get_own_channel_config(this_ptr: &UserConfig) -> crate::util::config::ChannelHandshakeConfig {
@@ -703,6 +683,24 @@ pub extern "C" fn UserConfig_new(mut own_channel_config_arg: crate::util::config
 		peer_channel_config_limits: *unsafe { Box::from_raw(peer_channel_config_limits_arg.take_inner()) },
 		channel_options: *unsafe { Box::from_raw(channel_options_arg.take_inner()) },
 	})), is_owned: true }
+}
+impl Clone for UserConfig {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UserConfig_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUserConfig)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UserConfig_clone(orig: &UserConfig) -> UserConfig {
+	orig.clone()
 }
 #[must_use]
 #[no_mangle]

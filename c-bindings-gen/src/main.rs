@@ -10,11 +10,10 @@
 //! It also generates relevant memory-management functions and free-standing functions with
 //! parameters mapped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, hash_map, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
 use std::process;
 
 use proc_macro2::{TokenTree, TokenStream, Span};
@@ -518,7 +517,6 @@ fn writeln_trait<'a, 'b, W: std::io::Write>(w: &mut W, t: &'a syn::ItemTrait, ty
 	writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
 
 	write_cpp_wrapper(cpp_headers, &trait_name, true);
-	types.trait_declared(&t.ident, t);
 }
 
 /// Write out a simple "opaque" type (eg structs) which contain a pointer to the native Rust type
@@ -555,53 +553,18 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, "\t\tret").unwrap();
 	writeln!(w, "\t}}\n}}").unwrap();
 
-	if attrs_derives_clone(attrs) {
-		writeln!(w, "impl Clone for {} {{", struct_name).unwrap();
-		writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
-		writeln!(w, "\t\tSelf {{").unwrap();
-		writeln!(w, "\t\t\tinner: if self.inner.is_null() {{ std::ptr::null_mut() }} else {{").unwrap();
-		writeln!(w, "\t\t\t\tBox::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())) }},").unwrap();
-		writeln!(w, "\t\t\tis_owned: true,").unwrap();
-		writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
-		writeln!(w, "#[allow(unused)]").unwrap();
-		writeln!(w, "/// Used only if an object of this type is returned as a trait impl by a method").unwrap();
-		writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", struct_name).unwrap();
-		writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", struct_name).unwrap();
-		writeln!(w, "}}").unwrap();
-		writeln!(w, "#[no_mangle]").unwrap();
-		writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", struct_name, struct_name, struct_name).unwrap();
-		writeln!(w, "\torig.clone()").unwrap();
-		writeln!(w, "}}").unwrap();
-	}
-
 	write_cpp_wrapper(cpp_headers, &format!("{}", ident), true);
-}
-
-fn declare_struct<'a, 'b>(s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>) -> bool {
-	let export = export_status(&s.attrs);
-	match export {
-		ExportStatus::Export => {},
-		ExportStatus::TestOnly => return false,
-		ExportStatus::NoExport => {
-			types.struct_ignored(&s.ident);
-			return false;
-		}
-	}
-
-	types.struct_imported(&s.ident, format!("{}", s.ident));
-	true
 }
 
 /// Writes out all the relevant mappings for a Rust struct, deferring to writeln_opaque to generate
 /// the struct itself, and then writing getters and setters for public, understood-type fields and
 /// a constructor if every field is public.
 fn writeln_struct<'a, 'b, W: std::io::Write>(w: &mut W, s: &'a syn::ItemStruct, types: &mut TypeResolver<'b, 'a>, extra_headers: &mut File, cpp_headers: &mut File) {
-	if !declare_struct(s, types) { return; }
+	if export_status(&s.attrs) != ExportStatus::Export { return; }
 
 	let struct_name = &format!("{}", s.ident);
 	writeln_opaque(w, &s.ident, struct_name, &s.generics, &s.attrs, types, extra_headers, cpp_headers);
 
-	eprintln!("exporting fields for {}", struct_name);
 	if let syn::Fields::Named(fields) = &s.fields {
 		let mut gen_types = GenericTypes::new();
 		assert!(gen_types.learn_generics(&s.generics, types));
@@ -934,20 +897,32 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 							}
 						) );
 						write!(w, "\n").unwrap();
-					} else if let Some(trait_ident) = trait_path.1.get_ident() {
-						//XXX: implement for other things like ToString
-						match &format!("{}", trait_ident) as &str {
-							"From" => {},
-							"Default" => {
-								write!(w, "#[must_use]\n#[no_mangle]\npub extern \"C\" fn {}_default() -> {} {{\n", ident, ident).unwrap();
-								write!(w, "\t{} {{ inner: Box::into_raw(Box::new(Default::default())), is_owned: true }}\n", ident).unwrap();
-								write!(w, "}}\n").unwrap();
-							},
-							"PartialEq" => {},
-							// If we have no generics, try a manual implementation:
-							_ => maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types),
-						}
+					} else if path_matches_nongeneric(&trait_path.1, &["From"]) {
+					} else if path_matches_nongeneric(&trait_path.1, &["Default"]) {
+						write!(w, "#[must_use]\n#[no_mangle]\npub extern \"C\" fn {}_default() -> {} {{\n", ident, ident).unwrap();
+						write!(w, "\t{} {{ inner: Box::into_raw(Box::new(Default::default())), is_owned: true }}\n", ident).unwrap();
+						write!(w, "}}\n").unwrap();
+					} else if path_matches_nongeneric(&trait_path.1, &["core", "cmp", "PartialEq"]) {
+					} else if (path_matches_nongeneric(&trait_path.1, &["core", "clone", "Clone"]) || path_matches_nongeneric(&trait_path.1, &["Clone"])) &&
+							types.c_type_has_inner_from_path(&resolved_path) {
+						writeln!(w, "impl Clone for {} {{", ident).unwrap();
+						writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
+						writeln!(w, "\t\tSelf {{").unwrap();
+						writeln!(w, "\t\t\tinner: if self.inner.is_null() {{ std::ptr::null_mut() }} else {{").unwrap();
+						writeln!(w, "\t\t\t\tBox::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())) }},").unwrap();
+						writeln!(w, "\t\t\tis_owned: true,").unwrap();
+						writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
+						writeln!(w, "#[allow(unused)]").unwrap();
+						writeln!(w, "/// Used only if an object of this type is returned as a trait impl by a method").unwrap();
+						writeln!(w, "pub(crate) extern \"C\" fn {}_clone_void(this_ptr: *const c_void) -> *mut c_void {{", ident).unwrap();
+						writeln!(w, "\tBox::into_raw(Box::new(unsafe {{ (*(this_ptr as *mut native{})).clone() }})) as *mut c_void", ident).unwrap();
+						writeln!(w, "}}").unwrap();
+						writeln!(w, "#[no_mangle]").unwrap();
+						writeln!(w, "pub extern \"C\" fn {}_clone(orig: &{}) -> {} {{", ident, ident, ident).unwrap();
+						writeln!(w, "\torig.clone()").unwrap();
+						writeln!(w, "}}").unwrap();
 					} else {
+						//XXX: implement for other things like ToString
 						// If we have no generics, try a manual implementation:
 						maybe_convert_trait_impl(w, &trait_path.1, &*i.self_ty, types, &gen_types);
 					}
@@ -1001,44 +976,67 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						}
 					}
 				}
-			} else {
-				eprintln!("Not implementing anything for {} due to no-resolve (probably the type isn't pub or its marked not exported)", ident);
-			}
-		}
-	}
-}
-
-/// Returns true if the enum will be mapped as an opaue (ie struct with a pointer to the underlying
-/// type), otherwise it is mapped into a transparent, C-compatible version of itself.
-fn is_enum_opaque(e: &syn::ItemEnum) -> bool {
-	for var in e.variants.iter() {
-		if let syn::Fields::Unit = var.fields {
-		} else if let syn::Fields::Named(fields) = &var.fields {
-			for field in fields.named.iter() {
-				match export_status(&field.attrs) {
-					ExportStatus::Export|ExportStatus::TestOnly => {},
-					ExportStatus::NoExport => return true,
+			} else if let Some(resolved_path) = types.maybe_resolve_ident(&ident) {
+				if let Some(aliases) = types.crate_types.reverse_alias_map.get(&resolved_path).cloned() {
+					'alias_impls: for (alias, arguments) in aliases {
+						let alias_resolved = types.resolve_path(&alias, None);
+						for (idx, gen) in i.generics.params.iter().enumerate() {
+							match gen {
+								syn::GenericParam::Type(type_param) => {
+									'bounds_check: for bound in type_param.bounds.iter() {
+										if let syn::TypeParamBound::Trait(trait_bound) = bound {
+											if let syn::PathArguments::AngleBracketed(ref t) = &arguments {
+												assert!(idx < t.args.len());
+												if let syn::GenericArgument::Type(syn::Type::Path(p)) = &t.args[idx] {
+													let generic_arg = types.resolve_path(&p.path, None);
+													let generic_bound = types.resolve_path(&trait_bound.path, None);
+													if let Some(traits_impld) = types.crate_types.trait_impls.get(&generic_arg) {
+														for trait_impld in traits_impld {
+															if *trait_impld == generic_bound { continue 'bounds_check; }
+														}
+														eprintln!("struct {}'s generic arg {} didn't match bound {}", alias_resolved, generic_arg, generic_bound);
+														continue 'alias_impls;
+													} else {
+														eprintln!("struct {}'s generic arg {} didn't match bound {}", alias_resolved, generic_arg, generic_bound);
+														continue 'alias_impls;
+													}
+												} else { unimplemented!(); }
+											} else { unimplemented!(); }
+										} else { unimplemented!(); }
+									}
+								},
+								syn::GenericParam::Lifetime(_) => {},
+								syn::GenericParam::Const(_) => unimplemented!(),
+							}
+						}
+						let aliased_impl = syn::ItemImpl {
+							attrs: i.attrs.clone(),
+							brace_token: syn::token::Brace(Span::call_site()),
+							defaultness: None,
+							generics: syn::Generics {
+								lt_token: None,
+								params: syn::punctuated::Punctuated::new(),
+								gt_token: None,
+								where_clause: None,
+							},
+							impl_token: syn::Token![impl](Span::call_site()),
+							items: i.items.clone(),
+							self_ty: Box::new(syn::Type::Path(syn::TypePath { qself: None, path: alias.clone() })),
+							trait_: i.trait_.clone(),
+							unsafety: None,
+						};
+						writeln_impl(w, &aliased_impl, types);
+					}
+				} else {
+					eprintln!("Not implementing anything for {} due to it being marked not exported", ident);
 				}
+			} else {
+				eprintln!("Not implementing anything for {} due to no-resolve (probably the type isn't pub)", ident);
 			}
-		} else {
-			return true;
 		}
 	}
-	false
 }
 
-fn declare_enum<'a, 'b>(e: &'a syn::ItemEnum, types: &mut TypeResolver<'b, 'a>) {
-	match export_status(&e.attrs) {
-		ExportStatus::Export => {},
-		ExportStatus::NoExport|ExportStatus::TestOnly => return,
-	}
-
-	if is_enum_opaque(e) {
-		types.enum_ignored(&e.ident);
-	} else {
-		types.mirrored_enum_declared(&e.ident);
-	}
-}
 
 /// Print a mapping of an enum. If all of the enum's fields are C-mapped in some form (or the enum
 /// is unitary), we generate an equivalent enum with all types replaced with their C mapped
@@ -1195,370 +1193,332 @@ fn writeln_fn<'a, 'b, W: std::io::Write>(w: &mut W, f: &'a syn::ItemFn, types: &
 // ********************************
 // *** File/Crate Walking Logic ***
 // ********************************
-
-/// Simple utility to walk the modules in a crate - iterating over the modules (with file paths) in
-/// a single File.
-struct FileIter<'a, I: Iterator<Item = &'a syn::Item>> {
-	in_dir: &'a str,
-	path: &'a str,
-	module: &'a str,
-	item_iter: I,
+/// A public module
+struct ASTModule {
+	pub attrs: Vec<syn::Attribute>,
+	pub items: Vec<syn::Item>,
+	pub submods: Vec<String>,
 }
-impl<'a, I: Iterator<Item = &'a syn::Item>> Iterator for FileIter<'a, I> {
-	type Item = (String, String, &'a syn::ItemMod);
-	fn next(&mut self) -> std::option::Option<<Self as std::iter::Iterator>::Item> {
-		loop {
-			match self.item_iter.next() {
-				Some(syn::Item::Mod(m)) => {
-					if let syn::Visibility::Public(_) = m.vis {
-						match export_status(&m.attrs) {
-							ExportStatus::Export => {},
-							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-						}
-
-						let f_path = format!("{}/{}.rs", (self.path.as_ref() as &Path).parent().unwrap().display(), m.ident);
-						let new_mod = if self.module.is_empty() { format!("{}", m.ident) } else { format!("{}::{}", self.module, m.ident) };
-						if let Ok(_) = File::open(&format!("{}/{}", self.in_dir, f_path)) {
-							return Some((f_path, new_mod, m));
+/// A struct containing the syn::File AST for each file in the crate.
+struct FullLibraryAST {
+	modules: HashMap<String, ASTModule, NonRandomHash>,
+}
+impl FullLibraryAST {
+	fn load_module(&mut self, module: String, attrs: Vec<syn::Attribute>, mut items: Vec<syn::Item>) {
+		let mut non_mod_items = Vec::with_capacity(items.len());
+		let mut submods = Vec::with_capacity(items.len());
+		for item in items.drain(..) {
+			match item {
+				syn::Item::Mod(m) if m.content.is_some() => {
+					if export_status(&m.attrs) == ExportStatus::Export {
+						if let syn::Visibility::Public(_) = m.vis {
+							let modident = format!("{}", m.ident);
+							let modname = if module != "" {
+								module.clone() + "::" + &modident
+							} else {
+								modident.clone()
+							};
+							self.load_module(modname, m.attrs, m.content.unwrap().1);
+							submods.push(modident);
 						} else {
-							return Some((
-								format!("{}/{}/mod.rs", (self.path.as_ref() as &Path).parent().unwrap().display(), m.ident),
-								new_mod, m));
+							non_mod_items.push(syn::Item::Mod(m));
 						}
 					}
 				},
-				Some(_) => {},
-				None => return None,
+				syn::Item::Mod(_) => panic!("--pretty=expanded output should never have non-body modules"),
+				_ => { non_mod_items.push(item); }
 			}
 		}
+		self.modules.insert(module, ASTModule { attrs, items: non_mod_items, submods });
 	}
-}
-fn file_iter<'a>(file: &'a syn::File, in_dir: &'a str, path: &'a str, module: &'a str) ->
-		impl Iterator<Item = (String, String, &'a syn::ItemMod)> + 'a {
-	FileIter { in_dir, path, module, item_iter: file.items.iter() }
-}
 
-/// A struct containing the syn::File AST for each file in the crate.
-struct FullLibraryAST {
-	files: HashMap<String, syn::File>,
+	pub fn load_lib(lib: syn::File) -> Self {
+		assert_eq!(export_status(&lib.attrs), ExportStatus::Export);
+		let mut res = Self { modules: HashMap::default() };
+		res.load_module("".to_owned(), lib.attrs, lib.items);
+		res
+	}
 }
 
 /// Do the Real Work of mapping an original file to C-callable wrappers. Creates a new file at
 /// `out_path` and fills it with wrapper structs/functions to allow calling the things in the AST
 /// at `module` from C.
-fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>, in_dir: &str, out_dir: &str, path: &str, orig_crate: &str, module: &str, header_file: &mut File, cpp_header_file: &mut File) {
-	let syntax = if let Some(ast) = libast.files.get(module) { ast } else { return };
+fn convert_file<'a, 'b>(libast: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>, out_dir: &str, orig_crate: &str, header_file: &mut File, cpp_header_file: &mut File) {
+	for (module, astmod) in libast.modules.iter() {
+		let ASTModule { ref attrs, ref items, ref submods } = astmod;
+		assert_eq!(export_status(&attrs), ExportStatus::Export);
 
-	assert!(syntax.shebang.is_none()); // Not sure what this is, hope we dont have one
+		let new_file_path = if submods.is_empty() {
+			format!("{}/{}.rs", out_dir, module.replace("::", "/"))
+		} else if module != "" {
+			format!("{}/{}/mod.rs", out_dir, module.replace("::", "/"))
+		} else {
+			format!("{}/lib.rs", out_dir)
+		};
+		let _ = std::fs::create_dir((&new_file_path.as_ref() as &std::path::Path).parent().unwrap());
+		let mut out = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
+			.open(new_file_path).expect("Unable to open new src file");
 
-	let new_file_path = format!("{}/{}", out_dir, path);
-	let _ = std::fs::create_dir((&new_file_path.as_ref() as &std::path::Path).parent().unwrap());
-	let mut out = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
-		.open(new_file_path).expect("Unable to open new src file");
+		writeln_docs(&mut out, &attrs, "");
 
-	assert_eq!(export_status(&syntax.attrs), ExportStatus::Export);
-	writeln_docs(&mut out, &syntax.attrs, "");
-
-	if path.ends_with("/lib.rs") {
-		// Special-case the top-level lib.rs with various lint allows and a pointer to the c_types
-		// and bitcoin hand-written modules.
-		writeln!(out, "#![allow(unknown_lints)]").unwrap();
-		writeln!(out, "#![allow(non_camel_case_types)]").unwrap();
-		writeln!(out, "#![allow(non_snake_case)]").unwrap();
-		writeln!(out, "#![allow(unused_imports)]").unwrap();
-		writeln!(out, "#![allow(unused_variables)]").unwrap();
-		writeln!(out, "#![allow(unused_mut)]").unwrap();
-		writeln!(out, "#![allow(unused_parens)]").unwrap();
-		writeln!(out, "#![allow(unused_unsafe)]").unwrap();
-		writeln!(out, "#![allow(unused_braces)]").unwrap();
-		writeln!(out, "mod c_types;").unwrap();
-		writeln!(out, "mod bitcoin;").unwrap();
-	} else {
-		writeln!(out, "\nuse std::ffi::c_void;\nuse bitcoin::hashes::Hash;\nuse crate::c_types::*;\n").unwrap();
-	}
-
-	for (path, new_mod, m) in file_iter(&syntax, in_dir, path, &module) {
-		writeln_docs(&mut out, &m.attrs, "");
-		writeln!(out, "pub mod {};", m.ident).unwrap();
-		convert_file(libast, crate_types, in_dir, out_dir, &path,
-			orig_crate, &new_mod, header_file, cpp_header_file);
-	}
-
-	eprintln!("Converting {} entries...", path);
-
-	let mut type_resolver = TypeResolver::new(orig_crate, module, crate_types);
-
-	// First pass over the items and fill in imports and file-declared objects in the type resolver
-	for item in syntax.items.iter() {
-		match item {
-			syn::Item::Use(u) => type_resolver.process_use(&mut out, &u),
-			syn::Item::Struct(s) => {
-				if let syn::Visibility::Public(_) = s.vis {
-					declare_struct(&s, &mut type_resolver);
-				}
-			},
-			syn::Item::Enum(e) => {
-				if let syn::Visibility::Public(_) = e.vis {
-					declare_enum(&e, &mut type_resolver);
-				}
-			},
-			_ => {},
+		if module == "" {
+			// Special-case the top-level lib.rs with various lint allows and a pointer to the c_types
+			// and bitcoin hand-written modules.
+			writeln!(out, "#![allow(unknown_lints)]").unwrap();
+			writeln!(out, "#![allow(non_camel_case_types)]").unwrap();
+			writeln!(out, "#![allow(non_snake_case)]").unwrap();
+			writeln!(out, "#![allow(unused_imports)]").unwrap();
+			writeln!(out, "#![allow(unused_variables)]").unwrap();
+			writeln!(out, "#![allow(unused_mut)]").unwrap();
+			writeln!(out, "#![allow(unused_parens)]").unwrap();
+			writeln!(out, "#![allow(unused_unsafe)]").unwrap();
+			writeln!(out, "#![allow(unused_braces)]").unwrap();
+			writeln!(out, "mod c_types;").unwrap();
+			writeln!(out, "mod bitcoin;").unwrap();
+		} else {
+			writeln!(out, "\nuse std::ffi::c_void;\nuse bitcoin::hashes::Hash;\nuse crate::c_types::*;\n").unwrap();
 		}
-	}
 
-	for item in syntax.items.iter() {
+		for m in submods {
+			writeln!(out, "pub mod {};", m).unwrap();
+		}
+
+		eprintln!("Converting {} entries...", module);
+
+		let import_resolver = ImportResolver::new(module, items);
+		let mut type_resolver = TypeResolver::new(orig_crate, module, import_resolver, crate_types);
+
+		for item in items.iter() {
+			match item {
+				syn::Item::Use(_) => {}, // Handled above
+				syn::Item::Static(_) => {},
+				syn::Item::Enum(e) => {
+					if let syn::Visibility::Public(_) = e.vis {
+						writeln_enum(&mut out, &e, &mut type_resolver, header_file, cpp_header_file);
+					}
+				},
+				syn::Item::Impl(i) => {
+					writeln_impl(&mut out, &i, &mut type_resolver);
+				},
+				syn::Item::Struct(s) => {
+					if let syn::Visibility::Public(_) = s.vis {
+						writeln_struct(&mut out, &s, &mut type_resolver, header_file, cpp_header_file);
+					}
+				},
+				syn::Item::Trait(t) => {
+					if let syn::Visibility::Public(_) = t.vis {
+						writeln_trait(&mut out, &t, &mut type_resolver, header_file, cpp_header_file);
+					}
+				},
+				syn::Item::Mod(_) => {}, // We don't have to do anything - the top loop handles these.
+				syn::Item::Const(c) => {
+					// Re-export any primitive-type constants.
+					if let syn::Visibility::Public(_) = c.vis {
+						if let syn::Type::Path(p) = &*c.ty {
+							let resolved_path = type_resolver.resolve_path(&p.path, None);
+							if type_resolver.is_primitive(&resolved_path) {
+								writeln!(out, "\n#[no_mangle]").unwrap();
+								writeln!(out, "pub static {}: {} = {}::{}::{};", c.ident, resolved_path, orig_crate, module, c.ident).unwrap();
+							}
+						}
+					}
+				},
+				syn::Item::Type(t) => {
+					if let syn::Visibility::Public(_) = t.vis {
+						match export_status(&t.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+
+						let mut process_alias = true;
+						for tok in t.generics.params.iter() {
+							if let syn::GenericParam::Lifetime(_) = tok {}
+							else { process_alias = false; }
+						}
+						if process_alias {
+							match &*t.ty {
+								syn::Type::Path(_) =>
+									writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file),
+								_ => {}
+							}
+						}
+					}
+				},
+				syn::Item::Fn(f) => {
+					if let syn::Visibility::Public(_) = f.vis {
+						writeln_fn(&mut out, &f, &mut type_resolver);
+					}
+				},
+				syn::Item::Macro(m) => {
+					if m.ident.is_none() { // If its not a macro definition
+						convert_macro(&mut out, &m.mac.path, &m.mac.tokens, &type_resolver);
+					}
+				},
+				syn::Item::Verbatim(_) => {},
+				syn::Item::ExternCrate(_) => {},
+				_ => unimplemented!(),
+			}
+		}
+
+		out.flush().unwrap();
+	}
+}
+
+fn walk_private_mod<'a>(module: String, items: &'a syn::ItemMod, crate_types: &mut CrateTypes<'a>) {
+	let import_resolver = ImportResolver::new(&module, &items.content.as_ref().unwrap().1);
+	for item in items.content.as_ref().unwrap().1.iter() {
 		match item {
-			syn::Item::Use(_) => {}, // Handled above
-			syn::Item::Static(_) => {},
-			syn::Item::Enum(e) => {
-				if let syn::Visibility::Public(_) = e.vis {
-					writeln_enum(&mut out, &e, &mut type_resolver, header_file, cpp_header_file);
-				}
-			},
+			syn::Item::Mod(m) => walk_private_mod(format!("{}::{}", module, m.ident), m, crate_types),
 			syn::Item::Impl(i) => {
-				writeln_impl(&mut out, &i, &mut type_resolver);
-			},
-			syn::Item::Struct(s) => {
-				if let syn::Visibility::Public(_) = s.vis {
-					writeln_struct(&mut out, &s, &mut type_resolver, header_file, cpp_header_file);
-				}
-			},
-			syn::Item::Trait(t) => {
-				if let syn::Visibility::Public(_) = t.vis {
-					writeln_trait(&mut out, &t, &mut type_resolver, header_file, cpp_header_file);
-				}
-			},
-			syn::Item::Mod(_) => {}, // We don't have to do anything - the top loop handles these.
-			syn::Item::Const(c) => {
-				// Re-export any primitive-type constants.
-				if let syn::Visibility::Public(_) = c.vis {
-					if let syn::Type::Path(p) = &*c.ty {
-						let resolved_path = type_resolver.resolve_path(&p.path, None);
-						if type_resolver.is_primitive(&resolved_path) {
-							writeln!(out, "\n#[no_mangle]").unwrap();
-							writeln!(out, "pub static {}: {} = {}::{}::{};", c.ident, resolved_path, orig_crate, module, c.ident).unwrap();
-						}
-					}
-				}
-			},
-			syn::Item::Type(t) => {
-				if let syn::Visibility::Public(_) = t.vis {
-					match export_status(&t.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-
-					let mut process_alias = true;
-					for tok in t.generics.params.iter() {
-						if let syn::GenericParam::Lifetime(_) = tok {}
-						else { process_alias = false; }
-					}
-					if process_alias {
-						match &*t.ty {
-							syn::Type::Path(_) =>
-								writeln_opaque(&mut out, &t.ident, &format!("{}", t.ident), &t.generics, &t.attrs, &type_resolver, header_file, cpp_header_file),
-							_ => {}
-						}
-					}
-				}
-			},
-			syn::Item::Fn(f) => {
-				if let syn::Visibility::Public(_) = f.vis {
-					writeln_fn(&mut out, &f, &mut type_resolver);
-				}
-			},
-			syn::Item::Macro(m) => {
-				if m.ident.is_none() { // If its not a macro definition
-					convert_macro(&mut out, &m.mac.path, &m.mac.tokens, &type_resolver);
-				}
-			},
-			syn::Item::Verbatim(_) => {},
-			syn::Item::ExternCrate(_) => {},
-			_ => unimplemented!(),
-		}
-	}
-
-	out.flush().unwrap();
-}
-
-/// Load the AST for each file in the crate, filling the FullLibraryAST object
-fn load_ast(in_dir: &str, path: &str, module: String, ast_storage: &mut FullLibraryAST) {
-	eprintln!("Loading {}{}...", in_dir, path);
-
-	let mut file = File::open(format!("{}/{}", in_dir, path)).expect("Unable to open file");
-	let mut src = String::new();
-	file.read_to_string(&mut src).expect("Unable to read file");
-	let syntax = syn::parse_file(&src).expect("Unable to parse file");
-
-	assert_eq!(export_status(&syntax.attrs), ExportStatus::Export);
-
-	for (path, new_mod, _) in file_iter(&syntax, in_dir, path, &module) {
-		load_ast(in_dir, &path, new_mod, ast_storage);
-	}
-	ast_storage.files.insert(module, syntax);
-}
-
-/// Insert ident -> absolute Path resolutions into imports from the given UseTree and path-prefix.
-fn process_use_intern<'a>(u: &'a syn::UseTree, mut path: syn::punctuated::Punctuated<syn::PathSegment, syn::token::Colon2>, imports: &mut HashMap<&'a syn::Ident, syn::Path>) {
-	match u {
-		syn::UseTree::Path(p) => {
-			path.push(syn::PathSegment { ident: p.ident.clone(), arguments: syn::PathArguments::None });
-			process_use_intern(&p.tree, path, imports);
-		},
-		syn::UseTree::Name(n) => {
-			path.push(syn::PathSegment { ident: n.ident.clone(), arguments: syn::PathArguments::None });
-			imports.insert(&n.ident, syn::Path { leading_colon: Some(syn::Token![::](Span::call_site())), segments: path });
-		},
-		syn::UseTree::Group(g) => {
-			for i in g.items.iter() {
-				process_use_intern(i, path.clone(), imports);
-			}
-		},
-		_ => {}
-	}
-}
-
-/// Map all the Paths in a Type into absolute paths given a set of imports (generated via process_use_intern)
-fn resolve_imported_refs(imports: &HashMap<&syn::Ident, syn::Path>, mut ty: syn::Type) -> syn::Type {
-	match &mut ty {
-		syn::Type::Path(p) => {
-			if let Some(ident) = p.path.get_ident() {
-				if let Some(newpath) = imports.get(ident) {
-					p.path = newpath.clone();
-				}
-			} else { unimplemented!(); }
-		},
-		syn::Type::Reference(r) => {
-			r.elem = Box::new(resolve_imported_refs(imports, (*r.elem).clone()));
-		},
-		syn::Type::Slice(s) => {
-			s.elem = Box::new(resolve_imported_refs(imports, (*s.elem).clone()));
-		},
-		syn::Type::Tuple(t) => {
-			for e in t.elems.iter_mut() {
-				*e = resolve_imported_refs(imports, e.clone());
-			}
-		},
-		_ => unimplemented!(),
-	}
-	ty
-}
-
-/// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
-fn walk_ast<'a>(in_dir: &str, path: &str, module: String, ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
-	let syntax = if let Some(ast) = ast_storage.files.get(&module) { ast } else { return };
-	assert_eq!(export_status(&syntax.attrs), ExportStatus::Export);
-
-	for (path, new_mod, _) in file_iter(&syntax, in_dir, path, &module) {
-		walk_ast(in_dir, &path, new_mod, ast_storage, crate_types);
-	}
-
-	let mut import_maps = HashMap::new();
-
-	for item in syntax.items.iter() {
-		match item {
-			syn::Item::Use(u) => {
-				process_use_intern(&u.tree, syn::punctuated::Punctuated::new(), &mut import_maps);
-			},
-			syn::Item::Struct(s) => {
-				if let syn::Visibility::Public(_) = s.vis {
-					match export_status(&s.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-					let struct_path = format!("{}::{}", module, s.ident);
-					if attrs_derives_clone(&s.attrs) {
-						crate_types.clonable_types.insert("crate::".to_owned() + &struct_path);
-					}
-
-					crate_types.opaques.insert(struct_path, &s.ident);
-				}
-			},
-			syn::Item::Trait(t) => {
-				if let syn::Visibility::Public(_) = t.vis {
-					match export_status(&t.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-					let trait_path = format!("{}::{}", module, t.ident);
-					walk_supertraits!(t, None, (
-						("Clone", _) => {
-							crate_types.clonable_types.insert("crate::".to_owned() + &trait_path);
-						},
-						(_, _) => {}
-					) );
-					crate_types.traits.insert(trait_path, &t);
-				}
-			},
-			syn::Item::Type(t) => {
-				if let syn::Visibility::Public(_) = t.vis {
-					match export_status(&t.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-					let type_path = format!("{}::{}", module, t.ident);
-					let mut process_alias = true;
-					for tok in t.generics.params.iter() {
-						if let syn::GenericParam::Lifetime(_) = tok {}
-						else { process_alias = false; }
-					}
-					if process_alias {
-						match &*t.ty {
-							syn::Type::Path(_) => {
-								// If its a path with no generics, assume we don't map the aliased type and map it opaque
-								crate_types.opaques.insert(type_path, &t.ident);
-							},
-							_ => {
-								crate_types.type_aliases.insert(type_path, resolve_imported_refs(&import_maps, (*t.ty).clone()));
+				if let &syn::Type::Path(ref p) = &*i.self_ty {
+					if let Some(trait_path) = i.trait_.as_ref() {
+						if let Some(tp) = import_resolver.maybe_resolve_path(&trait_path.1, None) {
+							if let Some(sp) = import_resolver.maybe_resolve_path(&p.path, None) {
+								match crate_types.trait_impls.entry(sp) {
+									hash_map::Entry::Occupied(mut e) => { e.get_mut().push(tp); },
+									hash_map::Entry::Vacant(e) => { e.insert(vec![tp]); },
+								}
 							}
 						}
 					}
 				}
 			},
-			syn::Item::Enum(e) if is_enum_opaque(e) => {
-				if let syn::Visibility::Public(_) = e.vis {
-					match export_status(&e.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-					let enum_path = format!("{}::{}", module, e.ident);
-					if attrs_derives_clone(&e.attrs) {
-						crate_types.clonable_types.insert("crate::".to_owned() + &enum_path);
-					}
-					crate_types.opaques.insert(enum_path, &e.ident);
-				}
-			},
-			syn::Item::Enum(e) => {
-				if let syn::Visibility::Public(_) = e.vis {
-					match export_status(&e.attrs) {
-						ExportStatus::Export => {},
-						ExportStatus::NoExport|ExportStatus::TestOnly => continue,
-					}
-					let enum_path = format!("{}::{}", module, e.ident);
-					if attrs_derives_clone(&e.attrs) {
-						crate_types.clonable_types.insert("crate::".to_owned() + &enum_path);
-					}
-					crate_types.mirrored_enums.insert(enum_path, &e);
-				}
-			},
 			_ => {},
+		}
+	}
+}
+
+/// Walk the FullLibraryAST, deciding how things will be mapped and adding tracking to CrateTypes.
+fn walk_ast<'a>(ast_storage: &'a FullLibraryAST, crate_types: &mut CrateTypes<'a>) {
+	for (module, astmod) in ast_storage.modules.iter() {
+		let ASTModule { ref attrs, ref items, submods: _ } = astmod;
+		assert_eq!(export_status(&attrs), ExportStatus::Export);
+		let import_resolver = ImportResolver::new(module, items);
+
+		for item in items.iter() {
+			match item {
+				syn::Item::Struct(s) => {
+					if let syn::Visibility::Public(_) = s.vis {
+						match export_status(&s.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+						let struct_path = format!("{}::{}", module, s.ident);
+						crate_types.opaques.insert(struct_path, &s.ident);
+					}
+				},
+				syn::Item::Trait(t) => {
+					if let syn::Visibility::Public(_) = t.vis {
+						match export_status(&t.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+						let trait_path = format!("{}::{}", module, t.ident);
+						walk_supertraits!(t, None, (
+							("Clone", _) => {
+								crate_types.clonable_types.insert("crate::".to_owned() + &trait_path);
+							},
+							(_, _) => {}
+						) );
+						crate_types.traits.insert(trait_path, &t);
+					}
+				},
+				syn::Item::Type(t) => {
+					if let syn::Visibility::Public(_) = t.vis {
+						match export_status(&t.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+						let type_path = format!("{}::{}", module, t.ident);
+						let mut process_alias = true;
+						for tok in t.generics.params.iter() {
+							if let syn::GenericParam::Lifetime(_) = tok {}
+							else { process_alias = false; }
+						}
+						if process_alias {
+							match &*t.ty {
+								syn::Type::Path(p) => {
+									// If its a path with no generics, assume we don't map the aliased type and map it opaque
+									let mut segments = syn::punctuated::Punctuated::new();
+									segments.push(syn::PathSegment {
+										ident: t.ident.clone(),
+										arguments: syn::PathArguments::None,
+									});
+									let path_obj = syn::Path { leading_colon: None, segments };
+									let args_obj = p.path.segments.last().unwrap().arguments.clone();
+									match crate_types.reverse_alias_map.entry(import_resolver.maybe_resolve_path(&p.path, None).unwrap()) {
+										hash_map::Entry::Occupied(mut e) => { e.get_mut().push((path_obj, args_obj)); },
+										hash_map::Entry::Vacant(e) => { e.insert(vec![(path_obj, args_obj)]); },
+									}
+
+									crate_types.opaques.insert(type_path.clone(), &t.ident);
+								},
+								_ => {
+									crate_types.type_aliases.insert(type_path, import_resolver.resolve_imported_refs((*t.ty).clone()));
+								}
+							}
+						}
+					}
+				},
+				syn::Item::Enum(e) if is_enum_opaque(e) => {
+					if let syn::Visibility::Public(_) = e.vis {
+						match export_status(&e.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+						let enum_path = format!("{}::{}", module, e.ident);
+						crate_types.opaques.insert(enum_path, &e.ident);
+					}
+				},
+				syn::Item::Enum(e) => {
+					if let syn::Visibility::Public(_) = e.vis {
+						match export_status(&e.attrs) {
+							ExportStatus::Export => {},
+							ExportStatus::NoExport|ExportStatus::TestOnly => continue,
+						}
+						let enum_path = format!("{}::{}", module, e.ident);
+						crate_types.mirrored_enums.insert(enum_path, &e);
+					}
+				},
+				syn::Item::Impl(i) => {
+					if let &syn::Type::Path(ref p) = &*i.self_ty {
+						if let Some(trait_path) = i.trait_.as_ref() {
+							if path_matches_nongeneric(&trait_path.1, &["core", "clone", "Clone"]) {
+								if let Some(full_path) = import_resolver.maybe_resolve_path(&p.path, None) {
+									crate_types.clonable_types.insert("crate::".to_owned() + &full_path);
+								}
+							}
+							if let Some(tp) = import_resolver.maybe_resolve_path(&trait_path.1, None) {
+								if let Some(sp) = import_resolver.maybe_resolve_path(&p.path, None) {
+									match crate_types.trait_impls.entry(sp) {
+										hash_map::Entry::Occupied(mut e) => { e.get_mut().push(tp); },
+										hash_map::Entry::Vacant(e) => { e.insert(vec![tp]); },
+									}
+								}
+							}
+						}
+					}
+				},
+				syn::Item::Mod(m) => walk_private_mod(format!("{}::{}", module, m.ident), m, crate_types),
+				_ => {},
+			}
 		}
 	}
 }
 
 fn main() {
 	let args: Vec<String> = env::args().collect();
-	if args.len() != 7 {
-		eprintln!("Usage: source/dir target/dir source_crate_name derived_templates.rs extra/includes.h extra/cpp/includes.hpp");
+	if args.len() != 6 {
+		eprintln!("Usage: target/dir source_crate_name derived_templates.rs extra/includes.h extra/cpp/includes.hpp");
 		process::exit(1);
 	}
 
 	let mut derived_templates = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
-		.open(&args[4]).expect("Unable to open new header file");
+		.open(&args[3]).expect("Unable to open new header file");
 	let mut header_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
-		.open(&args[5]).expect("Unable to open new header file");
+		.open(&args[4]).expect("Unable to open new header file");
 	let mut cpp_header_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
-		.open(&args[6]).expect("Unable to open new header file");
+		.open(&args[5]).expect("Unable to open new header file");
 
 	writeln!(header_file, "#if defined(__GNUC__)").unwrap();
 	writeln!(header_file, "#define MUST_USE_STRUCT __attribute__((warn_unused))").unwrap();
@@ -1576,18 +1536,21 @@ fn main() {
 
 	// First parse the full crate's ASTs, caching them so that we can hold references to the AST
 	// objects in other datastructures:
-	let mut libast = FullLibraryAST { files: HashMap::new() };
-	load_ast(&args[1], "/lib.rs", "".to_string(), &mut libast);
+	let mut lib_src = String::new();
+	std::io::stdin().lock().read_to_string(&mut lib_src).unwrap();
+	let lib_syntax = syn::parse_file(&lib_src).expect("Unable to parse file");
+	let libast = FullLibraryAST::load_lib(lib_syntax);
 
 	// ...then walk the ASTs tracking what types we will map, and how, so that we can resolve them
 	// when parsing other file ASTs...
 	let mut libtypes = CrateTypes { traits: HashMap::new(), opaques: HashMap::new(), mirrored_enums: HashMap::new(),
-		type_aliases: HashMap::new(), templates_defined: HashMap::default(), template_file: &mut derived_templates,
-		clonable_types: HashSet::new() };
-	walk_ast(&args[1], "/lib.rs", "".to_string(), &libast, &mut libtypes);
+		type_aliases: HashMap::new(), reverse_alias_map: HashMap::new(), templates_defined: HashMap::default(),
+		template_file: &mut derived_templates,
+		clonable_types: HashSet::new(), trait_impls: HashMap::new() };
+	walk_ast(&libast, &mut libtypes);
 
 	// ... finally, do the actual file conversion/mapping, writing out types as we go.
-	convert_file(&libast, &mut libtypes, &args[1], &args[2], "/lib.rs", &args[3], "", &mut header_file, &mut cpp_header_file);
+	convert_file(&libast, &mut libtypes, &args[1], &args[2], &mut header_file, &mut cpp_header_file);
 
 	// For container templates which we created while walking the crate, make sure we add C++
 	// mapped types so that C++ users can utilize the auto-destructors available.

@@ -19,7 +19,7 @@ pub extern "C" fn build_commitment_secret(commitment_seed: *const [u8; 32], mut 
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_private_key(mut per_commitment_point: crate::c_types::PublicKey, base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeySecpErrorZ {
+pub extern "C" fn derive_private_key(mut per_commitment_point: crate::c_types::PublicKey, base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeyErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_private_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *base_secret}[..]).unwrap());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::SecretKey::from_rust(o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -32,7 +32,7 @@ pub extern "C" fn derive_private_key(mut per_commitment_point: crate::c_types::P
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_public_key(mut per_commitment_point: crate::c_types::PublicKey, mut base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
+pub extern "C" fn derive_public_key(mut per_commitment_point: crate::c_types::PublicKey, mut base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeyErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_public_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &base_point.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::PublicKey::from_rust(&o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -48,7 +48,7 @@ pub extern "C" fn derive_public_key(mut per_commitment_point: crate::c_types::Pu
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_private_revocation_key(per_commitment_secret: *const [u8; 32], countersignatory_revocation_base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeySecpErrorZ {
+pub extern "C" fn derive_private_revocation_key(per_commitment_secret: *const [u8; 32], countersignatory_revocation_base_secret: *const [u8; 32]) -> crate::c_types::derived::CResult_SecretKeyErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_private_revocation_key(&bitcoin::secp256k1::Secp256k1::new(), &::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *per_commitment_secret}[..]).unwrap(), &::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *countersignatory_revocation_base_secret}[..]).unwrap());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::SecretKey::from_rust(o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -66,7 +66,7 @@ pub extern "C" fn derive_private_revocation_key(per_commitment_secret: *const [u
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
 #[no_mangle]
-pub extern "C" fn derive_public_revocation_key(mut per_commitment_point: crate::c_types::PublicKey, mut countersignatory_revocation_base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeySecpErrorZ {
+pub extern "C" fn derive_public_revocation_key(mut per_commitment_point: crate::c_types::PublicKey, mut countersignatory_revocation_base_point: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_PublicKeyErrorZ {
 	let mut ret = lightning::ln::chan_utils::derive_public_revocation_key(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &countersignatory_revocation_base_point.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::c_types::PublicKey::from_rust(&o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -119,24 +119,6 @@ impl TxCreationKeys {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for TxCreationKeys {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn TxCreationKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeTxCreationKeys)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn TxCreationKeys_clone(orig: &TxCreationKeys) -> TxCreationKeys {
-	orig.clone()
 }
 /// The broadcaster's per-commitment public key which was used to derive the other keys.
 #[no_mangle]
@@ -208,21 +190,37 @@ pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_type
 		broadcaster_delayed_payment_key: broadcaster_delayed_payment_key_arg.into_rust(),
 	})), is_owned: true }
 }
+impl Clone for TxCreationKeys {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn TxCreationKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeTxCreationKeys)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn TxCreationKeys_clone(orig: &TxCreationKeys) -> TxCreationKeys {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn TxCreationKeys_write(obj: &TxCreationKeys) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn TxCreationKeys_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeTxCreationKeys) })
 }
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_read(ser: crate::c_types::u8slice) -> TxCreationKeys {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		TxCreationKeys { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		TxCreationKeys { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn TxCreationKeys_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_TxCreationKeysDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::TxCreationKeys { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::ln::chan_utils::ChannelPublicKeys as nativeChannelPublicKeysImport;
@@ -261,24 +259,6 @@ impl ChannelPublicKeys {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ChannelPublicKeys {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelPublicKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelPublicKeys)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelPublicKeys_clone(orig: &ChannelPublicKeys) -> ChannelPublicKeys {
-	orig.clone()
 }
 /// The public key which is used to sign all commitment transactions, as it appears in the
 /// on-chain channel lock-in 2-of-2 multisig output.
@@ -364,27 +344,43 @@ pub extern "C" fn ChannelPublicKeys_new(mut funding_pubkey_arg: crate::c_types::
 		htlc_basepoint: htlc_basepoint_arg.into_rust(),
 	})), is_owned: true }
 }
+impl Clone for ChannelPublicKeys {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelPublicKeys_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelPublicKeys)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelPublicKeys_clone(orig: &ChannelPublicKeys) -> ChannelPublicKeys {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn ChannelPublicKeys_write(obj: &ChannelPublicKeys) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelPublicKeys_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelPublicKeys) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelPublicKeys_read(ser: crate::c_types::u8slice) -> ChannelPublicKeys {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelPublicKeys { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelPublicKeys { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelPublicKeys_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelPublicKeysDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::ChannelPublicKeys { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 /// Create per-state keys from channel base points and the per-commitment point.
 /// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_derive_new(mut per_commitment_point: crate::c_types::PublicKey, mut broadcaster_delayed_payment_base: crate::c_types::PublicKey, mut broadcaster_htlc_base: crate::c_types::PublicKey, mut countersignatory_revocation_base: crate::c_types::PublicKey, mut countersignatory_htlc_base: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_TxCreationKeysSecpErrorZ {
+pub extern "C" fn TxCreationKeys_derive_new(mut per_commitment_point: crate::c_types::PublicKey, mut broadcaster_delayed_payment_base: crate::c_types::PublicKey, mut broadcaster_htlc_base: crate::c_types::PublicKey, mut countersignatory_revocation_base: crate::c_types::PublicKey, mut countersignatory_htlc_base: crate::c_types::PublicKey) -> crate::c_types::derived::CResult_TxCreationKeysErrorZ {
 	let mut ret = lightning::ln::chan_utils::TxCreationKeys::derive_new(&bitcoin::secp256k1::Secp256k1::new(), &per_commitment_point.into_rust(), &broadcaster_delayed_payment_base.into_rust(), &broadcaster_htlc_base.into_rust(), &countersignatory_revocation_base.into_rust(), &countersignatory_htlc_base.into_rust());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::TxCreationKeys { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -394,7 +390,7 @@ pub extern "C" fn TxCreationKeys_derive_new(mut per_commitment_point: crate::c_t
 /// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn TxCreationKeys_from_channel_static_keys(mut per_commitment_point: crate::c_types::PublicKey, broadcaster_keys: &crate::ln::chan_utils::ChannelPublicKeys, countersignatory_keys: &crate::ln::chan_utils::ChannelPublicKeys) -> crate::c_types::derived::CResult_TxCreationKeysSecpErrorZ {
+pub extern "C" fn TxCreationKeys_from_channel_static_keys(mut per_commitment_point: crate::c_types::PublicKey, broadcaster_keys: &crate::ln::chan_utils::ChannelPublicKeys, countersignatory_keys: &crate::ln::chan_utils::ChannelPublicKeys) -> crate::c_types::derived::CResult_TxCreationKeysErrorZ {
 	let mut ret = lightning::ln::chan_utils::TxCreationKeys::from_channel_static_keys(&per_commitment_point.into_rust(), unsafe { &*broadcaster_keys.inner }, unsafe { &*countersignatory_keys.inner }, &bitcoin::secp256k1::Secp256k1::new());
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::TxCreationKeys { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::c_types::Secp256k1Error::from_rust(e) }).into() };
 	local_ret
@@ -446,24 +442,6 @@ impl HTLCOutputInCommitment {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for HTLCOutputInCommitment {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn HTLCOutputInCommitment_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHTLCOutputInCommitment)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn HTLCOutputInCommitment_clone(orig: &HTLCOutputInCommitment) -> HTLCOutputInCommitment {
-	orig.clone()
 }
 /// Whether the HTLC was \"offered\" (ie outbound in relation to this commitment transaction).
 /// Note that this is not the same as whether it is ountbound *from us*. To determine that you
@@ -517,21 +495,37 @@ pub extern "C" fn HTLCOutputInCommitment_get_payment_hash(this_ptr: &HTLCOutputI
 pub extern "C" fn HTLCOutputInCommitment_set_payment_hash(this_ptr: &mut HTLCOutputInCommitment, mut val: crate::c_types::ThirtyTwoBytes) {
 	unsafe { &mut *this_ptr.inner }.payment_hash = ::lightning::ln::channelmanager::PaymentHash(val.data);
 }
+impl Clone for HTLCOutputInCommitment {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn HTLCOutputInCommitment_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeHTLCOutputInCommitment)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn HTLCOutputInCommitment_clone(orig: &HTLCOutputInCommitment) -> HTLCOutputInCommitment {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn HTLCOutputInCommitment_write(obj: &HTLCOutputInCommitment) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn HTLCOutputInCommitment_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeHTLCOutputInCommitment) })
 }
 #[no_mangle]
-pub extern "C" fn HTLCOutputInCommitment_read(ser: crate::c_types::u8slice) -> HTLCOutputInCommitment {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		HTLCOutputInCommitment { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		HTLCOutputInCommitment { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn HTLCOutputInCommitment_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_HTLCOutputInCommitmentDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::HTLCOutputInCommitment { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
 /// does not need to have its previous_output_index filled.
@@ -598,24 +592,6 @@ impl ChannelTransactionParameters {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ChannelTransactionParameters {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelTransactionParameters_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelTransactionParameters)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelTransactionParameters_clone(orig: &ChannelTransactionParameters) -> ChannelTransactionParameters {
-	orig.clone()
 }
 /// Holder public keys
 #[no_mangle]
@@ -693,6 +669,24 @@ pub extern "C" fn ChannelTransactionParameters_new(mut holder_pubkeys_arg: crate
 		funding_outpoint: local_funding_outpoint_arg,
 	})), is_owned: true }
 }
+impl Clone for ChannelTransactionParameters {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelTransactionParameters_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelTransactionParameters)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelTransactionParameters_clone(orig: &ChannelTransactionParameters) -> ChannelTransactionParameters {
+	orig.clone()
+}
 
 use lightning::ln::chan_utils::CounterpartyChannelTransactionParameters as nativeCounterpartyChannelTransactionParametersImport;
 type nativeCounterpartyChannelTransactionParameters = nativeCounterpartyChannelTransactionParametersImport;
@@ -731,24 +725,6 @@ impl CounterpartyChannelTransactionParameters {
 		ret
 	}
 }
-impl Clone for CounterpartyChannelTransactionParameters {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn CounterpartyChannelTransactionParameters_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCounterpartyChannelTransactionParameters)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn CounterpartyChannelTransactionParameters_clone(orig: &CounterpartyChannelTransactionParameters) -> CounterpartyChannelTransactionParameters {
-	orig.clone()
-}
 /// Counter-party public keys
 #[no_mangle]
 pub extern "C" fn CounterpartyChannelTransactionParameters_get_pubkeys(this_ptr: &CounterpartyChannelTransactionParameters) -> crate::ln::chan_utils::ChannelPublicKeys {
@@ -778,6 +754,24 @@ pub extern "C" fn CounterpartyChannelTransactionParameters_new(mut pubkeys_arg: 
 		pubkeys: *unsafe { Box::from_raw(pubkeys_arg.take_inner()) },
 		selected_contest_delay: selected_contest_delay_arg,
 	})), is_owned: true }
+}
+impl Clone for CounterpartyChannelTransactionParameters {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn CounterpartyChannelTransactionParameters_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCounterpartyChannelTransactionParameters)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn CounterpartyChannelTransactionParameters_clone(orig: &CounterpartyChannelTransactionParameters) -> CounterpartyChannelTransactionParameters {
+	orig.clone()
 }
 /// Whether the late bound parameters are populated.
 #[must_use]
@@ -811,35 +805,31 @@ pub extern "C" fn ChannelTransactionParameters_as_counterparty_broadcastable(thi
 
 #[no_mangle]
 pub extern "C" fn CounterpartyChannelTransactionParameters_write(obj: &CounterpartyChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn CounterpartyChannelTransactionParameters_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeCounterpartyChannelTransactionParameters) })
 }
 #[no_mangle]
-pub extern "C" fn CounterpartyChannelTransactionParameters_read(ser: crate::c_types::u8slice) -> CounterpartyChannelTransactionParameters {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		CounterpartyChannelTransactionParameters { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		CounterpartyChannelTransactionParameters { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn CounterpartyChannelTransactionParameters_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_CounterpartyChannelTransactionParametersDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::CounterpartyChannelTransactionParameters { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn ChannelTransactionParameters_write(obj: &ChannelTransactionParameters) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelTransactionParameters_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelTransactionParameters) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelTransactionParameters_read(ser: crate::c_types::u8slice) -> ChannelTransactionParameters {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelTransactionParameters { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelTransactionParameters { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelTransactionParameters_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelTransactionParametersDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::ChannelTransactionParameters { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::ln::chan_utils::DirectedChannelTransactionParameters as nativeDirectedChannelTransactionParametersImport;
@@ -967,6 +957,23 @@ impl HolderCommitmentTransaction {
 		ret
 	}
 }
+/// Our counterparty's signature for the transaction
+#[no_mangle]
+pub extern "C" fn HolderCommitmentTransaction_get_counterparty_sig(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::Signature {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.counterparty_sig;
+	crate::c_types::Signature::from_rust(&(*inner_val))
+}
+/// Our counterparty's signature for the transaction
+#[no_mangle]
+pub extern "C" fn HolderCommitmentTransaction_set_counterparty_sig(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::Signature) {
+	unsafe { &mut *this_ptr.inner }.counterparty_sig = val.into_rust();
+}
+/// All non-dust counterparty HTLC signatures, in the order they appear in the transaction
+#[no_mangle]
+pub extern "C" fn HolderCommitmentTransaction_set_counterparty_htlc_sigs(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_SignatureZ) {
+	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { item.into_rust() }); };
+	unsafe { &mut *this_ptr.inner }.counterparty_htlc_sigs = local_val;
+}
 impl Clone for HolderCommitmentTransaction {
 	fn clone(&self) -> Self {
 		Self {
@@ -985,38 +992,19 @@ pub(crate) extern "C" fn HolderCommitmentTransaction_clone_void(this_ptr: *const
 pub extern "C" fn HolderCommitmentTransaction_clone(orig: &HolderCommitmentTransaction) -> HolderCommitmentTransaction {
 	orig.clone()
 }
-/// Our counterparty's signature for the transaction
-#[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_get_counterparty_sig(this_ptr: &HolderCommitmentTransaction) -> crate::c_types::Signature {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.counterparty_sig;
-	crate::c_types::Signature::from_rust(&(*inner_val))
-}
-/// Our counterparty's signature for the transaction
-#[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_set_counterparty_sig(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::Signature) {
-	unsafe { &mut *this_ptr.inner }.counterparty_sig = val.into_rust();
-}
-/// All non-dust counterparty HTLC signatures, in the order they appear in the transaction
-#[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_set_counterparty_htlc_sigs(this_ptr: &mut HolderCommitmentTransaction, mut val: crate::c_types::derived::CVec_SignatureZ) {
-	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { item.into_rust() }); };
-	unsafe { &mut *this_ptr.inner }.counterparty_htlc_sigs = local_val;
-}
 #[no_mangle]
 pub extern "C" fn HolderCommitmentTransaction_write(obj: &HolderCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn HolderCommitmentTransaction_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeHolderCommitmentTransaction) })
 }
 #[no_mangle]
-pub extern "C" fn HolderCommitmentTransaction_read(ser: crate::c_types::u8slice) -> HolderCommitmentTransaction {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		HolderCommitmentTransaction { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		HolderCommitmentTransaction { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn HolderCommitmentTransaction_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_HolderCommitmentTransactionDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::HolderCommitmentTransaction { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 /// Create a new holder transaction with the given counterparty signatures.
 /// The funding keys are used to figure out which signature should go first when building the transaction for broadcast.
@@ -1066,24 +1054,6 @@ impl BuiltCommitmentTransaction {
 		ret
 	}
 }
-impl Clone for BuiltCommitmentTransaction {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn BuiltCommitmentTransaction_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeBuiltCommitmentTransaction)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn BuiltCommitmentTransaction_clone(orig: &BuiltCommitmentTransaction) -> BuiltCommitmentTransaction {
-	orig.clone()
-}
 /// The commitment transaction
 #[no_mangle]
 pub extern "C" fn BuiltCommitmentTransaction_get_transaction(this_ptr: &BuiltCommitmentTransaction) -> crate::c_types::Transaction {
@@ -1121,21 +1091,37 @@ pub extern "C" fn BuiltCommitmentTransaction_new(mut transaction_arg: crate::c_t
 		txid: ::bitcoin::hash_types::Txid::from_slice(&txid_arg.data[..]).unwrap(),
 	})), is_owned: true }
 }
+impl Clone for BuiltCommitmentTransaction {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn BuiltCommitmentTransaction_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeBuiltCommitmentTransaction)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn BuiltCommitmentTransaction_clone(orig: &BuiltCommitmentTransaction) -> BuiltCommitmentTransaction {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn BuiltCommitmentTransaction_write(obj: &BuiltCommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn BuiltCommitmentTransaction_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeBuiltCommitmentTransaction) })
 }
 #[no_mangle]
-pub extern "C" fn BuiltCommitmentTransaction_read(ser: crate::c_types::u8slice) -> BuiltCommitmentTransaction {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		BuiltCommitmentTransaction { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		BuiltCommitmentTransaction { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn BuiltCommitmentTransaction_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_BuiltCommitmentTransactionDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::BuiltCommitmentTransaction { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 /// Get the SIGHASH_ALL sighash value of the transaction.
 ///
@@ -1219,19 +1205,17 @@ pub extern "C" fn CommitmentTransaction_clone(orig: &CommitmentTransaction) -> C
 }
 #[no_mangle]
 pub extern "C" fn CommitmentTransaction_write(obj: &CommitmentTransaction) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn CommitmentTransaction_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeCommitmentTransaction) })
 }
 #[no_mangle]
-pub extern "C" fn CommitmentTransaction_read(ser: crate::c_types::u8slice) -> CommitmentTransaction {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		CommitmentTransaction { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		CommitmentTransaction { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn CommitmentTransaction_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_CommitmentTransactionDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::chan_utils::CommitmentTransaction { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 /// The backwards-counting commitment number
 #[must_use]

@@ -6,7 +6,7 @@ set -x
 # Generate (and reasonably test) C bindings
 
 # First build the latest c-bindings-gen binary
-cd c-bindings-gen && cargo build && cd ..
+cd c-bindings-gen && cargo build --release && cd ..
 
 # Then wipe all the existing C bindings (because we're being run in the right directory)
 # note that we keep the few manually-generated files first:
@@ -20,12 +20,15 @@ mv ./mod.rs lightning-c-bindings/src/c_types/
 mv ./bitcoin lightning-c-bindings/src/
 
 # Finally, run the c-bindings-gen binary, building fresh bindings.
-SRC="$(pwd)/lightning/src"
 OUT="$(pwd)/lightning-c-bindings/src"
 OUT_TEMPL="$(pwd)/lightning-c-bindings/src/c_types/derived.rs"
 OUT_F="$(pwd)/lightning-c-bindings/include/rust_types.h"
 OUT_CPP="$(pwd)/lightning-c-bindings/include/lightningpp.hpp"
-RUST_BACKTRACE=1 ./c-bindings-gen/target/debug/c-bindings-gen $SRC/ $OUT/ lightning $OUT_TEMPL $OUT_F $OUT_CPP
+
+cd lightning
+RUSTC_BOOTSTRAP=1 cargo rustc --profile=check -- -Zunstable-options --pretty=expanded |
+	RUST_BACKTRACE=1 ../c-bindings-gen/target/release/c-bindings-gen $OUT/ lightning $OUT_TEMPL $OUT_F $OUT_CPP
+cd ..
 
 # Now cd to lightning-c-bindings, build the generated bindings, and call cbindgen to build a C header file
 PATH="$PATH:~/.cargo/bin"

@@ -56,24 +56,6 @@ impl ChannelMonitorUpdate {
 		ret
 	}
 }
-impl Clone for ChannelMonitorUpdate {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelMonitorUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelMonitorUpdate)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelMonitorUpdate_clone(orig: &ChannelMonitorUpdate) -> ChannelMonitorUpdate {
-	orig.clone()
-}
 /// The sequence number of this update. Updates *must* be replayed in-order according to this
 /// sequence number (and updates may panic if they are not). The update_id values are strictly
 /// increasing and increase by one for each new update, with one exception specified below.
@@ -108,6 +90,24 @@ pub extern "C" fn ChannelMonitorUpdate_get_update_id(this_ptr: &ChannelMonitorUp
 #[no_mangle]
 pub extern "C" fn ChannelMonitorUpdate_set_update_id(this_ptr: &mut ChannelMonitorUpdate, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.update_id = val;
+}
+impl Clone for ChannelMonitorUpdate {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelMonitorUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelMonitorUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelMonitorUpdate_clone(orig: &ChannelMonitorUpdate) -> ChannelMonitorUpdate {
+	orig.clone()
 }
 
 #[no_mangle]
@@ -401,19 +401,17 @@ pub extern "C" fn HTLCUpdate_clone(orig: &HTLCUpdate) -> HTLCUpdate {
 }
 #[no_mangle]
 pub extern "C" fn HTLCUpdate_write(obj: &HTLCUpdate) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn HTLCUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeHTLCUpdate) })
 }
 #[no_mangle]
-pub extern "C" fn HTLCUpdate_read(ser: crate::c_types::u8slice) -> HTLCUpdate {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		HTLCUpdate { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		HTLCUpdate { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn HTLCUpdate_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_HTLCUpdateDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::chain::channelmonitor::HTLCUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::chain::channelmonitor::ChannelMonitor as nativeChannelMonitorImport;

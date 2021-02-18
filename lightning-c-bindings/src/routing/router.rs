@@ -45,24 +45,6 @@ impl RouteHop {
 		ret
 	}
 }
-impl Clone for RouteHop {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn RouteHop_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHop)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn RouteHop_clone(orig: &RouteHop) -> RouteHop {
-	orig.clone()
-}
 /// The node_id of the node at this hop.
 #[no_mangle]
 pub extern "C" fn RouteHop_get_pubkey(this_ptr: &RouteHop) -> crate::c_types::PublicKey {
@@ -147,6 +129,24 @@ pub extern "C" fn RouteHop_new(mut pubkey_arg: crate::c_types::PublicKey, mut no
 		cltv_expiry_delta: cltv_expiry_delta_arg,
 	})), is_owned: true }
 }
+impl Clone for RouteHop {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn RouteHop_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHop)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RouteHop_clone(orig: &RouteHop) -> RouteHop {
+	orig.clone()
+}
 
 use lightning::routing::router::Route as nativeRouteImport;
 type nativeRoute = nativeRouteImport;
@@ -186,24 +186,6 @@ impl Route {
 		ret
 	}
 }
-impl Clone for Route {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn Route_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoute)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn Route_clone(orig: &Route) -> Route {
-	orig.clone()
-}
 /// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
 /// last RouteHop in each path must be the same.
 /// Each entry represents a list of hops, NOT INCLUDING our own, where the last hop is the
@@ -222,6 +204,24 @@ pub extern "C" fn Route_new(mut paths_arg: crate::c_types::derived::CVec_CVec_Ro
 	Route { inner: Box::into_raw(Box::new(nativeRoute {
 		paths: local_paths_arg,
 	})), is_owned: true }
+}
+impl Clone for Route {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Route_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoute)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Route_clone(orig: &Route) -> Route {
+	orig.clone()
 }
 #[no_mangle]
 pub extern "C" fn Route_write(obj: &Route) -> crate::c_types::derived::CVec_u8Z {
@@ -274,24 +274,6 @@ impl RouteHint {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for RouteHint {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn RouteHint_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHint)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn RouteHint_clone(orig: &RouteHint) -> RouteHint {
-	orig.clone()
 }
 /// The node_id of the non-target end of the route
 #[no_mangle]
@@ -358,6 +340,24 @@ pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, 
 		cltv_expiry_delta: cltv_expiry_delta_arg,
 		htlc_minimum_msat: htlc_minimum_msat_arg,
 	})), is_owned: true }
+}
+impl Clone for RouteHint {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn RouteHint_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRouteHint)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RouteHint_clone(orig: &RouteHint) -> RouteHint {
+	orig.clone()
 }
 /// Gets a route from us to the given target node.
 ///

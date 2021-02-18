@@ -45,24 +45,6 @@ impl OutPoint {
 		ret
 	}
 }
-impl Clone for OutPoint {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn OutPoint_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOutPoint)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn OutPoint_clone(orig: &OutPoint) -> OutPoint {
-	orig.clone()
-}
 /// The referenced transaction's txid.
 #[no_mangle]
 pub extern "C" fn OutPoint_get_txid(this_ptr: &OutPoint) -> *const [u8; 32] {
@@ -93,6 +75,24 @@ pub extern "C" fn OutPoint_new(mut txid_arg: crate::c_types::ThirtyTwoBytes, mut
 		index: index_arg,
 	})), is_owned: true }
 }
+impl Clone for OutPoint {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn OutPoint_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOutPoint)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn OutPoint_clone(orig: &OutPoint) -> OutPoint {
+	orig.clone()
+}
 /// Convert an `OutPoint` to a lightning channel id.
 #[must_use]
 #[no_mangle]
@@ -103,17 +103,15 @@ pub extern "C" fn OutPoint_to_channel_id(this_arg: &OutPoint) -> crate::c_types:
 
 #[no_mangle]
 pub extern "C" fn OutPoint_write(obj: &OutPoint) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn OutPoint_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeOutPoint) })
 }
 #[no_mangle]
-pub extern "C" fn OutPoint_read(ser: crate::c_types::u8slice) -> OutPoint {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		OutPoint { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		OutPoint { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn OutPoint_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_OutPointDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }

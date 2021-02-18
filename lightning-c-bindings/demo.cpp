@@ -385,8 +385,9 @@ int main() {
 		assert(channels2->datalen == 0);
 
 		LDK::RoutingMessageHandler net_msgs2 = NetGraphMsgHandler_as_RoutingMessageHandler(&net_graph2);
-		LDK::ChannelAnnouncement chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
-		LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, &chan_ann);
+		LDK::CResult_ChannelAnnouncementDecodeErrorZ chan_ann = ChannelAnnouncement_read(LDKu8slice { .data = valid_node_announcement, .datalen = sizeof(valid_node_announcement) });
+		assert(chan_ann->result_ok);
+		LDK::CResult_boolLightningErrorZ ann_res = net_msgs2->handle_channel_announcement(net_msgs2->this_arg, chan_ann->contents.result);
 		assert(ann_res->result_ok);
 
 		LDK::MessageHandler msg_handler2 = MessageHandler_new(ChannelManager_as_ChannelMessageHandler(&cm2), std::move(net_msgs2));
