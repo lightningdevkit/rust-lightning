@@ -169,24 +169,6 @@ impl ErrorMessage {
 		ret
 	}
 }
-impl Clone for ErrorMessage {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ErrorMessage_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeErrorMessage)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ErrorMessage_clone(orig: &ErrorMessage) -> ErrorMessage {
-	orig.clone()
-}
 /// The channel ID involved in the error
 #[no_mangle]
 pub extern "C" fn ErrorMessage_get_channel_id(this_ptr: &ErrorMessage) -> *const [u8; 32] {
@@ -222,6 +204,24 @@ pub extern "C" fn ErrorMessage_new(mut channel_id_arg: crate::c_types::ThirtyTwo
 		channel_id: channel_id_arg.data,
 		data: String::from_utf8(data_arg.into_rust()).unwrap(),
 	})), is_owned: true }
+}
+impl Clone for ErrorMessage {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ErrorMessage_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeErrorMessage)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ErrorMessage_clone(orig: &ErrorMessage) -> ErrorMessage {
+	orig.clone()
 }
 
 use lightning::ln::msgs::Ping as nativePingImport;
@@ -261,24 +261,6 @@ impl Ping {
 		ret
 	}
 }
-impl Clone for Ping {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn Ping_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePing)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn Ping_clone(orig: &Ping) -> Ping {
-	orig.clone()
-}
 /// The desired response length
 #[no_mangle]
 pub extern "C" fn Ping_get_ponglen(this_ptr: &Ping) -> u16 {
@@ -310,6 +292,24 @@ pub extern "C" fn Ping_new(mut ponglen_arg: u16, mut byteslen_arg: u16) -> Ping 
 		ponglen: ponglen_arg,
 		byteslen: byteslen_arg,
 	})), is_owned: true }
+}
+impl Clone for Ping {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Ping_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePing)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Ping_clone(orig: &Ping) -> Ping {
+	orig.clone()
 }
 
 use lightning::ln::msgs::Pong as nativePongImport;
@@ -349,24 +349,6 @@ impl Pong {
 		ret
 	}
 }
-impl Clone for Pong {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn Pong_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePong)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn Pong_clone(orig: &Pong) -> Pong {
-	orig.clone()
-}
 /// The pong packet size.
 /// This field is not sent on the wire. byteslen zeros are sent.
 #[no_mangle]
@@ -386,6 +368,24 @@ pub extern "C" fn Pong_new(mut byteslen_arg: u16) -> Pong {
 	Pong { inner: Box::into_raw(Box::new(nativePong {
 		byteslen: byteslen_arg,
 	})), is_owned: true }
+}
+impl Clone for Pong {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Pong_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePong)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Pong_clone(orig: &Pong) -> Pong {
+	orig.clone()
 }
 
 use lightning::ln::msgs::OpenChannel as nativeOpenChannelImport;
@@ -424,24 +424,6 @@ impl OpenChannel {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for OpenChannel {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn OpenChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOpenChannel)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn OpenChannel_clone(orig: &OpenChannel) -> OpenChannel {
-	orig.clone()
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -641,6 +623,24 @@ pub extern "C" fn OpenChannel_get_channel_flags(this_ptr: &OpenChannel) -> u8 {
 pub extern "C" fn OpenChannel_set_channel_flags(this_ptr: &mut OpenChannel, mut val: u8) {
 	unsafe { &mut *this_ptr.inner }.channel_flags = val;
 }
+impl Clone for OpenChannel {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn OpenChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeOpenChannel)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn OpenChannel_clone(orig: &OpenChannel) -> OpenChannel {
+	orig.clone()
+}
 
 use lightning::ln::msgs::AcceptChannel as nativeAcceptChannelImport;
 type nativeAcceptChannel = nativeAcceptChannelImport;
@@ -678,24 +678,6 @@ impl AcceptChannel {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for AcceptChannel {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn AcceptChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAcceptChannel)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn AcceptChannel_clone(orig: &AcceptChannel) -> AcceptChannel {
-	orig.clone()
 }
 /// A temporary channel ID, until the funding outpoint is announced
 #[no_mangle]
@@ -851,6 +833,24 @@ pub extern "C" fn AcceptChannel_get_first_per_commitment_point(this_ptr: &Accept
 pub extern "C" fn AcceptChannel_set_first_per_commitment_point(this_ptr: &mut AcceptChannel, mut val: crate::c_types::PublicKey) {
 	unsafe { &mut *this_ptr.inner }.first_per_commitment_point = val.into_rust();
 }
+impl Clone for AcceptChannel {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn AcceptChannel_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAcceptChannel)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn AcceptChannel_clone(orig: &AcceptChannel) -> AcceptChannel {
+	orig.clone()
+}
 
 use lightning::ln::msgs::FundingCreated as nativeFundingCreatedImport;
 type nativeFundingCreated = nativeFundingCreatedImport;
@@ -888,24 +888,6 @@ impl FundingCreated {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for FundingCreated {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn FundingCreated_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingCreated)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn FundingCreated_clone(orig: &FundingCreated) -> FundingCreated {
-	orig.clone()
 }
 /// A temporary channel ID, until the funding is established
 #[no_mangle]
@@ -961,6 +943,24 @@ pub extern "C" fn FundingCreated_new(mut temporary_channel_id_arg: crate::c_type
 		signature: signature_arg.into_rust(),
 	})), is_owned: true }
 }
+impl Clone for FundingCreated {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn FundingCreated_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingCreated)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn FundingCreated_clone(orig: &FundingCreated) -> FundingCreated {
+	orig.clone()
+}
 
 use lightning::ln::msgs::FundingSigned as nativeFundingSignedImport;
 type nativeFundingSigned = nativeFundingSignedImport;
@@ -999,24 +999,6 @@ impl FundingSigned {
 		ret
 	}
 }
-impl Clone for FundingSigned {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn FundingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingSigned)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn FundingSigned_clone(orig: &FundingSigned) -> FundingSigned {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn FundingSigned_get_channel_id(this_ptr: &FundingSigned) -> *const [u8; 32] {
@@ -1046,6 +1028,24 @@ pub extern "C" fn FundingSigned_new(mut channel_id_arg: crate::c_types::ThirtyTw
 		channel_id: channel_id_arg.data,
 		signature: signature_arg.into_rust(),
 	})), is_owned: true }
+}
+impl Clone for FundingSigned {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn FundingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingSigned)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn FundingSigned_clone(orig: &FundingSigned) -> FundingSigned {
+	orig.clone()
 }
 
 use lightning::ln::msgs::FundingLocked as nativeFundingLockedImport;
@@ -1085,24 +1085,6 @@ impl FundingLocked {
 		ret
 	}
 }
-impl Clone for FundingLocked {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn FundingLocked_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingLocked)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn FundingLocked_clone(orig: &FundingLocked) -> FundingLocked {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn FundingLocked_get_channel_id(this_ptr: &FundingLocked) -> *const [u8; 32] {
@@ -1132,6 +1114,24 @@ pub extern "C" fn FundingLocked_new(mut channel_id_arg: crate::c_types::ThirtyTw
 		channel_id: channel_id_arg.data,
 		next_per_commitment_point: next_per_commitment_point_arg.into_rust(),
 	})), is_owned: true }
+}
+impl Clone for FundingLocked {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn FundingLocked_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeFundingLocked)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn FundingLocked_clone(orig: &FundingLocked) -> FundingLocked {
+	orig.clone()
 }
 
 use lightning::ln::msgs::Shutdown as nativeShutdownImport;
@@ -1171,24 +1171,6 @@ impl Shutdown {
 		ret
 	}
 }
-impl Clone for Shutdown {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn Shutdown_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeShutdown)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn Shutdown_clone(orig: &Shutdown) -> Shutdown {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn Shutdown_get_channel_id(this_ptr: &Shutdown) -> *const [u8; 32] {
@@ -1220,6 +1202,24 @@ pub extern "C" fn Shutdown_new(mut channel_id_arg: crate::c_types::ThirtyTwoByte
 		channel_id: channel_id_arg.data,
 		scriptpubkey: ::bitcoin::blockdata::script::Script::from(scriptpubkey_arg.into_rust()),
 	})), is_owned: true }
+}
+impl Clone for Shutdown {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn Shutdown_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeShutdown)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn Shutdown_clone(orig: &Shutdown) -> Shutdown {
+	orig.clone()
 }
 
 use lightning::ln::msgs::ClosingSigned as nativeClosingSignedImport;
@@ -1258,24 +1258,6 @@ impl ClosingSigned {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ClosingSigned {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ClosingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeClosingSigned)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ClosingSigned_clone(orig: &ClosingSigned) -> ClosingSigned {
-	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1319,6 +1301,24 @@ pub extern "C" fn ClosingSigned_new(mut channel_id_arg: crate::c_types::ThirtyTw
 		signature: signature_arg.into_rust(),
 	})), is_owned: true }
 }
+impl Clone for ClosingSigned {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ClosingSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeClosingSigned)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ClosingSigned_clone(orig: &ClosingSigned) -> ClosingSigned {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UpdateAddHTLC as nativeUpdateAddHTLCImport;
 type nativeUpdateAddHTLC = nativeUpdateAddHTLCImport;
@@ -1356,24 +1356,6 @@ impl UpdateAddHTLC {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for UpdateAddHTLC {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UpdateAddHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateAddHTLC)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UpdateAddHTLC_clone(orig: &UpdateAddHTLC) -> UpdateAddHTLC {
-	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1430,6 +1412,24 @@ pub extern "C" fn UpdateAddHTLC_get_cltv_expiry(this_ptr: &UpdateAddHTLC) -> u32
 pub extern "C" fn UpdateAddHTLC_set_cltv_expiry(this_ptr: &mut UpdateAddHTLC, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.cltv_expiry = val;
 }
+impl Clone for UpdateAddHTLC {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UpdateAddHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateAddHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateAddHTLC_clone(orig: &UpdateAddHTLC) -> UpdateAddHTLC {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UpdateFulfillHTLC as nativeUpdateFulfillHTLCImport;
 type nativeUpdateFulfillHTLC = nativeUpdateFulfillHTLCImport;
@@ -1467,24 +1467,6 @@ impl UpdateFulfillHTLC {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for UpdateFulfillHTLC {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UpdateFulfillHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFulfillHTLC)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UpdateFulfillHTLC_clone(orig: &UpdateFulfillHTLC) -> UpdateFulfillHTLC {
-	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1528,6 +1510,24 @@ pub extern "C" fn UpdateFulfillHTLC_new(mut channel_id_arg: crate::c_types::Thir
 		payment_preimage: ::lightning::ln::channelmanager::PaymentPreimage(payment_preimage_arg.data),
 	})), is_owned: true }
 }
+impl Clone for UpdateFulfillHTLC {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UpdateFulfillHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFulfillHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateFulfillHTLC_clone(orig: &UpdateFulfillHTLC) -> UpdateFulfillHTLC {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UpdateFailHTLC as nativeUpdateFailHTLCImport;
 type nativeUpdateFailHTLC = nativeUpdateFailHTLCImport;
@@ -1566,24 +1566,6 @@ impl UpdateFailHTLC {
 		ret
 	}
 }
-impl Clone for UpdateFailHTLC {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UpdateFailHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailHTLC)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UpdateFailHTLC_clone(orig: &UpdateFailHTLC) -> UpdateFailHTLC {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFailHTLC_get_channel_id(this_ptr: &UpdateFailHTLC) -> *const [u8; 32] {
@@ -1605,6 +1587,24 @@ pub extern "C" fn UpdateFailHTLC_get_htlc_id(this_ptr: &UpdateFailHTLC) -> u64 {
 #[no_mangle]
 pub extern "C" fn UpdateFailHTLC_set_htlc_id(this_ptr: &mut UpdateFailHTLC, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.htlc_id = val;
+}
+impl Clone for UpdateFailHTLC {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UpdateFailHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateFailHTLC_clone(orig: &UpdateFailHTLC) -> UpdateFailHTLC {
+	orig.clone()
 }
 
 use lightning::ln::msgs::UpdateFailMalformedHTLC as nativeUpdateFailMalformedHTLCImport;
@@ -1644,24 +1644,6 @@ impl UpdateFailMalformedHTLC {
 		ret
 	}
 }
-impl Clone for UpdateFailMalformedHTLC {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UpdateFailMalformedHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailMalformedHTLC)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UpdateFailMalformedHTLC_clone(orig: &UpdateFailMalformedHTLC) -> UpdateFailMalformedHTLC {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFailMalformedHTLC_get_channel_id(this_ptr: &UpdateFailMalformedHTLC) -> *const [u8; 32] {
@@ -1694,6 +1676,24 @@ pub extern "C" fn UpdateFailMalformedHTLC_get_failure_code(this_ptr: &UpdateFail
 #[no_mangle]
 pub extern "C" fn UpdateFailMalformedHTLC_set_failure_code(this_ptr: &mut UpdateFailMalformedHTLC, mut val: u16) {
 	unsafe { &mut *this_ptr.inner }.failure_code = val;
+}
+impl Clone for UpdateFailMalformedHTLC {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UpdateFailMalformedHTLC_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFailMalformedHTLC)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateFailMalformedHTLC_clone(orig: &UpdateFailMalformedHTLC) -> UpdateFailMalformedHTLC {
+	orig.clone()
 }
 
 use lightning::ln::msgs::CommitmentSigned as nativeCommitmentSignedImport;
@@ -1733,24 +1733,6 @@ impl CommitmentSigned {
 		ret
 	}
 }
-impl Clone for CommitmentSigned {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn CommitmentSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentSigned)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn CommitmentSigned_clone(orig: &CommitmentSigned) -> CommitmentSigned {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn CommitmentSigned_get_channel_id(this_ptr: &CommitmentSigned) -> *const [u8; 32] {
@@ -1789,6 +1771,24 @@ pub extern "C" fn CommitmentSigned_new(mut channel_id_arg: crate::c_types::Thirt
 		htlc_signatures: local_htlc_signatures_arg,
 	})), is_owned: true }
 }
+impl Clone for CommitmentSigned {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn CommitmentSigned_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentSigned)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn CommitmentSigned_clone(orig: &CommitmentSigned) -> CommitmentSigned {
+	orig.clone()
+}
 
 use lightning::ln::msgs::RevokeAndACK as nativeRevokeAndACKImport;
 type nativeRevokeAndACK = nativeRevokeAndACKImport;
@@ -1826,24 +1826,6 @@ impl RevokeAndACK {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for RevokeAndACK {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn RevokeAndACK_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRevokeAndACK)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn RevokeAndACK_clone(orig: &RevokeAndACK) -> RevokeAndACK {
-	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -1887,6 +1869,24 @@ pub extern "C" fn RevokeAndACK_new(mut channel_id_arg: crate::c_types::ThirtyTwo
 		next_per_commitment_point: next_per_commitment_point_arg.into_rust(),
 	})), is_owned: true }
 }
+impl Clone for RevokeAndACK {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn RevokeAndACK_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRevokeAndACK)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RevokeAndACK_clone(orig: &RevokeAndACK) -> RevokeAndACK {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UpdateFee as nativeUpdateFeeImport;
 type nativeUpdateFee = nativeUpdateFeeImport;
@@ -1925,24 +1925,6 @@ impl UpdateFee {
 		ret
 	}
 }
-impl Clone for UpdateFee {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UpdateFee_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFee)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UpdateFee_clone(orig: &UpdateFee) -> UpdateFee {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn UpdateFee_get_channel_id(this_ptr: &UpdateFee) -> *const [u8; 32] {
@@ -1972,6 +1954,24 @@ pub extern "C" fn UpdateFee_new(mut channel_id_arg: crate::c_types::ThirtyTwoByt
 		channel_id: channel_id_arg.data,
 		feerate_per_kw: feerate_per_kw_arg,
 	})), is_owned: true }
+}
+impl Clone for UpdateFee {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UpdateFee_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUpdateFee)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UpdateFee_clone(orig: &UpdateFee) -> UpdateFee {
+	orig.clone()
 }
 
 use lightning::ln::msgs::DataLossProtect as nativeDataLossProtectImport;
@@ -2014,24 +2014,6 @@ impl DataLossProtect {
 		ret
 	}
 }
-impl Clone for DataLossProtect {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn DataLossProtect_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDataLossProtect)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn DataLossProtect_clone(orig: &DataLossProtect) -> DataLossProtect {
-	orig.clone()
-}
 /// Proof that the sender knows the per-commitment secret of a specific commitment transaction
 /// belonging to the recipient
 #[no_mangle]
@@ -2063,6 +2045,24 @@ pub extern "C" fn DataLossProtect_new(mut your_last_per_commitment_secret_arg: c
 		your_last_per_commitment_secret: your_last_per_commitment_secret_arg.data,
 		my_current_per_commitment_point: my_current_per_commitment_point_arg.into_rust(),
 	})), is_owned: true }
+}
+impl Clone for DataLossProtect {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn DataLossProtect_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDataLossProtect)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn DataLossProtect_clone(orig: &DataLossProtect) -> DataLossProtect {
+	orig.clone()
 }
 
 use lightning::ln::msgs::ChannelReestablish as nativeChannelReestablishImport;
@@ -2102,24 +2102,6 @@ impl ChannelReestablish {
 		ret
 	}
 }
-impl Clone for ChannelReestablish {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelReestablish_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelReestablish)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelReestablish_clone(orig: &ChannelReestablish) -> ChannelReestablish {
-	orig.clone()
-}
 /// The channel ID
 #[no_mangle]
 pub extern "C" fn ChannelReestablish_get_channel_id(this_ptr: &ChannelReestablish) -> *const [u8; 32] {
@@ -2152,6 +2134,24 @@ pub extern "C" fn ChannelReestablish_get_next_remote_commitment_number(this_ptr:
 #[no_mangle]
 pub extern "C" fn ChannelReestablish_set_next_remote_commitment_number(this_ptr: &mut ChannelReestablish, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.next_remote_commitment_number = val;
+}
+impl Clone for ChannelReestablish {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelReestablish_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelReestablish)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelReestablish_clone(orig: &ChannelReestablish) -> ChannelReestablish {
+	orig.clone()
 }
 
 use lightning::ln::msgs::AnnouncementSignatures as nativeAnnouncementSignaturesImport;
@@ -2190,24 +2190,6 @@ impl AnnouncementSignatures {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for AnnouncementSignatures {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn AnnouncementSignatures_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAnnouncementSignatures)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn AnnouncementSignatures_clone(orig: &AnnouncementSignatures) -> AnnouncementSignatures {
-	orig.clone()
 }
 /// The channel ID
 #[no_mangle]
@@ -2262,6 +2244,24 @@ pub extern "C" fn AnnouncementSignatures_new(mut channel_id_arg: crate::c_types:
 		node_signature: node_signature_arg.into_rust(),
 		bitcoin_signature: bitcoin_signature_arg.into_rust(),
 	})), is_owned: true }
+}
+impl Clone for AnnouncementSignatures {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn AnnouncementSignatures_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeAnnouncementSignatures)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn AnnouncementSignatures_clone(orig: &AnnouncementSignatures) -> AnnouncementSignatures {
+	orig.clone()
 }
 /// An address which can be used to connect to a remote peer
 #[must_use]
@@ -2494,24 +2494,6 @@ impl UnsignedNodeAnnouncement {
 		ret
 	}
 }
-impl Clone for UnsignedNodeAnnouncement {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedNodeAnnouncement)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UnsignedNodeAnnouncement_clone(orig: &UnsignedNodeAnnouncement) -> UnsignedNodeAnnouncement {
-	orig.clone()
-}
 /// The advertised features
 #[no_mangle]
 pub extern "C" fn UnsignedNodeAnnouncement_get_features(this_ptr: &UnsignedNodeAnnouncement) -> crate::ln::features::NodeFeatures {
@@ -2577,6 +2559,24 @@ pub extern "C" fn UnsignedNodeAnnouncement_set_addresses(this_ptr: &mut Unsigned
 	let mut local_val = Vec::new(); for mut item in val.into_rust().drain(..) { local_val.push( { item.into_native() }); };
 	unsafe { &mut *this_ptr.inner }.addresses = local_val;
 }
+impl Clone for UnsignedNodeAnnouncement {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UnsignedNodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedNodeAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedNodeAnnouncement_clone(orig: &UnsignedNodeAnnouncement) -> UnsignedNodeAnnouncement {
+	orig.clone()
+}
 
 use lightning::ln::msgs::NodeAnnouncement as nativeNodeAnnouncementImport;
 type nativeNodeAnnouncement = nativeNodeAnnouncementImport;
@@ -2615,24 +2615,6 @@ impl NodeAnnouncement {
 		ret
 	}
 }
-impl Clone for NodeAnnouncement {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn NodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeAnnouncement)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn NodeAnnouncement_clone(orig: &NodeAnnouncement) -> NodeAnnouncement {
-	orig.clone()
-}
 /// The signature by the node key
 #[no_mangle]
 pub extern "C" fn NodeAnnouncement_get_signature(this_ptr: &NodeAnnouncement) -> crate::c_types::Signature {
@@ -2662,6 +2644,24 @@ pub extern "C" fn NodeAnnouncement_new(mut signature_arg: crate::c_types::Signat
 		signature: signature_arg.into_rust(),
 		contents: *unsafe { Box::from_raw(contents_arg.take_inner()) },
 	})), is_owned: true }
+}
+impl Clone for NodeAnnouncement {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn NodeAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn NodeAnnouncement_clone(orig: &NodeAnnouncement) -> NodeAnnouncement {
+	orig.clone()
 }
 
 use lightning::ln::msgs::UnsignedChannelAnnouncement as nativeUnsignedChannelAnnouncementImport;
@@ -2700,24 +2700,6 @@ impl UnsignedChannelAnnouncement {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for UnsignedChannelAnnouncement {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelAnnouncement)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UnsignedChannelAnnouncement_clone(orig: &UnsignedChannelAnnouncement) -> UnsignedChannelAnnouncement {
-	orig.clone()
 }
 /// The advertised channel features
 #[no_mangle]
@@ -2796,6 +2778,24 @@ pub extern "C" fn UnsignedChannelAnnouncement_get_bitcoin_key_2(this_ptr: &Unsig
 pub extern "C" fn UnsignedChannelAnnouncement_set_bitcoin_key_2(this_ptr: &mut UnsignedChannelAnnouncement, mut val: crate::c_types::PublicKey) {
 	unsafe { &mut *this_ptr.inner }.bitcoin_key_2 = val.into_rust();
 }
+impl Clone for UnsignedChannelAnnouncement {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UnsignedChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedChannelAnnouncement_clone(orig: &UnsignedChannelAnnouncement) -> UnsignedChannelAnnouncement {
+	orig.clone()
+}
 
 use lightning::ln::msgs::ChannelAnnouncement as nativeChannelAnnouncementImport;
 type nativeChannelAnnouncement = nativeChannelAnnouncementImport;
@@ -2833,24 +2833,6 @@ impl ChannelAnnouncement {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ChannelAnnouncement {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelAnnouncement)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelAnnouncement_clone(orig: &ChannelAnnouncement) -> ChannelAnnouncement {
-	orig.clone()
 }
 /// Authentication of the announcement by the first public node
 #[no_mangle]
@@ -2918,6 +2900,24 @@ pub extern "C" fn ChannelAnnouncement_new(mut node_signature_1_arg: crate::c_typ
 		contents: *unsafe { Box::from_raw(contents_arg.take_inner()) },
 	})), is_owned: true }
 }
+impl Clone for ChannelAnnouncement {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelAnnouncement_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelAnnouncement)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelAnnouncement_clone(orig: &ChannelAnnouncement) -> ChannelAnnouncement {
+	orig.clone()
+}
 
 use lightning::ln::msgs::UnsignedChannelUpdate as nativeUnsignedChannelUpdateImport;
 type nativeUnsignedChannelUpdate = nativeUnsignedChannelUpdateImport;
@@ -2955,24 +2955,6 @@ impl UnsignedChannelUpdate {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for UnsignedChannelUpdate {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn UnsignedChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelUpdate)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn UnsignedChannelUpdate_clone(orig: &UnsignedChannelUpdate) -> UnsignedChannelUpdate {
-	orig.clone()
 }
 /// The genesis hash of the blockchain where the channel is to be opened
 #[no_mangle]
@@ -3062,6 +3044,24 @@ pub extern "C" fn UnsignedChannelUpdate_get_fee_proportional_millionths(this_ptr
 pub extern "C" fn UnsignedChannelUpdate_set_fee_proportional_millionths(this_ptr: &mut UnsignedChannelUpdate, mut val: u32) {
 	unsafe { &mut *this_ptr.inner }.fee_proportional_millionths = val;
 }
+impl Clone for UnsignedChannelUpdate {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn UnsignedChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeUnsignedChannelUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn UnsignedChannelUpdate_clone(orig: &UnsignedChannelUpdate) -> UnsignedChannelUpdate {
+	orig.clone()
+}
 
 use lightning::ln::msgs::ChannelUpdate as nativeChannelUpdateImport;
 type nativeChannelUpdate = nativeChannelUpdateImport;
@@ -3100,24 +3100,6 @@ impl ChannelUpdate {
 		ret
 	}
 }
-impl Clone for ChannelUpdate {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelUpdate)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelUpdate_clone(orig: &ChannelUpdate) -> ChannelUpdate {
-	orig.clone()
-}
 /// A signature of the channel update
 #[no_mangle]
 pub extern "C" fn ChannelUpdate_get_signature(this_ptr: &ChannelUpdate) -> crate::c_types::Signature {
@@ -3147,6 +3129,24 @@ pub extern "C" fn ChannelUpdate_new(mut signature_arg: crate::c_types::Signature
 		signature: signature_arg.into_rust(),
 		contents: *unsafe { Box::from_raw(contents_arg.take_inner()) },
 	})), is_owned: true }
+}
+impl Clone for ChannelUpdate {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelUpdate_clone(orig: &ChannelUpdate) -> ChannelUpdate {
+	orig.clone()
 }
 
 use lightning::ln::msgs::QueryChannelRange as nativeQueryChannelRangeImport;
@@ -3189,24 +3189,6 @@ impl QueryChannelRange {
 		ret
 	}
 }
-impl Clone for QueryChannelRange {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn QueryChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryChannelRange)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn QueryChannelRange_clone(orig: &QueryChannelRange) -> QueryChannelRange {
-	orig.clone()
-}
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
 pub extern "C" fn QueryChannelRange_get_chain_hash(this_ptr: &QueryChannelRange) -> *const [u8; 32] {
@@ -3248,6 +3230,24 @@ pub extern "C" fn QueryChannelRange_new(mut chain_hash_arg: crate::c_types::Thir
 		first_blocknum: first_blocknum_arg,
 		number_of_blocks: number_of_blocks_arg,
 	})), is_owned: true }
+}
+impl Clone for QueryChannelRange {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn QueryChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryChannelRange)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn QueryChannelRange_clone(orig: &QueryChannelRange) -> QueryChannelRange {
+	orig.clone()
 }
 
 use lightning::ln::msgs::ReplyChannelRange as nativeReplyChannelRangeImport;
@@ -3292,24 +3292,6 @@ impl ReplyChannelRange {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for ReplyChannelRange {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ReplyChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyChannelRange)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ReplyChannelRange_clone(orig: &ReplyChannelRange) -> ReplyChannelRange {
-	orig.clone()
 }
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
@@ -3373,6 +3355,24 @@ pub extern "C" fn ReplyChannelRange_new(mut chain_hash_arg: crate::c_types::Thir
 		short_channel_ids: local_short_channel_ids_arg,
 	})), is_owned: true }
 }
+impl Clone for ReplyChannelRange {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ReplyChannelRange_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyChannelRange)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ReplyChannelRange_clone(orig: &ReplyChannelRange) -> ReplyChannelRange {
+	orig.clone()
+}
 
 use lightning::ln::msgs::QueryShortChannelIds as nativeQueryShortChannelIdsImport;
 type nativeQueryShortChannelIds = nativeQueryShortChannelIdsImport;
@@ -3418,24 +3418,6 @@ impl QueryShortChannelIds {
 		ret
 	}
 }
-impl Clone for QueryShortChannelIds {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn QueryShortChannelIds_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryShortChannelIds)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn QueryShortChannelIds_clone(orig: &QueryShortChannelIds) -> QueryShortChannelIds {
-	orig.clone()
-}
 /// The genesis hash of the blockchain being queried
 #[no_mangle]
 pub extern "C" fn QueryShortChannelIds_get_chain_hash(this_ptr: &QueryShortChannelIds) -> *const [u8; 32] {
@@ -3461,6 +3443,24 @@ pub extern "C" fn QueryShortChannelIds_new(mut chain_hash_arg: crate::c_types::T
 		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
 		short_channel_ids: local_short_channel_ids_arg,
 	})), is_owned: true }
+}
+impl Clone for QueryShortChannelIds {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn QueryShortChannelIds_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeQueryShortChannelIds)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn QueryShortChannelIds_clone(orig: &QueryShortChannelIds) -> QueryShortChannelIds {
+	orig.clone()
 }
 
 use lightning::ln::msgs::ReplyShortChannelIdsEnd as nativeReplyShortChannelIdsEndImport;
@@ -3503,24 +3503,6 @@ impl ReplyShortChannelIdsEnd {
 		ret
 	}
 }
-impl Clone for ReplyShortChannelIdsEnd {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ReplyShortChannelIdsEnd_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyShortChannelIdsEnd)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ReplyShortChannelIdsEnd_clone(orig: &ReplyShortChannelIdsEnd) -> ReplyShortChannelIdsEnd {
-	orig.clone()
-}
 /// The genesis hash of the blockchain that was queried
 #[no_mangle]
 pub extern "C" fn ReplyShortChannelIdsEnd_get_chain_hash(this_ptr: &ReplyShortChannelIdsEnd) -> *const [u8; 32] {
@@ -3552,6 +3534,24 @@ pub extern "C" fn ReplyShortChannelIdsEnd_new(mut chain_hash_arg: crate::c_types
 		chain_hash: ::bitcoin::hash_types::BlockHash::from_slice(&chain_hash_arg.data[..]).unwrap(),
 		full_information: full_information_arg,
 	})), is_owned: true }
+}
+impl Clone for ReplyShortChannelIdsEnd {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ReplyShortChannelIdsEnd_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeReplyShortChannelIdsEnd)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ReplyShortChannelIdsEnd_clone(orig: &ReplyShortChannelIdsEnd) -> ReplyShortChannelIdsEnd {
+	orig.clone()
 }
 
 use lightning::ln::msgs::GossipTimestampFilter as nativeGossipTimestampFilterImport;
@@ -3592,24 +3592,6 @@ impl GossipTimestampFilter {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for GossipTimestampFilter {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn GossipTimestampFilter_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeGossipTimestampFilter)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn GossipTimestampFilter_clone(orig: &GossipTimestampFilter) -> GossipTimestampFilter {
-	orig.clone()
 }
 /// The genesis hash of the blockchain for channel and node information
 #[no_mangle]
@@ -3652,6 +3634,24 @@ pub extern "C" fn GossipTimestampFilter_new(mut chain_hash_arg: crate::c_types::
 		first_timestamp: first_timestamp_arg,
 		timestamp_range: timestamp_range_arg,
 	})), is_owned: true }
+}
+impl Clone for GossipTimestampFilter {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn GossipTimestampFilter_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeGossipTimestampFilter)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn GossipTimestampFilter_clone(orig: &GossipTimestampFilter) -> GossipTimestampFilter {
+	orig.clone()
 }
 /// Used to put an error message in a LightningError
 #[must_use]
@@ -3788,24 +3788,6 @@ impl LightningError {
 		ret
 	}
 }
-impl Clone for LightningError {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn LightningError_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeLightningError)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn LightningError_clone(orig: &LightningError) -> LightningError {
-	orig.clone()
-}
 /// A human-readable message describing the error
 #[no_mangle]
 pub extern "C" fn LightningError_get_err(this_ptr: &LightningError) -> crate::c_types::Str {
@@ -3835,6 +3817,24 @@ pub extern "C" fn LightningError_new(mut err_arg: crate::c_types::derived::CVec_
 		err: String::from_utf8(err_arg.into_rust()).unwrap(),
 		action: action_arg.into_native(),
 	})), is_owned: true }
+}
+impl Clone for LightningError {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn LightningError_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeLightningError)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn LightningError_clone(orig: &LightningError) -> LightningError {
+	orig.clone()
 }
 
 use lightning::ln::msgs::CommitmentUpdate as nativeCommitmentUpdateImport;
@@ -3874,24 +3874,6 @@ impl CommitmentUpdate {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for CommitmentUpdate {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn CommitmentUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentUpdate)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn CommitmentUpdate_clone(orig: &CommitmentUpdate) -> CommitmentUpdate {
-	orig.clone()
 }
 /// update_add_htlc messages which should be sent
 #[no_mangle]
@@ -3957,6 +3939,24 @@ pub extern "C" fn CommitmentUpdate_new(mut update_add_htlcs_arg: crate::c_types:
 		update_fee: local_update_fee_arg,
 		commitment_signed: *unsafe { Box::from_raw(commitment_signed_arg.take_inner()) },
 	})), is_owned: true }
+}
+impl Clone for CommitmentUpdate {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn CommitmentUpdate_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeCommitmentUpdate)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn CommitmentUpdate_clone(orig: &CommitmentUpdate) -> CommitmentUpdate {
+	orig.clone()
 }
 /// The information we received from a peer along the route of a payment we originated. This is
 /// returned by ChannelMessageHandler::handle_update_fail_htlc to be passed into
@@ -4370,35 +4370,31 @@ impl Drop for RoutingMessageHandler {
 }
 #[no_mangle]
 pub extern "C" fn AcceptChannel_write(obj: &AcceptChannel) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn AcceptChannel_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeAcceptChannel) })
 }
 #[no_mangle]
-pub extern "C" fn AcceptChannel_read(ser: crate::c_types::u8slice) -> AcceptChannel {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		AcceptChannel { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		AcceptChannel { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn AcceptChannel_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_AcceptChannelDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::AcceptChannel { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn AnnouncementSignatures_write(obj: &AnnouncementSignatures) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn AnnouncementSignatures_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeAnnouncementSignatures) })
 }
 #[no_mangle]
-pub extern "C" fn AnnouncementSignatures_read(ser: crate::c_types::u8slice) -> AnnouncementSignatures {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		AnnouncementSignatures { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		AnnouncementSignatures { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn AnnouncementSignatures_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_AnnouncementSignaturesDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::AnnouncementSignatures { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn ChannelReestablish_write(obj: &ChannelReestablish) -> crate::c_types::derived::CVec_u8Z {
@@ -4416,83 +4412,73 @@ pub extern "C" fn ChannelReestablish_read(ser: crate::c_types::u8slice) -> crate
 }
 #[no_mangle]
 pub extern "C" fn ClosingSigned_write(obj: &ClosingSigned) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ClosingSigned_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeClosingSigned) })
 }
 #[no_mangle]
-pub extern "C" fn ClosingSigned_read(ser: crate::c_types::u8slice) -> ClosingSigned {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ClosingSigned { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ClosingSigned { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ClosingSigned_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ClosingSignedDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ClosingSigned { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn CommitmentSigned_write(obj: &CommitmentSigned) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn CommitmentSigned_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeCommitmentSigned) })
 }
 #[no_mangle]
-pub extern "C" fn CommitmentSigned_read(ser: crate::c_types::u8slice) -> CommitmentSigned {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		CommitmentSigned { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		CommitmentSigned { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn CommitmentSigned_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_CommitmentSignedDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::CommitmentSigned { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn FundingCreated_write(obj: &FundingCreated) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn FundingCreated_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeFundingCreated) })
 }
 #[no_mangle]
-pub extern "C" fn FundingCreated_read(ser: crate::c_types::u8slice) -> FundingCreated {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		FundingCreated { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		FundingCreated { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn FundingCreated_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_FundingCreatedDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::FundingCreated { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn FundingSigned_write(obj: &FundingSigned) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn FundingSigned_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeFundingSigned) })
 }
 #[no_mangle]
-pub extern "C" fn FundingSigned_read(ser: crate::c_types::u8slice) -> FundingSigned {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		FundingSigned { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		FundingSigned { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn FundingSigned_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_FundingSignedDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::FundingSigned { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn FundingLocked_write(obj: &FundingLocked) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn FundingLocked_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeFundingLocked) })
 }
 #[no_mangle]
-pub extern "C" fn FundingLocked_read(ser: crate::c_types::u8slice) -> FundingLocked {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		FundingLocked { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		FundingLocked { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn FundingLocked_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_FundingLockedDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::FundingLocked { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn Init_write(obj: &Init) -> crate::c_types::derived::CVec_u8Z {
@@ -4510,131 +4496,115 @@ pub extern "C" fn Init_read(ser: crate::c_types::u8slice) -> crate::c_types::der
 }
 #[no_mangle]
 pub extern "C" fn OpenChannel_write(obj: &OpenChannel) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn OpenChannel_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeOpenChannel) })
 }
 #[no_mangle]
-pub extern "C" fn OpenChannel_read(ser: crate::c_types::u8slice) -> OpenChannel {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		OpenChannel { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		OpenChannel { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn OpenChannel_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_OpenChannelDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::OpenChannel { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn RevokeAndACK_write(obj: &RevokeAndACK) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn RevokeAndACK_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeRevokeAndACK) })
 }
 #[no_mangle]
-pub extern "C" fn RevokeAndACK_read(ser: crate::c_types::u8slice) -> RevokeAndACK {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		RevokeAndACK { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		RevokeAndACK { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn RevokeAndACK_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_RevokeAndACKDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::RevokeAndACK { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn Shutdown_write(obj: &Shutdown) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn Shutdown_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeShutdown) })
 }
 #[no_mangle]
-pub extern "C" fn Shutdown_read(ser: crate::c_types::u8slice) -> Shutdown {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		Shutdown { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		Shutdown { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn Shutdown_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ShutdownDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::Shutdown { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UpdateFailHTLC_write(obj: &UpdateFailHTLC) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UpdateFailHTLC_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUpdateFailHTLC) })
 }
 #[no_mangle]
-pub extern "C" fn UpdateFailHTLC_read(ser: crate::c_types::u8slice) -> UpdateFailHTLC {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UpdateFailHTLC { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UpdateFailHTLC { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UpdateFailHTLC_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UpdateFailHTLCDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UpdateFailHTLC { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UpdateFailMalformedHTLC_write(obj: &UpdateFailMalformedHTLC) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UpdateFailMalformedHTLC_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUpdateFailMalformedHTLC) })
 }
 #[no_mangle]
-pub extern "C" fn UpdateFailMalformedHTLC_read(ser: crate::c_types::u8slice) -> UpdateFailMalformedHTLC {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UpdateFailMalformedHTLC { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UpdateFailMalformedHTLC { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UpdateFailMalformedHTLC_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UpdateFailMalformedHTLCDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UpdateFailMalformedHTLC { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UpdateFee_write(obj: &UpdateFee) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UpdateFee_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUpdateFee) })
 }
 #[no_mangle]
-pub extern "C" fn UpdateFee_read(ser: crate::c_types::u8slice) -> UpdateFee {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UpdateFee { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UpdateFee { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UpdateFee_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UpdateFeeDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UpdateFee { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UpdateFulfillHTLC_write(obj: &UpdateFulfillHTLC) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UpdateFulfillHTLC_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUpdateFulfillHTLC) })
 }
 #[no_mangle]
-pub extern "C" fn UpdateFulfillHTLC_read(ser: crate::c_types::u8slice) -> UpdateFulfillHTLC {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UpdateFulfillHTLC { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UpdateFulfillHTLC { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UpdateFulfillHTLC_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UpdateFulfillHTLCDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UpdateFulfillHTLC { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UpdateAddHTLC_write(obj: &UpdateAddHTLC) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn UpdateAddHTLC_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeUpdateAddHTLC) })
 }
 #[no_mangle]
-pub extern "C" fn UpdateAddHTLC_read(ser: crate::c_types::u8slice) -> UpdateAddHTLC {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		UpdateAddHTLC { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		UpdateAddHTLC { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn UpdateAddHTLC_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_UpdateAddHTLCDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::UpdateAddHTLC { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn Ping_write(obj: &Ping) -> crate::c_types::derived::CVec_u8Z {
@@ -4680,19 +4650,17 @@ pub extern "C" fn UnsignedChannelAnnouncement_read(ser: crate::c_types::u8slice)
 }
 #[no_mangle]
 pub extern "C" fn ChannelAnnouncement_write(obj: &ChannelAnnouncement) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelAnnouncement_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelAnnouncement) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelAnnouncement_read(ser: crate::c_types::u8slice) -> ChannelAnnouncement {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelAnnouncement { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelAnnouncement { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelAnnouncementDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ChannelAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn UnsignedChannelUpdate_write(obj: &UnsignedChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
@@ -4710,19 +4678,17 @@ pub extern "C" fn UnsignedChannelUpdate_read(ser: crate::c_types::u8slice) -> cr
 }
 #[no_mangle]
 pub extern "C" fn ChannelUpdate_write(obj: &ChannelUpdate) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelUpdate_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelUpdate) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelUpdate_read(ser: crate::c_types::u8slice) -> ChannelUpdate {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelUpdate { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelUpdate { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelUpdate_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelUpdateDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::ChannelUpdate { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn ErrorMessage_write(obj: &ErrorMessage) -> crate::c_types::derived::CVec_u8Z {
@@ -4754,19 +4720,17 @@ pub extern "C" fn UnsignedNodeAnnouncement_read(ser: crate::c_types::u8slice) ->
 }
 #[no_mangle]
 pub extern "C" fn NodeAnnouncement_write(obj: &NodeAnnouncement) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn NodeAnnouncement_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeNodeAnnouncement) })
 }
 #[no_mangle]
-pub extern "C" fn NodeAnnouncement_read(ser: crate::c_types::u8slice) -> NodeAnnouncement {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		NodeAnnouncement { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		NodeAnnouncement { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn NodeAnnouncement_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_NodeAnnouncementDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::ln::msgs::NodeAnnouncement { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 #[no_mangle]
 pub extern "C" fn QueryShortChannelIds_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_QueryShortChannelIdsDecodeErrorZ {

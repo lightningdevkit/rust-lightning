@@ -218,24 +218,6 @@ impl PeerHandleError {
 		ret
 	}
 }
-impl Clone for PeerHandleError {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn PeerHandleError_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePeerHandleError)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn PeerHandleError_clone(orig: &PeerHandleError) -> PeerHandleError {
-	orig.clone()
-}
 /// Used to indicate that we probably can't make any future connections to this peer, implying
 /// we should go ahead and force-close any channels we have with it.
 #[no_mangle]
@@ -255,6 +237,24 @@ pub extern "C" fn PeerHandleError_new(mut no_connection_possible_arg: bool) -> P
 	PeerHandleError { inner: Box::into_raw(Box::new(nativePeerHandleError {
 		no_connection_possible: no_connection_possible_arg,
 	})), is_owned: true }
+}
+impl Clone for PeerHandleError {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn PeerHandleError_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePeerHandleError)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn PeerHandleError_clone(orig: &PeerHandleError) -> PeerHandleError {
+	orig.clone()
 }
 
 use lightning::ln::peer_handler::PeerManager as nativePeerManagerImport;

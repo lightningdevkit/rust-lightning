@@ -334,24 +334,6 @@ impl DirectionalChannelInfo {
 		ret
 	}
 }
-impl Clone for DirectionalChannelInfo {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn DirectionalChannelInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDirectionalChannelInfo)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn DirectionalChannelInfo_clone(orig: &DirectionalChannelInfo) -> DirectionalChannelInfo {
-	orig.clone()
-}
 /// When the last update to the channel direction was issued.
 /// Value is opaque, as set in the announcement.
 #[no_mangle]
@@ -428,21 +410,37 @@ pub extern "C" fn DirectionalChannelInfo_set_last_update_message(this_ptr: &mut 
 	let mut local_val = if val.inner.is_null() { None } else { Some( { *unsafe { Box::from_raw(val.take_inner()) } }) };
 	unsafe { &mut *this_ptr.inner }.last_update_message = local_val;
 }
+impl Clone for DirectionalChannelInfo {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn DirectionalChannelInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDirectionalChannelInfo)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn DirectionalChannelInfo_clone(orig: &DirectionalChannelInfo) -> DirectionalChannelInfo {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn DirectionalChannelInfo_write(obj: &DirectionalChannelInfo) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn DirectionalChannelInfo_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeDirectionalChannelInfo) })
 }
 #[no_mangle]
-pub extern "C" fn DirectionalChannelInfo_read(ser: crate::c_types::u8slice) -> DirectionalChannelInfo {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		DirectionalChannelInfo { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		DirectionalChannelInfo { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn DirectionalChannelInfo_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_DirectionalChannelInfoDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::DirectionalChannelInfo { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::routing::network_graph::ChannelInfo as nativeChannelInfoImport;
@@ -563,19 +561,17 @@ pub extern "C" fn ChannelInfo_set_announcement_message(this_ptr: &mut ChannelInf
 }
 #[no_mangle]
 pub extern "C" fn ChannelInfo_write(obj: &ChannelInfo) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(unsafe { &(*(*obj).inner) })
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
 }
 #[no_mangle]
 pub(crate) extern "C" fn ChannelInfo_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeChannelInfo) })
 }
 #[no_mangle]
-pub extern "C" fn ChannelInfo_read(ser: crate::c_types::u8slice) -> ChannelInfo {
-	if let Ok(res) = crate::c_types::deserialize_obj(ser) {
-		ChannelInfo { inner: Box::into_raw(Box::new(res)), is_owned: true }
-	} else {
-		ChannelInfo { inner: std::ptr::null_mut(), is_owned: true }
-	}
+pub extern "C" fn ChannelInfo_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_ChannelInfoDecodeErrorZ {
+	let res = crate::c_types::deserialize_obj(ser);
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::network_graph::ChannelInfo { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	local_res
 }
 
 use lightning::routing::network_graph::RoutingFees as nativeRoutingFeesImport;
@@ -615,24 +611,6 @@ impl RoutingFees {
 		ret
 	}
 }
-impl Clone for RoutingFees {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn RoutingFees_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoutingFees)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn RoutingFees_clone(orig: &RoutingFees) -> RoutingFees {
-	orig.clone()
-}
 /// Flat routing fee in satoshis
 #[no_mangle]
 pub extern "C" fn RoutingFees_get_base_msat(this_ptr: &RoutingFees) -> u32 {
@@ -664,6 +642,24 @@ pub extern "C" fn RoutingFees_new(mut base_msat_arg: u32, mut proportional_milli
 		base_msat: base_msat_arg,
 		proportional_millionths: proportional_millionths_arg,
 	})), is_owned: true }
+}
+impl Clone for RoutingFees {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn RoutingFees_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeRoutingFees)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn RoutingFees_clone(orig: &RoutingFees) -> RoutingFees {
+	orig.clone()
 }
 #[no_mangle]
 pub extern "C" fn RoutingFees_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_RoutingFeesDecodeErrorZ {
@@ -716,24 +712,6 @@ impl NodeAnnouncementInfo {
 		self.inner = std::ptr::null_mut();
 		ret
 	}
-}
-impl Clone for NodeAnnouncementInfo {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn NodeAnnouncementInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeAnnouncementInfo)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn NodeAnnouncementInfo_clone(orig: &NodeAnnouncementInfo) -> NodeAnnouncementInfo {
-	orig.clone()
 }
 /// Protocol features the node announced support for
 #[no_mangle]
@@ -824,6 +802,24 @@ pub extern "C" fn NodeAnnouncementInfo_new(mut features_arg: crate::ln::features
 		announcement_message: local_announcement_message_arg,
 	})), is_owned: true }
 }
+impl Clone for NodeAnnouncementInfo {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn NodeAnnouncementInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeAnnouncementInfo)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn NodeAnnouncementInfo_clone(orig: &NodeAnnouncementInfo) -> NodeAnnouncementInfo {
+	orig.clone()
+}
 #[no_mangle]
 pub extern "C" fn NodeAnnouncementInfo_write(obj: &NodeAnnouncementInfo) -> crate::c_types::derived::CVec_u8Z {
 	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
@@ -876,24 +872,6 @@ impl NodeInfo {
 		ret
 	}
 }
-impl Clone for NodeInfo {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn NodeInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeInfo)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn NodeInfo_clone(orig: &NodeInfo) -> NodeInfo {
-	orig.clone()
-}
 /// All valid channels a node has announced
 #[no_mangle]
 pub extern "C" fn NodeInfo_set_channels(this_ptr: &mut NodeInfo, mut val: crate::c_types::derived::CVec_u64Z) {
@@ -945,6 +923,24 @@ pub extern "C" fn NodeInfo_new(mut channels_arg: crate::c_types::derived::CVec_u
 		lowest_inbound_channel_fees: local_lowest_inbound_channel_fees_arg,
 		announcement_info: local_announcement_info_arg,
 	})), is_owned: true }
+}
+impl Clone for NodeInfo {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn NodeInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNodeInfo)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn NodeInfo_clone(orig: &NodeInfo) -> NodeInfo {
+	orig.clone()
 }
 #[no_mangle]
 pub extern "C" fn NodeInfo_write(obj: &NodeInfo) -> crate::c_types::derived::CVec_u8Z {

@@ -124,24 +124,6 @@ impl ChannelDetails {
 		ret
 	}
 }
-impl Clone for ChannelDetails {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn ChannelDetails_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelDetails)).clone() })) as *mut c_void
-}
-#[no_mangle]
-pub extern "C" fn ChannelDetails_clone(orig: &ChannelDetails) -> ChannelDetails {
-	orig.clone()
-}
 /// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 /// thereafter this is the txid of the funding transaction xor the funding transaction output).
 /// Note that this means this value is *not* persistent - it can change once during the
@@ -176,7 +158,7 @@ pub extern "C" fn ChannelDetails_set_remote_network_id(this_ptr: &mut ChannelDet
 #[no_mangle]
 pub extern "C" fn ChannelDetails_get_counterparty_features(this_ptr: &ChannelDetails) -> crate::ln::features::InitFeatures {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.counterparty_features;
-	crate::ln::features::InitFeatures { inner: &mut (*inner_val), is_owned: false }
+	crate::ln::features::InitFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
 }
 /// The Features the channel counterparty provided upon last connection.
 /// Useful for routing as it is the most up-to-date copy of the counterparty's features and
@@ -255,6 +237,24 @@ pub extern "C" fn ChannelDetails_get_is_live(this_ptr: &ChannelDetails) -> bool 
 #[no_mangle]
 pub extern "C" fn ChannelDetails_set_is_live(this_ptr: &mut ChannelDetails, mut val: bool) {
 	unsafe { &mut *this_ptr.inner }.is_live = val;
+}
+impl Clone for ChannelDetails {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelDetails_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelDetails)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelDetails_clone(orig: &ChannelDetails) -> ChannelDetails {
+	orig.clone()
 }
 
 use lightning::ln::channelmanager::PaymentSendFailure as nativePaymentSendFailureImport;
