@@ -1004,8 +1004,8 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 		match full_path {
 			"Result" if !is_ref => {
 				Some(("match ",
-						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.result)) }})", var_name)),
-						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.err)) }})", var_name))],
+						vec![(".result_ok { true => Ok(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.result)) }})", var_access)),
+						     ("), false => Err(".to_string(), format!("(*unsafe {{ Box::from_raw(<*mut _>::take_ptr(&mut {}.contents.err)) }})", var_access))],
 						")}"))
 			},
 			"Vec"|"Slice" if !is_ref => {
@@ -1018,9 +1018,9 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 				if let Some(syn::Type::Path(p)) = single_contained {
 					if self.c_type_has_inner_from_path(&self.resolve_path(&p.path, generics)) {
 						if is_ref {
-							return Some(("if ", vec![(".inner.is_null() { None } else { Some((*".to_string(), format!("{}", var_name))], ").clone()) }"))
+							return Some(("if ", vec![(".inner.is_null() { None } else { Some((*".to_string(), format!("{}", var_access))], ").clone()) }"))
 						} else {
-							return Some(("if ", vec![(".inner.is_null() { None } else { Some(".to_string(), format!("{}", var_name))], ") }"));
+							return Some(("if ", vec![(".inner.is_null() { None } else { Some(".to_string(), format!("{}", var_access))], ") }"));
 						}
 					}
 				}
