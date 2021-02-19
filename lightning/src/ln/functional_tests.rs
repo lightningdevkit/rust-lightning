@@ -1701,8 +1701,9 @@ fn test_fee_spike_violation_fails_htlc() {
 fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	// Set the fee rate for the channel very high, to the point where the fundee
-	// sending any amount would result in a channel reserve violation. In this test
-	// we check that we would be prevented from sending an HTLC in this situation.
+	// sending any above-dust amount would result in a channel reserve violation.
+	// In this test we check that we would be prevented from sending an HTLC in
+	// this situation.
 	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
 	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1720,7 +1721,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 		}}
 	}
 
-	let (route, our_payment_hash, _) = get_route_and_payment_hash!(1000);
+	let (route, our_payment_hash, _) = get_route_and_payment_hash!(4843000);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1776,6 +1777,57 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let err_msg = check_closed_broadcast!(nodes[0], true).unwrap();
 	assert_eq!(err_msg.data, "Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value");
 	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
+fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
+	// Test that if we receive many dust HTLCs over an outbound channel, they don't count when
+	// calculating our commitment transaction fee (this was previously broken).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
+	// channel reserve violation (so their balance is channel reserve (1000 sats) + commitment
+	// transaction fee with 0 HTLCs (183 sats)).
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98817000, InitFeatures::known(), InitFeatures::known());
+
+	let dust_amt = 546000; // Dust amount
+	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
+	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
+	// commitment transaction fee.
+	let (_, _) = route_payment(&nodes[1], &[&nodes[0]], dust_amt);
+}
+
+#[test]
+fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
+	// Test that if we receive many dust HTLCs over an inbound channel, they don't count when
+	// calculating our counterparty's commitment transaction fee (this was previously broken).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98000000, InitFeatures::known(), InitFeatures::known());
+
+	let payment_amt = 46000; // Dust amount
+	// In the previous code, these first four payments would succeed.
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+
+	// Then these next 5 would be interpreted by nodes[1] as violating the fee spike buffer.
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
+
+	// And this last payment previously resulted in nodes[1] closing on its inbound-channel
+	// counterparty, because it counted all the previous dust HTLCs against nodes[0]'s commitment
+	// transaction fee and therefore perceived this next payment as a channel reserve violation.
+	let (_, _) = route_payment(&nodes[0], &[&nodes[1]], payment_amt);
 }
 
 #[test]
@@ -2089,23 +2141,6 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	let commit_tx_fee_0_htlcs = 2*commit_tx_fee_msat(feerate, 1);
 	let recv_value_3 = commit_tx_fee_2_htlcs - commit_tx_fee_0_htlcs - total_fee_msat;
-	{
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_3 + 1);
-		let err = nodes[0].node.send_payment(&route, our_payment_hash, &None).err().unwrap();
-		match err {
-			PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
-				match &fails[0] {
-					&APIError::ChannelUnavailable{ref err} =>
-						assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)),
-					_ => panic!("Unexpected error variant"),
-				}
-			},
-			_ => panic!("Unexpected error variant"),
-		}
-		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 3);
-	}
-
 	send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_3, recv_value_3);
 
 	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat(feerate, 1 + 1);
