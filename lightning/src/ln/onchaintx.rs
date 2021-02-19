@@ -240,7 +240,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-pub struct OnchainTxHandler<ChanSigner: Sign> {
+pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
@@ -250,7 +250,7 @@ pub struct OnchainTxHandler<ChanSigner: Sign> {
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 
-	signer: ChanSigner,
+	signer: ChannelSigner,
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
@@ -287,7 +287,7 @@ pub struct OnchainTxHandler<ChanSigner: Sign> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<ChanSigner: Sign> OnchainTxHandler<ChanSigner> {
+impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;
@@ -423,8 +423,8 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 	}
 }
 
-impl<ChanSigner: Sign> OnchainTxHandler<ChanSigner> {
-	pub(crate) fn new(destination_script: Script, signer: ChanSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
+impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
+	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
 		OnchainTxHandler {
 			destination_script,
 			holder_commitment,

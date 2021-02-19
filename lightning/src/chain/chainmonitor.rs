@@ -56,15 +56,15 @@ use std::ops::Deref;
 /// [`chain::Watch`]: ../trait.Watch.html
 /// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
 /// [module-level documentation]: index.html
-pub struct ChainMonitor<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
-        P::Target: channelmonitor::Persist<ChanSigner>,
+        P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// The monitors
-	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChanSigner>>>,
+	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChannelSigner>>>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -72,12 +72,12 @@ pub struct ChainMonitor<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref
 	persister: P,
 }
 
-impl<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
-	    P::Target: channelmonitor::Persist<ChanSigner>,
+	    P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on transactions in the connected block. See
@@ -140,13 +140,13 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChanSigner: Sign, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send>
-chain::Watch<ChanSigner> for ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref + Sync + Send, T: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send, P: Deref + Sync + Send>
+chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
 	    L::Target: Logger,
-	    P::Target: channelmonitor::Persist<ChanSigner>,
+	    P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// Adds the monitor that watches the channel referred to by the given outpoint.
 	///
@@ -156,7 +156,7 @@ where C::Target: chain::Filter,
 	/// monitors lock.
 	///
 	/// [`chain::Filter`]: ../trait.Filter.html
-	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let mut monitors = self.monitors.lock().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
@@ -232,12 +232,12 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChanSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChanSigner, C, T, F, L, P>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
-	      P::Target: channelmonitor::Persist<ChanSigner>,
+	      P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();

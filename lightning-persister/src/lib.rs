@@ -126,14 +126,14 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChanSigner: Sign + Send + Sync> channelmonitor::Persist<ChanSigner> for FilesystemPersister {
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+impl<ChannelSigner: Sign + Send + Sync> channelmonitor::Persist<ChannelSigner> for FilesystemPersister {
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChanSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
