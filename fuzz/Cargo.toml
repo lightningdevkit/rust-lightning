@@ -24,6 +24,12 @@ hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
 libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git", optional = true }
 
+[patch.crates-io]
+# Rust-Secp256k1 PR 282. This patch should be dropped once that is merged.
+secp256k1 = { git = 'https://github.com/TheBlueMatt/rust-secp256k1', rev = '32767e0e21e8861701ff7d5957613169d67ff1f8' }
+# bitcoin_hashes PR 111 (without the top commit). This patch should be dropped once that is merged.
+bitcoin_hashes = { git = 'https://github.com/TheBlueMatt/bitcoin_hashes', rev = 'c90d26339a3e34fd2f942aa80298f410cc41b743' }
+
 [build-dependencies]
 cc = "1.0"
 
