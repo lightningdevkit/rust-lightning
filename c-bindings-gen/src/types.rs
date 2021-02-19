@@ -963,7 +963,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 						").into() }"))
 			},
 			"Vec" if !is_ref => {
-				Some(("Vec::new(); for item in ", vec![(format!(".drain(..) {{ local_{}.push(", var_name), "item".to_string())], "); }"))
+				Some(("Vec::new(); for mut item in ", vec![(format!(".drain(..) {{ local_{}.push(", var_name), "item".to_string())], "); }"))
 			},
 			"Slice" => {
 				Some(("Vec::new(); for item in ", vec![(format!(".iter() {{ local_{}.push(", var_name), "**item".to_string())], "); }"))
