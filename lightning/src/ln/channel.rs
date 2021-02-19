@@ -4087,7 +4087,8 @@ impl<Signer: Sign> Channel<Signer> {
 			signature = res.0;
 			htlc_signatures = res.1;
 
-			log_trace!(logger, "Signed remote commitment tx {} with redeemscript {} -> {}",
+			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {}",
+				encode::serialize_hex(&counterparty_commitment_tx.0.trust().built_transaction().transaction),
 				&counterparty_commitment_txid,
 				encode::serialize_hex(&self.get_funding_redeemscript()),
 				log_bytes!(signature.serialize_compact()[..]));
