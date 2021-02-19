@@ -25,8 +25,10 @@ pub(crate) mod transaction_utils;
 
 #[macro_use]
 pub(crate) mod ser_macros;
+
+/// Logging macro utilities.
 #[macro_use]
-pub(crate) mod macro_logger;
+pub mod macro_logger;
 
 // These have to come after macro_logger to build
 pub mod logger;
