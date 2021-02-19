@@ -7,5 +7,6 @@ use crate::c_types::*;
 pub mod events;
 pub mod errors;
 pub mod ser;
+pub mod macro_logger;
 pub mod logger;
 pub mod config;

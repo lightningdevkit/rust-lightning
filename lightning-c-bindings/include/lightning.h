@@ -1679,14 +1679,14 @@ typedef enum LDKSpendableOutputDescriptor_Tag {
     *
     * To derive the delayed_payment key which is used to sign for this input, you must pass the
     * holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
-    * ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
+    * Sign::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
     * chan_utils::derive_private_key. The public key can be generated without the secret key
     * using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
-    * ChannelKeys::pubkeys().
+    * Sign::pubkeys().
     *
     * To derive the revocation_pubkey provided here (which is used in the witness
     * script generation), you must pass the counterparty revocation_basepoint (which appears in the
-    * call to ChannelKeys::ready_channel) and the provided per_commitment point
+    * call to Sign::ready_channel) and the provided per_commitment point
     * to chan_utils::derive_public_revocation_key.
     *
     * The witness script which is hashed and included in the output script_pubkey may be
@@ -1697,7 +1697,7 @@ typedef enum LDKSpendableOutputDescriptor_Tag {
    LDKSpendableOutputDescriptor_DelayedPaymentOutput,
    /**
     * An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
-    * corresponds to the public key in ChannelKeys::pubkeys().payment_point).
+    * corresponds to the public key in Sign::pubkeys().payment_point).
     * The witness in the spending input, is, thus, simply:
     * <BIP 143 signature> <payment key>
     *
@@ -2006,10 +2006,10 @@ typedef struct MUST_USE_STRUCT LDKUnsignedChannelAnnouncement {
 } LDKUnsignedChannelAnnouncement;
 
 /**
- * Set of lightning keys needed to operate a channel as described in BOLT 3.
+ * A trait to sign lightning channel transactions as described in BOLT 3.
  *
  * Signing services could be implemented on a hardware wallet. In this case,
- * the current ChannelKeys would be a front-end on top of a communication
+ * the current Sign would be a front-end on top of a communication
  * channel connected to your secure device and lightning key material wouldn't
  * reside on a hot server. Nevertheless, a this deployment would still need
  * to trust the ChannelManager to avoid loss of funds as this latest component
@@ -2024,7 +2024,7 @@ typedef struct MUST_USE_STRUCT LDKUnsignedChannelAnnouncement {
  * to act, as liveness and breach reply correctness are always going to be hard requirements
  * of LN security model, orthogonal of key management issues.
  */
-typedef struct LDKChannelKeys {
+typedef struct LDKSign {
    void *this_arg;
    /**
     * Gets the per-commitment point for a specific commitment number
@@ -2052,11 +2052,11 @@ typedef struct LDKChannelKeys {
     * Note that this takes a pointer to this object, not the this_ptr like other methods do
     * This function pointer may be NULL if pubkeys is filled in when this object is created and never needs updating.
     */
-   void (*set_pubkeys)(const struct LDKChannelKeys*NONNULL_PTR );
+   void (*set_pubkeys)(const struct LDKSign*NONNULL_PTR );
    /**
     * Gets an arbitrary identifier describing the set of keys which are provided back to you in
     * some SpendableOutputDescriptor types. This should be sufficient to identify this
-    * ChannelKeys object uniquely and lookup or re-derive its keys.
+    * Sign object uniquely and lookup or re-derive its keys.
     */
    struct LDKThirtyTwoBytes (*channel_keys_id)(const void *this_arg);
    /**
@@ -2152,7 +2152,7 @@ typedef struct LDKChannelKeys {
    void *(*clone)(const void *this_arg);
    struct LDKCVec_u8Z (*write)(const void *this_arg);
    void (*free)(void *this_arg);
-} LDKChannelKeys;
+} LDKSign;
 
 
 
@@ -2476,15 +2476,15 @@ typedef struct LDKBroadcasterInterface {
    void (*free)(void *this_arg);
 } LDKBroadcasterInterface;
 
-typedef union LDKCResult_ChannelKeysDecodeErrorZPtr {
-   struct LDKChannelKeys *result;
+typedef union LDKCResult_SignDecodeErrorZPtr {
+   struct LDKSign *result;
    struct LDKDecodeError *err;
-} LDKCResult_ChannelKeysDecodeErrorZPtr;
+} LDKCResult_SignDecodeErrorZPtr;
 
-typedef struct LDKCResult_ChannelKeysDecodeErrorZ {
-   union LDKCResult_ChannelKeysDecodeErrorZPtr contents;
+typedef struct LDKCResult_SignDecodeErrorZ {
+   union LDKCResult_SignDecodeErrorZPtr contents;
    bool result_ok;
-} LDKCResult_ChannelKeysDecodeErrorZ;
+} LDKCResult_SignDecodeErrorZ;
 
 typedef struct LDKu8slice {
    const uint8_t *data;
@@ -2518,12 +2518,12 @@ typedef struct LDKKeysInterface {
     */
    struct LDKPublicKey (*get_shutdown_pubkey)(const void *this_arg);
    /**
-    * Get a new set of ChannelKeys for per-channel secrets. These MUST be unique even if you
+    * Get a new set of Sign for per-channel secrets. These MUST be unique even if you
     * restarted with some stale data!
     *
     * This method must return a different value each time it is called.
     */
-   struct LDKChannelKeys (*get_channel_keys)(const void *this_arg, bool inbound, uint64_t channel_value_satoshis);
+   struct LDKSign (*get_channel_signer)(const void *this_arg, bool inbound, uint64_t channel_value_satoshis);
    /**
     * Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
     * onion packets and for temporary channel IDs. There is no requirement that these be
@@ -2533,14 +2533,14 @@ typedef struct LDKKeysInterface {
     */
    struct LDKThirtyTwoBytes (*get_secure_random_bytes)(const void *this_arg);
    /**
-    * Reads a `ChanKeySigner` for this `KeysInterface` from the given input stream.
+    * Reads a `Signer` for this `KeysInterface` from the given input stream.
     * This is only called during deserialization of other objects which contain
-    * `ChannelKeys`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
-    * The bytes are exactly those which `<Self::ChanKeySigner as Writeable>::write()` writes, and
+    * `Sign`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
+    * The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
     * contain no versioning scheme. You may wish to include your own version prefix and ensure
     * you've read all of the provided bytes to ensure no corruption occurred.
     */
-   struct LDKCResult_ChannelKeysDecodeErrorZ (*read_chan_signer)(const void *this_arg, struct LDKu8slice reader);
+   struct LDKCResult_SignDecodeErrorZ (*read_chan_signer)(const void *this_arg, struct LDKu8slice reader);
    void (*free)(void *this_arg);
 } LDKKeysInterface;
 
@@ -2674,29 +2674,29 @@ typedef struct LDKCResult_CVec_CVec_u8ZZNoneZ {
 
 
 /**
- * A simple implementation of ChannelKeys that just keeps the private keys in memory.
+ * A simple implementation of Sign that just keeps the private keys in memory.
  *
  * This implementation performs no policy checks and is insufficient by itself as
  * a secure external signer.
  */
-typedef struct MUST_USE_STRUCT LDKInMemoryChannelKeys {
+typedef struct MUST_USE_STRUCT LDKInMemorySigner {
    /**
     * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
-   LDKnativeInMemoryChannelKeys *inner;
+   LDKnativeInMemorySigner *inner;
    bool is_owned;
-} LDKInMemoryChannelKeys;
+} LDKInMemorySigner;
 
-typedef union LDKCResult_InMemoryChannelKeysDecodeErrorZPtr {
-   struct LDKInMemoryChannelKeys *result;
+typedef union LDKCResult_InMemorySignerDecodeErrorZPtr {
+   struct LDKInMemorySigner *result;
    struct LDKDecodeError *err;
-} LDKCResult_InMemoryChannelKeysDecodeErrorZPtr;
+} LDKCResult_InMemorySignerDecodeErrorZPtr;
 
-typedef struct LDKCResult_InMemoryChannelKeysDecodeErrorZ {
-   union LDKCResult_InMemoryChannelKeysDecodeErrorZPtr contents;
+typedef struct LDKCResult_InMemorySignerDecodeErrorZ {
+   union LDKCResult_InMemorySignerDecodeErrorZPtr contents;
    bool result_ok;
-} LDKCResult_InMemoryChannelKeysDecodeErrorZ;
+} LDKCResult_InMemorySignerDecodeErrorZ;
 
 typedef struct LDKCVec_TxOutZ {
    struct LDKTxOut *data;
@@ -4340,13 +4340,13 @@ void CResult_SignatureNoneZ_free(struct LDKCResult_SignatureNoneZ _res);
 
 struct LDKCResult_SignatureNoneZ CResult_SignatureNoneZ_clone(const struct LDKCResult_SignatureNoneZ *NONNULL_PTR orig);
 
-struct LDKCResult_ChannelKeysDecodeErrorZ CResult_ChannelKeysDecodeErrorZ_ok(struct LDKChannelKeys o);
+struct LDKCResult_SignDecodeErrorZ CResult_SignDecodeErrorZ_ok(struct LDKSign o);
 
-struct LDKCResult_ChannelKeysDecodeErrorZ CResult_ChannelKeysDecodeErrorZ_err(struct LDKDecodeError e);
+struct LDKCResult_SignDecodeErrorZ CResult_SignDecodeErrorZ_err(struct LDKDecodeError e);
 
-void CResult_ChannelKeysDecodeErrorZ_free(struct LDKCResult_ChannelKeysDecodeErrorZ _res);
+void CResult_SignDecodeErrorZ_free(struct LDKCResult_SignDecodeErrorZ _res);
 
-struct LDKCResult_ChannelKeysDecodeErrorZ CResult_ChannelKeysDecodeErrorZ_clone(const struct LDKCResult_ChannelKeysDecodeErrorZ *NONNULL_PTR orig);
+struct LDKCResult_SignDecodeErrorZ CResult_SignDecodeErrorZ_clone(const struct LDKCResult_SignDecodeErrorZ *NONNULL_PTR orig);
 
 void CVec_CVec_u8ZZ_free(struct LDKCVec_CVec_u8ZZ _res);
 
@@ -4358,13 +4358,13 @@ void CResult_CVec_CVec_u8ZZNoneZ_free(struct LDKCResult_CVec_CVec_u8ZZNoneZ _res
 
 struct LDKCResult_CVec_CVec_u8ZZNoneZ CResult_CVec_CVec_u8ZZNoneZ_clone(const struct LDKCResult_CVec_CVec_u8ZZNoneZ *NONNULL_PTR orig);
 
-struct LDKCResult_InMemoryChannelKeysDecodeErrorZ CResult_InMemoryChannelKeysDecodeErrorZ_ok(struct LDKInMemoryChannelKeys o);
+struct LDKCResult_InMemorySignerDecodeErrorZ CResult_InMemorySignerDecodeErrorZ_ok(struct LDKInMemorySigner o);
 
-struct LDKCResult_InMemoryChannelKeysDecodeErrorZ CResult_InMemoryChannelKeysDecodeErrorZ_err(struct LDKDecodeError e);
+struct LDKCResult_InMemorySignerDecodeErrorZ CResult_InMemorySignerDecodeErrorZ_err(struct LDKDecodeError e);
 
-void CResult_InMemoryChannelKeysDecodeErrorZ_free(struct LDKCResult_InMemoryChannelKeysDecodeErrorZ _res);
+void CResult_InMemorySignerDecodeErrorZ_free(struct LDKCResult_InMemorySignerDecodeErrorZ _res);
 
-struct LDKCResult_InMemoryChannelKeysDecodeErrorZ CResult_InMemoryChannelKeysDecodeErrorZ_clone(const struct LDKCResult_InMemoryChannelKeysDecodeErrorZ *NONNULL_PTR orig);
+struct LDKCResult_InMemorySignerDecodeErrorZ CResult_InMemorySignerDecodeErrorZ_clone(const struct LDKCResult_InMemorySignerDecodeErrorZ *NONNULL_PTR orig);
 
 void CVec_TxOutZ_free(struct LDKCVec_TxOutZ _res);
 
@@ -5410,14 +5410,14 @@ void DelayedPaymentOutputDescriptor_set_revocation_pubkey(struct LDKDelayedPayme
 
 /**
  * Arbitrary identification information returned by a call to
- * `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+ * `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
  * the channel to spend the output.
  */
 const uint8_t (*DelayedPaymentOutputDescriptor_get_channel_keys_id(const struct LDKDelayedPaymentOutputDescriptor *NONNULL_PTR this_ptr))[32];
 
 /**
  * Arbitrary identification information returned by a call to
- * `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+ * `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
  * the channel to spend the output.
  */
 void DelayedPaymentOutputDescriptor_set_channel_keys_id(struct LDKDelayedPaymentOutputDescriptor *NONNULL_PTR this_ptr, struct LDKThirtyTwoBytes val);
@@ -5455,14 +5455,14 @@ void StaticPaymentOutputDescriptor_set_output(struct LDKStaticPaymentOutputDescr
 
 /**
  * Arbitrary identification information returned by a call to
- * `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+ * `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
  * the channel to spend the output.
  */
 const uint8_t (*StaticPaymentOutputDescriptor_get_channel_keys_id(const struct LDKStaticPaymentOutputDescriptor *NONNULL_PTR this_ptr))[32];
 
 /**
  * Arbitrary identification information returned by a call to
- * `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+ * `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
  * the channel to spend the output.
  */
 void StaticPaymentOutputDescriptor_set_channel_keys_id(struct LDKStaticPaymentOutputDescriptor *NONNULL_PTR this_ptr, struct LDKThirtyTwoBytes val);
@@ -5489,92 +5489,92 @@ struct LDKCVec_u8Z SpendableOutputDescriptor_write(const struct LDKSpendableOutp
 
 struct LDKCResult_SpendableOutputDescriptorDecodeErrorZ SpendableOutputDescriptor_read(struct LDKu8slice ser);
 
-struct LDKChannelKeys ChannelKeys_clone(const struct LDKChannelKeys *NONNULL_PTR orig);
+struct LDKSign Sign_clone(const struct LDKSign *NONNULL_PTR orig);
 
 /**
  * Calls the free function if one is set
  */
-void ChannelKeys_free(struct LDKChannelKeys this_ptr);
+void Sign_free(struct LDKSign this_ptr);
 
 /**
  * Calls the free function if one is set
  */
 void KeysInterface_free(struct LDKKeysInterface this_ptr);
 
-void InMemoryChannelKeys_free(struct LDKInMemoryChannelKeys this_ptr);
+void InMemorySigner_free(struct LDKInMemorySigner this_ptr);
 
 /**
  * Private key of anchor tx
  */
-const uint8_t (*InMemoryChannelKeys_get_funding_key(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_funding_key(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Private key of anchor tx
  */
-void InMemoryChannelKeys_set_funding_key(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKSecretKey val);
+void InMemorySigner_set_funding_key(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKSecretKey val);
 
 /**
  * Holder secret key for blinded revocation pubkey
  */
-const uint8_t (*InMemoryChannelKeys_get_revocation_base_key(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_revocation_base_key(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Holder secret key for blinded revocation pubkey
  */
-void InMemoryChannelKeys_set_revocation_base_key(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKSecretKey val);
+void InMemorySigner_set_revocation_base_key(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKSecretKey val);
 
 /**
  * Holder secret key used for our balance in counterparty-broadcasted commitment transactions
  */
-const uint8_t (*InMemoryChannelKeys_get_payment_key(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_payment_key(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Holder secret key used for our balance in counterparty-broadcasted commitment transactions
  */
-void InMemoryChannelKeys_set_payment_key(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKSecretKey val);
+void InMemorySigner_set_payment_key(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKSecretKey val);
 
 /**
  * Holder secret key used in HTLC tx
  */
-const uint8_t (*InMemoryChannelKeys_get_delayed_payment_base_key(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_delayed_payment_base_key(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Holder secret key used in HTLC tx
  */
-void InMemoryChannelKeys_set_delayed_payment_base_key(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKSecretKey val);
+void InMemorySigner_set_delayed_payment_base_key(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKSecretKey val);
 
 /**
  * Holder htlc secret key used in commitment tx htlc outputs
  */
-const uint8_t (*InMemoryChannelKeys_get_htlc_base_key(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_htlc_base_key(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Holder htlc secret key used in commitment tx htlc outputs
  */
-void InMemoryChannelKeys_set_htlc_base_key(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKSecretKey val);
+void InMemorySigner_set_htlc_base_key(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKSecretKey val);
 
 /**
  * Commitment seed
  */
-const uint8_t (*InMemoryChannelKeys_get_commitment_seed(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr))[32];
+const uint8_t (*InMemorySigner_get_commitment_seed(const struct LDKInMemorySigner *NONNULL_PTR this_ptr))[32];
 
 /**
  * Commitment seed
  */
-void InMemoryChannelKeys_set_commitment_seed(struct LDKInMemoryChannelKeys *NONNULL_PTR this_ptr, struct LDKThirtyTwoBytes val);
+void InMemorySigner_set_commitment_seed(struct LDKInMemorySigner *NONNULL_PTR this_ptr, struct LDKThirtyTwoBytes val);
 
-struct LDKInMemoryChannelKeys InMemoryChannelKeys_clone(const struct LDKInMemoryChannelKeys *NONNULL_PTR orig);
+struct LDKInMemorySigner InMemorySigner_clone(const struct LDKInMemorySigner *NONNULL_PTR orig);
 
 /**
- * Create a new InMemoryChannelKeys
+ * Create a new InMemorySigner
  */
-MUST_USE_RES struct LDKInMemoryChannelKeys InMemoryChannelKeys_new(struct LDKSecretKey funding_key, struct LDKSecretKey revocation_base_key, struct LDKSecretKey payment_key, struct LDKSecretKey delayed_payment_base_key, struct LDKSecretKey htlc_base_key, struct LDKThirtyTwoBytes commitment_seed, uint64_t channel_value_satoshis, struct LDKThirtyTwoBytes channel_keys_id);
+MUST_USE_RES struct LDKInMemorySigner InMemorySigner_new(struct LDKSecretKey funding_key, struct LDKSecretKey revocation_base_key, struct LDKSecretKey payment_key, struct LDKSecretKey delayed_payment_base_key, struct LDKSecretKey htlc_base_key, struct LDKThirtyTwoBytes commitment_seed, uint64_t channel_value_satoshis, struct LDKThirtyTwoBytes channel_keys_id);
 
 /**
  * Counterparty pubkeys.
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES struct LDKChannelPublicKeys InMemoryChannelKeys_counterparty_pubkeys(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES struct LDKChannelPublicKeys InMemorySigner_counterparty_pubkeys(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * The contest_delay value specified by our counterparty and applied on holder-broadcastable
@@ -5582,7 +5582,7 @@ MUST_USE_RES struct LDKChannelPublicKeys InMemoryChannelKeys_counterparty_pubkey
  * broadcast a transaction.
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES uint16_t InMemoryChannelKeys_counterparty_selected_contest_delay(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES uint16_t InMemorySigner_counterparty_selected_contest_delay(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * The contest_delay value specified by us and applied on transactions broadcastable
@@ -5590,19 +5590,19 @@ MUST_USE_RES uint16_t InMemoryChannelKeys_counterparty_selected_contest_delay(co
  * if they broadcast a transaction.
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES uint16_t InMemoryChannelKeys_holder_selected_contest_delay(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES uint16_t InMemorySigner_holder_selected_contest_delay(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * Whether the holder is the initiator
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES bool InMemoryChannelKeys_is_outbound(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES bool InMemorySigner_is_outbound(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * Funding outpoint
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES struct LDKOutPoint InMemoryChannelKeys_funding_outpoint(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES struct LDKOutPoint InMemorySigner_funding_outpoint(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * Obtain a ChannelTransactionParameters for this channel, to be used when verifying or
@@ -5610,7 +5610,7 @@ MUST_USE_RES struct LDKOutPoint InMemoryChannelKeys_funding_outpoint(const struc
  *
  * Will panic if ready_channel wasn't called.
  */
-MUST_USE_RES struct LDKChannelTransactionParameters InMemoryChannelKeys_get_channel_parameters(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+MUST_USE_RES struct LDKChannelTransactionParameters InMemorySigner_get_channel_parameters(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
 /**
  * Sign the single input of spend_tx at index `input_idx` which spends the output
@@ -5619,7 +5619,7 @@ MUST_USE_RES struct LDKChannelTransactionParameters InMemoryChannelKeys_get_chan
  * Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
  * or is not spending the outpoint described by `descriptor.outpoint`.
  */
-MUST_USE_RES struct LDKCResult_CVec_CVec_u8ZZNoneZ InMemoryChannelKeys_sign_counterparty_payment_input(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg, struct LDKTransaction spend_tx, uintptr_t input_idx, const struct LDKStaticPaymentOutputDescriptor *NONNULL_PTR descriptor);
+MUST_USE_RES struct LDKCResult_CVec_CVec_u8ZZNoneZ InMemorySigner_sign_counterparty_payment_input(const struct LDKInMemorySigner *NONNULL_PTR this_arg, struct LDKTransaction spend_tx, uintptr_t input_idx, const struct LDKStaticPaymentOutputDescriptor *NONNULL_PTR descriptor);
 
 /**
  * Sign the single input of spend_tx at index `input_idx` which spends the output
@@ -5629,13 +5629,13 @@ MUST_USE_RES struct LDKCResult_CVec_CVec_u8ZZNoneZ InMemoryChannelKeys_sign_coun
  * is not spending the outpoint described by `descriptor.outpoint`, or does not have a
  * sequence set to `descriptor.to_self_delay`.
  */
-MUST_USE_RES struct LDKCResult_CVec_CVec_u8ZZNoneZ InMemoryChannelKeys_sign_dynamic_p2wsh_input(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg, struct LDKTransaction spend_tx, uintptr_t input_idx, const struct LDKDelayedPaymentOutputDescriptor *NONNULL_PTR descriptor);
+MUST_USE_RES struct LDKCResult_CVec_CVec_u8ZZNoneZ InMemorySigner_sign_dynamic_p2wsh_input(const struct LDKInMemorySigner *NONNULL_PTR this_arg, struct LDKTransaction spend_tx, uintptr_t input_idx, const struct LDKDelayedPaymentOutputDescriptor *NONNULL_PTR descriptor);
 
-struct LDKChannelKeys InMemoryChannelKeys_as_ChannelKeys(const struct LDKInMemoryChannelKeys *NONNULL_PTR this_arg);
+struct LDKSign InMemorySigner_as_Sign(const struct LDKInMemorySigner *NONNULL_PTR this_arg);
 
-struct LDKCVec_u8Z InMemoryChannelKeys_write(const struct LDKInMemoryChannelKeys *NONNULL_PTR obj);
+struct LDKCVec_u8Z InMemorySigner_write(const struct LDKInMemorySigner *NONNULL_PTR obj);
 
-struct LDKCResult_InMemoryChannelKeysDecodeErrorZ InMemoryChannelKeys_read(struct LDKu8slice ser);
+struct LDKCResult_InMemorySignerDecodeErrorZ InMemorySigner_read(struct LDKu8slice ser);
 
 void KeysManager_free(struct LDKKeysManager this_ptr);
 
@@ -5663,13 +5663,13 @@ void KeysManager_free(struct LDKKeysManager this_ptr);
 MUST_USE_RES struct LDKKeysManager KeysManager_new(const uint8_t (*seed)[32], uint64_t starting_time_secs, uint32_t starting_time_nanos);
 
 /**
- * Derive an old set of ChannelKeys for per-channel secrets based on a key derivation
+ * Derive an old set of Sign for per-channel secrets based on a key derivation
  * parameters.
  * Key derivation parameters are accessible through a per-channel secrets
- * ChannelKeys::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
+ * Sign::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
  * onchain output detection for which a corresponding delayed_payment_key must be derived.
  */
-MUST_USE_RES struct LDKInMemoryChannelKeys KeysManager_derive_channel_keys(const struct LDKKeysManager *NONNULL_PTR this_arg, uint64_t channel_value_satoshis, const uint8_t (*params)[32]);
+MUST_USE_RES struct LDKInMemorySigner KeysManager_derive_channel_keys(const struct LDKKeysManager *NONNULL_PTR this_arg, uint64_t channel_value_satoshis, const uint8_t (*params)[32]);
 
 /**
  * Creates a Transaction which spends the given descriptors to the given outputs, plus an
@@ -5682,7 +5682,7 @@ MUST_USE_RES struct LDKInMemoryChannelKeys KeysManager_derive_channel_keys(const
  * We do not enforce that outputs meet the dust limit or that any output scripts are standard.
  *
  * May panic if the `SpendableOutputDescriptor`s were not generated by Channels which used
- * this KeysManager or one of the `InMemoryChannelKeys` created by this KeysManager.
+ * this KeysManager or one of the `InMemorySigner` created by this KeysManager.
  */
 MUST_USE_RES struct LDKCResult_TransactionNoneZ KeysManager_spend_spendable_outputs(const struct LDKKeysManager *NONNULL_PTR this_arg, struct LDKCVec_SpendableOutputDescriptorZ descriptors, struct LDKCVec_TxOutZ outputs, struct LDKCVec_u8Z change_destination_script, uint32_t feerate_sat_per_1000_weight);
 
@@ -6037,6 +6037,12 @@ void ChannelManager_block_connected(const struct LDKChannelManager *NONNULL_PTR 
  * in the shutdown.
  */
 void ChannelManager_block_disconnected(const struct LDKChannelManager *NONNULL_PTR this_arg, const uint8_t (*header)[80]);
+
+/**
+ * Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
+ * guaranteed to be woken up.
+ */
+void ChannelManager_wait(const struct LDKChannelManager *NONNULL_PTR this_arg);
 
 struct LDKChannelMessageHandler ChannelManager_as_ChannelMessageHandler(const struct LDKChannelManager *NONNULL_PTR this_arg);
 

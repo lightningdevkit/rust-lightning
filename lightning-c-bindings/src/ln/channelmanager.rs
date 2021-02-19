@@ -15,7 +15,7 @@ use crate::c_types::*;
 
 
 use lightning::ln::channelmanager::ChannelManager as nativeChannelManagerImport;
-type nativeChannelManager = nativeChannelManagerImport<crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
+type nativeChannelManager = nativeChannelManagerImport<crate::chain::keysinterface::Sign, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -754,6 +754,13 @@ pub extern "C" fn ChannelManager_block_disconnected(this_arg: &ChannelManager, h
 	unsafe { &*this_arg.inner }.block_disconnected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap())
 }
 
+/// Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
+/// guaranteed to be woken up.
+#[no_mangle]
+pub extern "C" fn ChannelManager_wait(this_arg: &ChannelManager) {
+	unsafe { &*this_arg.inner }.wait()
+}
+
 impl From<nativeChannelManager> for crate::ln::msgs::ChannelMessageHandler {
 	fn from(obj: nativeChannelManager) -> Self {
 		let mut rust_obj = ChannelManager { inner: Box::into_raw(Box::new(obj)), is_owned: true };
@@ -871,7 +878,7 @@ pub(crate) extern "C" fn ChannelManager_write_void(obj: *const c_void) -> crate:
 }
 
 use lightning::ln::channelmanager::ChannelManagerReadArgs as nativeChannelManagerReadArgsImport;
-type nativeChannelManagerReadArgs = nativeChannelManagerReadArgsImport<'static, crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
+type nativeChannelManagerReadArgs = nativeChannelManagerReadArgsImport<'static, crate::chain::keysinterface::Sign, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>;
 
 /// Arguments for the creation of a ChannelManager that are not deserialized.
 ///
@@ -1024,7 +1031,7 @@ pub extern "C" fn ChannelManagerReadArgs_new(mut keys_manager: crate::chain::key
 #[no_mangle]
 pub extern "C" fn C2Tuple_BlockHashChannelManagerZ_read(ser: crate::c_types::u8slice, arg: crate::ln::channelmanager::ChannelManagerReadArgs) -> crate::c_types::derived::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ {
 	let arg_conv = *unsafe { Box::from_raw(arg.take_inner()) };
-	let res: Result<(bitcoin::hash_types::BlockHash, lightning::ln::channelmanager::ChannelManager<crate::chain::keysinterface::ChannelKeys, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>), lightning::ln::msgs::DecodeError> = crate::c_types::deserialize_obj_arg(ser, arg_conv);
+	let res: Result<(bitcoin::hash_types::BlockHash, lightning::ln::channelmanager::ChannelManager<crate::chain::keysinterface::Sign, crate::chain::Watch, crate::chain::chaininterface::BroadcasterInterface, crate::chain::keysinterface::KeysInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger>), lightning::ln::msgs::DecodeError> = crate::c_types::deserialize_obj_arg(ser, arg_conv);
 	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_res_0_0, mut orig_res_0_1) = o; let mut local_res_0 = (crate::c_types::ThirtyTwoBytes { data: orig_res_0_0.into_inner() }, crate::ln::channelmanager::ChannelManager { inner: Box::into_raw(Box::new(orig_res_0_1)), is_owned: true }).into(); local_res_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
