@@ -6,238 +6,336 @@ use std::ffi::c_void;
 use bitcoin::hashes::Hash;
 use crate::c_types::*;
 
+
+use lightning::chain::keysinterface::DelayedPaymentOutputDescriptor as nativeDelayedPaymentOutputDescriptorImport;
+type nativeDelayedPaymentOutputDescriptor = nativeDelayedPaymentOutputDescriptorImport;
+
+/// Information about a spendable output to a P2WSH script. See
+/// SpendableOutputDescriptor::DelayedPaymentOutput for more details on how to spend this.
+#[must_use]
+#[repr(C)]
+pub struct DelayedPaymentOutputDescriptor {
+	/// Nearly everywhere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeDelayedPaymentOutputDescriptor,
+	pub is_owned: bool,
+}
+
+impl Drop for DelayedPaymentOutputDescriptor {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_free(this_ptr: DelayedPaymentOutputDescriptor) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn DelayedPaymentOutputDescriptor_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeDelayedPaymentOutputDescriptor); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl DelayedPaymentOutputDescriptor {
+	pub(crate) fn take_inner(mut self) -> *mut nativeDelayedPaymentOutputDescriptor {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+/// The outpoint which is spendable
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_outpoint(this_ptr: &DelayedPaymentOutputDescriptor) -> crate::chain::transaction::OutPoint {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.outpoint;
+	crate::chain::transaction::OutPoint { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The outpoint which is spendable
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_outpoint(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: crate::chain::transaction::OutPoint) {
+	unsafe { &mut *this_ptr.inner }.outpoint = *unsafe { Box::from_raw(val.take_inner()) };
+}
+/// Per commitment point to derive delayed_payment_key by key holder
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_per_commitment_point(this_ptr: &DelayedPaymentOutputDescriptor) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.per_commitment_point;
+	crate::c_types::PublicKey::from_rust(&(*inner_val))
+}
+/// Per commitment point to derive delayed_payment_key by key holder
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_per_commitment_point(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.per_commitment_point = val.into_rust();
+}
+/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
+/// the witness_script.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_to_self_delay(this_ptr: &DelayedPaymentOutputDescriptor) -> u16 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.to_self_delay;
+	(*inner_val)
+}
+/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
+/// the witness_script.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_to_self_delay(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: u16) {
+	unsafe { &mut *this_ptr.inner }.to_self_delay = val;
+}
+/// The output which is referenced by the given outpoint
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_output(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: crate::c_types::TxOut) {
+	unsafe { &mut *this_ptr.inner }.output = val.into_rust();
+}
+/// The revocation point specific to the commitment transaction which was broadcast. Used to
+/// derive the witnessScript for this output.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_revocation_pubkey(this_ptr: &DelayedPaymentOutputDescriptor) -> crate::c_types::PublicKey {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.revocation_pubkey;
+	crate::c_types::PublicKey::from_rust(&(*inner_val))
+}
+/// The revocation point specific to the commitment transaction which was broadcast. Used to
+/// derive the witnessScript for this output.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_revocation_pubkey(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: crate::c_types::PublicKey) {
+	unsafe { &mut *this_ptr.inner }.revocation_pubkey = val.into_rust();
+}
+/// Arbitrary identification information returned by a call to
+/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+/// the channel to spend the output.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_channel_keys_id(this_ptr: &DelayedPaymentOutputDescriptor) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.channel_keys_id;
+	&(*inner_val)
+}
+/// Arbitrary identification information returned by a call to
+/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+/// the channel to spend the output.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_channel_keys_id(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.channel_keys_id = val.data;
+}
+/// The value of the channel which this output originated from, possibly indirectly.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_get_channel_value_satoshis(this_ptr: &DelayedPaymentOutputDescriptor) -> u64 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.channel_value_satoshis;
+	(*inner_val)
+}
+/// The value of the channel which this output originated from, possibly indirectly.
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_set_channel_value_satoshis(this_ptr: &mut DelayedPaymentOutputDescriptor, mut val: u64) {
+	unsafe { &mut *this_ptr.inner }.channel_value_satoshis = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_new(mut outpoint_arg: crate::chain::transaction::OutPoint, mut per_commitment_point_arg: crate::c_types::PublicKey, mut to_self_delay_arg: u16, mut output_arg: crate::c_types::TxOut, mut revocation_pubkey_arg: crate::c_types::PublicKey, mut channel_keys_id_arg: crate::c_types::ThirtyTwoBytes, mut channel_value_satoshis_arg: u64) -> DelayedPaymentOutputDescriptor {
+	DelayedPaymentOutputDescriptor { inner: Box::into_raw(Box::new(nativeDelayedPaymentOutputDescriptor {
+		outpoint: *unsafe { Box::from_raw(outpoint_arg.take_inner()) },
+		per_commitment_point: per_commitment_point_arg.into_rust(),
+		to_self_delay: to_self_delay_arg,
+		output: output_arg.into_rust(),
+		revocation_pubkey: revocation_pubkey_arg.into_rust(),
+		channel_keys_id: channel_keys_id_arg.data,
+		channel_value_satoshis: channel_value_satoshis_arg,
+	})), is_owned: true }
+}
+impl Clone for DelayedPaymentOutputDescriptor {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn DelayedPaymentOutputDescriptor_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeDelayedPaymentOutputDescriptor)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn DelayedPaymentOutputDescriptor_clone(orig: &DelayedPaymentOutputDescriptor) -> DelayedPaymentOutputDescriptor {
+	orig.clone()
+}
+
+use lightning::chain::keysinterface::StaticPaymentOutputDescriptor as nativeStaticPaymentOutputDescriptorImport;
+type nativeStaticPaymentOutputDescriptor = nativeStaticPaymentOutputDescriptorImport;
+
+/// Information about a spendable output to our \"payment key\". See
+/// SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
+#[must_use]
+#[repr(C)]
+pub struct StaticPaymentOutputDescriptor {
+	/// Nearly everywhere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeStaticPaymentOutputDescriptor,
+	pub is_owned: bool,
+}
+
+impl Drop for StaticPaymentOutputDescriptor {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_free(this_ptr: StaticPaymentOutputDescriptor) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn StaticPaymentOutputDescriptor_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeStaticPaymentOutputDescriptor); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl StaticPaymentOutputDescriptor {
+	pub(crate) fn take_inner(mut self) -> *mut nativeStaticPaymentOutputDescriptor {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+/// The outpoint which is spendable
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_get_outpoint(this_ptr: &StaticPaymentOutputDescriptor) -> crate::chain::transaction::OutPoint {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.outpoint;
+	crate::chain::transaction::OutPoint { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The outpoint which is spendable
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_set_outpoint(this_ptr: &mut StaticPaymentOutputDescriptor, mut val: crate::chain::transaction::OutPoint) {
+	unsafe { &mut *this_ptr.inner }.outpoint = *unsafe { Box::from_raw(val.take_inner()) };
+}
+/// The output which is referenced by the given outpoint
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_set_output(this_ptr: &mut StaticPaymentOutputDescriptor, mut val: crate::c_types::TxOut) {
+	unsafe { &mut *this_ptr.inner }.output = val.into_rust();
+}
+/// Arbitrary identification information returned by a call to
+/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+/// the channel to spend the output.
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_get_channel_keys_id(this_ptr: &StaticPaymentOutputDescriptor) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.channel_keys_id;
+	&(*inner_val)
+}
+/// Arbitrary identification information returned by a call to
+/// `ChannelKeys::channel_keys_id()`. This may be useful in re-deriving keys used in
+/// the channel to spend the output.
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_set_channel_keys_id(this_ptr: &mut StaticPaymentOutputDescriptor, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.channel_keys_id = val.data;
+}
+/// The value of the channel which this transactions spends.
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_get_channel_value_satoshis(this_ptr: &StaticPaymentOutputDescriptor) -> u64 {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.channel_value_satoshis;
+	(*inner_val)
+}
+/// The value of the channel which this transactions spends.
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_set_channel_value_satoshis(this_ptr: &mut StaticPaymentOutputDescriptor, mut val: u64) {
+	unsafe { &mut *this_ptr.inner }.channel_value_satoshis = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_new(mut outpoint_arg: crate::chain::transaction::OutPoint, mut output_arg: crate::c_types::TxOut, mut channel_keys_id_arg: crate::c_types::ThirtyTwoBytes, mut channel_value_satoshis_arg: u64) -> StaticPaymentOutputDescriptor {
+	StaticPaymentOutputDescriptor { inner: Box::into_raw(Box::new(nativeStaticPaymentOutputDescriptor {
+		outpoint: *unsafe { Box::from_raw(outpoint_arg.take_inner()) },
+		output: output_arg.into_rust(),
+		channel_keys_id: channel_keys_id_arg.data,
+		channel_value_satoshis: channel_value_satoshis_arg,
+	})), is_owned: true }
+}
+impl Clone for StaticPaymentOutputDescriptor {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn StaticPaymentOutputDescriptor_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeStaticPaymentOutputDescriptor)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn StaticPaymentOutputDescriptor_clone(orig: &StaticPaymentOutputDescriptor) -> StaticPaymentOutputDescriptor {
+	orig.clone()
+}
+
+use lightning::chain::keysinterface::SpendableOutputDescriptor as nativeSpendableOutputDescriptorImport;
+type nativeSpendableOutputDescriptor = nativeSpendableOutputDescriptorImport;
+
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
 /// spend on-chain. The information needed to do this is provided in this enum, including the
 /// outpoint describing which txid and output index is available, the full output which exists at
 /// that txid/index, and any keys or other information required to sign.
 #[must_use]
-#[derive(Clone)]
 #[repr(C)]
-pub enum SpendableOutputDescriptor {
-	/// An output to a script which was provided via KeysInterface directly, either from
-	/// `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
-	/// spend it. No secret keys are provided as rust-lightning was never given any key.
-	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
-	/// on-chain using the payment preimage or after it has timed out.
-	StaticOutput {
-		outpoint: crate::chain::transaction::OutPoint,
-		output: crate::c_types::TxOut,
-	},
-	/// An output to a P2WSH script which can be spent with a single signature after a CSV delay.
-	///
-	/// The witness in the spending input should be:
-	/// <BIP 143 signature> <empty vector> (MINIMALIF standard rule) <provided witnessScript>
-	///
-	/// Note that the nSequence field in the spending input must be set to to_self_delay
-	/// (which means the transaction is not broadcastable until at least to_self_delay
-	/// blocks after the outpoint confirms).
-	///
-	/// These are generally the result of a \"revocable\" output to us, spendable only by us unless
-	/// it is an output from an old state which we broadcast (which should never happen).
-	///
-	/// To derive the delayed_payment key which is used to sign for this input, you must pass the
-	/// holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
-	/// ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
-	/// chan_utils::derive_private_key. The public key can be generated without the secret key
-	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
-	/// ChannelKeys::pubkeys().
-	///
-	/// To derive the revocation_pubkey provided here (which is used in the witness
-	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to ChannelKeys::ready_channel) and the provided per_commitment point
-	/// to chan_utils::derive_public_revocation_key.
-	///
-	/// The witness script which is hashed and included in the output script_pubkey may be
-	/// regenerated by passing the revocation_pubkey (derived as above), our delayed_payment pubkey
-	/// (derived as above), and the to_self_delay contained here to
-	/// chan_utils::get_revokeable_redeemscript.
-	DynamicOutputP2WSH {
-		outpoint: crate::chain::transaction::OutPoint,
-		per_commitment_point: crate::c_types::PublicKey,
-		to_self_delay: u16,
-		output: crate::c_types::TxOut,
-		revocation_pubkey: crate::c_types::PublicKey,
-		channel_keys_id: crate::c_types::ThirtyTwoBytes,
-		channel_value_satoshis: u64,
-	},
-	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
-	/// corresponds to the public key in ChannelKeys::pubkeys().payment_point).
-	/// The witness in the spending input, is, thus, simply:
-	/// <BIP 143 signature> <payment key>
-	///
-	/// These are generally the result of our counterparty having broadcast the current state,
-	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
-	StaticOutputCounterpartyPayment {
-		outpoint: crate::chain::transaction::OutPoint,
-		output: crate::c_types::TxOut,
-		channel_keys_id: crate::c_types::ThirtyTwoBytes,
-		channel_value_satoshis: u64,
-	},
+pub struct SpendableOutputDescriptor {
+	/// Nearly everywhere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeSpendableOutputDescriptor,
+	pub is_owned: bool,
 }
-use lightning::chain::keysinterface::SpendableOutputDescriptor as nativeSpendableOutputDescriptor;
-impl SpendableOutputDescriptor {
-	#[allow(unused)]
-	pub(crate) fn to_native(&self) -> nativeSpendableOutputDescriptor {
-		match self {
-			SpendableOutputDescriptor::StaticOutput {ref outpoint, ref output, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut output_nonref = (*output).clone();
-				nativeSpendableOutputDescriptor::StaticOutput {
-					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_inner()) },
-					output: output_nonref.into_rust(),
-				}
-			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, ref channel_value_satoshis, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
-				let mut to_self_delay_nonref = (*to_self_delay).clone();
-				let mut output_nonref = (*output).clone();
-				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
-				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
-				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
-				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
-					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_inner()) },
-					per_commitment_point: per_commitment_point_nonref.into_rust(),
-					to_self_delay: to_self_delay_nonref,
-					output: output_nonref.into_rust(),
-					revocation_pubkey: revocation_pubkey_nonref.into_rust(),
-					channel_keys_id: channel_keys_id_nonref.data,
-					channel_value_satoshis: channel_value_satoshis_nonref,
-				}
-			},
-			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref channel_keys_id, ref channel_value_satoshis, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut output_nonref = (*output).clone();
-				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
-				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
-				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
-					outpoint: *unsafe { Box::from_raw(outpoint_nonref.take_inner()) },
-					output: output_nonref.into_rust(),
-					channel_keys_id: channel_keys_id_nonref.data,
-					channel_value_satoshis: channel_value_satoshis_nonref,
-				}
-			},
-		}
-	}
-	#[allow(unused)]
-	pub(crate) fn into_native(self) -> nativeSpendableOutputDescriptor {
-		match self {
-			SpendableOutputDescriptor::StaticOutput {mut outpoint, mut output, } => {
-				nativeSpendableOutputDescriptor::StaticOutput {
-					outpoint: *unsafe { Box::from_raw(outpoint.take_inner()) },
-					output: output.into_rust(),
-				}
-			},
-			SpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut revocation_pubkey, mut channel_keys_id, mut channel_value_satoshis, } => {
-				nativeSpendableOutputDescriptor::DynamicOutputP2WSH {
-					outpoint: *unsafe { Box::from_raw(outpoint.take_inner()) },
-					per_commitment_point: per_commitment_point.into_rust(),
-					to_self_delay: to_self_delay,
-					output: output.into_rust(),
-					revocation_pubkey: revocation_pubkey.into_rust(),
-					channel_keys_id: channel_keys_id.data,
-					channel_value_satoshis: channel_value_satoshis,
-				}
-			},
-			SpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut channel_keys_id, mut channel_value_satoshis, } => {
-				nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {
-					outpoint: *unsafe { Box::from_raw(outpoint.take_inner()) },
-					output: output.into_rust(),
-					channel_keys_id: channel_keys_id.data,
-					channel_value_satoshis: channel_value_satoshis,
-				}
-			},
-		}
-	}
-	#[allow(unused)]
-	pub(crate) fn from_native(native: &nativeSpendableOutputDescriptor) -> Self {
-		match native {
-			nativeSpendableOutputDescriptor::StaticOutput {ref outpoint, ref output, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut output_nonref = (*output).clone();
-				SpendableOutputDescriptor::StaticOutput {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
-					output: crate::c_types::TxOut::from_rust(output_nonref),
-				}
-			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {ref outpoint, ref per_commitment_point, ref to_self_delay, ref output, ref revocation_pubkey, ref channel_keys_id, ref channel_value_satoshis, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut per_commitment_point_nonref = (*per_commitment_point).clone();
-				let mut to_self_delay_nonref = (*to_self_delay).clone();
-				let mut output_nonref = (*output).clone();
-				let mut revocation_pubkey_nonref = (*revocation_pubkey).clone();
-				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
-				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
-				SpendableOutputDescriptor::DynamicOutputP2WSH {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
-					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point_nonref),
-					to_self_delay: to_self_delay_nonref,
-					output: crate::c_types::TxOut::from_rust(output_nonref),
-					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey_nonref),
-					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id_nonref },
-					channel_value_satoshis: channel_value_satoshis_nonref,
-				}
-			},
-			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {ref outpoint, ref output, ref channel_keys_id, ref channel_value_satoshis, } => {
-				let mut outpoint_nonref = (*outpoint).clone();
-				let mut output_nonref = (*output).clone();
-				let mut channel_keys_id_nonref = (*channel_keys_id).clone();
-				let mut channel_value_satoshis_nonref = (*channel_value_satoshis).clone();
-				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint_nonref)), is_owned: true },
-					output: crate::c_types::TxOut::from_rust(output_nonref),
-					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id_nonref },
-					channel_value_satoshis: channel_value_satoshis_nonref,
-				}
-			},
-		}
-	}
-	#[allow(unused)]
-	pub(crate) fn native_into(native: nativeSpendableOutputDescriptor) -> Self {
-		match native {
-			nativeSpendableOutputDescriptor::StaticOutput {mut outpoint, mut output, } => {
-				SpendableOutputDescriptor::StaticOutput {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
-					output: crate::c_types::TxOut::from_rust(output),
-				}
-			},
-			nativeSpendableOutputDescriptor::DynamicOutputP2WSH {mut outpoint, mut per_commitment_point, mut to_self_delay, mut output, mut revocation_pubkey, mut channel_keys_id, mut channel_value_satoshis, } => {
-				SpendableOutputDescriptor::DynamicOutputP2WSH {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
-					per_commitment_point: crate::c_types::PublicKey::from_rust(&per_commitment_point),
-					to_self_delay: to_self_delay,
-					output: crate::c_types::TxOut::from_rust(output),
-					revocation_pubkey: crate::c_types::PublicKey::from_rust(&revocation_pubkey),
-					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id },
-					channel_value_satoshis: channel_value_satoshis,
-				}
-			},
-			nativeSpendableOutputDescriptor::StaticOutputCounterpartyPayment {mut outpoint, mut output, mut channel_keys_id, mut channel_value_satoshis, } => {
-				SpendableOutputDescriptor::StaticOutputCounterpartyPayment {
-					outpoint: crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(outpoint)), is_owned: true },
-					output: crate::c_types::TxOut::from_rust(output),
-					channel_keys_id: crate::c_types::ThirtyTwoBytes { data: channel_keys_id },
-					channel_value_satoshis: channel_value_satoshis,
-				}
-			},
+
+impl Drop for SpendableOutputDescriptor {
+	fn drop(&mut self) {
+		if self.is_owned && !self.inner.is_null() {
+			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
 }
 #[no_mangle]
 pub extern "C" fn SpendableOutputDescriptor_free(this_ptr: SpendableOutputDescriptor) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn SpendableOutputDescriptor_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeSpendableOutputDescriptor); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl SpendableOutputDescriptor {
+	pub(crate) fn take_inner(mut self) -> *mut nativeSpendableOutputDescriptor {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+impl Clone for SpendableOutputDescriptor {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn SpendableOutputDescriptor_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeSpendableOutputDescriptor)).clone() })) as *mut c_void
+}
 #[no_mangle]
 pub extern "C" fn SpendableOutputDescriptor_clone(orig: &SpendableOutputDescriptor) -> SpendableOutputDescriptor {
 	orig.clone()
 }
 #[no_mangle]
 pub extern "C" fn SpendableOutputDescriptor_write(obj: &SpendableOutputDescriptor) -> crate::c_types::derived::CVec_u8Z {
-	crate::c_types::serialize_obj(&unsafe { &*obj }.to_native())
+	crate::c_types::serialize_obj(unsafe { &*unsafe { &*obj }.inner })
+}
+#[no_mangle]
+pub(crate) extern "C" fn SpendableOutputDescriptor_write_void(obj: *const c_void) -> crate::c_types::derived::CVec_u8Z {
+	crate::c_types::serialize_obj(unsafe { &*(obj as *const nativeSpendableOutputDescriptor) })
 }
 #[no_mangle]
 pub extern "C" fn SpendableOutputDescriptor_read(ser: crate::c_types::u8slice) -> crate::c_types::derived::CResult_SpendableOutputDescriptorDecodeErrorZ {
 	let res = crate::c_types::deserialize_obj(ser);
-	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(o) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	let mut local_res = match res { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::chain::keysinterface::SpendableOutputDescriptor { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::DecodeError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_res
 }
 /// Set of lightning keys needed to operate a channel as described in BOLT 3.
@@ -257,11 +355,6 @@ pub extern "C" fn SpendableOutputDescriptor_read(ser: crate::c_types::u8slice) -
 /// In any case, ChannelMonitor or fallback watchtowers are always going to be trusted
 /// to act, as liveness and breach reply correctness are always going to be hard requirements
 /// of LN security model, orthogonal of key management issues.
-///
-/// If you're implementing a custom signer, you almost certainly want to implement
-/// Readable/Writable to serialize out a unique reference to this set of keys so
-/// that you can serialize the full ChannelManager object.
-///
 #[repr(C)]
 pub struct ChannelKeys {
 	pub this_arg: *mut c_void,
@@ -278,7 +371,6 @@ pub struct ChannelKeys {
 	/// May be called more than once for the same index.
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
-	/// TODO: return a Result so we can signal a validation error
 	#[must_use]
 	pub release_commitment_secret: extern "C" fn (this_arg: *const c_void, idx: u64) -> crate::c_types::ThirtyTwoBytes,
 	/// Gets the holder's channel public keys and basepoints
@@ -779,6 +871,33 @@ pub extern "C" fn InMemoryChannelKeys_get_channel_parameters(this_arg: &InMemory
 	crate::ln::chan_utils::ChannelTransactionParameters { inner: unsafe { ( (&(*ret) as *const _) as *mut _) }, is_owned: false }
 }
 
+/// Sign the single input of spend_tx at index `input_idx` which spends the output
+/// described by descriptor, returning the witness stack for the input.
+///
+/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
+/// or is not spending the outpoint described by `descriptor.outpoint`.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn InMemoryChannelKeys_sign_counterparty_payment_input(this_arg: &InMemoryChannelKeys, mut spend_tx: crate::c_types::Transaction, mut input_idx: usize, descriptor: &crate::chain::keysinterface::StaticPaymentOutputDescriptor) -> crate::c_types::derived::CResult_CVec_CVec_u8ZZNoneZ {
+	let mut ret = unsafe { &*this_arg.inner }.sign_counterparty_payment_input(&spend_tx.into_bitcoin(), input_idx, unsafe { &*descriptor.inner }, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for mut item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = Vec::new(); for mut item in item.drain(..) { local_ret_0_0.push( { item }); }; local_ret_0_0.into() }); }; local_ret_0.into() }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	local_ret
+}
+
+/// Sign the single input of spend_tx at index `input_idx` which spends the output
+/// described by descriptor, returning the witness stack for the input.
+///
+/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
+/// is not spending the outpoint described by `descriptor.outpoint`, or does not have a
+/// sequence set to `descriptor.to_self_delay`.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn InMemoryChannelKeys_sign_dynamic_p2wsh_input(this_arg: &InMemoryChannelKeys, mut spend_tx: crate::c_types::Transaction, mut input_idx: usize, descriptor: &crate::chain::keysinterface::DelayedPaymentOutputDescriptor) -> crate::c_types::derived::CResult_CVec_CVec_u8ZZNoneZ {
+	let mut ret = unsafe { &*this_arg.inner }.sign_dynamic_p2wsh_input(&spend_tx.into_bitcoin(), input_idx, unsafe { &*descriptor.inner }, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for mut item in o.drain(..) { local_ret_0.push( { let mut local_ret_0_0 = Vec::new(); for mut item in item.drain(..) { local_ret_0_0.push( { item }); }; local_ret_0_0.into() }); }; local_ret_0.into() }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	local_ret
+}
+
 impl From<nativeInMemoryChannelKeys> for crate::chain::keysinterface::ChannelKeys {
 	fn from(obj: nativeInMemoryChannelKeys) -> Self {
 		let mut rust_obj = InMemoryChannelKeys { inner: Box::into_raw(Box::new(obj)), is_owned: true };
@@ -842,13 +961,13 @@ extern "C" fn InMemoryChannelKeys_ChannelKeys_channel_keys_id(this_arg: *const c
 #[must_use]
 extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_counterparty_commitment(this_arg: *const c_void, commitment_tx: &crate::ln::chan_utils::CommitmentTransaction) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_counterparty_commitment(unsafe { &*commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = o; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::Signature::from_rust(&item) }); }; let mut local_ret_0 = (crate::c_types::Signature::from_rust(&orig_ret_0_0), local_orig_ret_0_1.into()).into(); local_ret_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = o; let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::Signature::from_rust(&item) }); }; let mut local_ret_0 = (crate::c_types::Signature::from_rust(&orig_ret_0_0), local_orig_ret_0_1.into()).into(); local_ret_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn InMemoryChannelKeys_ChannelKeys_sign_holder_commitment_and_htlcs(this_arg: *const c_void, commitment_tx: &crate::ln::chan_utils::HolderCommitmentTransaction) -> crate::c_types::derived::CResult_C2Tuple_SignatureCVec_SignatureZZNoneZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeInMemoryChannelKeys) }.sign_holder_commitment_and_htlcs(unsafe { &*commitment_tx.inner }, &bitcoin::secp256k1::Secp256k1::new());
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = o; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::Signature::from_rust(&item) }); }; let mut local_ret_0 = (crate::c_types::Signature::from_rust(&orig_ret_0_0), local_orig_ret_0_1.into()).into(); local_ret_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let (mut orig_ret_0_0, mut orig_ret_0_1) = o; let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { crate::c_types::Signature::from_rust(&item) }); }; let mut local_ret_0 = (crate::c_types::Signature::from_rust(&orig_ret_0_0), local_orig_ret_0_1.into()).into(); local_ret_0 }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
 	local_ret
 }
 #[must_use]
@@ -959,8 +1078,8 @@ impl KeysManager {
 /// detailed description of the guarantee.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn KeysManager_new(seed: *const [u8; 32], mut network: crate::bitcoin::network::Network, mut starting_time_secs: u64, mut starting_time_nanos: u32) -> KeysManager {
-	let mut ret = lightning::chain::keysinterface::KeysManager::new(unsafe { &*seed}, network.into_bitcoin(), starting_time_secs, starting_time_nanos);
+pub extern "C" fn KeysManager_new(seed: *const [u8; 32], mut starting_time_secs: u64, mut starting_time_nanos: u32) -> KeysManager {
+	let mut ret = lightning::chain::keysinterface::KeysManager::new(unsafe { &*seed}, starting_time_secs, starting_time_nanos);
 	KeysManager { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -974,6 +1093,27 @@ pub extern "C" fn KeysManager_new(seed: *const [u8; 32], mut network: crate::bit
 pub extern "C" fn KeysManager_derive_channel_keys(this_arg: &KeysManager, mut channel_value_satoshis: u64, params: *const [u8; 32]) -> crate::chain::keysinterface::InMemoryChannelKeys {
 	let mut ret = unsafe { &*this_arg.inner }.derive_channel_keys(channel_value_satoshis, unsafe { &*params});
 	crate::chain::keysinterface::InMemoryChannelKeys { inner: Box::into_raw(Box::new(ret)), is_owned: true }
+}
+
+/// Creates a Transaction which spends the given descriptors to the given outputs, plus an
+/// output to the given change destination (if sufficient change value remains). The
+/// transaction will have a feerate, at least, of the given value.
+///
+/// Returns `Err(())` if the output value is greater than the input value minus required fee or
+/// if a descriptor was duplicated.
+///
+/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
+///
+/// May panic if the `SpendableOutputDescriptor`s were not generated by Channels which used
+/// this KeysManager or one of the `InMemoryChannelKeys` created by this KeysManager.
+#[must_use]
+#[no_mangle]
+pub extern "C" fn KeysManager_spend_spendable_outputs(this_arg: &KeysManager, mut descriptors: crate::c_types::derived::CVec_SpendableOutputDescriptorZ, mut outputs: crate::c_types::derived::CVec_TxOutZ, mut change_destination_script: crate::c_types::derived::CVec_u8Z, mut feerate_sat_per_1000_weight: u32) -> crate::c_types::derived::CResult_TransactionNoneZ {
+	let mut local_descriptors = Vec::new(); for mut item in descriptors.as_slice().iter() { local_descriptors.push( { unsafe { &*item.inner } }); };
+	let mut local_outputs = Vec::new(); for mut item in outputs.into_rust().drain(..) { local_outputs.push( { item.into_rust() }); };
+	let mut ret = unsafe { &*this_arg.inner }.spend_spendable_outputs(&local_descriptors[..], local_outputs, ::bitcoin::blockdata::script::Script::from(change_destination_script.into_rust()), feerate_sat_per_1000_weight, &bitcoin::secp256k1::Secp256k1::new());
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = ::bitcoin::consensus::encode::serialize(&o); crate::c_types::Transaction::from_vec(local_ret_0) }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	local_ret
 }
 
 impl From<nativeKeysManager> for crate::chain::keysinterface::KeysInterface {

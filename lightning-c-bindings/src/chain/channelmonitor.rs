@@ -512,7 +512,7 @@ pub extern "C" fn ChannelMonitor_get_funding_txo(this_arg: &ChannelMonitor) -> c
 #[no_mangle]
 pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: &mut ChannelMonitor) -> crate::c_types::derived::CVec_MonitorEventZ {
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_and_clear_pending_monitor_events();
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
 	local_ret.into()
 }
 
@@ -526,7 +526,7 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: 
 #[no_mangle]
 pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut ChannelMonitor) -> crate::c_types::derived::CVec_EventZ {
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_and_clear_pending_events();
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
 	local_ret.into()
 }
 
@@ -543,7 +543,7 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut Cha
 #[no_mangle]
 pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut ChannelMonitor, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CVec_TransactionZ {
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_latest_holder_commitment_txn(logger);
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { let mut local_ret_0 = ::bitcoin::consensus::encode::serialize(&item); crate::c_types::Transaction::from_vec(local_ret_0) }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { let mut local_ret_0 = ::bitcoin::consensus::encode::serialize(&item); crate::c_types::Transaction::from_vec(local_ret_0) }); };
 	local_ret.into()
 }
 
@@ -563,7 +563,7 @@ pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut
 pub extern "C" fn ChannelMonitor_block_connected(this_arg: &mut ChannelMonitor, header: *const [u8; 80], mut txdata: crate::c_types::derived::CVec_C2Tuple_usizeTransactionZZ, mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ {
 	let mut local_txdata = Vec::new(); for mut item in txdata.into_rust().drain(..) { local_txdata.push( { let (mut orig_txdata_0_0, mut orig_txdata_0_1) = item.to_rust(); let mut local_txdata_0 = (orig_txdata_0_0, orig_txdata_0_1.into_bitcoin()); local_txdata_0 }); };
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.block_connected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), &local_txdata.iter().map(|(a, b)| (*a, b)).collect::<Vec<_>>()[..], height, broadcaster, fee_estimator, logger);
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1) = item; let mut local_orig_ret_0_1 = Vec::new(); for item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { let (mut orig_orig_ret_0_1_0_0, mut orig_orig_ret_0_1_0_1) = item; let mut local_orig_ret_0_1_0 = (orig_orig_ret_0_1_0_0, crate::c_types::TxOut::from_rust(orig_orig_ret_0_1_0_1)).into(); local_orig_ret_0_1_0 }); }; let mut local_ret_0 = (crate::c_types::ThirtyTwoBytes { data: orig_ret_0_0.into_inner() }, local_orig_ret_0_1.into()).into(); local_ret_0 }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1) = item; let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { let (mut orig_orig_ret_0_1_0_0, mut orig_orig_ret_0_1_0_1) = item; let mut local_orig_ret_0_1_0 = (orig_orig_ret_0_1_0_0, crate::c_types::TxOut::from_rust(orig_orig_ret_0_1_0_1)).into(); local_orig_ret_0_1_0 }); }; let mut local_ret_0 = (crate::c_types::ThirtyTwoBytes { data: orig_ret_0_0.into_inner() }, local_orig_ret_0_1.into()).into(); local_ret_0 }); };
 	local_ret.into()
 }
 
