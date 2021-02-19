@@ -362,6 +362,14 @@ pub enum MessageSendEvent {
 		/// The query_short_channel_ids which should be sent.
 		msg: msgs::QueryShortChannelIds,
 	},
+	/// Sends a reply to a channel range query. This may be one of several events
+	/// emitted during processing of the query.
+	SendReplyChannelRange {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The reply_channel_range which should be sent.
+		msg: msgs::ReplyChannelRange,
+	}
 }
 
 /// A trait indicating an object may generate message send events
