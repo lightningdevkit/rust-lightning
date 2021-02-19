@@ -2321,6 +2321,21 @@ public:
 	const LDKCResult_HolderCommitmentTransactionDecodeErrorZ* operator &() const { return &self; }
 	const LDKCResult_HolderCommitmentTransactionDecodeErrorZ* operator ->() const { return &self; }
 };
+class CVec_CResult_NoneAPIErrorZZ {
+private:
+	LDKCVec_CResult_NoneAPIErrorZZ self;
+public:
+	CVec_CResult_NoneAPIErrorZZ(const CVec_CResult_NoneAPIErrorZZ&) = delete;
+	CVec_CResult_NoneAPIErrorZZ(CVec_CResult_NoneAPIErrorZZ&& o) : self(o.self) { memset(&o, 0, sizeof(CVec_CResult_NoneAPIErrorZZ)); }
+	CVec_CResult_NoneAPIErrorZZ(LDKCVec_CResult_NoneAPIErrorZZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCVec_CResult_NoneAPIErrorZZ)); }
+	operator LDKCVec_CResult_NoneAPIErrorZZ() && { LDKCVec_CResult_NoneAPIErrorZZ res = self; memset(&self, 0, sizeof(LDKCVec_CResult_NoneAPIErrorZZ)); return res; }
+	~CVec_CResult_NoneAPIErrorZZ() { CVec_CResult_NoneAPIErrorZZ_free(self); }
+	CVec_CResult_NoneAPIErrorZZ& operator=(CVec_CResult_NoneAPIErrorZZ&& o) { CVec_CResult_NoneAPIErrorZZ_free(self); self = o.self; memset(&o, 0, sizeof(CVec_CResult_NoneAPIErrorZZ)); return *this; }
+	LDKCVec_CResult_NoneAPIErrorZZ* operator &() { return &self; }
+	LDKCVec_CResult_NoneAPIErrorZZ* operator ->() { return &self; }
+	const LDKCVec_CResult_NoneAPIErrorZZ* operator &() const { return &self; }
+	const LDKCVec_CResult_NoneAPIErrorZZ* operator ->() const { return &self; }
+};
 class CResult_SignatureNoneZ {
 private:
 	LDKCResult_SignatureNoneZ self;
@@ -3100,6 +3115,21 @@ public:
 	LDKCResult_ChannelUpdateDecodeErrorZ* operator ->() { return &self; }
 	const LDKCResult_ChannelUpdateDecodeErrorZ* operator &() const { return &self; }
 	const LDKCResult_ChannelUpdateDecodeErrorZ* operator ->() const { return &self; }
+};
+class CVec_APIErrorZ {
+private:
+	LDKCVec_APIErrorZ self;
+public:
+	CVec_APIErrorZ(const CVec_APIErrorZ&) = delete;
+	CVec_APIErrorZ(CVec_APIErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CVec_APIErrorZ)); }
+	CVec_APIErrorZ(LDKCVec_APIErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCVec_APIErrorZ)); }
+	operator LDKCVec_APIErrorZ() && { LDKCVec_APIErrorZ res = self; memset(&self, 0, sizeof(LDKCVec_APIErrorZ)); return res; }
+	~CVec_APIErrorZ() { CVec_APIErrorZ_free(self); }
+	CVec_APIErrorZ& operator=(CVec_APIErrorZ&& o) { CVec_APIErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CVec_APIErrorZ)); return *this; }
+	LDKCVec_APIErrorZ* operator &() { return &self; }
+	LDKCVec_APIErrorZ* operator ->() { return &self; }
+	const LDKCVec_APIErrorZ* operator &() const { return &self; }
+	const LDKCVec_APIErrorZ* operator ->() const { return &self; }
 };
 class CVec_UpdateFulfillHTLCZ {
 private:

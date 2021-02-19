@@ -283,58 +283,85 @@ pub(crate) extern "C" fn MonitorUpdateError_clone_void(this_ptr: *const c_void) 
 pub extern "C" fn MonitorUpdateError_clone(orig: &MonitorUpdateError) -> MonitorUpdateError {
 	orig.clone()
 }
-
-use lightning::chain::channelmonitor::MonitorEvent as nativeMonitorEventImport;
-type nativeMonitorEvent = nativeMonitorEventImport;
-
 /// An event to be processed by the ChannelManager.
 #[must_use]
+#[derive(Clone)]
 #[repr(C)]
-pub struct MonitorEvent {
-	/// Nearly everywhere, inner must be non-null, however in places where
-	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
-	pub inner: *mut nativeMonitorEvent,
-	pub is_owned: bool,
+pub enum MonitorEvent {
+	/// A monitor event containing an HTLCUpdate.
+	HTLCEvent(crate::chain::channelmonitor::HTLCUpdate),
+	/// A monitor event that the Channel's commitment transaction was broadcasted.
+	CommitmentTxBroadcasted(crate::chain::transaction::OutPoint),
 }
-
-impl Drop for MonitorEvent {
-	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
-			let _ = unsafe { Box::from_raw(self.inner) };
+use lightning::chain::channelmonitor::MonitorEvent as nativeMonitorEvent;
+impl MonitorEvent {
+	#[allow(unused)]
+	pub(crate) fn to_native(&self) -> nativeMonitorEvent {
+		match self {
+			MonitorEvent::HTLCEvent (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				nativeMonitorEvent::HTLCEvent (
+					*unsafe { Box::from_raw(a_nonref.take_inner()) },
+				)
+			},
+			MonitorEvent::CommitmentTxBroadcasted (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				nativeMonitorEvent::CommitmentTxBroadcasted (
+					*unsafe { Box::from_raw(a_nonref.take_inner()) },
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn into_native(self) -> nativeMonitorEvent {
+		match self {
+			MonitorEvent::HTLCEvent (mut a, ) => {
+				nativeMonitorEvent::HTLCEvent (
+					*unsafe { Box::from_raw(a.take_inner()) },
+				)
+			},
+			MonitorEvent::CommitmentTxBroadcasted (mut a, ) => {
+				nativeMonitorEvent::CommitmentTxBroadcasted (
+					*unsafe { Box::from_raw(a.take_inner()) },
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn from_native(native: &nativeMonitorEvent) -> Self {
+		match native {
+			nativeMonitorEvent::HTLCEvent (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				MonitorEvent::HTLCEvent (
+					crate::chain::channelmonitor::HTLCUpdate { inner: Box::into_raw(Box::new(a_nonref)), is_owned: true },
+				)
+			},
+			nativeMonitorEvent::CommitmentTxBroadcasted (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				MonitorEvent::CommitmentTxBroadcasted (
+					crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(a_nonref)), is_owned: true },
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn native_into(native: nativeMonitorEvent) -> Self {
+		match native {
+			nativeMonitorEvent::HTLCEvent (mut a, ) => {
+				MonitorEvent::HTLCEvent (
+					crate::chain::channelmonitor::HTLCUpdate { inner: Box::into_raw(Box::new(a)), is_owned: true },
+				)
+			},
+			nativeMonitorEvent::CommitmentTxBroadcasted (mut a, ) => {
+				MonitorEvent::CommitmentTxBroadcasted (
+					crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(a)), is_owned: true },
+				)
+			},
 		}
 	}
 }
 #[no_mangle]
 pub extern "C" fn MonitorEvent_free(this_ptr: MonitorEvent) { }
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-extern "C" fn MonitorEvent_free_void(this_ptr: *mut c_void) {
-	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeMonitorEvent); }
-}
-#[allow(unused)]
-/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
-impl MonitorEvent {
-	pub(crate) fn take_inner(mut self) -> *mut nativeMonitorEvent {
-		assert!(self.is_owned);
-		let ret = self.inner;
-		self.inner = std::ptr::null_mut();
-		ret
-	}
-}
-impl Clone for MonitorEvent {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn MonitorEvent_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeMonitorEvent)).clone() })) as *mut c_void
-}
 #[no_mangle]
 pub extern "C" fn MonitorEvent_clone(orig: &MonitorEvent) -> MonitorEvent {
 	orig.clone()
@@ -512,7 +539,7 @@ pub extern "C" fn ChannelMonitor_get_funding_txo(this_arg: &ChannelMonitor) -> c
 #[no_mangle]
 pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: &mut ChannelMonitor) -> crate::c_types::derived::CVec_MonitorEventZ {
 	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_and_clear_pending_monitor_events();
-	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent::native_into(item) }); };
 	local_ret.into()
 }
 

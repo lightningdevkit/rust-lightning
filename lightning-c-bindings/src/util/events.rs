@@ -137,7 +137,7 @@ impl Event {
 			},
 			Event::SpendableOutputs {ref outputs, } => {
 				let mut outputs_nonref = (*outputs).clone();
-				let mut local_outputs_nonref = Vec::new(); for mut item in outputs_nonref.into_rust().drain(..) { local_outputs_nonref.push( { *unsafe { Box::from_raw(item.take_inner()) } }); };
+				let mut local_outputs_nonref = Vec::new(); for mut item in outputs_nonref.into_rust().drain(..) { local_outputs_nonref.push( { item.into_native() }); };
 				nativeEvent::SpendableOutputs {
 					outputs: local_outputs_nonref,
 				}
@@ -186,7 +186,7 @@ impl Event {
 				}
 			},
 			Event::SpendableOutputs {mut outputs, } => {
-				let mut local_outputs = Vec::new(); for mut item in outputs.into_rust().drain(..) { local_outputs.push( { *unsafe { Box::from_raw(item.take_inner()) } }); };
+				let mut local_outputs = Vec::new(); for mut item in outputs.into_rust().drain(..) { local_outputs.push( { item.into_native() }); };
 				nativeEvent::SpendableOutputs {
 					outputs: local_outputs,
 				}
@@ -249,7 +249,7 @@ impl Event {
 			},
 			nativeEvent::SpendableOutputs {ref outputs, } => {
 				let mut outputs_nonref = (*outputs).clone();
-				let mut local_outputs_nonref = Vec::new(); for mut item in outputs_nonref.drain(..) { local_outputs_nonref.push( { crate::chain::keysinterface::SpendableOutputDescriptor { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
+				let mut local_outputs_nonref = Vec::new(); for mut item in outputs_nonref.drain(..) { local_outputs_nonref.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
 				Event::SpendableOutputs {
 					outputs: local_outputs_nonref.into(),
 				}
@@ -298,7 +298,7 @@ impl Event {
 				}
 			},
 			nativeEvent::SpendableOutputs {mut outputs, } => {
-				let mut local_outputs = Vec::new(); for mut item in outputs.drain(..) { local_outputs.push( { crate::chain::keysinterface::SpendableOutputDescriptor { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
+				let mut local_outputs = Vec::new(); for mut item in outputs.drain(..) { local_outputs.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
 				Event::SpendableOutputs {
 					outputs: local_outputs.into(),
 				}

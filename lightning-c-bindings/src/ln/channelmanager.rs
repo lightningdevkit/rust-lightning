@@ -256,60 +256,168 @@ pub(crate) extern "C" fn ChannelDetails_clone_void(this_ptr: *const c_void) -> *
 pub extern "C" fn ChannelDetails_clone(orig: &ChannelDetails) -> ChannelDetails {
 	orig.clone()
 }
-
-use lightning::ln::channelmanager::PaymentSendFailure as nativePaymentSendFailureImport;
-type nativePaymentSendFailure = nativePaymentSendFailureImport;
-
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
 /// Err() type describing which state the payment is in, see the description of individual enum
 /// states for more.
 #[must_use]
+#[derive(Clone)]
 #[repr(C)]
-pub struct PaymentSendFailure {
-	/// Nearly everywhere, inner must be non-null, however in places where
-	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
-	pub inner: *mut nativePaymentSendFailure,
-	pub is_owned: bool,
+pub enum PaymentSendFailure {
+	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
+	/// send the payment at all. No channel state has been changed or messages sent to peers, and
+	/// once you've changed the parameter at error, you can freely retry the payment in full.
+	ParameterError(crate::util::errors::APIError),
+	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
+	/// from attempting to send the payment at all. No channel state has been changed or messages
+	/// sent to peers, and once you've changed the parameter at error, you can freely retry the
+	/// payment in full.
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment.
+	PathParameterError(crate::c_types::derived::CVec_CResult_NoneAPIErrorZZ),
+	/// All paths which were attempted failed to send, with no channel state change taking place.
+	/// You can freely retry the payment in full (though you probably want to do so over different
+	/// paths than the ones selected).
+	AllFailedRetrySafe(crate::c_types::derived::CVec_APIErrorZ),
+	/// Some paths which were attempted failed to send, though possibly not all. At least some
+	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
+	/// in over-/re-payment.
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment, and any Errs which are not APIError::MonitorUpdateFailed can be safely
+	/// retried (though there is currently no API with which to do so).
+	///
+	/// Any entries which contain Err(APIError::MonitorUpdateFailed) or Ok(()) MUST NOT be retried
+	/// as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
+	/// case of Ok(())) or will send once channel_monitor_updated is called on the next-hop channel
+	/// with the latest update_id.
+	PartialFailure(crate::c_types::derived::CVec_CResult_NoneAPIErrorZZ),
 }
-
-impl Drop for PaymentSendFailure {
-	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
-			let _ = unsafe { Box::from_raw(self.inner) };
+use lightning::ln::channelmanager::PaymentSendFailure as nativePaymentSendFailure;
+impl PaymentSendFailure {
+	#[allow(unused)]
+	pub(crate) fn to_native(&self) -> nativePaymentSendFailure {
+		match self {
+			PaymentSendFailure::ParameterError (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				nativePaymentSendFailure::ParameterError (
+					a_nonref.into_native(),
+				)
+			},
+			PaymentSendFailure::PathParameterError (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.into_rust().drain(..) { local_a_nonref.push( { let mut local_a_nonref_0 = match item.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.err)) }).into_native() })}; local_a_nonref_0 }); };
+				nativePaymentSendFailure::PathParameterError (
+					local_a_nonref,
+				)
+			},
+			PaymentSendFailure::AllFailedRetrySafe (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.into_rust().drain(..) { local_a_nonref.push( { item.into_native() }); };
+				nativePaymentSendFailure::AllFailedRetrySafe (
+					local_a_nonref,
+				)
+			},
+			PaymentSendFailure::PartialFailure (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.into_rust().drain(..) { local_a_nonref.push( { let mut local_a_nonref_0 = match item.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.err)) }).into_native() })}; local_a_nonref_0 }); };
+				nativePaymentSendFailure::PartialFailure (
+					local_a_nonref,
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn into_native(self) -> nativePaymentSendFailure {
+		match self {
+			PaymentSendFailure::ParameterError (mut a, ) => {
+				nativePaymentSendFailure::ParameterError (
+					a.into_native(),
+				)
+			},
+			PaymentSendFailure::PathParameterError (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.into_rust().drain(..) { local_a.push( { let mut local_a_0 = match item.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.err)) }).into_native() })}; local_a_0 }); };
+				nativePaymentSendFailure::PathParameterError (
+					local_a,
+				)
+			},
+			PaymentSendFailure::AllFailedRetrySafe (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.into_rust().drain(..) { local_a.push( { item.into_native() }); };
+				nativePaymentSendFailure::AllFailedRetrySafe (
+					local_a,
+				)
+			},
+			PaymentSendFailure::PartialFailure (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.into_rust().drain(..) { local_a.push( { let mut local_a_0 = match item.result_ok { true => Ok( { () /*(*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.result)) })*/ }), false => Err( { (*unsafe { Box::from_raw(<*mut _>::take_ptr(&mut item.contents.err)) }).into_native() })}; local_a_0 }); };
+				nativePaymentSendFailure::PartialFailure (
+					local_a,
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn from_native(native: &nativePaymentSendFailure) -> Self {
+		match native {
+			nativePaymentSendFailure::ParameterError (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				PaymentSendFailure::ParameterError (
+					crate::util::errors::APIError::native_into(a_nonref),
+				)
+			},
+			nativePaymentSendFailure::PathParameterError (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.drain(..) { local_a_nonref.push( { let mut local_a_nonref_0 = match item { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() }; local_a_nonref_0 }); };
+				PaymentSendFailure::PathParameterError (
+					local_a_nonref.into(),
+				)
+			},
+			nativePaymentSendFailure::AllFailedRetrySafe (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.drain(..) { local_a_nonref.push( { crate::util::errors::APIError::native_into(item) }); };
+				PaymentSendFailure::AllFailedRetrySafe (
+					local_a_nonref.into(),
+				)
+			},
+			nativePaymentSendFailure::PartialFailure (ref a, ) => {
+				let mut a_nonref = (*a).clone();
+				let mut local_a_nonref = Vec::new(); for mut item in a_nonref.drain(..) { local_a_nonref.push( { let mut local_a_nonref_0 = match item { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() }; local_a_nonref_0 }); };
+				PaymentSendFailure::PartialFailure (
+					local_a_nonref.into(),
+				)
+			},
+		}
+	}
+	#[allow(unused)]
+	pub(crate) fn native_into(native: nativePaymentSendFailure) -> Self {
+		match native {
+			nativePaymentSendFailure::ParameterError (mut a, ) => {
+				PaymentSendFailure::ParameterError (
+					crate::util::errors::APIError::native_into(a),
+				)
+			},
+			nativePaymentSendFailure::PathParameterError (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.drain(..) { local_a.push( { let mut local_a_0 = match item { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() }; local_a_0 }); };
+				PaymentSendFailure::PathParameterError (
+					local_a.into(),
+				)
+			},
+			nativePaymentSendFailure::AllFailedRetrySafe (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.drain(..) { local_a.push( { crate::util::errors::APIError::native_into(item) }); };
+				PaymentSendFailure::AllFailedRetrySafe (
+					local_a.into(),
+				)
+			},
+			nativePaymentSendFailure::PartialFailure (mut a, ) => {
+				let mut local_a = Vec::new(); for mut item in a.drain(..) { local_a.push( { let mut local_a_0 = match item { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::util::errors::APIError::native_into(e) }).into() }; local_a_0 }); };
+				PaymentSendFailure::PartialFailure (
+					local_a.into(),
+				)
+			},
 		}
 	}
 }
 #[no_mangle]
 pub extern "C" fn PaymentSendFailure_free(this_ptr: PaymentSendFailure) { }
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-extern "C" fn PaymentSendFailure_free_void(this_ptr: *mut c_void) {
-	unsafe { let _ = Box::from_raw(this_ptr as *mut nativePaymentSendFailure); }
-}
-#[allow(unused)]
-/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
-impl PaymentSendFailure {
-	pub(crate) fn take_inner(mut self) -> *mut nativePaymentSendFailure {
-		assert!(self.is_owned);
-		let ret = self.inner;
-		self.inner = std::ptr::null_mut();
-		ret
-	}
-}
-impl Clone for PaymentSendFailure {
-	fn clone(&self) -> Self {
-		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
-				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
-			is_owned: true,
-		}
-	}
-}
-#[allow(unused)]
-/// Used only if an object of this type is returned as a trait impl by a method
-pub(crate) extern "C" fn PaymentSendFailure_clone_void(this_ptr: *const c_void) -> *mut c_void {
-	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativePaymentSendFailure)).clone() })) as *mut c_void
-}
 #[no_mangle]
 pub extern "C" fn PaymentSendFailure_clone(orig: &PaymentSendFailure) -> PaymentSendFailure {
 	orig.clone()
@@ -453,7 +561,7 @@ pub extern "C" fn ChannelManager_force_close_all_channels(this_arg: &ChannelMana
 pub extern "C" fn ChannelManager_send_payment(this_arg: &ChannelManager, route: &crate::routing::router::Route, mut payment_hash: crate::c_types::ThirtyTwoBytes, mut payment_secret: crate::c_types::ThirtyTwoBytes) -> crate::c_types::derived::CResult_NonePaymentSendFailureZ {
 	let mut local_payment_secret = if payment_secret.data == [0; 32] { None } else { Some( { ::lightning::ln::channelmanager::PaymentSecret(payment_secret.data) }) };
 	let mut ret = unsafe { &*this_arg.inner }.send_payment(unsafe { &*route.inner }, ::lightning::ln::channelmanager::PaymentHash(payment_hash.data), &local_payment_secret);
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::channelmanager::PaymentSendFailure { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::channelmanager::PaymentSendFailure::native_into(e) }).into() };
 	local_ret
 }
 

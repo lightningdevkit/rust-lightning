@@ -1551,21 +1551,20 @@ typedef struct LDKCResult_NoneChannelMonitorUpdateErrZ {
 
 
 /**
- * An event to be processed by the ChannelManager.
+ * Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
+ * chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
+ * preimage claim backward will lead to loss of funds.
+ *
+ * [`chain::Watch`]: ../trait.Watch.html
  */
-typedef struct MUST_USE_STRUCT LDKMonitorEvent {
+typedef struct MUST_USE_STRUCT LDKHTLCUpdate {
    /**
     * Nearly everywhere, inner must be non-null, however in places where
     * the Rust equivalent takes an Option, it may be set to null to indicate None.
     */
-   LDKnativeMonitorEvent *inner;
+   LDKnativeHTLCUpdate *inner;
    bool is_owned;
-} LDKMonitorEvent;
-
-typedef struct LDKCVec_MonitorEventZ {
-   struct LDKMonitorEvent *data;
-   uintptr_t datalen;
-} LDKCVec_MonitorEventZ;
+} LDKHTLCUpdate;
 
 
 
@@ -1584,7 +1583,70 @@ typedef struct MUST_USE_STRUCT LDKOutPoint {
    bool is_owned;
 } LDKOutPoint;
 
+/**
+ * An event to be processed by the ChannelManager.
+ */
+typedef enum LDKMonitorEvent_Tag {
+   /**
+    * A monitor event containing an HTLCUpdate.
+    */
+   LDKMonitorEvent_HTLCEvent,
+   /**
+    * A monitor event that the Channel's commitment transaction was broadcasted.
+    */
+   LDKMonitorEvent_CommitmentTxBroadcasted,
+   /**
+    * Must be last for serialization purposes
+    */
+   LDKMonitorEvent_Sentinel,
+} LDKMonitorEvent_Tag;
 
+typedef struct MUST_USE_STRUCT LDKMonitorEvent {
+   LDKMonitorEvent_Tag tag;
+   union {
+      struct {
+         struct LDKHTLCUpdate htlc_event;
+      };
+      struct {
+         struct LDKOutPoint commitment_tx_broadcasted;
+      };
+   };
+} LDKMonitorEvent;
+
+typedef struct LDKCVec_MonitorEventZ {
+   struct LDKMonitorEvent *data;
+   uintptr_t datalen;
+} LDKCVec_MonitorEventZ;
+
+
+
+/**
+ * Information about a spendable output to a P2WSH script. See
+ * SpendableOutputDescriptor::DelayedPaymentOutput for more details on how to spend this.
+ */
+typedef struct MUST_USE_STRUCT LDKDelayedPaymentOutputDescriptor {
+   /**
+    * Nearly everywhere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeDelayedPaymentOutputDescriptor *inner;
+   bool is_owned;
+} LDKDelayedPaymentOutputDescriptor;
+
+
+
+/**
+ * Information about a spendable output to our \"payment key\". See
+ * SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
+ */
+typedef struct MUST_USE_STRUCT LDKStaticPaymentOutputDescriptor {
+   /**
+    * Nearly everywhere, inner must be non-null, however in places where
+    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    */
+   LDKnativeStaticPaymentOutputDescriptor *inner;
+   bool is_owned;
+} LDKStaticPaymentOutputDescriptor;
 
 /**
  * When on-chain outputs are created by rust-lightning (which our counterparty is not able to
@@ -1593,13 +1655,78 @@ typedef struct MUST_USE_STRUCT LDKOutPoint {
  * outpoint describing which txid and output index is available, the full output which exists at
  * that txid/index, and any keys or other information required to sign.
  */
-typedef struct MUST_USE_STRUCT LDKSpendableOutputDescriptor {
+typedef enum LDKSpendableOutputDescriptor_Tag {
    /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    * An output to a script which was provided via KeysInterface directly, either from
+    * `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
+    * spend it. No secret keys are provided as rust-lightning was never given any key.
+    * These may include outputs from a transaction punishing our counterparty or claiming an HTLC
+    * on-chain using the payment preimage or after it has timed out.
     */
-   LDKnativeSpendableOutputDescriptor *inner;
-   bool is_owned;
+   LDKSpendableOutputDescriptor_StaticOutput,
+   /**
+    * An output to a P2WSH script which can be spent with a single signature after a CSV delay.
+    *
+    * The witness in the spending input should be:
+    * <BIP 143 signature> <empty vector> (MINIMALIF standard rule) <provided witnessScript>
+    *
+    * Note that the nSequence field in the spending input must be set to to_self_delay
+    * (which means the transaction is not broadcastable until at least to_self_delay
+    * blocks after the outpoint confirms).
+    *
+    * These are generally the result of a \"revocable\" output to us, spendable only by us unless
+    * it is an output from an old state which we broadcast (which should never happen).
+    *
+    * To derive the delayed_payment key which is used to sign for this input, you must pass the
+    * holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
+    * ChannelKeys::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
+    * chan_utils::derive_private_key. The public key can be generated without the secret key
+    * using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
+    * ChannelKeys::pubkeys().
+    *
+    * To derive the revocation_pubkey provided here (which is used in the witness
+    * script generation), you must pass the counterparty revocation_basepoint (which appears in the
+    * call to ChannelKeys::ready_channel) and the provided per_commitment point
+    * to chan_utils::derive_public_revocation_key.
+    *
+    * The witness script which is hashed and included in the output script_pubkey may be
+    * regenerated by passing the revocation_pubkey (derived as above), our delayed_payment pubkey
+    * (derived as above), and the to_self_delay contained here to
+    * chan_utils::get_revokeable_redeemscript.
+    */
+   LDKSpendableOutputDescriptor_DelayedPaymentOutput,
+   /**
+    * An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
+    * corresponds to the public key in ChannelKeys::pubkeys().payment_point).
+    * The witness in the spending input, is, thus, simply:
+    * <BIP 143 signature> <payment key>
+    *
+    * These are generally the result of our counterparty having broadcast the current state,
+    * allowing us to claim the non-HTLC-encumbered outputs immediately.
+    */
+   LDKSpendableOutputDescriptor_StaticPaymentOutput,
+   /**
+    * Must be last for serialization purposes
+    */
+   LDKSpendableOutputDescriptor_Sentinel,
+} LDKSpendableOutputDescriptor_Tag;
+
+typedef struct LDKSpendableOutputDescriptor_LDKStaticOutput_Body {
+   struct LDKOutPoint outpoint;
+   struct LDKTxOut output;
+} LDKSpendableOutputDescriptor_LDKStaticOutput_Body;
+
+typedef struct MUST_USE_STRUCT LDKSpendableOutputDescriptor {
+   LDKSpendableOutputDescriptor_Tag tag;
+   union {
+      LDKSpendableOutputDescriptor_LDKStaticOutput_Body static_output;
+      struct {
+         struct LDKDelayedPaymentOutputDescriptor delayed_payment_output;
+      };
+      struct {
+         struct LDKStaticPaymentOutputDescriptor static_payment_output;
+      };
+   };
 } LDKSpendableOutputDescriptor;
 
 typedef struct LDKCVec_SpendableOutputDescriptorZ {
@@ -1761,24 +1888,6 @@ typedef struct LDKCResult_ChannelMonitorUpdateDecodeErrorZ {
    union LDKCResult_ChannelMonitorUpdateDecodeErrorZPtr contents;
    bool result_ok;
 } LDKCResult_ChannelMonitorUpdateDecodeErrorZ;
-
-
-
-/**
- * Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
- * chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
- * preimage claim backward will lead to loss of funds.
- *
- * [`chain::Watch`]: ../trait.Watch.html
- */
-typedef struct MUST_USE_STRUCT LDKHTLCUpdate {
-   /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
-    */
-   LDKnativeHTLCUpdate *inner;
-   bool is_owned;
-} LDKHTLCUpdate;
 
 typedef union LDKCResult_HTLCUpdateDecodeErrorZPtr {
    struct LDKHTLCUpdate *result;
@@ -2186,6 +2295,16 @@ typedef struct LDKCResult_NoneAPIErrorZ {
    bool result_ok;
 } LDKCResult_NoneAPIErrorZ;
 
+typedef struct LDKCVec_CResult_NoneAPIErrorZZ {
+   struct LDKCResult_NoneAPIErrorZ *data;
+   uintptr_t datalen;
+} LDKCVec_CResult_NoneAPIErrorZZ;
+
+typedef struct LDKCVec_APIErrorZ {
+   struct LDKAPIError *data;
+   uintptr_t datalen;
+} LDKCVec_APIErrorZ;
+
 
 
 /**
@@ -2205,20 +2324,71 @@ typedef struct LDKCVec_ChannelDetailsZ {
    uintptr_t datalen;
 } LDKCVec_ChannelDetailsZ;
 
-
-
 /**
  * If a payment fails to send, it can be in one of several states. This enum is returned as the
  * Err() type describing which state the payment is in, see the description of individual enum
  * states for more.
  */
-typedef struct MUST_USE_STRUCT LDKPaymentSendFailure {
+typedef enum LDKPaymentSendFailure_Tag {
    /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
+    * A parameter which was passed to send_payment was invalid, preventing us from attempting to
+    * send the payment at all. No channel state has been changed or messages sent to peers, and
+    * once you've changed the parameter at error, you can freely retry the payment in full.
     */
-   LDKnativePaymentSendFailure *inner;
-   bool is_owned;
+   LDKPaymentSendFailure_ParameterError,
+   /**
+    * A parameter in a single path which was passed to send_payment was invalid, preventing us
+    * from attempting to send the payment at all. No channel state has been changed or messages
+    * sent to peers, and once you've changed the parameter at error, you can freely retry the
+    * payment in full.
+    *
+    * The results here are ordered the same as the paths in the route object which was passed to
+    * send_payment.
+    */
+   LDKPaymentSendFailure_PathParameterError,
+   /**
+    * All paths which were attempted failed to send, with no channel state change taking place.
+    * You can freely retry the payment in full (though you probably want to do so over different
+    * paths than the ones selected).
+    */
+   LDKPaymentSendFailure_AllFailedRetrySafe,
+   /**
+    * Some paths which were attempted failed to send, though possibly not all. At least some
+    * paths have irrevocably committed to the HTLC and retrying the payment in full would result
+    * in over-/re-payment.
+    *
+    * The results here are ordered the same as the paths in the route object which was passed to
+    * send_payment, and any Errs which are not APIError::MonitorUpdateFailed can be safely
+    * retried (though there is currently no API with which to do so).
+    *
+    * Any entries which contain Err(APIError::MonitorUpdateFailed) or Ok(()) MUST NOT be retried
+    * as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
+    * case of Ok(())) or will send once channel_monitor_updated is called on the next-hop channel
+    * with the latest update_id.
+    */
+   LDKPaymentSendFailure_PartialFailure,
+   /**
+    * Must be last for serialization purposes
+    */
+   LDKPaymentSendFailure_Sentinel,
+} LDKPaymentSendFailure_Tag;
+
+typedef struct MUST_USE_STRUCT LDKPaymentSendFailure {
+   LDKPaymentSendFailure_Tag tag;
+   union {
+      struct {
+         struct LDKAPIError parameter_error;
+      };
+      struct {
+         struct LDKCVec_CResult_NoneAPIErrorZZ path_parameter_error;
+      };
+      struct {
+         struct LDKCVec_APIErrorZ all_failed_retry_safe;
+      };
+      struct {
+         struct LDKCVec_CResult_NoneAPIErrorZZ partial_failure;
+      };
+   };
 } LDKPaymentSendFailure;
 
 typedef union LDKCResult_NonePaymentSendFailureZPtr {
@@ -3407,36 +3577,6 @@ typedef struct MUST_USE_STRUCT LDKChainMonitor {
 
 
 /**
- * Information about a spendable output to a P2WSH script. See
- * SpendableOutputDescriptor::DelayedPaymentOutput for more details on how to spend this.
- */
-typedef struct MUST_USE_STRUCT LDKDelayedPaymentOutputDescriptor {
-   /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
-    */
-   LDKnativeDelayedPaymentOutputDescriptor *inner;
-   bool is_owned;
-} LDKDelayedPaymentOutputDescriptor;
-
-
-
-/**
- * Information about a spendable output to our \"payment key\". See
- * SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
- */
-typedef struct MUST_USE_STRUCT LDKStaticPaymentOutputDescriptor {
-   /**
-    * Nearly everywhere, inner must be non-null, however in places where
-    * the Rust equivalent takes an Option, it may be set to null to indicate None.
-    */
-   LDKnativeStaticPaymentOutputDescriptor *inner;
-   bool is_owned;
-} LDKStaticPaymentOutputDescriptor;
-
-
-
-/**
  * Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
  * and derives keys from that.
  *
@@ -4143,6 +4283,10 @@ struct LDKCResult_NoneAPIErrorZ CResult_NoneAPIErrorZ_err(struct LDKAPIError e);
 void CResult_NoneAPIErrorZ_free(struct LDKCResult_NoneAPIErrorZ _res);
 
 struct LDKCResult_NoneAPIErrorZ CResult_NoneAPIErrorZ_clone(const struct LDKCResult_NoneAPIErrorZ *NONNULL_PTR orig);
+
+void CVec_CResult_NoneAPIErrorZZ_free(struct LDKCVec_CResult_NoneAPIErrorZZ _res);
+
+void CVec_APIErrorZ_free(struct LDKCVec_APIErrorZ _res);
 
 void CVec_ChannelDetailsZ_free(struct LDKCVec_ChannelDetailsZ _res);
 
