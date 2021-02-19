@@ -114,16 +114,20 @@ pub fn assert_simple_bound(bound: &syn::TraitBound) {
 /// type), otherwise it is mapped into a transparent, C-compatible version of itself.
 pub fn is_enum_opaque(e: &syn::ItemEnum) -> bool {
 	for var in e.variants.iter() {
-		if let syn::Fields::Unit = var.fields {
-		} else if let syn::Fields::Named(fields) = &var.fields {
+		if let syn::Fields::Named(fields) = &var.fields {
 			for field in fields.named.iter() {
 				match export_status(&field.attrs) {
 					ExportStatus::Export|ExportStatus::TestOnly => {},
 					ExportStatus::NoExport => return true,
 				}
 			}
-		} else {
-			return true;
+		} else if let syn::Fields::Unnamed(fields) = &var.fields {
+			for field in fields.unnamed.iter() {
+				match export_status(&field.attrs) {
+					ExportStatus::Export|ExportStatus::TestOnly => {},
+					ExportStatus::NoExport => return true,
+				}
+			}
 		}
 	}
 	false
