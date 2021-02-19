@@ -68,7 +68,7 @@ int main() {
 		.free = NULL,
 	};
 
-	LDKKeysManager keys = KeysManager_new(&node_seed, net, 0, 0);
+	LDKKeysManager keys = KeysManager_new(&node_seed, 0, 0);
 	LDKKeysInterface keys_source = KeysManager_as_KeysInterface(&keys);
 
 	LDKUserConfig config = UserConfig_default();

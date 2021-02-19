@@ -3286,6 +3286,86 @@ impl Clone for CResult_NoneAPIErrorZ {
 #[no_mangle]
 pub extern "C" fn CResult_NoneAPIErrorZ_clone(orig: &CResult_NoneAPIErrorZ) -> CResult_NoneAPIErrorZ { orig.clone() }
 #[repr(C)]
+pub struct CVec_CResult_NoneAPIErrorZZ {
+	pub data: *mut crate::c_types::derived::CResult_NoneAPIErrorZ,
+	pub datalen: usize
+}
+impl CVec_CResult_NoneAPIErrorZZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::c_types::derived::CResult_NoneAPIErrorZ> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::c_types::derived::CResult_NoneAPIErrorZ] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::c_types::derived::CResult_NoneAPIErrorZ>> for CVec_CResult_NoneAPIErrorZZ {
+	fn from(v: Vec<crate::c_types::derived::CResult_NoneAPIErrorZ>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_CResult_NoneAPIErrorZZ_free(_res: CVec_CResult_NoneAPIErrorZZ) { }
+impl Drop for CVec_CResult_NoneAPIErrorZZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_CResult_NoneAPIErrorZZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub struct CVec_APIErrorZ {
+	pub data: *mut crate::util::errors::APIError,
+	pub datalen: usize
+}
+impl CVec_APIErrorZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::util::errors::APIError> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::util::errors::APIError] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::util::errors::APIError>> for CVec_APIErrorZ {
+	fn from(v: Vec<crate::util::errors::APIError>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_APIErrorZ_free(_res: CVec_APIErrorZ) { }
+impl Drop for CVec_APIErrorZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_APIErrorZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
 pub struct CVec_ChannelDetailsZ {
 	pub data: *mut crate::ln::channelmanager::ChannelDetails,
 	pub datalen: usize
@@ -3847,6 +3927,119 @@ impl Clone for CResult_ChannelKeysDecodeErrorZ {
 #[no_mangle]
 pub extern "C" fn CResult_ChannelKeysDecodeErrorZ_clone(orig: &CResult_ChannelKeysDecodeErrorZ) -> CResult_ChannelKeysDecodeErrorZ { orig.clone() }
 #[repr(C)]
+pub struct CVec_CVec_u8ZZ {
+	pub data: *mut crate::c_types::derived::CVec_u8Z,
+	pub datalen: usize
+}
+impl CVec_CVec_u8ZZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::c_types::derived::CVec_u8Z> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::c_types::derived::CVec_u8Z] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::c_types::derived::CVec_u8Z>> for CVec_CVec_u8ZZ {
+	fn from(v: Vec<crate::c_types::derived::CVec_u8Z>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_CVec_u8ZZ_free(_res: CVec_CVec_u8ZZ) { }
+impl Drop for CVec_CVec_u8ZZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_CVec_u8ZZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub union CResult_CVec_CVec_u8ZZNoneZPtr {
+	pub result: *mut crate::c_types::derived::CVec_CVec_u8ZZ,
+	/// Note that this value is always NULL, as there are no contents in the Err variant
+	pub err: *mut std::ffi::c_void,
+}
+#[repr(C)]
+pub struct CResult_CVec_CVec_u8ZZNoneZ {
+	pub contents: CResult_CVec_CVec_u8ZZNoneZPtr,
+	pub result_ok: bool,
+}
+#[no_mangle]
+pub extern "C" fn CResult_CVec_CVec_u8ZZNoneZ_ok(o: crate::c_types::derived::CVec_CVec_u8ZZ) -> CResult_CVec_CVec_u8ZZNoneZ {
+	CResult_CVec_CVec_u8ZZNoneZ {
+		contents: CResult_CVec_CVec_u8ZZNoneZPtr {
+			result: Box::into_raw(Box::new(o)),
+		},
+		result_ok: true,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_CVec_CVec_u8ZZNoneZ_err() -> CResult_CVec_CVec_u8ZZNoneZ {
+	CResult_CVec_CVec_u8ZZNoneZ {
+		contents: CResult_CVec_CVec_u8ZZNoneZPtr {
+			err: std::ptr::null_mut(),
+		},
+		result_ok: false,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_CVec_CVec_u8ZZNoneZ_free(_res: CResult_CVec_CVec_u8ZZNoneZ) { }
+impl Drop for CResult_CVec_CVec_u8ZZNoneZ {
+	fn drop(&mut self) {
+		if self.result_ok {
+			if unsafe { !(self.contents.result as *mut ()).is_null() } {
+				let _ = unsafe { Box::from_raw(self.contents.result) };
+			}
+		} else {
+		}
+	}
+}
+impl From<crate::c_types::CResultTempl<crate::c_types::derived::CVec_CVec_u8ZZ, u8>> for CResult_CVec_CVec_u8ZZNoneZ {
+	fn from(mut o: crate::c_types::CResultTempl<crate::c_types::derived::CVec_CVec_u8ZZ, u8>) -> Self {
+		let contents = if o.result_ok {
+			let result = unsafe { o.contents.result };
+			unsafe { o.contents.result = std::ptr::null_mut() };
+			CResult_CVec_CVec_u8ZZNoneZPtr { result }
+		} else {
+			let _ = unsafe { Box::from_raw(o.contents.err) };
+			o.contents.err = std::ptr::null_mut();
+			CResult_CVec_CVec_u8ZZNoneZPtr { err: std::ptr::null_mut() }
+		};
+		Self {
+			contents,
+			result_ok: o.result_ok,
+		}
+	}
+}
+impl Clone for CResult_CVec_CVec_u8ZZNoneZ {
+	fn clone(&self) -> Self {
+		if self.result_ok {
+			Self { result_ok: true, contents: CResult_CVec_CVec_u8ZZNoneZPtr {
+				result: Box::into_raw(Box::new(<crate::c_types::derived::CVec_CVec_u8ZZ>::clone(unsafe { &*self.contents.result })))
+			} }
+		} else {
+			Self { result_ok: false, contents: CResult_CVec_CVec_u8ZZNoneZPtr {
+				err: std::ptr::null_mut()
+			} }
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_CVec_CVec_u8ZZNoneZ_clone(orig: &CResult_CVec_CVec_u8ZZNoneZ) -> CResult_CVec_CVec_u8ZZNoneZ { orig.clone() }
+#[repr(C)]
 pub union CResult_InMemoryChannelKeysDecodeErrorZPtr {
 	pub result: *mut crate::chain::keysinterface::InMemoryChannelKeys,
 	pub err: *mut crate::ln::msgs::DecodeError,
@@ -3921,6 +4114,104 @@ impl Clone for CResult_InMemoryChannelKeysDecodeErrorZ {
 }
 #[no_mangle]
 pub extern "C" fn CResult_InMemoryChannelKeysDecodeErrorZ_clone(orig: &CResult_InMemoryChannelKeysDecodeErrorZ) -> CResult_InMemoryChannelKeysDecodeErrorZ { orig.clone() }
+#[repr(C)]
+pub struct CVec_TxOutZ {
+	pub data: *mut crate::c_types::TxOut,
+	pub datalen: usize
+}
+impl CVec_TxOutZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::c_types::TxOut> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::c_types::TxOut] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::c_types::TxOut>> for CVec_TxOutZ {
+	fn from(v: Vec<crate::c_types::TxOut>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_TxOutZ_free(_res: CVec_TxOutZ) { }
+impl Drop for CVec_TxOutZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_TxOutZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub union CResult_TransactionNoneZPtr {
+	pub result: *mut crate::c_types::Transaction,
+	/// Note that this value is always NULL, as there are no contents in the Err variant
+	pub err: *mut std::ffi::c_void,
+}
+#[repr(C)]
+pub struct CResult_TransactionNoneZ {
+	pub contents: CResult_TransactionNoneZPtr,
+	pub result_ok: bool,
+}
+#[no_mangle]
+pub extern "C" fn CResult_TransactionNoneZ_ok(o: crate::c_types::Transaction) -> CResult_TransactionNoneZ {
+	CResult_TransactionNoneZ {
+		contents: CResult_TransactionNoneZPtr {
+			result: Box::into_raw(Box::new(o)),
+		},
+		result_ok: true,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_TransactionNoneZ_err() -> CResult_TransactionNoneZ {
+	CResult_TransactionNoneZ {
+		contents: CResult_TransactionNoneZPtr {
+			err: std::ptr::null_mut(),
+		},
+		result_ok: false,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_TransactionNoneZ_free(_res: CResult_TransactionNoneZ) { }
+impl Drop for CResult_TransactionNoneZ {
+	fn drop(&mut self) {
+		if self.result_ok {
+			if unsafe { !(self.contents.result as *mut ()).is_null() } {
+				let _ = unsafe { Box::from_raw(self.contents.result) };
+			}
+		} else {
+		}
+	}
+}
+impl From<crate::c_types::CResultTempl<crate::c_types::Transaction, u8>> for CResult_TransactionNoneZ {
+	fn from(mut o: crate::c_types::CResultTempl<crate::c_types::Transaction, u8>) -> Self {
+		let contents = if o.result_ok {
+			let result = unsafe { o.contents.result };
+			unsafe { o.contents.result = std::ptr::null_mut() };
+			CResult_TransactionNoneZPtr { result }
+		} else {
+			let _ = unsafe { Box::from_raw(o.contents.err) };
+			o.contents.err = std::ptr::null_mut();
+			CResult_TransactionNoneZPtr { err: std::ptr::null_mut() }
+		};
+		Self {
+			contents,
+			result_ok: o.result_ok,
+		}
+	}
+}
 #[repr(C)]
 pub struct CVec_RouteHopZ {
 	pub data: *mut crate::routing::router::RouteHop,

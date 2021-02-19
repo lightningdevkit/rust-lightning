@@ -396,6 +396,9 @@ pub extern "C" fn TxCreationKeys_from_channel_static_keys(mut per_commitment_poi
 	local_ret
 }
 
+
+#[no_mangle]
+pub static REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = lightning::ln::chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH;
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
@@ -1351,7 +1354,7 @@ pub extern "C" fn TrustedCommitmentTransaction_keys(this_arg: &TrustedCommitment
 #[no_mangle]
 pub extern "C" fn TrustedCommitmentTransaction_get_htlc_sigs(this_arg: &TrustedCommitmentTransaction, htlc_base_key: *const [u8; 32], channel_parameters: &crate::ln::chan_utils::DirectedChannelTransactionParameters) -> crate::c_types::derived::CResult_CVec_SignatureZNoneZ {
 	let mut ret = unsafe { &*this_arg.inner }.get_htlc_sigs(&::bitcoin::secp256k1::key::SecretKey::from_slice(&unsafe { *htlc_base_key}[..]).unwrap(), unsafe { &*channel_parameters.inner }, &bitcoin::secp256k1::Secp256k1::new());
-	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for item in o.drain(..) { local_ret_0.push( { crate::c_types::Signature::from_rust(&item) }); }; local_ret_0.into() }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
+	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { let mut local_ret_0 = Vec::new(); for mut item in o.drain(..) { local_ret_0.push( { crate::c_types::Signature::from_rust(&item) }); }; local_ret_0.into() }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { 0u8 /*e*/ }).into() };
 	local_ret
 }
 

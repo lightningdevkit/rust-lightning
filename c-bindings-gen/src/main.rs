@@ -1076,6 +1076,17 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 				writeln!(w, ",").unwrap();
 			}
 			write!(w, "\t}}").unwrap();
+		} else if let syn::Fields::Unnamed(fields) = &var.fields {
+			needs_free = true;
+			write!(w, "(").unwrap();
+			for (idx, field) in fields.unnamed.iter().enumerate() {
+				if export_status(&field.attrs) == ExportStatus::TestOnly { continue; }
+				types.write_c_type(w, &field.ty, None, false);
+				if idx != fields.unnamed.len() - 1 {
+					write!(w, ",").unwrap();
+				}
+			}
+			write!(w, ")").unwrap();
 		}
 		if var.discriminant.is_some() { unimplemented!(); }
 		writeln!(w, ",").unwrap();
@@ -1094,28 +1105,35 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 						write!(w, "{}{}, ", if $ref { "ref " } else { "mut " }, field.ident.as_ref().unwrap()).unwrap();
 					}
 					write!(w, "}} ").unwrap();
+				} else if let syn::Fields::Unnamed(fields) = &var.fields {
+					write!(w, "(").unwrap();
+					for (idx, field) in fields.unnamed.iter().enumerate() {
+						if export_status(&field.attrs) == ExportStatus::TestOnly { continue; }
+						write!(w, "{}{}, ", if $ref { "ref " } else { "mut " }, ('a' as u8 + idx as u8) as char).unwrap();
+					}
+					write!(w, ") ").unwrap();
 				}
 				write!(w, "=>").unwrap();
-				if let syn::Fields::Named(fields) = &var.fields {
-					write!(w, " {{\n\t\t\t\t").unwrap();
-					for field in fields.named.iter() {
-						if export_status(&field.attrs) == ExportStatus::TestOnly { continue; }
+
+				macro_rules! handle_field_a {
+					($field: expr, $field_ident: expr) => { {
+						if export_status(&$field.attrs) == ExportStatus::TestOnly { continue; }
 						let mut sink = ::std::io::sink();
 						let mut out: &mut dyn std::io::Write = if $ref { &mut sink } else { w };
 						let new_var = if $to_c {
-							types.write_to_c_conversion_new_var(&mut out, field.ident.as_ref().unwrap(), &field.ty, None, false)
+							types.write_to_c_conversion_new_var(&mut out, $field_ident, &$field.ty, None, false)
 						} else {
-							types.write_from_c_conversion_new_var(&mut out, field.ident.as_ref().unwrap(), &field.ty, None)
+							types.write_from_c_conversion_new_var(&mut out, $field_ident, &$field.ty, None)
 						};
 						if $ref || new_var {
 							if $ref {
-								write!(w, "let mut {}_nonref = (*{}).clone();\n\t\t\t\t", field.ident.as_ref().unwrap(), field.ident.as_ref().unwrap()).unwrap();
+								write!(w, "let mut {}_nonref = (*{}).clone();\n\t\t\t\t", $field_ident, $field_ident).unwrap();
 								if new_var {
-									let nonref_ident = syn::Ident::new(&format!("{}_nonref", field.ident.as_ref().unwrap()), Span::call_site());
+									let nonref_ident = syn::Ident::new(&format!("{}_nonref", $field_ident), Span::call_site());
 									if $to_c {
-										types.write_to_c_conversion_new_var(w, &nonref_ident, &field.ty, None, false);
+										types.write_to_c_conversion_new_var(w, &nonref_ident, &$field.ty, None, false);
 									} else {
-										types.write_from_c_conversion_new_var(w, &nonref_ident, &field.ty, None);
+										types.write_from_c_conversion_new_var(w, &nonref_ident, &$field.ty, None);
 									}
 									write!(w, "\n\t\t\t\t").unwrap();
 								}
@@ -1123,30 +1141,57 @@ fn writeln_enum<'a, 'b, W: std::io::Write>(w: &mut W, e: &'a syn::ItemEnum, type
 								write!(w, "\n\t\t\t\t").unwrap();
 							}
 						}
+					} }
+				}
+				if let syn::Fields::Named(fields) = &var.fields {
+					write!(w, " {{\n\t\t\t\t").unwrap();
+					for field in fields.named.iter() {
+						handle_field_a!(field, field.ident.as_ref().unwrap());
+					}
+				} else if let syn::Fields::Unnamed(fields) = &var.fields {
+					write!(w, " {{\n\t\t\t\t").unwrap();
+					for (idx, field) in fields.unnamed.iter().enumerate() {
+						handle_field_a!(field, &syn::Ident::new(&(('a' as u8 + idx as u8) as char).to_string(), Span::call_site()));
 					}
 				} else { write!(w, " ").unwrap(); }
+
 				write!(w, "{}{}::{}", if $to_c { "" } else { "native" }, e.ident, var.ident).unwrap();
+
+				macro_rules! handle_field_b {
+					($field: expr, $field_ident: expr) => { {
+						if export_status(&$field.attrs) == ExportStatus::TestOnly { continue; }
+						if $to_c {
+							types.write_to_c_conversion_inline_prefix(w, &$field.ty, None, false);
+						} else {
+							types.write_from_c_conversion_prefix(w, &$field.ty, None);
+						}
+						write!(w, "{}{}", $field_ident,
+							if $ref { "_nonref" } else { "" }).unwrap();
+						if $to_c {
+							types.write_to_c_conversion_inline_suffix(w, &$field.ty, None, false);
+						} else {
+							types.write_from_c_conversion_suffix(w, &$field.ty, None);
+						}
+						write!(w, ",").unwrap();
+					} }
+				}
+
 				if let syn::Fields::Named(fields) = &var.fields {
 					write!(w, " {{").unwrap();
 					for field in fields.named.iter() {
 						if export_status(&field.attrs) == ExportStatus::TestOnly { continue; }
 						write!(w, "\n\t\t\t\t\t{}: ", field.ident.as_ref().unwrap()).unwrap();
-						if $to_c {
-							types.write_to_c_conversion_inline_prefix(w, &field.ty, None, false);
-						} else {
-							types.write_from_c_conversion_prefix(w, &field.ty, None);
-						}
-						write!(w, "{}{}",
-							field.ident.as_ref().unwrap(),
-							if $ref { "_nonref" } else { "" }).unwrap();
-						if $to_c {
-							types.write_to_c_conversion_inline_suffix(w, &field.ty, None, false);
-						} else {
-							types.write_from_c_conversion_suffix(w, &field.ty, None);
-						}
-						write!(w, ",").unwrap();
+						handle_field_b!(field, field.ident.as_ref().unwrap());
 					}
 					writeln!(w, "\n\t\t\t\t}}").unwrap();
+					write!(w, "\t\t\t}}").unwrap();
+				} else if let syn::Fields::Unnamed(fields) = &var.fields {
+					write!(w, " (").unwrap();
+					for (idx, field) in fields.unnamed.iter().enumerate() {
+						write!(w, "\n\t\t\t\t\t").unwrap();
+						handle_field_b!(field, &syn::Ident::new(&(('a' as u8 + idx as u8) as char).to_string(), Span::call_site()));
+					}
+					writeln!(w, "\n\t\t\t\t)").unwrap();
 					write!(w, "\t\t\t}}").unwrap();
 				}
 				writeln!(w, ",").unwrap();

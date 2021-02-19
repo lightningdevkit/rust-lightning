@@ -249,7 +249,7 @@ impl Event {
 			},
 			nativeEvent::SpendableOutputs {ref outputs, } => {
 				let mut outputs_nonref = (*outputs).clone();
-				let mut local_outputs_nonref = Vec::new(); for item in outputs_nonref.drain(..) { local_outputs_nonref.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
+				let mut local_outputs_nonref = Vec::new(); for mut item in outputs_nonref.drain(..) { local_outputs_nonref.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
 				Event::SpendableOutputs {
 					outputs: local_outputs_nonref.into(),
 				}
@@ -298,7 +298,7 @@ impl Event {
 				}
 			},
 			nativeEvent::SpendableOutputs {mut outputs, } => {
-				let mut local_outputs = Vec::new(); for item in outputs.drain(..) { local_outputs.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
+				let mut local_outputs = Vec::new(); for mut item in outputs.drain(..) { local_outputs.push( { crate::chain::keysinterface::SpendableOutputDescriptor::native_into(item) }); };
 				Event::SpendableOutputs {
 					outputs: local_outputs.into(),
 				}

@@ -153,7 +153,7 @@ extern "C" fn ChainMonitor_Watch_update_channel(this_arg: *const c_void, mut fun
 #[must_use]
 extern "C" fn ChainMonitor_Watch_release_pending_monitor_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_MonitorEventZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.release_pending_monitor_events();
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent::native_into(item) }); };
 	local_ret.into()
 }
 
@@ -179,7 +179,7 @@ use lightning::util::events::EventsProvider as EventsProviderTraitImport;
 #[must_use]
 extern "C" fn ChainMonitor_EventsProvider_get_and_clear_pending_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_EventZ {
 	let mut ret = unsafe { &mut *(this_arg as *mut nativeChainMonitor) }.get_and_clear_pending_events();
-	let mut local_ret = Vec::new(); for item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
+	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
 	local_ret.into()
 }
 

@@ -348,7 +348,7 @@ int main() {
 		// Instantiate classes for node 1:
 		uint8_t node_seed[32];
 		memset(&node_seed, 0, 32);
-		LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 0, 0);
+		LDK::KeysManager keys1 = KeysManager_new(&node_seed, 0, 0);
 		LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
 		node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
 
@@ -370,7 +370,7 @@ int main() {
 
 		// Instantiate classes for node 2:
 		memset(&node_seed, 1, 32);
-		LDK::KeysManager keys2 = KeysManager_new(&node_seed, network, 0, 0);
+		LDK::KeysManager keys2 = KeysManager_new(&node_seed, 0, 0);
 		LDK::KeysInterface keys_source2 = KeysManager_as_KeysInterface(&keys2);
 		node_secret2 = keys_source2->get_node_secret(keys_source2->this_arg);
 
@@ -567,7 +567,7 @@ int main() {
 	mons_list1->data[0].is_owned = false; // XXX: God this sucks
 	uint8_t node_seed[32];
 	memset(&node_seed, 0, 32);
-	LDK::KeysManager keys1 = KeysManager_new(&node_seed, network, 1, 0);
+	LDK::KeysManager keys1 = KeysManager_new(&node_seed, 1, 0);
 	LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
 
 	LDK::ChannelManagerReadArgs cm1_args = ChannelManagerReadArgs_new(KeysManager_as_KeysInterface(&keys1), fee_est, mon1, broadcast, logger1, UserConfig_default(), std::move(mons_list1));
@@ -581,7 +581,7 @@ int main() {
 	mons_list2->data[0] = *& std::get<1>(mons2.mons[0]); // Note that we need a reference, thus need a raw clone here, which *& does.
 	mons_list2->data[0].is_owned = false; // XXX: God this sucks
 	memset(&node_seed, 1, 32);
-	LDK::KeysManager keys2 = KeysManager_new(&node_seed, network, 1, 0);
+	LDK::KeysManager keys2 = KeysManager_new(&node_seed, 1, 0);
 
 	LDK::ChannelManagerReadArgs cm2_args = ChannelManagerReadArgs_new(KeysManager_as_KeysInterface(&keys2), fee_est, mon2, broadcast, logger2, UserConfig_default(), std::move(mons_list2));
 	LDK::CResult_C2Tuple_BlockHashChannelManagerZDecodeErrorZ cm2_read =
