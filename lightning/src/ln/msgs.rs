@@ -61,7 +61,8 @@ pub enum DecodeError {
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
-	Io(::std::io::ErrorKind),
+	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
+        ::std::io::ErrorKind),
 }
 
 /// An init message to be sent or received from a peer
