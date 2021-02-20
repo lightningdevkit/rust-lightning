@@ -1615,19 +1615,19 @@ fn test_fee_spike_violation_fails_htlc() {
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
-		let chan_keys = local_chan.get_keys();
-		let pubkeys = chan_keys.pubkeys();
+		let chan_signer = local_chan.get_signer();
+		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
-		 chan_keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx))
+		 chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx))
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
-		let chan_keys = remote_chan.get_keys();
-		let pubkeys = chan_keys.pubkeys();
+		let chan_signer = remote_chan.get_signer();
+		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx))
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx))
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
@@ -1651,7 +1651,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let res = {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
-		let local_chan_keys = local_chan.get_keys();
+		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
 			95000,
@@ -1661,7 +1661,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			&mut vec![(accepted_htlc_info, ())],
 			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
-		local_chan_keys.sign_counterparty_commitment(&commitment_tx, &secp_ctx).unwrap()
+		local_chan_signer.sign_counterparty_commitment(&commitment_tx, &secp_ctx).unwrap()
 	};
 
 	let commit_signed_msg = msgs::CommitmentSigned {
@@ -4236,8 +4236,8 @@ fn test_invalid_channel_announcement() {
 
 	nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
 
-	let as_bitcoin_key = as_chan.get_keys().inner.holder_channel_pubkeys.funding_pubkey;
-	let bs_bitcoin_key = bs_chan.get_keys().inner.holder_channel_pubkeys.funding_pubkey;
+	let as_bitcoin_key = as_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
+	let bs_bitcoin_key = bs_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
 
 	let as_network_key = nodes[0].node.get_our_node_id();
 	let bs_network_key = nodes[1].node.get_our_node_id();
@@ -4264,8 +4264,8 @@ fn test_invalid_channel_announcement() {
 	macro_rules! sign_msg {
 		($unsigned_msg: expr) => {
 			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_keys().inner.funding_key);
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_keys().inner.funding_key);
+			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_signer().inner.funding_key);
+			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_signer().inner.funding_key);
 			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
 			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
 			chan_announcement = msgs::ChannelAnnouncement {
@@ -8037,7 +8037,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let mut guard = nodes[0].node.channel_state.lock().unwrap();
-	let keys = &guard.by_id.get_mut(&channel_id).unwrap().holder_keys;
+	let keys = &guard.by_id.get_mut(&channel_id).unwrap().get_signer();
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 	// Must revoke without gaps

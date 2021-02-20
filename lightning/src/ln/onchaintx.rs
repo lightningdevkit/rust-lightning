@@ -602,19 +602,19 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
 					&InputMaterial::Revoked { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_counterparty_tx_csv } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
+						if let Ok(tx_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
 
 							let witness_script = if let Some(ref htlc) = *htlc {
-								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key)
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &tx_keys.broadcaster_htlc_key, &tx_keys.countersignatory_htlc_key, &tx_keys.revocation_key)
 							} else {
-								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
+								chan_utils::get_revokeable_redeemscript(&tx_keys.revocation_key, *on_counterparty_tx_csv, &tx_keys.broadcaster_delayed_payment_key)
 							};
 
 							let sig = self.signer.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx).expect("sign justice tx");
 							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 							if htlc.is_some() {
-								bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+								bumped_tx.input[i].witness.push(tx_keys.revocation_key.clone().serialize().to_vec());
 							} else {
 								bumped_tx.input[i].witness.push(vec!(1));
 							}
@@ -624,8 +624,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						}
 					},
 					&InputMaterial::CounterpartyHTLC { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref preimage, ref htlc } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
-							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+						if let Ok(tx_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
+							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &tx_keys.broadcaster_htlc_key, &tx_keys.countersignatory_htlc_key, &tx_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 							let sig = self.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx).expect("sign counterparty HTLC tx");

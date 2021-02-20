@@ -300,10 +300,7 @@ pub(super) struct Channel<Signer: Sign> {
 
 	latest_monitor_update_id: u64,
 
-	#[cfg(not(test))]
-	holder_keys: Signer,
-	#[cfg(test)]
-	pub(super) holder_keys: Signer,
+	holder_signer: Signer,
 	shutdown_pubkey: PublicKey,
 	destination_script: Script,
 
@@ -503,8 +500,8 @@ impl<Signer: Sign> Channel<Signer> {
 	      F::Target: FeeEstimator,
 	{
 		let holder_selected_contest_delay = config.own_channel_config.our_to_self_delay;
-		let chan_keys = keys_provider.get_channel_signer(false, channel_value_satoshis);
-		let pubkeys = chan_keys.pubkeys().clone();
+		let holder_signer = keys_provider.get_channel_signer(false, channel_value_satoshis);
+		let pubkeys = holder_signer.pubkeys().clone();
 
 		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
 			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than {}, it was {}", MAX_FUNDING_SATOSHIS, channel_value_satoshis)});
@@ -534,7 +531,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			latest_monitor_update_id: 0,
 
-			holder_keys: chan_keys,
+			holder_signer,
 			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
 			destination_script: keys_provider.get_destination_script(),
 
@@ -626,8 +623,8 @@ impl<Signer: Sign> Channel<Signer> {
 		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
-		let chan_keys = keys_provider.get_channel_signer(true, msg.funding_satoshis);
-		let pubkeys = chan_keys.pubkeys().clone();
+		let holder_signer = keys_provider.get_channel_signer(true, msg.funding_satoshis);
+		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
 			revocation_basepoint: msg.revocation_basepoint,
@@ -768,7 +765,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			latest_monitor_update_id: 0,
 
-			holder_keys: chan_keys,
+			holder_signer,
 			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
 			destination_script: keys_provider.get_destination_script(),
 
@@ -1136,7 +1133,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_holder_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
-		let per_commitment_point = self.holder_keys.get_per_commitment_point(commitment_number, &self.secp_ctx);
+		let per_commitment_point = self.holder_signer.get_per_commitment_point(commitment_number, &self.secp_ctx);
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -1509,7 +1506,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 		log_trace!(logger, "Initial counterparty ID {} tx {}", counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let counterparty_signature = self.holder_keys.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -1540,7 +1537,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// funding_created_signature may fail.
-		self.holder_keys.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
 
 		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
@@ -1568,7 +1565,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
+		let mut channel_monitor = ChannelMonitor::new(self.holder_signer.clone(),
 		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
 		                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                              &self.channel_transaction_parameters,
@@ -1613,8 +1610,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_trace!(logger, "Initial counterparty ID {} tx {}", counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_keys, true, false, self.feerate_per_kw, logger).0;
+		let holder_signer = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_signer, true, false, self.feerate_per_kw, logger).0;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
@@ -1638,7 +1635,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo = self.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.holder_keys.clone(),
+		let mut channel_monitor = ChannelMonitor::new(self.holder_signer.clone(),
 		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
 		                                              &self.destination_script, (funding_txo, funding_txo_script),
 		                                              &self.channel_transaction_parameters,
@@ -2192,8 +2189,8 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
-		let per_commitment_secret = self.holder_keys.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
+		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
+		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
@@ -2769,7 +2766,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_locked = if self.monitor_pending_funding_locked {
 			assert!(!self.is_outbound(), "Funding transaction broadcast without FundingBroadcastSafe!");
 			self.monitor_pending_funding_locked = false;
-			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
@@ -2821,8 +2818,8 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-		let per_commitment_secret = self.holder_keys.release_commitment_secret(self.cur_holder_commitment_transaction_number + 2);
+		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.channel_id,
 			per_commitment_secret,
@@ -2905,7 +2902,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.next_remote_commitment_number > 0 {
 			match msg.data_loss_protect {
 				OptionalField::Present(ref data_loss) => {
-					let expected_point = self.holder_keys.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
+					let expected_point = self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.secp_ctx);
 					let given_secret = SecretKey::from_slice(&data_loss.your_last_per_commitment_secret)
 						.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 					if expected_point != PublicKey::from_secret_key(&self.secp_ctx, &given_secret) {
@@ -2944,7 +2941,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 
 			// We have OurFundingLocked set!
-			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
@@ -2974,7 +2971,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let resend_funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateFailed resending FundingLocked
-			let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
@@ -3055,7 +3052,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 
 		let (closing_tx, total_fee_satoshis) = self.build_closing_transaction(proposed_total_fee_satoshis, false);
-		let sig = self.holder_keys
+		let sig = self.holder_signer
 			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.ok();
 		assert!(closing_tx.get_weight() as u64 <= tx_weight);
@@ -3219,7 +3216,7 @@ impl<Signer: Sign> Channel<Signer> {
 			($new_feerate: expr) => {
 				let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate as u64 * tx_weight / 1000, false);
-				let sig = self.holder_keys
+				let sig = self.holder_signer
 					.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 					.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 				assert!(closing_tx.get_weight() as u64 <= tx_weight);
@@ -3255,7 +3252,7 @@ impl<Signer: Sign> Channel<Signer> {
 			propose_new_feerate!(min_feerate);
 		}
 
-		let sig = self.holder_keys
+		let sig = self.holder_signer
 			.sign_closing_transaction(&closing_tx, &self.secp_ctx)
 			.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 		self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
@@ -3367,8 +3364,8 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	#[cfg(test)]
-	pub fn get_keys(&self) -> &Signer {
-		&self.holder_keys
+	pub fn get_signer(&self) -> &Signer {
+		&self.holder_signer
 	}
 
 	#[cfg(test)]
@@ -3604,7 +3601,7 @@ impl<Signer: Sign> Channel<Signer> {
 					//a protocol oversight, but I assume I'm just missing something.
 					if need_commitment_update {
 						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-							let next_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+							let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 							return Ok((Some(msgs::FundingLocked {
 								channel_id: self.channel_id,
 								next_per_commitment_point,
@@ -3652,7 +3649,7 @@ impl<Signer: Sign> Channel<Signer> {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		let keys = self.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -3689,7 +3686,7 @@ impl<Signer: Sign> Channel<Signer> {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.holder_keys.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		let keys = self.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
@@ -3715,7 +3712,7 @@ impl<Signer: Sign> Channel<Signer> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
-		Ok(self.holder_keys.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -3740,7 +3737,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.holder_keys.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -3798,7 +3795,7 @@ impl<Signer: Sign> Channel<Signer> {
 			excess_data: Vec::new(),
 		};
 
-		let sig = self.holder_keys.sign_channel_announcement(&msg, &self.secp_ctx)
+		let sig = self.holder_signer.sign_channel_announcement(&msg, &self.secp_ctx)
 			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 
 		Ok((msg, sig))
@@ -4087,7 +4084,7 @@ impl<Signer: Sign> Channel<Signer> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.holder_keys.sign_counterparty_commitment(&counterparty_commitment_tx.0, &self.secp_ctx)
+			let res = self.holder_signer.sign_counterparty_commitment(&counterparty_commitment_tx.0, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -4273,7 +4270,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.latest_monitor_update_id.write(writer)?;
 
 		let mut key_data = VecWriter(Vec::new());
-		self.holder_keys.write(&mut key_data)?;
+		self.holder_signer.write(&mut key_data)?;
 		assert!(key_data.0.len() < std::usize::MAX);
 		assert!(key_data.0.len() < std::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
@@ -4471,7 +4468,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			reader.read_exact(read_slice)?;
 			keys_data.extend_from_slice(read_slice);
 		}
-		let holder_keys = keys_source.read_chan_signer(&keys_data)?;
+		let holder_signer = keys_source.read_chan_signer(&keys_data)?;
 
 		let shutdown_pubkey = Readable::read(reader)?;
 		let destination_script = Readable::read(reader)?;
@@ -4612,7 +4609,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 			latest_monitor_update_id,
 
-			holder_keys,
+			holder_signer,
 			shutdown_pubkey,
 			destination_script,
 
@@ -4728,7 +4725,7 @@ mod tests {
 	}
 
 	struct Keys {
-		chan_keys: InMemorySigner,
+		signer: InMemorySigner,
 	}
 	impl KeysInterface for Keys {
 		type Signer = InMemorySigner;
@@ -4748,7 +4745,7 @@ mod tests {
 		}
 
 		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {
-			self.chan_keys.clone()
+			self.signer.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
@@ -4967,7 +4964,7 @@ mod tests {
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let secp_ctx = Secp256k1::new();
 
-		let mut chan_keys = InMemorySigner::new(
+		let mut signer = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
@@ -4981,9 +4978,9 @@ mod tests {
 			[0; 32]
 		);
 
-		assert_eq!(chan_keys.pubkeys().funding_pubkey.serialize()[..],
+		assert_eq!(signer.pubkeys().funding_pubkey.serialize()[..],
 				hex::decode("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]);
-		let keys_provider = Keys { chan_keys: chan_keys.clone() };
+		let keys_provider = Keys { signer: signer.clone() };
 
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
@@ -5006,7 +5003,7 @@ mod tests {
 				selected_contest_delay: 144
 			});
 		chan.channel_transaction_parameters.funding_outpoint = Some(funding_info);
-		chan_keys.ready_channel(&chan.channel_transaction_parameters);
+		signer.ready_channel(&chan.channel_transaction_parameters);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);
@@ -5020,10 +5017,10 @@ mod tests {
 		// We can't just use build_holder_transaction_keys here as the per_commitment_secret is not
 		// derived from a commitment_seed, so instead we copy it here and call
 		// build_commitment_transaction.
-		let delayed_payment_base = &chan.holder_keys.pubkeys().delayed_payment_basepoint;
+		let delayed_payment_base = &chan.holder_signer.pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		let htlc_basepoint = &chan.holder_keys.pubkeys().htlc_basepoint;
+		let htlc_basepoint = &chan.holder_signer.pubkeys().htlc_basepoint;
 		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint).unwrap();
 
 		macro_rules! test_commitment {
@@ -5060,10 +5057,10 @@ mod tests {
 					commitment_tx.clone(),
 					counterparty_signature,
 					counterparty_htlc_sigs,
-					&chan.holder_keys.pubkeys().funding_pubkey,
+					&chan.holder_signer.pubkeys().funding_pubkey,
 					chan.counterparty_funding_pubkey()
 				);
-				let (holder_sig, htlc_sigs) = chan_keys.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
+				let (holder_sig, htlc_sigs) = signer.sign_holder_commitment_and_htlcs(&holder_commitment_tx, &secp_ctx).unwrap();
 				assert_eq!(Signature::from_der(&hex::decode($sig_hex).unwrap()[..]).unwrap(), holder_sig, "holder_sig");
 
 				let funding_redeemscript = chan.get_funding_redeemscript();
