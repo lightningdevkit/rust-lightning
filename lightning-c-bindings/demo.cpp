@@ -363,9 +363,9 @@ int main() {
 		LDK::PeerManager net1 = PeerManager_new(std::move(msg_handler1), node_secret1, &random_bytes.data, logger1);
 
 		// Demo getting a channel key and check that its returning real pubkeys:
-		LDK::ChannelKeys chan_keys1 = keys_source1->get_channel_keys(keys_source1->this_arg, false, 42);
-		chan_keys1->set_pubkeys(&chan_keys1); // Make sure pubkeys is defined
-		LDKPublicKey payment_point = ChannelPublicKeys_get_payment_point(&chan_keys1->pubkeys);
+		LDK::Sign chan_signer1 = keys_source1->get_channel_signer(keys_source1->this_arg, false, 42);
+		chan_signer1->set_pubkeys(&chan_signer1); // Make sure pubkeys is defined
+		LDKPublicKey payment_point = ChannelPublicKeys_get_payment_point(&chan_signer1->pubkeys);
 		assert(memcmp(&payment_point, &null_pk, sizeof(null_pk)));
 
 		// Instantiate classes for node 2:
@@ -634,5 +634,5 @@ int main() {
 	memset(&sk, 42, 32);
 	LDKThirtyTwoBytes kdiv_params;
 	memset(&kdiv_params, 43, 32);
-	LDK::InMemoryChannelKeys keys = InMemoryChannelKeys_new(sk, sk, sk, sk, sk, random_bytes, 42, kdiv_params);
+	LDK::InMemorySigner signer = InMemorySigner_new(sk, sk, sk, sk, sk, random_bytes, 42, kdiv_params);
 }

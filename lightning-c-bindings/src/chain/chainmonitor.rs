@@ -26,7 +26,7 @@ use crate::c_types::*;
 
 
 use lightning::chain::chainmonitor::ChainMonitor as nativeChainMonitorImport;
-type nativeChainMonitor = nativeChainMonitorImport<crate::chain::keysinterface::ChannelKeys, crate::chain::Filter, crate::chain::chaininterface::BroadcasterInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger, crate::chain::channelmonitor::Persist>;
+type nativeChainMonitor = nativeChainMonitorImport<crate::chain::keysinterface::Sign, crate::chain::Filter, crate::chain::chaininterface::BroadcasterInterface, crate::chain::chaininterface::FeeEstimator, crate::util::logger::Logger, crate::chain::channelmonitor::Persist>;
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///

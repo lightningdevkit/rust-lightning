@@ -23,7 +23,7 @@ use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
-use util::enforcing_trait_impls::EnforcingChannelKeys;
+use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
@@ -106,7 +106,7 @@ fn test_monitor_and_persister_update_fail() {
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);

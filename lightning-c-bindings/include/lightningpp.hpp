@@ -881,20 +881,20 @@ public:
 	const LDKSpendableOutputDescriptor* operator &() const { return &self; }
 	const LDKSpendableOutputDescriptor* operator ->() const { return &self; }
 };
-class ChannelKeys {
+class Sign {
 private:
-	LDKChannelKeys self;
+	LDKSign self;
 public:
-	ChannelKeys(const ChannelKeys&) = delete;
-	ChannelKeys(ChannelKeys&& o) : self(o.self) { memset(&o, 0, sizeof(ChannelKeys)); }
-	ChannelKeys(LDKChannelKeys&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKChannelKeys)); }
-	operator LDKChannelKeys() && { LDKChannelKeys res = self; memset(&self, 0, sizeof(LDKChannelKeys)); return res; }
-	~ChannelKeys() { ChannelKeys_free(self); }
-	ChannelKeys& operator=(ChannelKeys&& o) { ChannelKeys_free(self); self = o.self; memset(&o, 0, sizeof(ChannelKeys)); return *this; }
-	LDKChannelKeys* operator &() { return &self; }
-	LDKChannelKeys* operator ->() { return &self; }
-	const LDKChannelKeys* operator &() const { return &self; }
-	const LDKChannelKeys* operator ->() const { return &self; }
+	Sign(const Sign&) = delete;
+	Sign(Sign&& o) : self(o.self) { memset(&o, 0, sizeof(Sign)); }
+	Sign(LDKSign&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKSign)); }
+	operator LDKSign() && { LDKSign res = self; memset(&self, 0, sizeof(LDKSign)); return res; }
+	~Sign() { Sign_free(self); }
+	Sign& operator=(Sign&& o) { Sign_free(self); self = o.self; memset(&o, 0, sizeof(Sign)); return *this; }
+	LDKSign* operator &() { return &self; }
+	LDKSign* operator ->() { return &self; }
+	const LDKSign* operator &() const { return &self; }
+	const LDKSign* operator ->() const { return &self; }
 };
 class KeysInterface {
 private:
@@ -911,20 +911,20 @@ public:
 	const LDKKeysInterface* operator &() const { return &self; }
 	const LDKKeysInterface* operator ->() const { return &self; }
 };
-class InMemoryChannelKeys {
+class InMemorySigner {
 private:
-	LDKInMemoryChannelKeys self;
+	LDKInMemorySigner self;
 public:
-	InMemoryChannelKeys(const InMemoryChannelKeys&) = delete;
-	InMemoryChannelKeys(InMemoryChannelKeys&& o) : self(o.self) { memset(&o, 0, sizeof(InMemoryChannelKeys)); }
-	InMemoryChannelKeys(LDKInMemoryChannelKeys&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKInMemoryChannelKeys)); }
-	operator LDKInMemoryChannelKeys() && { LDKInMemoryChannelKeys res = self; memset(&self, 0, sizeof(LDKInMemoryChannelKeys)); return res; }
-	~InMemoryChannelKeys() { InMemoryChannelKeys_free(self); }
-	InMemoryChannelKeys& operator=(InMemoryChannelKeys&& o) { InMemoryChannelKeys_free(self); self = o.self; memset(&o, 0, sizeof(InMemoryChannelKeys)); return *this; }
-	LDKInMemoryChannelKeys* operator &() { return &self; }
-	LDKInMemoryChannelKeys* operator ->() { return &self; }
-	const LDKInMemoryChannelKeys* operator &() const { return &self; }
-	const LDKInMemoryChannelKeys* operator ->() const { return &self; }
+	InMemorySigner(const InMemorySigner&) = delete;
+	InMemorySigner(InMemorySigner&& o) : self(o.self) { memset(&o, 0, sizeof(InMemorySigner)); }
+	InMemorySigner(LDKInMemorySigner&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKInMemorySigner)); }
+	operator LDKInMemorySigner() && { LDKInMemorySigner res = self; memset(&self, 0, sizeof(LDKInMemorySigner)); return res; }
+	~InMemorySigner() { InMemorySigner_free(self); }
+	InMemorySigner& operator=(InMemorySigner&& o) { InMemorySigner_free(self); self = o.self; memset(&o, 0, sizeof(InMemorySigner)); return *this; }
+	LDKInMemorySigner* operator &() { return &self; }
+	LDKInMemorySigner* operator ->() { return &self; }
+	const LDKInMemorySigner* operator &() const { return &self; }
+	const LDKInMemorySigner* operator ->() const { return &self; }
 };
 class KeysManager {
 private:
@@ -2411,6 +2411,21 @@ public:
 	const LDKCVec_ChannelDetailsZ* operator &() const { return &self; }
 	const LDKCVec_ChannelDetailsZ* operator ->() const { return &self; }
 };
+class CResult_SignDecodeErrorZ {
+private:
+	LDKCResult_SignDecodeErrorZ self;
+public:
+	CResult_SignDecodeErrorZ(const CResult_SignDecodeErrorZ&) = delete;
+	CResult_SignDecodeErrorZ(CResult_SignDecodeErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_SignDecodeErrorZ)); }
+	CResult_SignDecodeErrorZ(LDKCResult_SignDecodeErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_SignDecodeErrorZ)); }
+	operator LDKCResult_SignDecodeErrorZ() && { LDKCResult_SignDecodeErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_SignDecodeErrorZ)); return res; }
+	~CResult_SignDecodeErrorZ() { CResult_SignDecodeErrorZ_free(self); }
+	CResult_SignDecodeErrorZ& operator=(CResult_SignDecodeErrorZ&& o) { CResult_SignDecodeErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_SignDecodeErrorZ)); return *this; }
+	LDKCResult_SignDecodeErrorZ* operator &() { return &self; }
+	LDKCResult_SignDecodeErrorZ* operator ->() { return &self; }
+	const LDKCResult_SignDecodeErrorZ* operator &() const { return &self; }
+	const LDKCResult_SignDecodeErrorZ* operator ->() const { return &self; }
+};
 class CVec_MessageSendEventZ {
 private:
 	LDKCVec_MessageSendEventZ self;
@@ -2455,21 +2470,6 @@ public:
 	LDKC2Tuple_OutPointScriptZ* operator ->() { return &self; }
 	const LDKC2Tuple_OutPointScriptZ* operator &() const { return &self; }
 	const LDKC2Tuple_OutPointScriptZ* operator ->() const { return &self; }
-};
-class CResult_InMemoryChannelKeysDecodeErrorZ {
-private:
-	LDKCResult_InMemoryChannelKeysDecodeErrorZ self;
-public:
-	CResult_InMemoryChannelKeysDecodeErrorZ(const CResult_InMemoryChannelKeysDecodeErrorZ&) = delete;
-	CResult_InMemoryChannelKeysDecodeErrorZ(CResult_InMemoryChannelKeysDecodeErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_InMemoryChannelKeysDecodeErrorZ)); }
-	CResult_InMemoryChannelKeysDecodeErrorZ(LDKCResult_InMemoryChannelKeysDecodeErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_InMemoryChannelKeysDecodeErrorZ)); }
-	operator LDKCResult_InMemoryChannelKeysDecodeErrorZ() && { LDKCResult_InMemoryChannelKeysDecodeErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_InMemoryChannelKeysDecodeErrorZ)); return res; }
-	~CResult_InMemoryChannelKeysDecodeErrorZ() { CResult_InMemoryChannelKeysDecodeErrorZ_free(self); }
-	CResult_InMemoryChannelKeysDecodeErrorZ& operator=(CResult_InMemoryChannelKeysDecodeErrorZ&& o) { CResult_InMemoryChannelKeysDecodeErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_InMemoryChannelKeysDecodeErrorZ)); return *this; }
-	LDKCResult_InMemoryChannelKeysDecodeErrorZ* operator &() { return &self; }
-	LDKCResult_InMemoryChannelKeysDecodeErrorZ* operator ->() { return &self; }
-	const LDKCResult_InMemoryChannelKeysDecodeErrorZ* operator &() const { return &self; }
-	const LDKCResult_InMemoryChannelKeysDecodeErrorZ* operator ->() const { return &self; }
 };
 class CResult_UpdateFailMalformedHTLCDecodeErrorZ {
 private:
@@ -3176,21 +3176,6 @@ public:
 	const LDKCResult_UpdateFulfillHTLCDecodeErrorZ* operator &() const { return &self; }
 	const LDKCResult_UpdateFulfillHTLCDecodeErrorZ* operator ->() const { return &self; }
 };
-class CResult_ChannelKeysDecodeErrorZ {
-private:
-	LDKCResult_ChannelKeysDecodeErrorZ self;
-public:
-	CResult_ChannelKeysDecodeErrorZ(const CResult_ChannelKeysDecodeErrorZ&) = delete;
-	CResult_ChannelKeysDecodeErrorZ(CResult_ChannelKeysDecodeErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_ChannelKeysDecodeErrorZ)); }
-	CResult_ChannelKeysDecodeErrorZ(LDKCResult_ChannelKeysDecodeErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_ChannelKeysDecodeErrorZ)); }
-	operator LDKCResult_ChannelKeysDecodeErrorZ() && { LDKCResult_ChannelKeysDecodeErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_ChannelKeysDecodeErrorZ)); return res; }
-	~CResult_ChannelKeysDecodeErrorZ() { CResult_ChannelKeysDecodeErrorZ_free(self); }
-	CResult_ChannelKeysDecodeErrorZ& operator=(CResult_ChannelKeysDecodeErrorZ&& o) { CResult_ChannelKeysDecodeErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_ChannelKeysDecodeErrorZ)); return *this; }
-	LDKCResult_ChannelKeysDecodeErrorZ* operator &() { return &self; }
-	LDKCResult_ChannelKeysDecodeErrorZ* operator ->() { return &self; }
-	const LDKCResult_ChannelKeysDecodeErrorZ* operator &() const { return &self; }
-	const LDKCResult_ChannelKeysDecodeErrorZ* operator ->() const { return &self; }
-};
 class CResult_NodeFeaturesDecodeErrorZ {
 private:
 	LDKCResult_NodeFeaturesDecodeErrorZ self;
@@ -3205,6 +3190,21 @@ public:
 	LDKCResult_NodeFeaturesDecodeErrorZ* operator ->() { return &self; }
 	const LDKCResult_NodeFeaturesDecodeErrorZ* operator &() const { return &self; }
 	const LDKCResult_NodeFeaturesDecodeErrorZ* operator ->() const { return &self; }
+};
+class CResult_InMemorySignerDecodeErrorZ {
+private:
+	LDKCResult_InMemorySignerDecodeErrorZ self;
+public:
+	CResult_InMemorySignerDecodeErrorZ(const CResult_InMemorySignerDecodeErrorZ&) = delete;
+	CResult_InMemorySignerDecodeErrorZ(CResult_InMemorySignerDecodeErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_InMemorySignerDecodeErrorZ)); }
+	CResult_InMemorySignerDecodeErrorZ(LDKCResult_InMemorySignerDecodeErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_InMemorySignerDecodeErrorZ)); }
+	operator LDKCResult_InMemorySignerDecodeErrorZ() && { LDKCResult_InMemorySignerDecodeErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_InMemorySignerDecodeErrorZ)); return res; }
+	~CResult_InMemorySignerDecodeErrorZ() { CResult_InMemorySignerDecodeErrorZ_free(self); }
+	CResult_InMemorySignerDecodeErrorZ& operator=(CResult_InMemorySignerDecodeErrorZ&& o) { CResult_InMemorySignerDecodeErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_InMemorySignerDecodeErrorZ)); return *this; }
+	LDKCResult_InMemorySignerDecodeErrorZ* operator &() { return &self; }
+	LDKCResult_InMemorySignerDecodeErrorZ* operator ->() { return &self; }
+	const LDKCResult_InMemorySignerDecodeErrorZ* operator &() const { return &self; }
+	const LDKCResult_InMemorySignerDecodeErrorZ* operator ->() const { return &self; }
 };
 class CResult_ReplyShortChannelIdsEndDecodeErrorZ {
 private:

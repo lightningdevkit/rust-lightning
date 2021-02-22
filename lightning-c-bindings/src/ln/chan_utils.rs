@@ -1,6 +1,5 @@
 //! Various utilities for building scripts and deriving keys related to channels. These are
-//! largely of interest for those implementing chain::keysinterface::ChannelKeys message signing
-//! by hand.
+//! largely of interest for those implementing chain::keysinterface::Sign message signing by hand.
 
 use std::ffi::c_void;
 use bitcoin::hashes::Hash;

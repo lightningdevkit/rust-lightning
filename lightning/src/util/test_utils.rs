@@ -18,7 +18,7 @@ use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
-use util::enforcing_trait_impls::{EnforcingChannelKeys, INITIAL_REVOKED_COMMITMENT_NUMBER};
+use util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, ReadableArgs, Writer, Writeable};
@@ -39,7 +39,7 @@ use std::sync::{Mutex, Arc};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{cmp, mem};
 use std::collections::{HashMap, HashSet};
-use chain::keysinterface::InMemoryChannelKeys;
+use chain::keysinterface::InMemorySigner;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -63,23 +63,23 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 
 pub struct OnlyReadsKeysInterface {}
 impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
-	type ChanKeySigner = EnforcingChannelKeys;
+	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_pubkey(&self) -> PublicKey { unreachable!(); }
-	fn get_channel_keys(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingChannelKeys { unreachable!(); }
+	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
 	fn get_secure_random_bytes(&self) -> [u8; 32] { unreachable!(); }
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
-		EnforcingChannelKeys::read(&mut std::io::Cursor::new(reader))
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
+		EnforcingSigner::read(&mut std::io::Cursor::new(reader))
 	}
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingChannelKeys, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingChannelKeys>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 	// If this is set to Some(), after the next return, we'll always return this until update_ret
@@ -87,7 +87,7 @@ pub struct TestChainMonitor<'a> {
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingChannelKeys>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
@@ -98,15 +98,13 @@ impl<'a> TestChainMonitor<'a> {
 		}
 	}
 }
-impl<'a> chain::Watch for TestChainMonitor<'a> {
-	type Keys = EnforcingChannelKeys;
-
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
@@ -139,7 +137,7 @@ impl<'a> chain::Watch for TestChainMonitor<'a> {
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingChannelKeys>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
@@ -174,12 +172,12 @@ impl TestPersister {
 		*self.update_ret.lock().unwrap() = ret;
 	}
 }
-impl channelmonitor::Persist<EnforcingChannelKeys> for TestPersister {
-	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl channelmonitor::Persist<EnforcingSigner> for TestPersister {
+	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<EnforcingChannelKeys>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.update_ret.lock().unwrap().clone()
 	}
 }
@@ -427,15 +425,15 @@ pub struct TestKeysInterface {
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
-	type ChanKeySigner = EnforcingChannelKeys;
+	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
-	fn get_channel_keys(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingChannelKeys {
-		let keys = self.backing.get_channel_keys(inbound, channel_value_satoshis);
+	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
+		let keys = self.backing.get_channel_signer(inbound, channel_value_satoshis);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
+		EnforcingSigner::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -453,15 +451,15 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		self.backing.get_secure_random_bytes()
 	}
 
-	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::ChanKeySigner, msgs::DecodeError> {
+	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = std::io::Cursor::new(buffer);
 
-		let inner: InMemoryChannelKeys = Readable::read(&mut reader)?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);
 
 		let last_commitment_number = Readable::read(&mut reader)?;
 
-		Ok(EnforcingChannelKeys {
+		Ok(EnforcingSigner {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
 			revoked_commitment,
@@ -482,10 +480,10 @@ impl TestKeysInterface {
 			revoked_commitments: Mutex::new(HashMap::new()),
 		}
 	}
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingChannelKeys {
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingChannelKeys::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
+		EnforcingSigner::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
 	}
 
 	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {

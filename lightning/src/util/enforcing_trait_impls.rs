@@ -9,7 +9,7 @@
 
 use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction};
 use ln::{chan_utils, msgs};
-use chain::keysinterface::{ChannelKeys, InMemoryChannelKeys};
+use chain::keysinterface::{Sign, InMemorySigner};
 
 use std::cmp;
 use std::sync::{Mutex, Arc};
@@ -27,7 +27,7 @@ use ln::msgs::DecodeError;
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 
-/// An implementation of ChannelKeys that enforces some policy checks.  The current checks
+/// An implementation of Sign that enforces some policy checks.  The current checks
 /// are an incomplete set.  They include:
 ///
 /// - When signing, the holder transaction has not been revoked
@@ -39,8 +39,8 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// Eventually we will probably want to expose a variant of this which would essentially
 /// be what you'd want to run on a hardware wallet.
 #[derive(Clone)]
-pub struct EnforcingChannelKeys {
-	pub inner: InMemoryChannelKeys,
+pub struct EnforcingSigner {
+	pub inner: InMemorySigner,
 	/// The last counterparty commitment number we signed, backwards counting
 	pub last_commitment_number: Arc<Mutex<Option<u64>>>,
 	/// The last holder commitment number we revoked, backwards counting
@@ -48,9 +48,9 @@ pub struct EnforcingChannelKeys {
 	pub disable_revocation_policy_check: bool,
 }
 
-impl EnforcingChannelKeys {
-	/// Construct an EnforcingChannelKeys
-	pub fn new(inner: InMemoryChannelKeys) -> Self {
+impl EnforcingSigner {
+	/// Construct an EnforcingSigner
+	pub fn new(inner: InMemorySigner) -> Self {
 		Self {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(None)),
@@ -59,12 +59,12 @@ impl EnforcingChannelKeys {
 		}
 	}
 
-	/// Construct an EnforcingChannelKeys with externally managed storage
+	/// Construct an EnforcingSigner with externally managed storage
 	///
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
 	/// so that all copies are aware of revocations.  A pointer to this state is provided here, usually
 	/// by an implementation of KeysInterface.
-	pub fn new_with_revoked(inner: InMemoryChannelKeys, revoked_commitment: Arc<Mutex<u64>>, disable_revocation_policy_check: bool) -> Self {
+	pub fn new_with_revoked(inner: InMemorySigner, revoked_commitment: Arc<Mutex<u64>>, disable_revocation_policy_check: bool) -> Self {
 		Self {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(None)),
@@ -74,7 +74,7 @@ impl EnforcingChannelKeys {
 	}
 }
 
-impl ChannelKeys for EnforcingChannelKeys {
+impl Sign for EnforcingSigner {
 	fn get_per_commitment_point<T: secp256k1::Signing + secp256k1::Verification>(&self, idx: u64, secp_ctx: &Secp256k1<T>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
@@ -162,7 +162,7 @@ impl ChannelKeys for EnforcingChannelKeys {
 }
 
 
-impl Writeable for EnforcingChannelKeys {
+impl Writeable for EnforcingSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.write(writer)?;
 		let last = *self.last_commitment_number.lock().unwrap();
@@ -171,11 +171,11 @@ impl Writeable for EnforcingChannelKeys {
 	}
 }
 
-impl Readable for EnforcingChannelKeys {
+impl Readable for EnforcingSigner {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
 		let last_commitment_number = Readable::read(reader)?;
-		Ok(EnforcingChannelKeys {
+		Ok(EnforcingSigner {
 			inner,
 			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
 			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)),
@@ -184,7 +184,7 @@ impl Readable for EnforcingChannelKeys {
 	}
 }
 
-impl EnforcingChannelKeys {
+impl EnforcingSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
 		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)

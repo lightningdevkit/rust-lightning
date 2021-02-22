@@ -46,7 +46,7 @@ use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
-use chain::keysinterface::{ChannelKeys, KeysInterface, KeysManager, InMemoryChannelKeys};
+use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::{byte_utils, events};
@@ -314,8 +314,8 @@ pub(super) enum RAACommitmentOrder {
 }
 
 // Note this is only exposed in cfg(test):
-pub(super) struct ChannelHolder<ChanSigner: ChannelKeys> {
-	pub(super) by_id: HashMap<[u8; 32], Channel<ChanSigner>>,
+pub(super) struct ChannelHolder<Signer: Sign> {
+	pub(super) by_id: HashMap<[u8; 32], Channel<Signer>>,
 	pub(super) short_to_id: HashMap<u64, [u8; 32]>,
 	/// short channel id -> forward infos. Key of 0 means payments received
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
@@ -349,7 +349,7 @@ const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assum
 /// issues such as overly long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleArcChannelManager<M, T, F, L> = Arc<ChannelManager<InMemoryChannelKeys, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>>;
+pub type SimpleArcChannelManager<M, T, F, L> = Arc<ChannelManager<InMemorySigner, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
@@ -359,7 +359,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = Arc<ChannelManager<InMemoryChanne
 /// helps with issues such as long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<InMemoryChannelKeys, &'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<InMemorySigner, &'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -397,10 +397,10 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
-pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
@@ -418,9 +418,9 @@ pub struct ChannelManager<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) channel_state: Mutex<ChannelHolder<ChanSigner>>,
+	pub(super) channel_state: Mutex<ChannelHolder<Signer>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	channel_state: Mutex<ChannelHolder<ChanSigner>>,
+	channel_state: Mutex<ChannelHolder<Signer>>,
 	our_network_key: SecretKey,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
@@ -744,10 +744,10 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -845,7 +845,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		Ok(())
 	}
 
-	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<ChanSigner>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		{
 			let channel_state = self.channel_state.lock().unwrap();
@@ -1002,7 +1002,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<ChanSigner>>) {
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<Signer>>) {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -1274,7 +1274,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 
 	/// only fails if the channel does not yet have an assigned short_id
 	/// May be called with channel_state already locked!
-	fn get_channel_update(&self, chan: &Channel<ChanSigner>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
@@ -1522,7 +1522,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		}
 	}
 
-	fn get_announcement_sigs(&self, chan: &Channel<ChanSigner>) -> Option<msgs::AnnouncementSignatures> {
+	fn get_announcement_sigs(&self, chan: &Channel<Signer>) -> Option<msgs::AnnouncementSignatures> {
 		if !chan.should_announce() {
 			log_trace!(self.logger, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
 			return None
@@ -1947,7 +1947,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
-	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<ChanSigner>>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
+	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
 		//identify whether we sent it or not based on the (I presume) very different runtime
 		//between the branches here. We should make this async and move it into the forward HTLCs
@@ -2141,7 +2141,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		} else { false }
 	}
 
-	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<ChanSigner>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> Result<(), Option<(PublicKey, MsgHandleErrInternal)>> {
+	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> Result<(), Option<(PublicKey, MsgHandleErrInternal)>> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		let channel_state = &mut **channel_state_lock;
 		let chan_id = match channel_state.short_to_id.get(&prev_hop.short_channel_id) {
@@ -2194,7 +2194,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 		} else { unreachable!(); }
 	}
 
-	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<ChanSigner>>, source: HTLCSource, payment_preimage: PaymentPreimage) {
+	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage) {
 		match source {
 			HTLCSource::OutboundRoute { .. } => {
 				mem::drop(channel_state_lock);
@@ -2619,7 +2619,7 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 
-				let create_pending_htlc_status = |chan: &Channel<ChanSigner>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+				let create_pending_htlc_status = |chan: &Channel<Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// Ensure error_code has the UPDATE flag set, since by default we send a
 					// channel update along as part of failing the HTLC.
 					assert!((error_code & 0x1000) != 0);
@@ -3101,10 +3101,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
@@ -3120,10 +3120,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
@@ -3139,10 +3139,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -3318,11 +3318,11 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
-	ChannelMessageHandler for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -3832,10 +3832,10 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -3915,10 +3915,10 @@ impl<ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> 
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Move the ChannelMonitors into your local chain::Watch.
 /// 6) Disconnect/connect blocks on the ChannelManager.
-pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -3961,14 +3961,14 @@ pub struct ChannelManagerReadArgs<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T:
 	/// this struct.
 	///
 	/// (C-not exported) because we have no HashMap bindings
-	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<ChanSigner>>,
+	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<Signer>>,
 }
 
-impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>
+	where M::Target: chain::Watch<Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+		K::Target: KeysInterface<Signer = Signer>,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
@@ -3976,7 +3976,7 @@ impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
 	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
-			mut channel_monitors: Vec<&'a mut ChannelMonitor<ChanSigner>>) -> Self {
+			mut channel_monitors: Vec<&'a mut ChannelMonitor<Signer>>) -> Self {
 		Self {
 			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, logger, default_config,
 			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
@@ -3986,29 +3986,29 @@ impl<'a, ChanSigner: 'a + ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<ChanSigner, M, T, K, F, L>>)
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)>::read(reader, args)?;
+	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>> for (BlockHash, ChannelManager<ChanSigner, M, T, K, F, L>)
-	where M::Target: chain::Watch<Keys=ChanSigner>,
+impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
+	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<ChanKeySigner = ChanSigner>,
+        K::Target: KeysInterface<Signer = Signer>,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, ChanSigner, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver: u8 = Readable::read(reader)?;
 		let min_ver: u8 = Readable::read(reader)?;
 		if min_ver > SERIALIZATION_VERSION {
@@ -4026,7 +4026,7 @@ impl<'a, ChanSigner: ChannelKeys, M: Deref, T: Deref, K: Deref, F: Deref, L: Der
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
-			let mut channel: Channel<ChanSigner> = Channel::read(reader, &args.keys_manager)?;
+			let mut channel: Channel<Signer> = Channel::read(reader, &args.keys_manager)?;
 			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
 				return Err(DecodeError::InvalidValue);
 			}

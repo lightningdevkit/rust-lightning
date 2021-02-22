@@ -27,7 +27,7 @@ use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER, InputMaterial, ClaimRequest};
-use chain::keysinterface::{ChannelKeys, KeysInterface};
+use chain::keysinterface::{Sign, KeysInterface};
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
@@ -240,7 +240,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
+pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
@@ -250,7 +250,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
 	prev_holder_htlc_sigs: Option<Vec<Option<(usize, Signature)>>>,
 
-	key_storage: ChanSigner,
+	signer: ChannelSigner,
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 
 	// Used to track claiming requests. If claim tx doesn't confirm before height timer expiration we need to bump
@@ -287,7 +287,7 @@ pub struct OnchainTxHandler<ChanSigner: ChannelKeys> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
+impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;
@@ -298,7 +298,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 		self.channel_transaction_parameters.write(writer)?;
 
 		let mut key_data = VecWriter(Vec::new());
-		self.key_storage.write(&mut key_data)?;
+		self.signer.write(&mut key_data)?;
 		assert!(key_data.0.len() < std::usize::MAX);
 		assert!(key_data.0.len() < std::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
@@ -340,7 +340,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	}
 }
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySigner> {
+impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		let destination_script = Readable::read(reader)?;
 
@@ -360,7 +360,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySi
 			reader.read_exact(read_slice)?;
 			keys_data.extend_from_slice(read_slice);
 		}
-		let key_storage = keys_manager.read_chan_signer(&keys_data)?;
+		let signer = keys_manager.read_chan_signer(&keys_data)?;
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -412,7 +412,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySi
 			holder_htlc_sigs,
 			prev_holder_commitment,
 			prev_holder_htlc_sigs,
-			key_storage,
+			signer,
 			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
 			pending_claim_requests,
@@ -423,18 +423,15 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::ChanKeySi
 	}
 }
 
-impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
-	pub(crate) fn new(destination_script: Script, keys: ChanSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
-
-		let key_storage = keys;
-
+impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
+	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction) -> Self {
 		OnchainTxHandler {
 			destination_script,
 			holder_commitment,
 			holder_htlc_sigs: None,
 			prev_holder_commitment: None,
 			prev_holder_htlc_sigs: None,
-			key_storage,
+			signer,
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
@@ -605,19 +602,19 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 			for (i, (outp, per_outp_material)) in cached_claim_datas.per_input_material.iter().enumerate() {
 				match per_outp_material {
 					&InputMaterial::Revoked { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_counterparty_tx_csv } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
+						if let Ok(tx_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
 
 							let witness_script = if let Some(ref htlc) = *htlc {
-								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key)
+								chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &tx_keys.broadcaster_htlc_key, &tx_keys.countersignatory_htlc_key, &tx_keys.revocation_key)
 							} else {
-								chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, *on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key)
+								chan_utils::get_revokeable_redeemscript(&tx_keys.revocation_key, *on_counterparty_tx_csv, &tx_keys.broadcaster_delayed_payment_key)
 							};
 
-							let sig = self.key_storage.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx).expect("sign justice tx");
+							let sig = self.signer.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx).expect("sign justice tx");
 							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 							if htlc.is_some() {
-								bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+								bumped_tx.input[i].witness.push(tx_keys.revocation_key.clone().serialize().to_vec());
 							} else {
 								bumped_tx.input[i].witness.push(vec!(1));
 							}
@@ -627,11 +624,11 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 						}
 					},
 					&InputMaterial::CounterpartyHTLC { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref preimage, ref htlc } => {
-						if let Ok(chan_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.key_storage.pubkeys().revocation_basepoint, &self.key_storage.pubkeys().htlc_basepoint) {
-							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+						if let Ok(tx_keys) = TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, counterparty_delayed_payment_base_key, counterparty_htlc_base_key, &self.signer.pubkeys().revocation_basepoint, &self.signer.pubkeys().htlc_basepoint) {
+							let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &tx_keys.broadcaster_htlc_key, &tx_keys.countersignatory_htlc_key, &tx_keys.revocation_key);
 
 							if !preimage.is_some() { bumped_tx.lock_time = htlc.cltv_expiry }; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-							let sig = self.key_storage.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx).expect("sign counterparty HTLC tx");
+							let sig = self.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &htlc.amount_msat / 1000, &per_commitment_point, htlc, &self.secp_ctx).expect("sign counterparty HTLC tx");
 							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 							if let &Some(preimage) = preimage {
@@ -914,7 +911,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// ChannelMonitor replica, so we handle that case here.
 	fn sign_latest_holder_htlcs(&mut self) {
 		if self.holder_htlc_sigs.is_none() {
-			let (_sig, sigs) = self.key_storage.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+			let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 			self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, sigs));
 		}
 	}
@@ -925,7 +922,7 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	fn sign_prev_holder_htlcs(&mut self) {
 		if self.prev_holder_htlc_sigs.is_none() {
 			if let Some(ref holder_commitment) = self.prev_holder_commitment {
-				let (_sig, sigs) = self.key_storage.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign previous holder commitment");
+				let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign previous holder commitment");
 				self.prev_holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
 			}
 		}
@@ -946,14 +943,14 @@ impl<ChanSigner: ChannelKeys> OnchainTxHandler<ChanSigner> {
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
 	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.key_storage.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
+		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
 		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.key_storage.unsafe_sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+		let (sig, htlc_sigs) = self.signer.unsafe_sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}

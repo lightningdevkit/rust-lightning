@@ -3852,36 +3852,36 @@ impl Clone for CResult_SignatureNoneZ {
 #[no_mangle]
 pub extern "C" fn CResult_SignatureNoneZ_clone(orig: &CResult_SignatureNoneZ) -> CResult_SignatureNoneZ { orig.clone() }
 #[repr(C)]
-pub union CResult_ChannelKeysDecodeErrorZPtr {
-	pub result: *mut crate::chain::keysinterface::ChannelKeys,
+pub union CResult_SignDecodeErrorZPtr {
+	pub result: *mut crate::chain::keysinterface::Sign,
 	pub err: *mut crate::ln::msgs::DecodeError,
 }
 #[repr(C)]
-pub struct CResult_ChannelKeysDecodeErrorZ {
-	pub contents: CResult_ChannelKeysDecodeErrorZPtr,
+pub struct CResult_SignDecodeErrorZ {
+	pub contents: CResult_SignDecodeErrorZPtr,
 	pub result_ok: bool,
 }
 #[no_mangle]
-pub extern "C" fn CResult_ChannelKeysDecodeErrorZ_ok(o: crate::chain::keysinterface::ChannelKeys) -> CResult_ChannelKeysDecodeErrorZ {
-	CResult_ChannelKeysDecodeErrorZ {
-		contents: CResult_ChannelKeysDecodeErrorZPtr {
+pub extern "C" fn CResult_SignDecodeErrorZ_ok(o: crate::chain::keysinterface::Sign) -> CResult_SignDecodeErrorZ {
+	CResult_SignDecodeErrorZ {
+		contents: CResult_SignDecodeErrorZPtr {
 			result: Box::into_raw(Box::new(o)),
 		},
 		result_ok: true,
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_ChannelKeysDecodeErrorZ_err(e: crate::ln::msgs::DecodeError) -> CResult_ChannelKeysDecodeErrorZ {
-	CResult_ChannelKeysDecodeErrorZ {
-		contents: CResult_ChannelKeysDecodeErrorZPtr {
+pub extern "C" fn CResult_SignDecodeErrorZ_err(e: crate::ln::msgs::DecodeError) -> CResult_SignDecodeErrorZ {
+	CResult_SignDecodeErrorZ {
+		contents: CResult_SignDecodeErrorZPtr {
 			err: Box::into_raw(Box::new(e)),
 		},
 		result_ok: false,
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_ChannelKeysDecodeErrorZ_free(_res: CResult_ChannelKeysDecodeErrorZ) { }
-impl Drop for CResult_ChannelKeysDecodeErrorZ {
+pub extern "C" fn CResult_SignDecodeErrorZ_free(_res: CResult_SignDecodeErrorZ) { }
+impl Drop for CResult_SignDecodeErrorZ {
 	fn drop(&mut self) {
 		if self.result_ok {
 			if unsafe { !(self.contents.result as *mut ()).is_null() } {
@@ -3894,16 +3894,16 @@ impl Drop for CResult_ChannelKeysDecodeErrorZ {
 		}
 	}
 }
-impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::ChannelKeys, crate::ln::msgs::DecodeError>> for CResult_ChannelKeysDecodeErrorZ {
-	fn from(mut o: crate::c_types::CResultTempl<crate::chain::keysinterface::ChannelKeys, crate::ln::msgs::DecodeError>) -> Self {
+impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::Sign, crate::ln::msgs::DecodeError>> for CResult_SignDecodeErrorZ {
+	fn from(mut o: crate::c_types::CResultTempl<crate::chain::keysinterface::Sign, crate::ln::msgs::DecodeError>) -> Self {
 		let contents = if o.result_ok {
 			let result = unsafe { o.contents.result };
 			unsafe { o.contents.result = std::ptr::null_mut() };
-			CResult_ChannelKeysDecodeErrorZPtr { result }
+			CResult_SignDecodeErrorZPtr { result }
 		} else {
 			let err = unsafe { o.contents.err };
 			unsafe { o.contents.err = std::ptr::null_mut(); }
-			CResult_ChannelKeysDecodeErrorZPtr { err }
+			CResult_SignDecodeErrorZPtr { err }
 		};
 		Self {
 			contents,
@@ -3911,21 +3911,21 @@ impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::ChannelKeys,
 		}
 	}
 }
-impl Clone for CResult_ChannelKeysDecodeErrorZ {
+impl Clone for CResult_SignDecodeErrorZ {
 	fn clone(&self) -> Self {
 		if self.result_ok {
-			Self { result_ok: true, contents: CResult_ChannelKeysDecodeErrorZPtr {
-				result: Box::into_raw(Box::new(<crate::chain::keysinterface::ChannelKeys>::clone(unsafe { &*self.contents.result })))
+			Self { result_ok: true, contents: CResult_SignDecodeErrorZPtr {
+				result: Box::into_raw(Box::new(<crate::chain::keysinterface::Sign>::clone(unsafe { &*self.contents.result })))
 			} }
 		} else {
-			Self { result_ok: false, contents: CResult_ChannelKeysDecodeErrorZPtr {
+			Self { result_ok: false, contents: CResult_SignDecodeErrorZPtr {
 				err: Box::into_raw(Box::new(<crate::ln::msgs::DecodeError>::clone(unsafe { &*self.contents.err })))
 			} }
 		}
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_ChannelKeysDecodeErrorZ_clone(orig: &CResult_ChannelKeysDecodeErrorZ) -> CResult_ChannelKeysDecodeErrorZ { orig.clone() }
+pub extern "C" fn CResult_SignDecodeErrorZ_clone(orig: &CResult_SignDecodeErrorZ) -> CResult_SignDecodeErrorZ { orig.clone() }
 #[repr(C)]
 pub struct CVec_CVec_u8ZZ {
 	pub data: *mut crate::c_types::derived::CVec_u8Z,
@@ -4040,36 +4040,36 @@ impl Clone for CResult_CVec_CVec_u8ZZNoneZ {
 #[no_mangle]
 pub extern "C" fn CResult_CVec_CVec_u8ZZNoneZ_clone(orig: &CResult_CVec_CVec_u8ZZNoneZ) -> CResult_CVec_CVec_u8ZZNoneZ { orig.clone() }
 #[repr(C)]
-pub union CResult_InMemoryChannelKeysDecodeErrorZPtr {
-	pub result: *mut crate::chain::keysinterface::InMemoryChannelKeys,
+pub union CResult_InMemorySignerDecodeErrorZPtr {
+	pub result: *mut crate::chain::keysinterface::InMemorySigner,
 	pub err: *mut crate::ln::msgs::DecodeError,
 }
 #[repr(C)]
-pub struct CResult_InMemoryChannelKeysDecodeErrorZ {
-	pub contents: CResult_InMemoryChannelKeysDecodeErrorZPtr,
+pub struct CResult_InMemorySignerDecodeErrorZ {
+	pub contents: CResult_InMemorySignerDecodeErrorZPtr,
 	pub result_ok: bool,
 }
 #[no_mangle]
-pub extern "C" fn CResult_InMemoryChannelKeysDecodeErrorZ_ok(o: crate::chain::keysinterface::InMemoryChannelKeys) -> CResult_InMemoryChannelKeysDecodeErrorZ {
-	CResult_InMemoryChannelKeysDecodeErrorZ {
-		contents: CResult_InMemoryChannelKeysDecodeErrorZPtr {
+pub extern "C" fn CResult_InMemorySignerDecodeErrorZ_ok(o: crate::chain::keysinterface::InMemorySigner) -> CResult_InMemorySignerDecodeErrorZ {
+	CResult_InMemorySignerDecodeErrorZ {
+		contents: CResult_InMemorySignerDecodeErrorZPtr {
 			result: Box::into_raw(Box::new(o)),
 		},
 		result_ok: true,
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_InMemoryChannelKeysDecodeErrorZ_err(e: crate::ln::msgs::DecodeError) -> CResult_InMemoryChannelKeysDecodeErrorZ {
-	CResult_InMemoryChannelKeysDecodeErrorZ {
-		contents: CResult_InMemoryChannelKeysDecodeErrorZPtr {
+pub extern "C" fn CResult_InMemorySignerDecodeErrorZ_err(e: crate::ln::msgs::DecodeError) -> CResult_InMemorySignerDecodeErrorZ {
+	CResult_InMemorySignerDecodeErrorZ {
+		contents: CResult_InMemorySignerDecodeErrorZPtr {
 			err: Box::into_raw(Box::new(e)),
 		},
 		result_ok: false,
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_InMemoryChannelKeysDecodeErrorZ_free(_res: CResult_InMemoryChannelKeysDecodeErrorZ) { }
-impl Drop for CResult_InMemoryChannelKeysDecodeErrorZ {
+pub extern "C" fn CResult_InMemorySignerDecodeErrorZ_free(_res: CResult_InMemorySignerDecodeErrorZ) { }
+impl Drop for CResult_InMemorySignerDecodeErrorZ {
 	fn drop(&mut self) {
 		if self.result_ok {
 			if unsafe { !(self.contents.result as *mut ()).is_null() } {
@@ -4082,16 +4082,16 @@ impl Drop for CResult_InMemoryChannelKeysDecodeErrorZ {
 		}
 	}
 }
-impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>> for CResult_InMemoryChannelKeysDecodeErrorZ {
-	fn from(mut o: crate::c_types::CResultTempl<crate::chain::keysinterface::InMemoryChannelKeys, crate::ln::msgs::DecodeError>) -> Self {
+impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::InMemorySigner, crate::ln::msgs::DecodeError>> for CResult_InMemorySignerDecodeErrorZ {
+	fn from(mut o: crate::c_types::CResultTempl<crate::chain::keysinterface::InMemorySigner, crate::ln::msgs::DecodeError>) -> Self {
 		let contents = if o.result_ok {
 			let result = unsafe { o.contents.result };
 			unsafe { o.contents.result = std::ptr::null_mut() };
-			CResult_InMemoryChannelKeysDecodeErrorZPtr { result }
+			CResult_InMemorySignerDecodeErrorZPtr { result }
 		} else {
 			let err = unsafe { o.contents.err };
 			unsafe { o.contents.err = std::ptr::null_mut(); }
-			CResult_InMemoryChannelKeysDecodeErrorZPtr { err }
+			CResult_InMemorySignerDecodeErrorZPtr { err }
 		};
 		Self {
 			contents,
@@ -4099,21 +4099,21 @@ impl From<crate::c_types::CResultTempl<crate::chain::keysinterface::InMemoryChan
 		}
 	}
 }
-impl Clone for CResult_InMemoryChannelKeysDecodeErrorZ {
+impl Clone for CResult_InMemorySignerDecodeErrorZ {
 	fn clone(&self) -> Self {
 		if self.result_ok {
-			Self { result_ok: true, contents: CResult_InMemoryChannelKeysDecodeErrorZPtr {
-				result: Box::into_raw(Box::new(<crate::chain::keysinterface::InMemoryChannelKeys>::clone(unsafe { &*self.contents.result })))
+			Self { result_ok: true, contents: CResult_InMemorySignerDecodeErrorZPtr {
+				result: Box::into_raw(Box::new(<crate::chain::keysinterface::InMemorySigner>::clone(unsafe { &*self.contents.result })))
 			} }
 		} else {
-			Self { result_ok: false, contents: CResult_InMemoryChannelKeysDecodeErrorZPtr {
+			Self { result_ok: false, contents: CResult_InMemorySignerDecodeErrorZPtr {
 				err: Box::into_raw(Box::new(<crate::ln::msgs::DecodeError>::clone(unsafe { &*self.contents.err })))
 			} }
 		}
 	}
 }
 #[no_mangle]
-pub extern "C" fn CResult_InMemoryChannelKeysDecodeErrorZ_clone(orig: &CResult_InMemoryChannelKeysDecodeErrorZ) -> CResult_InMemoryChannelKeysDecodeErrorZ { orig.clone() }
+pub extern "C" fn CResult_InMemorySignerDecodeErrorZ_clone(orig: &CResult_InMemorySignerDecodeErrorZ) -> CResult_InMemorySignerDecodeErrorZ { orig.clone() }
 #[repr(C)]
 pub struct CVec_TxOutZ {
 	pub data: *mut crate::c_types::TxOut,
