@@ -4150,6 +4150,8 @@ struct LDKCResult_ChannelInfoDecodeErrorZ CResult_ChannelInfoDecodeErrorZ_err(st
 
 void CResult_ChannelInfoDecodeErrorZ_free(struct LDKCResult_ChannelInfoDecodeErrorZ _res);
 
+struct LDKCResult_ChannelInfoDecodeErrorZ CResult_ChannelInfoDecodeErrorZ_clone(const struct LDKCResult_ChannelInfoDecodeErrorZ *NONNULL_PTR orig);
+
 struct LDKCResult_RoutingFeesDecodeErrorZ CResult_RoutingFeesDecodeErrorZ_ok(struct LDKRoutingFees o);
 
 struct LDKCResult_RoutingFeesDecodeErrorZ CResult_RoutingFeesDecodeErrorZ_err(struct LDKDecodeError e);
@@ -4183,6 +4185,8 @@ struct LDKCResult_NetworkGraphDecodeErrorZ CResult_NetworkGraphDecodeErrorZ_ok(s
 struct LDKCResult_NetworkGraphDecodeErrorZ CResult_NetworkGraphDecodeErrorZ_err(struct LDKDecodeError e);
 
 void CResult_NetworkGraphDecodeErrorZ_free(struct LDKCResult_NetworkGraphDecodeErrorZ _res);
+
+struct LDKCResult_NetworkGraphDecodeErrorZ CResult_NetworkGraphDecodeErrorZ_clone(const struct LDKCResult_NetworkGraphDecodeErrorZ *NONNULL_PTR orig);
 
 struct LDKC2Tuple_usizeTransactionZ C2Tuple_usizeTransactionZ_new(uintptr_t a, struct LDKTransaction b);
 
@@ -6148,6 +6152,18 @@ void DecodeError_free(struct LDKDecodeError this_ptr);
 struct LDKDecodeError DecodeError_clone(const struct LDKDecodeError *NONNULL_PTR orig);
 
 void Init_free(struct LDKInit this_ptr);
+
+/**
+ * The relevant features which the sender supports
+ */
+struct LDKInitFeatures Init_get_features(const struct LDKInit *NONNULL_PTR this_ptr);
+
+/**
+ * The relevant features which the sender supports
+ */
+void Init_set_features(struct LDKInit *NONNULL_PTR this_ptr, struct LDKInitFeatures val);
+
+MUST_USE_RES struct LDKInit Init_new(struct LDKInitFeatures features_arg);
 
 struct LDKInit Init_clone(const struct LDKInit *NONNULL_PTR orig);
 
@@ -8772,6 +8788,8 @@ struct LDKCResult_RouteLightningErrorZ get_route(struct LDKPublicKey our_node_id
 
 void NetworkGraph_free(struct LDKNetworkGraph this_ptr);
 
+struct LDKNetworkGraph NetworkGraph_clone(const struct LDKNetworkGraph *NONNULL_PTR orig);
+
 void LockedNetworkGraph_free(struct LDKLockedNetworkGraph this_ptr);
 
 void NetGraphMsgHandler_free(struct LDKNetGraphMsgHandler this_ptr);
@@ -8951,6 +8969,8 @@ struct LDKChannelAnnouncement ChannelInfo_get_announcement_message(const struct 
  * Not stored if contains excess data to prevent DoS.
  */
 void ChannelInfo_set_announcement_message(struct LDKChannelInfo *NONNULL_PTR this_ptr, struct LDKChannelAnnouncement val);
+
+struct LDKChannelInfo ChannelInfo_clone(const struct LDKChannelInfo *NONNULL_PTR orig);
 
 struct LDKCVec_u8Z ChannelInfo_write(const struct LDKChannelInfo *NONNULL_PTR obj);
 

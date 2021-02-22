@@ -1940,6 +1940,21 @@ impl From<crate::c_types::CResultTempl<crate::routing::network_graph::ChannelInf
 		}
 	}
 }
+impl Clone for CResult_ChannelInfoDecodeErrorZ {
+	fn clone(&self) -> Self {
+		if self.result_ok {
+			Self { result_ok: true, contents: CResult_ChannelInfoDecodeErrorZPtr {
+				result: Box::into_raw(Box::new(<crate::routing::network_graph::ChannelInfo>::clone(unsafe { &*self.contents.result })))
+			} }
+		} else {
+			Self { result_ok: false, contents: CResult_ChannelInfoDecodeErrorZPtr {
+				err: Box::into_raw(Box::new(<crate::ln::msgs::DecodeError>::clone(unsafe { &*self.contents.err })))
+			} }
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_ChannelInfoDecodeErrorZ_clone(orig: &CResult_ChannelInfoDecodeErrorZ) -> CResult_ChannelInfoDecodeErrorZ { orig.clone() }
 #[repr(C)]
 pub union CResult_RoutingFeesDecodeErrorZPtr {
 	pub result: *mut crate::routing::network_graph::RoutingFees,
@@ -2305,6 +2320,21 @@ impl From<crate::c_types::CResultTempl<crate::routing::network_graph::NetworkGra
 		}
 	}
 }
+impl Clone for CResult_NetworkGraphDecodeErrorZ {
+	fn clone(&self) -> Self {
+		if self.result_ok {
+			Self { result_ok: true, contents: CResult_NetworkGraphDecodeErrorZPtr {
+				result: Box::into_raw(Box::new(<crate::routing::network_graph::NetworkGraph>::clone(unsafe { &*self.contents.result })))
+			} }
+		} else {
+			Self { result_ok: false, contents: CResult_NetworkGraphDecodeErrorZPtr {
+				err: Box::into_raw(Box::new(<crate::ln::msgs::DecodeError>::clone(unsafe { &*self.contents.err })))
+			} }
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_NetworkGraphDecodeErrorZ_clone(orig: &CResult_NetworkGraphDecodeErrorZ) -> CResult_NetworkGraphDecodeErrorZ { orig.clone() }
 #[repr(C)]
 pub struct C2Tuple_usizeTransactionZ {
 	pub a: usize,

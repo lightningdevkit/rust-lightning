@@ -42,6 +42,24 @@ impl NetworkGraph {
 		ret
 	}
 }
+impl Clone for NetworkGraph {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn NetworkGraph_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeNetworkGraph)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn NetworkGraph_clone(orig: &NetworkGraph) -> NetworkGraph {
+	orig.clone()
+}
 
 use lightning::routing::network_graph::LockedNetworkGraph as nativeLockedNetworkGraphImport;
 type nativeLockedNetworkGraph = nativeLockedNetworkGraphImport<'static>;
@@ -558,6 +576,24 @@ pub extern "C" fn ChannelInfo_get_announcement_message(this_ptr: &ChannelInfo) -
 pub extern "C" fn ChannelInfo_set_announcement_message(this_ptr: &mut ChannelInfo, mut val: crate::ln::msgs::ChannelAnnouncement) {
 	let mut local_val = if val.inner.is_null() { None } else { Some( { *unsafe { Box::from_raw(val.take_inner()) } }) };
 	unsafe { &mut *this_ptr.inner }.announcement_message = local_val;
+}
+impl Clone for ChannelInfo {
+	fn clone(&self) -> Self {
+		Self {
+			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
+			is_owned: true,
+		}
+	}
+}
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+pub(crate) extern "C" fn ChannelInfo_clone_void(this_ptr: *const c_void) -> *mut c_void {
+	Box::into_raw(Box::new(unsafe { (*(this_ptr as *mut nativeChannelInfo)).clone() })) as *mut c_void
+}
+#[no_mangle]
+pub extern "C" fn ChannelInfo_clone(orig: &ChannelInfo) -> ChannelInfo {
+	orig.clone()
 }
 #[no_mangle]
 pub extern "C" fn ChannelInfo_write(obj: &ChannelInfo) -> crate::c_types::derived::CVec_u8Z {
