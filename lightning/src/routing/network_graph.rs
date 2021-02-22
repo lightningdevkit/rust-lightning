@@ -335,7 +335,7 @@ where
 	}
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 /// Details about one direction of a channel. Received
 /// within a channel update.
 pub struct DirectionalChannelInfo {
@@ -376,7 +376,7 @@ impl_writeable!(DirectionalChannelInfo, 0, {
 	last_update_message
 });
 
-#[derive(PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 /// Details about a channel (both directions).
 /// Received within a channel announcement.
 pub struct ChannelInfo {
@@ -447,7 +447,7 @@ impl Writeable for RoutingFees {
 	}
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 /// Information received in the latest node_announcement from this node.
 pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
@@ -513,7 +513,7 @@ impl Readable for NodeAnnouncementInfo {
 	}
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 /// Details about a node in the network, known from the network announcement.
 pub struct NodeInfo {
 	/// All valid channels a node has announced
