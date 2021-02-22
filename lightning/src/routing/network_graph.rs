@@ -45,7 +45,7 @@ use bitcoin::hashes::hex::ToHex;
 const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 
 /// Represents the network as nodes and channels between them
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct NetworkGraph {
 	genesis_hash: BlockHash,
 	channels: BTreeMap<u64, ChannelInfo>,
