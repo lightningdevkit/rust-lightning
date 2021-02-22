@@ -113,6 +113,24 @@ impl Init {
 		ret
 	}
 }
+/// The relevant features which the sender supports
+#[no_mangle]
+pub extern "C" fn Init_get_features(this_ptr: &Init) -> crate::ln::features::InitFeatures {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.features;
+	crate::ln::features::InitFeatures { inner: unsafe { ( (&((*inner_val)) as *const _) as *mut _) }, is_owned: false }
+}
+/// The relevant features which the sender supports
+#[no_mangle]
+pub extern "C" fn Init_set_features(this_ptr: &mut Init, mut val: crate::ln::features::InitFeatures) {
+	unsafe { &mut *this_ptr.inner }.features = *unsafe { Box::from_raw(val.take_inner()) };
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn Init_new(mut features_arg: crate::ln::features::InitFeatures) -> Init {
+	Init { inner: Box::into_raw(Box::new(nativeInit {
+		features: *unsafe { Box::from_raw(features_arg.take_inner()) },
+	})), is_owned: true }
+}
 impl Clone for Init {
 	fn clone(&self) -> Self {
 		Self {
