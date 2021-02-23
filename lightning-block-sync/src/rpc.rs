@@ -34,7 +34,7 @@ impl RpcClient {
 	}
 
 	/// Calls a method with the response encoded in JSON format and interpreted as type `T`.
-	async fn call_method<T>(&mut self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
+	async fn call_method_async<T>(&mut self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
 	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = self.endpoint.path();
@@ -70,7 +70,7 @@ impl BlockSource for RpcClient {
 	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
-			Ok(self.call_method("getblockheader", &[header_hash]).await?)
+			Ok(self.call_method_async("getblockheader", &[header_hash]).await?)
 		})
 	}
 
@@ -78,13 +78,13 @@ impl BlockSource for RpcClient {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
 			let verbosity = serde_json::json!(0);
-			Ok(self.call_method("getblock", &[header_hash, verbosity]).await?)
+			Ok(self.call_method_async("getblock", &[header_hash, verbosity]).await?)
 		})
 	}
 
 	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 		Box::pin(async move {
-			Ok(self.call_method("getblockchaininfo", &[]).await?)
+			Ok(self.call_method_async("getblockchaininfo", &[]).await?)
 		})
 	}
 }
@@ -114,7 +114,7 @@ mod tests {
 		let server = HttpServer::responding_with_not_found();
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
-		match client.call_method::<u64>("getblockcount", &[]).await {
+		match client.call_method_async::<u64>("getblockcount", &[]).await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
 			Ok(_) => panic!("Expected error"),
 		}
@@ -126,7 +126,7 @@ mod tests {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
-		match client.call_method::<u64>("getblockcount", &[]).await {
+		match client.call_method_async::<u64>("getblockcount", &[]).await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
 				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON object");
@@ -144,7 +144,7 @@ mod tests {
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
 		let invalid_block_hash = serde_json::json!("foo");
-		match client.call_method::<u64>("getblock", &[invalid_block_hash]).await {
+		match client.call_method_async::<u64>("getblock", &[invalid_block_hash]).await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::Other);
 				assert_eq!(e.get_ref().unwrap().to_string(), "invalid parameter");
@@ -159,7 +159,7 @@ mod tests {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
-		match client.call_method::<u64>("getblockcount", &[]).await {
+		match client.call_method_async::<u64>("getblockcount", &[]).await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
 				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON result");
@@ -174,7 +174,7 @@ mod tests {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
-		match client.call_method::<u64>("getblockcount", &[]).await {
+		match client.call_method_async::<u64>("getblockcount", &[]).await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
 				assert_eq!(e.get_ref().unwrap().to_string(), "not a number");
@@ -189,7 +189,7 @@ mod tests {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
-		match client.call_method::<u64>("getblockcount", &[]).await {
+		match client.call_method_async::<u64>("getblockcount", &[]).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(count) => assert_eq!(count, 654470),
 		}
