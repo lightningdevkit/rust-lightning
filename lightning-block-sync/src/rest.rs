@@ -8,6 +8,9 @@ use bitcoin::hashes::hex::ToHex;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
+#[cfg(feature = "generic-rest-client")]
+use tokio::runtime::Runtime;
+
 /// A simple REST client for requesting resources using HTTP `GET`.
 pub struct RestClient {
 	endpoint: HttpEndpoint,
@@ -21,6 +24,13 @@ impl RestClient {
 	pub fn new(endpoint: HttpEndpoint) -> std::io::Result<Self> {
 		let client = HttpClient::connect(&endpoint)?;
 		Ok(Self { endpoint, client })
+	}
+
+	#[cfg(feature = "generic-rest-client")]
+	/// Requests a resource synchronously with the response encoded in JSON format.
+	pub fn request(&mut self, resource_path: &str) -> std::io::Result<serde_json::Value> {
+		let runtime = Runtime::new().expect("Unable to create a runtime");
+		runtime.block_on(self.request_resource::<serde_json::Value>(resource_path))
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.

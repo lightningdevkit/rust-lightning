@@ -10,7 +10,7 @@ use serde_json;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::sync::atomic::{AtomicUsize, Ordering};
-// #[cfg(feature = "tokio")]
+#[cfg(feature = "generic-rpc-client")]
 use tokio::runtime::Runtime;
 
 /// A simple RPC client for calling methods using HTTP `POST`.
@@ -36,6 +36,7 @@ impl RpcClient {
 	}
 
 	/// Calls a method synchronously with the response encoded in JSON format.
+	#[cfg(feature = "generic-rpc-client")]
 	pub fn call_method(&mut self, method: &str, params: &[serde_json::Value]) ->
 		std::io::Result<serde_json::Value>
 	{

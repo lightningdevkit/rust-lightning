@@ -11,6 +11,9 @@ Utilities to fetch the chain data from a block source and feed them into Rust Li
 [features]
 rest-client = [ "serde", "serde_json", "chunked_transfer" ]
 rpc-client = [ "serde", "serde_json", "chunked_transfer" ]
+generic-rpc-client = [ "tokio" ]
+generic-rest-client = [ "tokio" ]
+tokio-runtime = [ "tokio" ]
 
 [dependencies]
 bitcoin = "0.26"

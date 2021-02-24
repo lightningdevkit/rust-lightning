@@ -2,20 +2,20 @@ use chunked_transfer;
 use serde_json;
 
 use std::convert::TryFrom;
-#[cfg(not(feature = "tokio"))]
+#[cfg(not(feature = "tokio-runtime"))]
 use std::io::Write;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
 
-#[cfg(feature = "tokio")]
+#[cfg(feature = "tokio-runtime")]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-#[cfg(feature = "tokio")]
+#[cfg(feature = "tokio-runtime")]
 use tokio::net::TcpStream;
 
-#[cfg(not(feature = "tokio"))]
+#[cfg(not(feature = "tokio-runtime"))]
 use std::io::BufRead;
 use std::io::Read;
-#[cfg(not(feature = "tokio"))]
+#[cfg(not(feature = "tokio-runtime"))]
 use std::net::TcpStream;
 
 /// Timeout for operations on TCP streams.
@@ -103,7 +103,7 @@ impl HttpClient {
 		stream.set_read_timeout(Some(TCP_STREAM_TIMEOUT))?;
 		stream.set_write_timeout(Some(TCP_STREAM_TIMEOUT))?;
 
-		#[cfg(feature = "tokio")]
+		#[cfg(feature = "tokio-runtime")]
 		let stream = {
 			stream.set_nonblocking(true)?;
 			TcpStream::from_std(stream)?
@@ -177,12 +177,12 @@ impl HttpClient {
 
 	/// Writes an HTTP request message.
 	async fn write_request(&mut self, request: &str) -> std::io::Result<()> {
-		#[cfg(feature = "tokio")]
+		#[cfg(feature = "tokio-runtime")]
 		{
 			self.stream.write_all(request.as_bytes()).await?;
 			self.stream.flush().await
 		}
-		#[cfg(not(feature = "tokio"))]
+		#[cfg(not(feature = "tokio-runtime"))]
 		{
 			self.stream.write_all(request.as_bytes())?;
 			self.stream.flush()
@@ -191,23 +191,23 @@ impl HttpClient {
 
 	/// Reads an HTTP response message.
 	async fn read_response(&mut self) -> std::io::Result<Vec<u8>> {
-		#[cfg(feature = "tokio")]
+		#[cfg(feature = "tokio-runtime")]
 		let stream = self.stream.split().0;
-		#[cfg(not(feature = "tokio"))]
+		#[cfg(not(feature = "tokio-runtime"))]
 		let stream = std::io::Read::by_ref(&mut self.stream);
 
 		let limited_stream = stream.take(MAX_HTTP_MESSAGE_HEADER_SIZE as u64);
 
-		#[cfg(feature = "tokio")]
+		#[cfg(feature = "tokio-runtime")]
 		let mut reader = tokio::io::BufReader::new(limited_stream);
-		#[cfg(not(feature = "tokio"))]
+		#[cfg(not(feature = "tokio-runtime"))]
 		let mut reader = std::io::BufReader::new(limited_stream);
 
 		macro_rules! read_line { () => { {
 			let mut line = String::new();
-			#[cfg(feature = "tokio")]
+			#[cfg(feature = "tokio-runtime")]
 			let bytes_read = reader.read_line(&mut line).await?;
-			#[cfg(not(feature = "tokio"))]
+			#[cfg(not(feature = "tokio-runtime"))]
 			let bytes_read = reader.read_line(&mut line)?;
 
 			match bytes_read {
@@ -263,9 +263,9 @@ impl HttpClient {
 					Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
 				} else {
 					let mut content = vec![0; length];
-					#[cfg(feature = "tokio")]
+					#[cfg(feature = "tokio-runtime")]
 					reader.read_exact(&mut content[..]).await?;
-					#[cfg(not(feature = "tokio"))]
+					#[cfg(not(feature = "tokio-runtime"))]
 					reader.read_exact(&mut content[..])?;
 					Ok(content)
 				}
@@ -276,7 +276,7 @@ impl HttpClient {
 							std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
 				} else {
 					let mut content = Vec::new();
-					#[cfg(feature = "tokio")]
+					#[cfg(feature = "tokio-runtime")]
 					{
 						// Since chunked_transfer doesn't have an async interface, only use it to
 						// determine the size of each chunk to read.
@@ -310,7 +310,7 @@ impl HttpClient {
 						}
 						Ok(content)
 					}
-					#[cfg(not(feature = "tokio"))]
+					#[cfg(not(feature = "tokio-runtime"))]
 					{
 						let mut decoder = chunked_transfer::Decoder::new(reader);
 						decoder.read_to_end(&mut content)?;
