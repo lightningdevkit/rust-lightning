@@ -45,6 +45,7 @@ use std::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget"))]
 use std::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
+use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -737,15 +738,14 @@ impl<Signer: Sign> Channel<Signer> {
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
 				&OptionalField::Present(ref script) => {
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
-					if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wsh() || script.is_v0_p2wpkh() {
-						Some(script.clone())
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-					} else if script.len() == 0 {
+					if script.len() == 0 {
 						None
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
-					} else {
+					} else if is_unsupported_shutdown_script(&their_features, script) {
 						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
+					} else {
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -1439,15 +1439,14 @@ impl<Signer: Sign> Channel<Signer> {
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
 				&OptionalField::Present(ref script) => {
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. We enforce it while receiving shutdown msg
-					if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wsh() || script.is_v0_p2wpkh() {
-						Some(script.clone())
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-					} else if script.len() == 0 {
+					if script.len() == 0 {
 						None
 					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
+					} else if is_unsupported_shutdown_script(&their_features, script) {
+						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
 					} else {
-						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. scriptpubkey: ({})", script.to_bytes().to_hex())));
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -3066,7 +3065,7 @@ impl<Signer: Sign> Channel<Signer> {
 		})
 	}
 
-	pub fn shutdown<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	pub fn shutdown<F: Deref>(&mut self, fee_estimator: &F, their_features: &InitFeatures, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
 		where F::Target: FeeEstimator
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -3085,14 +3084,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		// BOLT 2 says we must only send a scriptpubkey of certain standard forms, which are up to
-		// 34 bytes in length, so don't let the remote peer feed us some super fee-heavy script.
-		if self.is_outbound() && msg.scriptpubkey.len() > 34 {
-			return Err(ChannelError::Close(format!("Got counterparty shutdown_scriptpubkey ({}) of absurd length from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
-		}
-
-		//Check counterparty_shutdown_scriptpubkey form as BOLT says we must
-		if !msg.scriptpubkey.is_p2pkh() && !msg.scriptpubkey.is_p2sh() && !msg.scriptpubkey.is_v0_p2wpkh() && !msg.scriptpubkey.is_v0_p2wsh() {
+		if is_unsupported_shutdown_script(&their_features, &msg.scriptpubkey) {
 			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
 		}
 
@@ -4215,6 +4207,24 @@ impl<Signer: Sign> Channel<Signer> {
 			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
 		}, dropped_outbound_htlcs)
 	}
+}
+
+fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script) -> bool {
+	// We restrain shutdown scripts to standards forms to avoid transactions not propagating on the p2p tx-relay network
+
+	// BOLT 2 says we must only send a scriptpubkey of certain standard forms,
+	// which for a a BIP-141-compliant witness program is at max 42 bytes in length.
+	// So don't let the remote peer feed us some super fee-heavy script.
+	let is_script_too_long = script.len() > 42;
+	if is_script_too_long {
+		return true;
+	}
+
+	if their_features.supports_shutdown_anysegwit() && script.is_witness_program() && script.as_bytes()[0] != OP_PUSHBYTES_0.into_u8() {
+		return false;
+	}
+
+	return !script.is_p2pkh() && !script.is_p2sh() && !script.is_v0_p2wpkh() && !script.is_v0_p2wsh()
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
