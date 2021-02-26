@@ -784,8 +784,8 @@ pub extern "C" fn ChannelManager_block_disconnected(this_arg: &ChannelManager, h
 /// Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
 /// guaranteed to be woken up.
 #[no_mangle]
-pub extern "C" fn ChannelManager_wait(this_arg: &ChannelManager) {
-	unsafe { &*this_arg.inner }.wait()
+pub extern "C" fn ChannelManager_await_persistable_update(this_arg: &ChannelManager) {
+	unsafe { &*this_arg.inner }.await_persistable_update()
 }
 
 impl From<nativeChannelManager> for crate::ln::msgs::ChannelMessageHandler {

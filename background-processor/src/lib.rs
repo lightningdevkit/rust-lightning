@@ -66,7 +66,7 @@ impl BackgroundProcessor {
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
 			let mut current_time = Instant::now();
 			loop {
-				let updates_available = manager.wait_timeout(Duration::from_millis(100));
+				let updates_available = manager.await_persistable_update_timeout(Duration::from_millis(100));
 				if updates_available {
 					persist_manager(&*manager)?;
 				}

@@ -480,10 +480,11 @@ pub struct ChainParameters {
 }
 
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
-/// desirable to notify any listeners on `wait_timeout`/`wait` that new updates are available for
-/// persistence. Therefore, this struct is responsible for locking the total consistency lock and,
-/// upon going out of scope, sending the aforementioned notification (since the lock being released
-/// indicates that the updates are ready for persistence).
+/// desirable to notify any listeners on `await_persistable_update_timeout`/
+/// `await_persistable_update` that new updates are available for persistence. Therefore, this
+/// struct is responsible for locking the total consistency lock and, upon going out of scope,
+/// sending the aforementioned notification (since the lock being released indicates that the
+/// updates are ready for persistence).
 struct PersistenceNotifierGuard<'a> {
 	persistence_notifier: &'a PersistenceNotifier,
 	// We hold onto this result so the lock doesn't get released immediately.
@@ -3407,17 +3408,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool
-	/// indicating whether persistence is necessary. Only one listener on `wait_timeout` is
-	/// guaranteed to be woken up.
+	/// indicating whether persistence is necessary. Only one listener on
+	/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
+	/// up.
 	/// Note that the feature `allow_wallclock_use` must be enabled to use this function.
 	#[cfg(any(test, feature = "allow_wallclock_use"))]
-	pub fn wait_timeout(&self, max_wait: Duration) -> bool {
+	pub fn await_persistable_update_timeout(&self, max_wait: Duration) -> bool {
 		self.persistence_notifier.wait_timeout(max_wait)
 	}
 
-	/// Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
-	/// guaranteed to be woken up.
-	pub fn wait(&self) {
+	/// Blocks until ChannelManager needs to be persisted. Only one listener on
+	/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
+	/// up.
+	pub fn await_persistable_update(&self) {
 		self.persistence_notifier.wait()
 	}
 
@@ -3669,7 +3672,7 @@ impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sy
 }
 
 /// Used to signal to the ChannelManager persister that the manager needs to be re-persisted to
-/// disk/backups, through `wait_timeout` and `wait`.
+/// disk/backups, through `await_persistable_update_timeout` and `await_persistable_update`.
 struct PersistenceNotifier {
 	/// Users won't access the persistence_lock directly, but rather wait on its bool using
 	/// `wait_timeout` and `wait`.

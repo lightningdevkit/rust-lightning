@@ -6072,7 +6072,7 @@ void ChannelManager_block_disconnected(const struct LDKChannelManager *NONNULL_P
  * Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
  * guaranteed to be woken up.
  */
-void ChannelManager_wait(const struct LDKChannelManager *NONNULL_PTR this_arg);
+void ChannelManager_await_persistable_update(const struct LDKChannelManager *NONNULL_PTR this_arg);
 
 struct LDKChannelMessageHandler ChannelManager_as_ChannelMessageHandler(const struct LDKChannelManager *NONNULL_PTR this_arg);
 
