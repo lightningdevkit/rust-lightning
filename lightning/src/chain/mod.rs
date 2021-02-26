@@ -9,6 +9,7 @@
 
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -44,6 +45,18 @@ pub trait Access: Send + Sync {
 	///
 	/// [`short_channel_id`]: https://github.com/lightningnetwork/lightning-rfc/blob/master/07-routing-gossip.md#definition-of-short_channel_id
 	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
+}
+
+/// The `Listen` trait is used to be notified of when blocks have been connected or disconnected
+/// from the chain.
+///
+/// Useful when needing to replay chain data upon startup or as new chain events occur.
+pub trait Listen {
+	/// Notifies the listener that a block was added at the given height.
+	fn block_connected(&self, block: &Block, height: u32);
+
+	/// Notifies the listener that a block was removed at the given height.
+	fn block_disconnected(&self, header: &BlockHeader, height: u32);
 }
 
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as
@@ -122,4 +135,30 @@ pub trait Filter: Send + Sync {
 	/// Registers interest in spends of a transaction output identified by `outpoint` having
 	/// `script_pubkey` as the spending condition.
 	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script);
+}
+
+impl<T: Listen> Listen for std::ops::Deref<Target = T> {
+	fn block_connected(&self, block: &Block, height: u32) {
+		(**self).block_connected(block, height);
+	}
+
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		(**self).block_disconnected(header, height);
+	}
+}
+
+impl<T: std::ops::Deref, U: std::ops::Deref> Listen for (T, U)
+where
+	T::Target: Listen,
+	U::Target: Listen,
+{
+	fn block_connected(&self, block: &Block, height: u32) {
+		self.0.block_connected(block, height);
+		self.1.block_connected(block, height);
+	}
+
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		self.0.block_disconnected(header, height);
+		self.1.block_disconnected(header, height);
+	}
 }
