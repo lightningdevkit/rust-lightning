@@ -355,7 +355,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: monitor_refs,
 			};
 
-			(<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
+			(<(Option<BlockHash>, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 

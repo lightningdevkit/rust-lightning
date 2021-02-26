@@ -188,7 +188,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(Option<BlockHash>, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: UserConfig::default(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
