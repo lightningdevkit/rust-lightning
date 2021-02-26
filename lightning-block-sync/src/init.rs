@@ -66,7 +66,7 @@ use lightning::chain;
 ///
 /// 	// Read the channel manager paired with the block hash when it was persisted.
 /// 	let serialized_manager = "...";
-/// 	let (manager_block_hash, mut manager) = {
+/// 	let (manager_block_hash_option, mut manager) = {
 /// 		let read_args = ChannelManagerReadArgs::new(
 /// 			keys_manager,
 /// 			fee_estimator,
@@ -76,17 +76,19 @@ use lightning::chain;
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<S, &ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
+/// 		<(Option<BlockHash>, ChannelManager<S, &ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
 /// 	// Synchronize any channel monitors and the channel manager to be on the best block.
 /// 	let mut cache = UnboundedCache::new();
 /// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
-/// 	let listeners = vec![
+/// 	let mut listeners = vec![
 /// 		(monitor_block_hash, &mut monitor_listener as &mut dyn chain::Listen),
-/// 		(manager_block_hash, &mut manager as &mut dyn chain::Listen),
 /// 	];
+/// 	if let Some(manager_block_hash) = manager_block_hash_option {
+/// 		listeners.push((manager_block_hash, &mut manager as &mut dyn chain::Listen))
+/// 	}
 /// 	let chain_tip = init::synchronize_listeners(
 /// 		block_source, Network::Bitcoin, &mut cache, listeners).await.unwrap();
 ///
