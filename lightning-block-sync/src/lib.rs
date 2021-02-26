@@ -235,7 +235,7 @@ impl<'a, P: Poll, C: Cache, L: Deref> SpvClient<'a, P, C, L> where L::Target: ch
 	/// Returns the best polled chain tip relative to the previous best known tip and whether any
 	/// blocks were indeed connected or disconnected.
 	pub async fn poll_best_tip(&mut self) -> BlockSourceResult<(ChainTip, bool)> {
-		let chain_tip = self.chain_poller.poll_chain_tip(self.chain_tip).await?;
+		let chain_tip = self.chain_poller.poll_chain_tip(Some(self.chain_tip)).await?;
 		let blocks_connected = match chain_tip {
 			ChainTip::Common => false,
 			ChainTip::Better(chain_tip) => {
