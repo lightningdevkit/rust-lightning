@@ -206,7 +206,7 @@ pub struct PaymentPreimage(pub [u8;32]);
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8;32]);
 
-type ShutdownResult = (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>);
+type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
@@ -942,12 +942,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
-		let (funding_txo_option, monitor_update, mut failed_htlcs) = shutdown_res;
+		let (monitor_update_option, mut failed_htlcs) = shutdown_res;
 		log_trace!(self.logger, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
-		if let Some(funding_txo) = funding_txo_option {
+		if let Some((funding_txo, monitor_update)) = monitor_update_option {
 			// There isn't anything we can do if we get an update failure - we're already
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
@@ -2418,7 +2418,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// We do not do a force-close here as that would generate a monitor update for
 					// a monitor that we didn't manage to store (and that we don't care about - we
 					// don't respond with the funding_signed so the channel can never go on chain).
-					let (_funding_txo_option, _monitor_update, failed_htlcs) = chan.force_shutdown(true);
+					let (_monitor_update, failed_htlcs) = chan.force_shutdown(true);
 					assert!(failed_htlcs.is_empty());
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id));
 				},
@@ -4071,7 +4071,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
-					let (_, _, mut new_failed_htlcs) = channel.force_shutdown(true);
+					let (_, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
 					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
