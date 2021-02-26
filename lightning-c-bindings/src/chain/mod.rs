@@ -100,6 +100,50 @@ impl Drop for Access {
 		}
 	}
 }
+/// The `Listen` trait is used to be notified of when blocks have been connected or disconnected
+/// from the chain.
+///
+/// Useful when needing to replay chain data upon startup or as new chain events occur.
+#[repr(C)]
+pub struct Listen {
+	pub this_arg: *mut c_void,
+	/// Notifies the listener that a block was added at the given height.
+	pub block_connected: extern "C" fn (this_arg: *const c_void, block: crate::c_types::u8slice, height: u32),
+	/// Notifies the listener that a block was removed at the given height.
+	pub block_disconnected: extern "C" fn (this_arg: *const c_void, header: *const [u8; 80], height: u32),
+	pub free: Option<extern "C" fn(this_arg: *mut c_void)>,
+}
+
+use lightning::chain::Listen as rustListen;
+impl rustListen for Listen {
+	fn block_connected(&self, block: &bitcoin::blockdata::block::Block, height: u32) {
+		let mut local_block = ::bitcoin::consensus::encode::serialize(block);
+		(self.block_connected)(self.this_arg, crate::c_types::u8slice::from_slice(&local_block), height)
+	}
+	fn block_disconnected(&self, header: &bitcoin::blockdata::block::BlockHeader, height: u32) {
+		let mut local_header = { let mut s = [0u8; 80]; s[..].copy_from_slice(&::bitcoin::consensus::encode::serialize(header)); s };
+		(self.block_disconnected)(self.this_arg, &local_header, height)
+	}
+}
+
+// We're essentially a pointer already, or at least a set of pointers, so allow us to be used
+// directly as a Deref trait in higher-level structs:
+impl std::ops::Deref for Listen {
+	type Target = Self;
+	fn deref(&self) -> &Self {
+		self
+	}
+}
+/// Calls the free function if one is set
+#[no_mangle]
+pub extern "C" fn Listen_free(this_ptr: Listen) { }
+impl Drop for Listen {
+	fn drop(&mut self) {
+		if let Some(f) = self.free {
+			f(self.this_arg);
+		}
+	}
+}
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as
 /// blocks are connected and disconnected.
 ///

@@ -174,8 +174,8 @@ typedef enum LDKSecp256k1Error {
    LDKSecp256k1Error_InvalidSecretKey,
    LDKSecp256k1Error_InvalidRecoveryId,
    LDKSecp256k1Error_InvalidTweak,
+   LDKSecp256k1Error_TweakCheckFailed,
    LDKSecp256k1Error_NotEnoughMemory,
-   LDKSecp256k1Error_CallbackPanicked,
    /**
     * Must be last for serialization purposes
     */
@@ -3452,6 +3452,25 @@ typedef struct LDKAccess {
 } LDKAccess;
 
 /**
+ * The `Listen` trait is used to be notified of when blocks have been connected or disconnected
+ * from the chain.
+ *
+ * Useful when needing to replay chain data upon startup or as new chain events occur.
+ */
+typedef struct LDKListen {
+   void *this_arg;
+   /**
+    * Notifies the listener that a block was added at the given height.
+    */
+   void (*block_connected)(const void *this_arg, struct LDKu8slice block, uint32_t height);
+   /**
+    * Notifies the listener that a block was removed at the given height.
+    */
+   void (*block_disconnected)(const void *this_arg, const uint8_t (*header)[80], uint32_t height);
+   void (*free)(void *this_arg);
+} LDKListen;
+
+/**
  * The `Filter` trait defines behavior for indicating chain activity of interest pertaining to
  * channels.
  *
@@ -3629,7 +3648,7 @@ typedef struct LDKChannelMessageHandler {
    /**
     * Handle an incoming shutdown message from the given peer.
     */
-   void (*handle_shutdown)(const void *this_arg, struct LDKPublicKey their_node_id, const struct LDKShutdown *NONNULL_PTR msg);
+   void (*handle_shutdown)(const void *this_arg, struct LDKPublicKey their_node_id, const struct LDKInitFeatures *NONNULL_PTR their_features, const struct LDKShutdown *NONNULL_PTR msg);
    /**
     * Handle an incoming closing_signed message from the given peer.
     */
@@ -5120,6 +5139,11 @@ void Access_free(struct LDKAccess this_ptr);
 /**
  * Calls the free function if one is set
  */
+void Listen_free(struct LDKListen this_ptr);
+
+/**
+ * Calls the free function if one is set
+ */
 void Watch_free(struct LDKWatch this_ptr);
 
 /**
@@ -5667,8 +5691,8 @@ void KeysManager_free(struct LDKKeysManager this_ptr);
 MUST_USE_RES struct LDKKeysManager KeysManager_new(const uint8_t (*seed)[32], uint64_t starting_time_secs, uint32_t starting_time_nanos);
 
 /**
- * Derive an old set of Sign for per-channel secrets based on a key derivation
- * parameters.
+ * Derive an old Sign containing per-channel secrets based on a key derivation parameters.
+ *
  * Key derivation parameters are accessible through a per-channel secrets
  * Sign::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
  * onchain output detection for which a corresponding delayed_payment_key must be derived.
@@ -6028,6 +6052,8 @@ void ChannelManager_channel_monitor_updated(const struct LDKChannelManager *NONN
 struct LDKMessageSendEventsProvider ChannelManager_as_MessageSendEventsProvider(const struct LDKChannelManager *NONNULL_PTR this_arg);
 
 struct LDKEventsProvider ChannelManager_as_EventsProvider(const struct LDKChannelManager *NONNULL_PTR this_arg);
+
+struct LDKListen ChannelManager_as_Listen(const struct LDKChannelManager *NONNULL_PTR this_arg);
 
 /**
  * Updates channel state based on transactions seen in a connected block.
