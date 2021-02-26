@@ -4180,6 +4180,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
 	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>) {
+		// Note that we MUST only generate a monitor update that indicates force-closure - we're
+		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
+		// being fully configured in some cases. Thus, its likely any monitor events we generate will
+		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and

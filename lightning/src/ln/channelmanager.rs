@@ -333,6 +333,15 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
 }
 
+/// Events which we process internally but cannot be procsesed immediately at the generation site
+/// for some reason. They are handled in timer_chan_freshness_every_min, so may be processed with
+/// quite some time lag.
+enum BackgroundEvent {
+	/// Handle a ChannelMonitorUpdate that closes a channel, broadcasting its current latest holder
+	/// commitment transaction.
+	ClosingMonitorUpdate((OutPoint, ChannelMonitorUpdate)),
+}
+
 /// State we hold per-peer. In the future we should put channels in here, but for now we only hold
 /// the latest Init features we heard from the peer.
 struct PeerState {
@@ -436,6 +445,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 
 	pending_events: Mutex<Vec<events::Event>>,
+	pending_background_events: Mutex<Vec<BackgroundEvent>>,
 	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
 	/// Essentially just when we're serializing ourselves out.
 	/// Taken first everywhere where we are making changes before any other locks.
@@ -794,6 +804,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			per_peer_state: RwLock::new(HashMap::new()),
 
 			pending_events: Mutex::new(Vec::new()),
+			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: PersistenceNotifier::new(),
 
@@ -1854,13 +1865,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		events.append(&mut new_events);
 	}
 
+	/// Free the background events, generally called from timer_chan_freshness_every_min.
+	///
+	/// Exposed for testing to allow us to process events quickly without generating accidental
+	/// BroadcastChannelUpdate events in timer_chan_freshness_every_min.
+	///
+	/// Expects the caller to have a total_consistency_lock read lock.
+	fn process_background_events(&self) {
+		let mut background_events = Vec::new();
+		mem::swap(&mut *self.pending_background_events.lock().unwrap(), &mut background_events);
+		for event in background_events.drain(..) {
+			match event {
+				BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)) => {
+					// The channel has already been closed, so no use bothering to care about the
+					// monitor updating completing.
+					let _ = self.chain_monitor.update_channel(funding_txo, update);
+				},
+			}
+		}
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) fn test_process_background_events(&self) {
+		self.process_background_events();
+	}
+
 	/// If a peer is disconnected we mark any channels with that peer as 'disabled'.
 	/// After some time, if channels are still disabled we need to broadcast a ChannelUpdate
 	/// to inform the network about the uselessness of these channels.
 	///
 	/// This method handles all the details, and must be called roughly once per minute.
+	///
+	/// Note that in some rare cases this may generate a `chain::Watch::update_channel` call.
 	pub fn timer_chan_freshness_every_min(&self) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		self.process_background_events();
+
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		for (_, chan) in channel_state.by_id.iter_mut() {
@@ -1953,6 +1993,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		//identify whether we sent it or not based on the (I presume) very different runtime
 		//between the branches here. We should make this async and move it into the forward HTLCs
 		//timer handling.
+
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// from block_connected which may run during initialization prior to the chain_monitor
+		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
 			HTLCSource::OutboundRoute { ref path, .. } => {
 				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -3100,6 +3144,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.finish_force_close_channel(failure);
 		}
 	}
+
+	/// Handle a list of channel failures during a block_connected or block_disconnected call,
+	/// pushing the channel monitor update (if any) to the background events queue and removing the
+	/// Channel object.
+	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
+		for mut failure in failed_channels.drain(..) {
+			// Either a commitment transactions has been confirmed on-chain or
+			// Channel::block_disconnected detected that the funding transaction has been
+			// reorganized out of the main chain.
+			// We cannot broadcast our latest local state via monitor update (as
+			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
+			// so we track the update internally and handle it when the user next calls
+			// timer_chan_freshness_every_min, guaranteeing we're running normally.
+			if let Some((funding_txo, update)) = failure.0.take() {
+				assert_eq!(update.updates.len(), 1);
+				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
+					assert!(should_broadcast);
+				} else { unreachable!(); }
+				self.pending_background_events.lock().unwrap().push(BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)));
+			}
+			self.finish_force_close_channel(failure);
+		}
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
@@ -3167,6 +3234,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 {
 	/// Updates channel state based on transactions seen in a connected block.
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
 		let header_hash = header.block_hash();
 		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
@@ -3218,9 +3288,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								if let Some(short_id) = channel.get_short_channel_id() {
 									short_to_id.remove(&short_id);
 								}
-								// It looks like our counterparty went on-chain. We go ahead and
-								// broadcast our latest local state as well here, just in case its
-								// some kind of SPV attack, though we expect these to be dropped.
+								// It looks like our counterparty went on-chain. Close the channel.
 								failed_channels.push(channel.force_shutdown(true));
 								if let Ok(update) = self.get_channel_update(&channel) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -3254,9 +3322,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
 			});
 		}
-		for failure in failed_channels.drain(..) {
-			self.finish_force_close_channel(failure);
-		}
+
+		self.handle_init_event_channel_failures(failed_channels);
 
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
@@ -3282,6 +3349,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If necessary, the channel may be force-closed without letting the counterparty participate
 	/// in the shutdown.
 	pub fn block_disconnected(&self, header: &BlockHeader) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		{
@@ -3306,9 +3376,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			});
 		}
-		for failure in failed_channels.drain(..) {
-			self.finish_force_close_channel(failure);
-		}
+		self.handle_init_event_channel_failures(failed_channels);
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
 		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.block_hash();
 	}
@@ -3914,6 +3982,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			event.write(writer)?;
 		}
 
+		let background_events = self.pending_background_events.lock().unwrap();
+		(background_events.len() as u64).write(writer)?;
+		for event in background_events.iter() {
+			match event {
+				BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)) => {
+					0u8.write(writer)?;
+					funding_txo.write(writer)?;
+					monitor_update.write(writer)?;
+				},
+			}
+		}
+
 		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
 
 		Ok(())
@@ -3932,8 +4012,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
 ///    ChannelMonitor::get_outputs_to_watch() and ChannelMonitor::get_funding_txo().
 /// 4) Reconnect blocks on your ChannelMonitors.
-/// 5) Move the ChannelMonitors into your local chain::Watch.
-/// 6) Disconnect/connect blocks on the ChannelManager.
+/// 5) Disconnect/connect blocks on the ChannelManager.
+/// 6) Move the ChannelMonitors into your local chain::Watch.
+///
+/// Note that the ordering of #4-6 is not of importance, however all three must occur before you
+/// call any other methods on the newly-deserialized ChannelManager.
 ///
 /// Note that because some channels may be closed during deserialization, it is critical that you
 /// always deserialize only the latest version of a ChannelManager and ChannelMonitors available to
@@ -4135,6 +4218,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
+		let background_event_count: u64 = Readable::read(reader)?;
+		let mut pending_background_events_read: Vec<BackgroundEvent> = Vec::with_capacity(cmp::min(background_event_count as usize, MAX_ALLOC_SIZE/mem::size_of::<BackgroundEvent>()));
+		for _ in 0..background_event_count {
+			match <u8 as Readable>::read(reader)? {
+				0 => pending_background_events_read.push(BackgroundEvent::ClosingMonitorUpdate((Readable::read(reader)?, Readable::read(reader)?))),
+				_ => return Err(DecodeError::InvalidValue),
+			}
+		}
+
 		let last_node_announcement_serial: u32 = Readable::read(reader)?;
 
 		let mut secp_ctx = Secp256k1::new();
@@ -4164,6 +4256,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			per_peer_state: RwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(pending_events_read),
+			pending_background_events: Mutex::new(pending_background_events_read),
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: PersistenceNotifier::new(),
 

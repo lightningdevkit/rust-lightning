@@ -207,6 +207,7 @@ fn test_unconf_chan() {
 		nodes[0].node.block_disconnected(&headers.pop().unwrap());
 	}
 	check_closed_broadcast!(nodes[0], false);
+	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 0);
