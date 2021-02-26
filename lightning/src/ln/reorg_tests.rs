@@ -9,14 +9,21 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use chain::channelmonitor::ANTI_REORG_DELAY;
+use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
+use chain::Watch;
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
+use util::config::UserConfig;
+use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::test_utils;
+use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::hash_types::BlockHash;
 
-use std::default::Default;
+use std::collections::HashMap;
 use std::mem;
 
 use ln::functional_test_utils::*;
@@ -182,14 +189,18 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
 }
 
-#[test]
-fn test_unconf_chan() {
-	// After creating a chan between nodes, we disconnect all blocks previously seen to force a channel close on nodes[0] side
+fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
+	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
+	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
+	// around freeing background events which store monitor updates during block_[dis]connected.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
@@ -203,15 +214,83 @@ fn test_unconf_chan() {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		headers.push(header.clone());
 	}
-	while !headers.is_empty() {
-		nodes[0].node.block_disconnected(&headers.pop().unwrap());
+	if !reorg_after_reload {
+		while !headers.is_empty() {
+			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		check_closed_broadcast!(nodes[0], false);
+		{
+			let channel_state = nodes[0].node.channel_state.lock().unwrap();
+			assert_eq!(channel_state.by_id.len(), 0);
+			assert_eq!(channel_state.short_to_id.len(), 0);
+		}
 	}
-	check_closed_broadcast!(nodes[0], false);
+
+	if reload_node {
+		// Since we currently have a background event pending, it's good to test that we survive a
+		// serialization roundtrip. Further, this tests the somewhat awkward edge-case of dropping
+		// the Channel object from the ChannelManager, but still having a monitor event pending for
+		// it when we go to deserialize, and then use the ChannelManager.
+		let nodes_0_serialized = nodes[0].node.encode();
+		let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+
+		persister = test_utils::TestPersister::new();
+		let keys_manager = &chanmon_cfgs[0].keys_manager;
+		new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+		nodes[0].chain_monitor = &new_chain_monitor;
+		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+		let (_, mut chan_0_monitor) = <(Option<BlockHash>, ChannelMonitor<EnforcingSigner>)>::read(
+			&mut chan_0_monitor_read, keys_manager).unwrap();
+		assert!(chan_0_monitor_read.is_empty());
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let config = UserConfig::default();
+		nodes_0_deserialized = {
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+			<(Option<BlockHash>, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster,
+			  &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(
+				&mut nodes_0_read, ChannelManagerReadArgs {
+					default_config: config,
+					keys_manager,
+					fee_estimator: node_cfgs[0].fee_estimator,
+					chain_monitor: nodes[0].chain_monitor,
+					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+					logger: nodes[0].logger,
+					channel_monitors,
+			}).unwrap().1
+		};
+		nodes[0].node = &nodes_0_deserialized;
+		assert!(nodes_0_read.is_empty());
+
+		nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
+
+	if reorg_after_reload {
+		while !headers.is_empty() {
+			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		check_closed_broadcast!(nodes[0], false);
+		{
+			let channel_state = nodes[0].node.channel_state.lock().unwrap();
+			assert_eq!(channel_state.by_id.len(), 0);
+			assert_eq!(channel_state.short_to_id.len(), 0);
+		}
+	}
+
+	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan_id, true));
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
-	let channel_state = nodes[0].node.channel_state.lock().unwrap();
-	assert_eq!(channel_state.by_id.len(), 0);
-	assert_eq!(channel_state.short_to_id.len(), 0);
+}
+
+#[test]
+fn test_unconf_chan() {
+	do_test_unconf_chan(true, true);
+	do_test_unconf_chan(false, true);
+	do_test_unconf_chan(true, false);
+	do_test_unconf_chan(false, false);
 }
 
 #[test]
