@@ -17,6 +17,7 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::Writeable;
 use std::fs;
 use std::io::Error;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -75,6 +76,12 @@ impl FilesystemPersister {
 		self.path_to_channel_data.clone()
 	}
 
+	pub(crate) fn path_to_monitor_data(&self) -> PathBuf {
+		let mut path = PathBuf::from(self.path_to_channel_data.clone());
+		path.push("monitors");
+		path
+	}
+
 	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
 	/// initialization, within a file called "manager".
 	pub fn persist_manager<Signer, M, T, K, F, L>(
@@ -88,54 +95,55 @@ impl FilesystemPersister {
 	      F: FeeEstimator,
 	      L: Logger
 	{
-		util::write_to_file(data_dir, "manager".to_string(), manager)
+		let path = PathBuf::from(data_dir);
+		util::write_to_file(path, "manager".to_string(), manager)
 	}
 
 	#[cfg(test)]
 	fn load_channel_data<Keys: KeysInterface>(&self, keys: &Keys) ->
 		Result<HashMap<OutPoint, ChannelMonitor<Keys::Signer>>, ChannelMonitorUpdateErr> {
-		if let Err(_) = fs::create_dir_all(&self.path_to_channel_data) {
-			return Err(ChannelMonitorUpdateErr::PermanentFailure);
-		}
-		let mut res = HashMap::new();
-		for file_option in fs::read_dir(&self.path_to_channel_data).unwrap() {
-			let file = file_option.unwrap();
-			let owned_file_name = file.file_name();
-			let filename = owned_file_name.to_str();
-			if !filename.is_some() || !filename.unwrap().is_ascii() || filename.unwrap().len() < 65 {
+			if let Err(_) = fs::create_dir_all(self.path_to_monitor_data()) {
 				return Err(ChannelMonitorUpdateErr::PermanentFailure);
 			}
+			let mut res = HashMap::new();
+			for file_option in fs::read_dir(self.path_to_monitor_data()).unwrap() {
+				let file = file_option.unwrap();
+				let owned_file_name = file.file_name();
+				let filename = owned_file_name.to_str();
+				if !filename.is_some() || !filename.unwrap().is_ascii() || filename.unwrap().len() < 65 {
+					return Err(ChannelMonitorUpdateErr::PermanentFailure);
+				}
 
-			let txid = Txid::from_hex(filename.unwrap().split_at(64).0);
-			if txid.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+				let txid = Txid::from_hex(filename.unwrap().split_at(64).0);
+				if txid.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
-			let index = filename.unwrap().split_at(65).1.split('.').next().unwrap().parse();
-			if index.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+				let index = filename.unwrap().split_at(65).1.split('.').next().unwrap().parse();
+				if index.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
-			let contents = fs::read(&file.path());
-			if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
+				let contents = fs::read(&file.path());
+				if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
-			if let Ok((_, loaded_monitor)) =
-				<(BlockHash, ChannelMonitor<Keys::Signer>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
-				res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
-			} else {
-				return Err(ChannelMonitorUpdateErr::PermanentFailure);
+				if let Ok((_, loaded_monitor)) =
+					<(BlockHash, ChannelMonitor<Keys::Signer>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
+						res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
+					} else {
+						return Err(ChannelMonitorUpdateErr::PermanentFailure);
+					}
 			}
+			Ok(res)
 		}
-		Ok(res)
-	}
 }
 
 impl<ChannelSigner: Sign + Send + Sync> channelmonitor::Persist<ChannelSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
+		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		util::write_to_file(self.path_to_channel_data.clone(), filename, monitor)
+		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
 		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 }

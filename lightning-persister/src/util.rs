@@ -17,10 +17,9 @@ pub(crate) trait DiskWriteable {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error>;
 }
 
-pub(crate) fn get_full_filepath(filepath: String, filename: String) -> String {
-	let mut path = PathBuf::from(filepath);
-	path.push(filename);
-	path.to_str().unwrap().to_string()
+pub(crate) fn get_full_filepath(mut filepath: PathBuf, filename: String) -> String {
+	filepath.push(filename);
+	filepath.to_str().unwrap().to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -40,7 +39,7 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: T) -> Vec<winapi::shared::ntdef::W
 }
 
 #[allow(bare_trait_objects)]
-pub(crate) fn write_to_file<D: DiskWriteable>(path: String, filename: String, data: &D) -> std::io::Result<()> {
+pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, data: &D) -> std::io::Result<()> {
 	fs::create_dir_all(path.clone())?;
 	// Do a crazy dance with lots of fsync()s to be overly cautious here...
 	// We never want to end up in a state where we've lost the old data, or end up using the
@@ -92,6 +91,7 @@ mod tests {
 	use std::fs;
 	use std::io;
 	use std::io::Write;
+	use std::path::PathBuf;
 
 	struct TestWriteable{}
 	impl DiskWriteable for TestWriteable {
@@ -113,7 +113,7 @@ mod tests {
 		let mut perms = fs::metadata(path.to_string()).unwrap().permissions();
 		perms.set_readonly(true);
 		fs::set_permissions(path.to_string(), perms).unwrap();
-		match write_to_file(path.to_string(), filename, &test_writeable) {
+		match write_to_file(PathBuf::from(path.to_string()), filename, &test_writeable) {
 			Err(e) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
 			_ => panic!("Unexpected error message")
 		}
@@ -131,10 +131,10 @@ mod tests {
 	fn test_rename_failure() {
 		let test_writeable = TestWriteable{};
 		let filename = "test_rename_failure_filename";
-		let path = "test_rename_failure_dir";
+		let path = PathBuf::from("test_rename_failure_dir");
 		// Create the channel data file and make it a directory.
-		fs::create_dir_all(get_full_filepath(path.to_string(), filename.to_string())).unwrap();
-		match write_to_file(path.to_string(), filename.to_string(), &test_writeable) {
+		fs::create_dir_all(get_full_filepath(path.clone(), filename.to_string())).unwrap();
+		match write_to_file(path.clone(), filename.to_string(), &test_writeable) {
 			Err(e) => assert_eq!(e.kind(), io::ErrorKind::Other),
 			_ => panic!("Unexpected Ok(())")
 		}
@@ -151,9 +151,9 @@ mod tests {
 		}
 
 		let filename = "test_diskwriteable_failure";
-		let path = "test_diskwriteable_failure_dir";
+		let path = PathBuf::from("test_diskwriteable_failure_dir");
 		let test_writeable = FailingWriteable{};
-		match write_to_file(path.to_string(), filename.to_string(), &test_writeable) {
+		match write_to_file(path.clone(), filename.to_string(), &test_writeable) {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::Other);
 				assert_eq!(e.get_ref().unwrap().to_string(), "expected failure");
@@ -170,7 +170,7 @@ mod tests {
 	fn test_tmp_file_creation_failure() {
 		let test_writeable = TestWriteable{};
 		let filename = "test_tmp_file_creation_failure_filename".to_string();
-		let path = "test_tmp_file_creation_failure_dir".to_string();
+		let path = PathBuf::from("test_tmp_file_creation_failure_dir");
 
 		// Create the tmp file and make it a directory.
 		let tmp_path = get_full_filepath(path.clone(), format!("{}.tmp", filename.clone()));
