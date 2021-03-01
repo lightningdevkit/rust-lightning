@@ -808,10 +808,10 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 								}
 							}
 						) );
-						write!(w, "\t}}\n}}\nuse {}::{} as {}TraitImport;\n", types.orig_crate, full_trait_path, trait_obj.ident).unwrap();
+						writeln!(w, "\t}}\n}}\n").unwrap();
 
 						macro_rules! impl_meth {
-							($m: expr, $trait: expr, $indent: expr) => {
+							($m: expr, $trait_path: expr, $trait: expr, $indent: expr) => {
 								let trait_method = $trait.items.iter().filter_map(|item| {
 									if let syn::TraitItem::Method(t_m) = item { Some(t_m) } else { None }
 								}).find(|trait_meth| trait_meth.sig.ident == $m.sig.ident).unwrap();
@@ -842,9 +842,9 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 									t_gen_args += "_"
 								}
 								if takes_self {
-									write!(w, "<native{} as {}TraitImport<{}>>::{}(unsafe {{ &mut *(this_arg as *mut native{}) }}, ", ident, $trait.ident, t_gen_args, $m.sig.ident, ident).unwrap();
+									write!(w, "<native{} as {}::{}<{}>>::{}(unsafe {{ &mut *(this_arg as *mut native{}) }}, ", ident, types.orig_crate, $trait_path, t_gen_args, $m.sig.ident, ident).unwrap();
 								} else {
-									write!(w, "<native{} as {}TraitImport<{}>>::{}(", ident, $trait.ident, t_gen_args, $m.sig.ident).unwrap();
+									write!(w, "<native{} as {}::{}<{}>>::{}(", ident, types.orig_crate, $trait_path, t_gen_args, $m.sig.ident).unwrap();
 								}
 
 								let mut real_type = "".to_string();
@@ -881,20 +881,19 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						for item in i.items.iter() {
 							match item {
 								syn::ImplItem::Method(m) => {
-									impl_meth!(m, trait_obj, "");
+									impl_meth!(m, full_trait_path, trait_obj, "");
 								},
 								syn::ImplItem::Type(_) => {},
 								_ => unimplemented!(),
 							}
 						}
 						walk_supertraits!(trait_obj, Some(&types), (
-							(s, t) => {
+							(s, _) => {
 								if let Some(supertrait_obj) = types.crate_types.traits.get(s).cloned() {
-									writeln!(w, "use {}::{} as native{}Trait;", types.orig_crate, s, t).unwrap();
 									for item in supertrait_obj.items.iter() {
 										match item {
 											syn::TraitItem::Method(m) => {
-												impl_meth!(m, supertrait_obj, "\t");
+												impl_meth!(m, s, supertrait_obj, "\t");
 											},
 											_ => {},
 										}
