@@ -221,15 +221,19 @@ impl PaymentPath {
 		return result;
 	}
 
-	// If an amount transferred by the path is updated, the fees should be adjusted. Any other way
-	// to change fees may result in an inconsistency. Also, it's only safe to reduce the value,
-	// to not violate channel upper bounds.
+	// If the amount transferred by the path is updated, the fees should be adjusted. Any other way
+	// to change fees may result in an inconsistency.
+	//
+	// Sometimes we call this function right after constructing a path which has inconsistent
+	// (in terms of reaching htlc_minimum_msat), so that this function puts the fees in order.
+	// In that case we call it on the "same" amount we initially allocated for this path, and which
+	// could have been reduced on the way. In that case, there is also a risk of exceeding
+	// available_liquidity inside this function, because the function is unaware of this bound.
+	// In our specific recomputation cases where we never increase the value the risk is pretty low.
+	// This function, however, does not support arbitrarily increasing the value being transferred,
+	// and the exception will be triggered.
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
-		if value_msat == self.hops.last().unwrap().route_hop.fee_msat {
-			// Nothing to change.
-			return;
-		}
-		assert!(value_msat < self.hops.last().unwrap().route_hop.fee_msat);
+		assert!(value_msat <= self.hops.last().unwrap().route_hop.fee_msat);
 
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (0..self.hops.len()).rev() {
@@ -251,6 +255,14 @@ impl PaymentPath {
 			// match htlc_minimum_msat logic.
 			let mut cur_hop_transferred_amount_msat = total_fee_paid_msat + value_msat;
 			if let Some(extra_fees_msat) = cur_hop.htlc_minimum_msat.checked_sub(cur_hop_transferred_amount_msat) {
+				// Note that there is a risk that *previous hops* (those closer to us, as we go
+				// payee->our_node here) would exceed their htlc_maximum_msat or available balance.
+				//
+				// This might make us end up with a broken route, although this should be super-rare
+				// in practice, both because of how healthy channels look like, and how we pick
+				// channels in add_entry.
+				// Also, this can't be exploited more heavily than *announce a free path and fail
+				// all payments*.
 				cur_hop_transferred_amount_msat += extra_fees_msat;
 				total_fee_paid_msat += extra_fees_msat;
 				cur_hop_fees_msat += extra_fees_msat;
@@ -490,6 +502,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// as not sufficient.
 					// TODO: Explore simply adding fee to hit htlc_minimum_msat
 					if contributes_sufficient_value && amount_to_transfer_over_msat >= $directional_info.htlc_minimum_msat {
+						// Note that low contribution here (limited by available_liquidity_msat)
+						// might violate htlc_minimum_msat on the hops which are next along the
+						// payment path (upstream to the payee). To avoid that, we recompute path
+						// path fees knowing the final path contribution after constructing it.
 						let hm_entry = dist.entry(&$src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							// If there was previously no known way to access
@@ -796,7 +812,15 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				ordered_hops.last_mut().unwrap().hop_use_fee_msat = 0;
 				ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = final_cltv;
 
-				let payment_path = PaymentPath {hops: ordered_hops};
+				let mut payment_path = PaymentPath {hops: ordered_hops};
+
+				// We could have possibly constructed a slightly inconsistent path: since we reduce
+				// value being transferred along the way, we could have violated htlc_minimum_msat
+				// on some channels we already passed (assuming dest->source direction). Here, we
+				// recompute the fees again, so that if that's the case, we match the currently
+				// underpaid htlc_minimum_msat with fees.
+				payment_path.update_value_and_recompute_fees(value_contribution_msat);
+
 				// Since a path allows to transfer as much value as
 				// the smallest channel it has ("bottleneck"), we should recompute
 				// the fees so sender HTLC don't overpay fees when traversing
