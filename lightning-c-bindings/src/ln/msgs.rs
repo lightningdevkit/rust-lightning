@@ -4123,7 +4123,7 @@ pub struct ChannelMessageHandler {
 	/// Handle an incoming funding_locked message from the given peer.
 	pub handle_funding_locked: extern "C" fn (this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingLocked),
 	/// Handle an incoming shutdown message from the given peer.
-	pub handle_shutdown: extern "C" fn (this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::Shutdown),
+	pub handle_shutdown: extern "C" fn (this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, their_features: &crate::ln::features::InitFeatures, msg: &crate::ln::msgs::Shutdown),
 	/// Handle an incoming closing_signed message from the given peer.
 	pub handle_closing_signed: extern "C" fn (this_arg: *const c_void, their_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ClosingSigned),
 	/// Handle an incoming update_add_htlc message from the given peer.
@@ -4181,8 +4181,8 @@ impl rustChannelMessageHandler for ChannelMessageHandler {
 	fn handle_funding_locked(&self, their_node_id: &bitcoin::secp256k1::key::PublicKey, msg: &lightning::ln::msgs::FundingLocked) {
 		(self.handle_funding_locked)(self.this_arg, crate::c_types::PublicKey::from_rust(&their_node_id), &crate::ln::msgs::FundingLocked { inner: unsafe { (msg as *const _) as *mut _ }, is_owned: false })
 	}
-	fn handle_shutdown(&self, their_node_id: &bitcoin::secp256k1::key::PublicKey, msg: &lightning::ln::msgs::Shutdown) {
-		(self.handle_shutdown)(self.this_arg, crate::c_types::PublicKey::from_rust(&their_node_id), &crate::ln::msgs::Shutdown { inner: unsafe { (msg as *const _) as *mut _ }, is_owned: false })
+	fn handle_shutdown(&self, their_node_id: &bitcoin::secp256k1::key::PublicKey, their_features: &lightning::ln::features::InitFeatures, msg: &lightning::ln::msgs::Shutdown) {
+		(self.handle_shutdown)(self.this_arg, crate::c_types::PublicKey::from_rust(&their_node_id), &crate::ln::features::InitFeatures { inner: unsafe { (their_features as *const _) as *mut _ }, is_owned: false }, &crate::ln::msgs::Shutdown { inner: unsafe { (msg as *const _) as *mut _ }, is_owned: false })
 	}
 	fn handle_closing_signed(&self, their_node_id: &bitcoin::secp256k1::key::PublicKey, msg: &lightning::ln::msgs::ClosingSigned) {
 		(self.handle_closing_signed)(self.this_arg, crate::c_types::PublicKey::from_rust(&their_node_id), &crate::ln::msgs::ClosingSigned { inner: unsafe { (msg as *const _) as *mut _ }, is_owned: false })

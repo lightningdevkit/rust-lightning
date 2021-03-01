@@ -702,6 +702,21 @@ public:
 	const LDKAccess* operator &() const { return &self; }
 	const LDKAccess* operator ->() const { return &self; }
 };
+class Listen {
+private:
+	LDKListen self;
+public:
+	Listen(const Listen&) = delete;
+	Listen(Listen&& o) : self(o.self) { memset(&o, 0, sizeof(Listen)); }
+	Listen(LDKListen&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKListen)); }
+	operator LDKListen() && { LDKListen res = self; memset(&self, 0, sizeof(LDKListen)); return res; }
+	~Listen() { Listen_free(self); }
+	Listen& operator=(Listen&& o) { Listen_free(self); self = o.self; memset(&o, 0, sizeof(Listen)); return *this; }
+	LDKListen* operator &() { return &self; }
+	LDKListen* operator ->() { return &self; }
+	const LDKListen* operator &() const { return &self; }
+	const LDKListen* operator ->() const { return &self; }
+};
 class Watch {
 private:
 	LDKWatch self;

@@ -587,7 +587,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 	/// Returns true we if can just skip passing this to C entirely
 	fn no_arg_path_to_rust(&self, full_path: &str) -> &str {
 		if full_path == "bitcoin::secp256k1::Secp256k1" {
-			"&bitcoin::secp256k1::Secp256k1::new()"
+			"secp256k1::SECP256K1"
 		} else { unimplemented!(); }
 	}
 

@@ -826,8 +826,8 @@ impl KeysManager {
 			Err(_) => panic!("Your rng is busted"),
 		}
 	}
-	/// Derive an old set of Sign for per-channel secrets based on a key derivation
-	/// parameters.
+	/// Derive an old Sign containing per-channel secrets based on a key derivation parameters.
+	///
 	/// Key derivation parameters are accessible through a per-channel secrets
 	/// Sign::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
 	/// onchain output detection for which a corresponding delayed_payment_key must be derived.

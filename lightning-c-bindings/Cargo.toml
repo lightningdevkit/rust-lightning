@@ -16,7 +16,19 @@ crate-type = ["staticlib"
 
 [dependencies]
 bitcoin = "0.26"
+secp256k1 = { version = "0.20.1", features = ["global-context-less-secure"] }
 lightning = { version = "0.0.12", path = "../lightning" }
+
+[patch.crates-io]
+# Rust-Secp256k1 PR 279. Should be dropped once merged.
+secp256k1 = { git = 'https://github.com/TheBlueMatt/rust-secp256k1', rev = '15a0d4195a20355f6b1e8f54c84eba56abc15cbd' }
+
+# Always force panic=abort, further options are set in the genbindings.sh build script
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
 
 # We eventually want to join the root workspace, but for now, the bindings generation is
 # a bit brittle and we don't want to hold up other developers from making changes just

@@ -44,8 +44,16 @@ HOST_PLATFORM="$(rustc --version --verbose | grep "host:")"
 if [ "$HOST_PLATFORM" = "host: x86_64-apple-darwin" ]; then
 	# OSX sed is for some reason not compatible with GNU sed
 	sed -i '' 's/typedef LDKnative.*Import.*LDKnative.*;//g' include/lightning.h
+
+	# stdlib.h doesn't exist in clang's wasm sysroot, and cbindgen
+	# doesn't actually use it anyway, so drop the import.
+	sed -i '' 's/#include <stdlib.h>//g' include/lightning.h
 else
 	sed -i 's/typedef LDKnative.*Import.*LDKnative.*;//g' include/lightning.h
+
+	# stdlib.h doesn't exist in clang's wasm sysroot, and cbindgen
+	# doesn't actually use it anyway, so drop the import.
+	sed -i 's/#include <stdlib.h>//g' include/lightning.h
 fi
 
 # Finally, sanity-check the generated C and C++ bindings with demo apps:
@@ -170,6 +178,9 @@ if [ "$HOST_PLATFORM" = "host: x86_64-unknown-linux-gnu" -o "$HOST_PLATFORM" = "
 else
 	echo "WARNING: Can't use address sanitizer on non-Linux, non-OSX non-x86 platforms"
 fi
+
+cargo rustc -v --target=wasm32-wasi -- -C embed-bitcode=yes || echo "WARNING: Failed to generate WASM LLVM-bitcode-embedded library"
+CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release --target=wasm32-wasi -- -C opt-level=s -C linker-plugin-lto -C lto || echo "WARNING: Failed to generate WASM LLVM-bitcode-embedded optimized library"
 
 # Now build with LTO on on both C++ and rust, but without cross-language LTO:
 CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C lto

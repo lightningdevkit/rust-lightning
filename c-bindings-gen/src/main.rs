@@ -835,10 +835,16 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 										takes_self = true;
 									}
 								}
+
+								let mut t_gen_args = String::new();
+								for (idx, _) in $trait.generics.params.iter().enumerate() {
+									if idx != 0 { t_gen_args += ", " };
+									t_gen_args += "_"
+								}
 								if takes_self {
-									write!(w, "unsafe {{ &mut *(this_arg as *mut native{}) }}.{}(", ident, $m.sig.ident).unwrap();
+									write!(w, "<native{} as {}TraitImport<{}>>::{}(unsafe {{ &mut *(this_arg as *mut native{}) }}, ", ident, $trait.ident, t_gen_args, $m.sig.ident, ident).unwrap();
 								} else {
-									write!(w, "{}::{}::{}(", types.orig_crate, resolved_path, $m.sig.ident).unwrap();
+									write!(w, "<native{} as {}TraitImport<{}>>::{}(", ident, $trait.ident, t_gen_args, $m.sig.ident).unwrap();
 								}
 
 								let mut real_type = "".to_string();
