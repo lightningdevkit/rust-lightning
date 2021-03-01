@@ -50,7 +50,6 @@ use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
 use util::events::Event;
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, hash_map};
 use std::{cmp, mem};
 use std::io::Error;
@@ -2474,7 +2473,7 @@ pub trait Persist<ChannelSigner: Sign>: Send + Sync {
 	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
-impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (RefCell<ChannelMonitor<Signer>>, T, F, L)
+impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
@@ -2482,11 +2481,11 @@ where
 {
 	fn block_connected(&self, block: &Block, height: u32) {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		self.0.borrow_mut().block_connected(&block.header, &txdata, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_connected(&block.header, &txdata, height, &*self.1, &*self.2, &*self.3);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		self.0.borrow_mut().block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
+		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
 	}
 }
 
