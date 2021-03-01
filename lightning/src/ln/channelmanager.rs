@@ -4009,8 +4009,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 ///    ChannelManager)>::read(reader, args).
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
-/// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
-///    ChannelMonitor::get_outputs_to_watch() and ChannelMonitor::get_funding_txo().
+/// 3) If you are not fetching full blocks, register all relevant ChannelMonitor outpoints the same
+///    way you would handle a `chain::Filter` call using ChannelMonitor::get_outputs_to_watch() and
+///    ChannelMonitor::get_funding_txo().
 /// 4) Reconnect blocks on your ChannelMonitors.
 /// 5) Disconnect/connect blocks on the ChannelManager.
 /// 6) Move the ChannelMonitors into your local chain::Watch.

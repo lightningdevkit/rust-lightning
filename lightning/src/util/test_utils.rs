@@ -82,9 +82,12 @@ pub struct TestChainMonitor<'a> {
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
-	// If this is set to Some(), after the next return, we'll always return this until update_ret
-	// is changed:
+	/// If this is set to Some(), after the next return, we'll always return this until update_ret
+	/// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
+	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
+	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
+	/// boolean.
 	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
