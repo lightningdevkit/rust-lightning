@@ -97,7 +97,7 @@ jobs:
         if: matrix.coverage
         run: |
           sudo apt-get update
-          sudo apt-get -y install binutils-dev libcurl4-openssl-dev zlib1g-dev libdw-dev libiberty-dev
+          sudo apt-get -y install binutils-dev libcurl4-openssl-dev zlib1g-dev libdw-dev libiberty-dev libcurl4-nss-dev
       - name: Install kcov
         if: matrix.coverage
         run: |
