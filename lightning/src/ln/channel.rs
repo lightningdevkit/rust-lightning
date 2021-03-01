@@ -521,13 +521,16 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
+
 		Ok(Channel {
 			user_id,
 			config: config.channel_options.clone(),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 			channel_value_satoshis,
 
 			latest_monitor_update_id: 0,
@@ -755,13 +758,16 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		} else { None };
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
+
 		let chan = Channel {
 			user_id,
 			config: local_config,
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 
 			latest_monitor_update_id: 0,
 
@@ -1564,7 +1570,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.holder_signer.clone(),
+		let mut channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
 		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
 		                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                              &self.channel_transaction_parameters,
@@ -1634,7 +1640,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo = self.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.holder_signer.clone(),
+		let mut channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
 		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
 		                                              &self.destination_script, (funding_txo, funding_txo_script),
 		                                              &self.channel_transaction_parameters,
@@ -4081,7 +4087,8 @@ impl<Signer: Sign> Channel<Signer> {
 			signature = res.0;
 			htlc_signatures = res.1;
 
-			log_trace!(logger, "Signed remote commitment tx {} with redeemscript {} -> {}",
+			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {}",
+				encode::serialize_hex(&counterparty_commitment_tx.0.trust().built_transaction().transaction),
 				&counterparty_commitment_txid,
 				encode::serialize_hex(&self.get_funding_redeemscript()),
 				log_bytes!(signature.serialize_compact()[..]));
@@ -4608,13 +4615,16 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_shutdown_scriptpubkey = Readable::read(reader)?;
 		let commitment_secrets = Readable::read(reader)?;
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
+
 		Ok(Channel {
 			user_id,
 
 			config,
 			channel_id,
 			channel_state,
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 			channel_value_satoshis,
 
 			latest_monitor_update_id,

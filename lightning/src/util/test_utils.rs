@@ -69,7 +69,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_pubkey(&self) -> PublicKey { unreachable!(); }
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
-	fn get_secure_random_bytes(&self) -> [u8; 32] { unreachable!(); }
+	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		EnforcingSigner::read(&mut std::io::Cursor::new(reader))
@@ -253,12 +253,14 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 		excess_data: Vec::new(),
 	};
 
-	msgs::ChannelAnnouncement {
-		node_signature_1: Signature::from(FFISignature::new()),
-		node_signature_2: Signature::from(FFISignature::new()),
-		bitcoin_signature_1: Signature::from(FFISignature::new()),
-		bitcoin_signature_2: Signature::from(FFISignature::new()),
-		contents: unsigned_ann,
+	unsafe {
+		msgs::ChannelAnnouncement {
+			node_signature_1: Signature::from(FFISignature::new()),
+			node_signature_2: Signature::from(FFISignature::new()),
+			bitcoin_signature_1: Signature::from(FFISignature::new()),
+			bitcoin_signature_2: Signature::from(FFISignature::new()),
+			contents: unsigned_ann,
+		}
 	}
 }
 
@@ -266,7 +268,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	let network = Network::Testnet;
 	msgs::ChannelUpdate {
-		signature: Signature::from(FFISignature::new()),
+		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
 			chain_hash: genesis_block(network).header.block_hash(),
 			short_channel_id: short_chan_id,

@@ -766,7 +766,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods.
 	pub fn new(network: Network, fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
-		let secp_ctx = Secp256k1::new();
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
 		ChannelManager {
 			default_configuration: config.clone(),
@@ -4129,6 +4130,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 		let last_node_announcement_serial: u32 = Readable::read(reader)?;
 
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
+
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
@@ -4137,7 +4141,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
 			last_block_hash: Mutex::new(last_block_hash),
-			secp_ctx: Secp256k1::new(),
+			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,

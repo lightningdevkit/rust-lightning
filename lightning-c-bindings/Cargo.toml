@@ -15,7 +15,7 @@ crate-type = ["staticlib"
 ,"cdylib"]
 
 [dependencies]
-bitcoin = "0.24"
+bitcoin = "0.26"
 lightning = { version = "0.0.12", path = "../lightning" }
 
 # We eventually want to join the root workspace, but for now, the bindings generation is

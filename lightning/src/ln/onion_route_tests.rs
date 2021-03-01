@@ -219,7 +219,7 @@ impl msgs::ChannelUpdate {
 		use bitcoin::secp256k1::ffi::Signature as FFISignature;
 		use bitcoin::secp256k1::Signature;
 		msgs::ChannelUpdate {
-			signature: Signature::from(FFISignature::new()),
+			signature: Signature::from(unsafe { FFISignature::new() }),
 			contents: msgs::UnsignedChannelUpdate {
 				chain_hash: BlockHash::hash(&vec![0u8][..]),
 				short_channel_id: 0,

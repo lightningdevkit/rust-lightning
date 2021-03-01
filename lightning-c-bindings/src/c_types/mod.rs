@@ -72,8 +72,8 @@ pub enum Secp256k1Error {
 	InvalidSecretKey,
 	InvalidRecoveryId,
 	InvalidTweak,
+	TweakCheckFailed,
 	NotEnoughMemory,
-	CallbackPanicked,
 }
 impl Secp256k1Error {
 	pub(crate) fn from_rust(err: SecpError) -> Self {
@@ -85,6 +85,7 @@ impl Secp256k1Error {
 			SecpError::InvalidSecretKey => Secp256k1Error::InvalidSecretKey,
 			SecpError::InvalidRecoveryId => Secp256k1Error::InvalidRecoveryId,
 			SecpError::InvalidTweak => Secp256k1Error::InvalidTweak,
+			SecpError::TweakCheckFailed => Secp256k1Error::TweakCheckFailed,
 			SecpError::NotEnoughMemory => Secp256k1Error::NotEnoughMemory,
 		}
 	}
