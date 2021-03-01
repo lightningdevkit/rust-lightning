@@ -536,7 +536,7 @@ fn writeln_opaque<W: std::io::Write>(w: &mut W, ident: &syn::Ident, struct_name:
 	writeln!(w, "\t/// the Rust equivalent takes an Option, it may be set to null to indicate None.").unwrap();
 	writeln!(w, "\tpub inner: *mut native{},\n\tpub is_owned: bool,\n}}\n", ident).unwrap();
 	writeln!(w, "impl Drop for {} {{\n\tfn drop(&mut self) {{", struct_name).unwrap();
-	writeln!(w, "\t\tif self.is_owned && !self.inner.is_null() {{").unwrap();
+	writeln!(w, "\t\tif self.is_owned && !<*mut native{}>::is_null(self.inner) {{", ident).unwrap();
 	writeln!(w, "\t\t\tlet _ = unsafe {{ Box::from_raw(self.inner) }};\n\t\t}}\n\t}}\n}}").unwrap();
 	writeln!(w, "#[no_mangle]\npub extern \"C\" fn {}_free(this_ptr: {}) {{ }}", struct_name, struct_name).unwrap();
 	writeln!(w, "#[allow(unused)]").unwrap();
@@ -913,7 +913,7 @@ fn writeln_impl<W: std::io::Write>(w: &mut W, i: &syn::ItemImpl, types: &mut Typ
 						writeln!(w, "impl Clone for {} {{", ident).unwrap();
 						writeln!(w, "\tfn clone(&self) -> Self {{").unwrap();
 						writeln!(w, "\t\tSelf {{").unwrap();
-						writeln!(w, "\t\t\tinner: if self.inner.is_null() {{ std::ptr::null_mut() }} else {{").unwrap();
+						writeln!(w, "\t\t\tinner: if <*mut native{}>::is_null(self.inner) {{ std::ptr::null_mut() }} else {{", ident).unwrap();
 						writeln!(w, "\t\t\t\tBox::into_raw(Box::new(unsafe {{ &*self.inner }}.clone())) }},").unwrap();
 						writeln!(w, "\t\t\tis_owned: true,").unwrap();
 						writeln!(w, "\t\t}}\n\t}}\n}}").unwrap();
