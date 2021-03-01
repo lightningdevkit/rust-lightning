@@ -43,7 +43,7 @@ use util::events;
 use util::events::Event;
 
 use std::collections::{HashMap, hash_map};
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::ops::Deref;
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
@@ -64,7 +64,7 @@ pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: De
         P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// The monitors
-	pub monitors: Mutex<HashMap<OutPoint, ChannelMonitor<ChannelSigner>>>,
+	pub monitors: RwLock<HashMap<OutPoint, ChannelMonitor<ChannelSigner>>>,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -93,8 +93,8 @@ where C::Target: chain::Filter,
 	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
 	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		let mut monitors = self.monitors.lock().unwrap();
-		for monitor in monitors.values_mut() {
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
 			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
 			if let Some(ref chain_source) = self.chain_source {
@@ -113,8 +113,8 @@ where C::Target: chain::Filter,
 	///
 	/// [`ChannelMonitor::block_disconnected`]: ../channelmonitor/struct.ChannelMonitor.html#method.block_disconnected
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let mut monitors = self.monitors.lock().unwrap();
-		for monitor in monitors.values_mut() {
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
 			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 		}
 	}
@@ -130,7 +130,7 @@ where C::Target: chain::Filter,
 	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
-			monitors: Mutex::new(HashMap::new()),
+			monitors: RwLock::new(HashMap::new()),
 			chain_source,
 			broadcaster,
 			logger,
@@ -177,7 +177,7 @@ where C::Target: chain::Filter,
 	///
 	/// [`chain::Filter`]: ../trait.Filter.html
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
-		let mut monitors = self.monitors.lock().unwrap();
+		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
 				log_error!(self.logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
@@ -209,8 +209,8 @@ where C::Target: chain::Filter,
 	/// `ChainMonitor` monitors lock.
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr> {
 		// Update the monitor that watches the channel referred to by the given outpoint.
-		let mut monitors = self.monitors.lock().unwrap();
-		match monitors.get_mut(&funding_txo) {
+		let monitors = self.monitors.read().unwrap();
+		match monitors.get(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
 
@@ -245,7 +245,7 @@ where C::Target: chain::Filter,
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
 		let mut pending_monitor_events = Vec::new();
-		for monitor in self.monitors.lock().unwrap().values_mut() {
+		for monitor in self.monitors.read().unwrap().values() {
 			pending_monitor_events.append(&mut monitor.get_and_clear_pending_monitor_events());
 		}
 		pending_monitor_events
@@ -261,7 +261,7 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();
-		for monitor in self.monitors.lock().unwrap().values_mut() {
+		for monitor in self.monitors.read().unwrap().values() {
 			pending_events.append(&mut monitor.get_and_clear_pending_events());
 		}
 		pending_events
