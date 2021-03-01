@@ -222,15 +222,15 @@ where C::Target: chain::Filter,
 				#[cfg(not(any(test, feature = "fuzztarget")))]
 				Err(ChannelMonitorUpdateErr::PermanentFailure)
 			},
-			Some(orig_monitor) => {
-				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(orig_monitor));
-				let update_res = orig_monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
+			Some(monitor) => {
+				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(monitor));
+				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
 				if let Err(e) = &update_res {
 					log_error!(self.logger, "Failed to update channel monitor: {:?}", e);
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
-				let persist_res = self.persister.update_persisted_channel(funding_txo, &update, orig_monitor);
+				let persist_res = self.persister.update_persisted_channel(funding_txo, &update, monitor);
 				if let Err(ref e) = persist_res {
 					log_error!(self.logger, "Failed to persist channel monitor update: {:?}", e);
 				}
@@ -245,8 +245,8 @@ where C::Target: chain::Filter,
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
 		let mut pending_monitor_events = Vec::new();
-		for chan in self.monitors.lock().unwrap().values_mut() {
-			pending_monitor_events.append(&mut chan.get_and_clear_pending_monitor_events());
+		for monitor in self.monitors.lock().unwrap().values_mut() {
+			pending_monitor_events.append(&mut monitor.get_and_clear_pending_monitor_events());
 		}
 		pending_monitor_events
 	}
@@ -261,8 +261,8 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 {
 	fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		let mut pending_events = Vec::new();
-		for chan in self.monitors.lock().unwrap().values_mut() {
-			pending_events.append(&mut chan.get_and_clear_pending_events());
+		for monitor in self.monitors.lock().unwrap().values_mut() {
+			pending_events.append(&mut monitor.get_and_clear_pending_events());
 		}
 		pending_events
 	}
