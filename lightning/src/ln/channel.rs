@@ -1570,13 +1570,13 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
-		                                              &self.destination_script, (funding_txo, funding_txo_script.clone()),
-		                                              &self.channel_transaction_parameters,
-		                                              funding_redeemscript.clone(), self.channel_value_satoshis,
-		                                              obscure_factor,
-		                                              holder_commitment_tx);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          &self.destination_script, (funding_txo, funding_txo_script.clone()),
+		                                          &self.channel_transaction_parameters,
+		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                          obscure_factor,
+		                                          holder_commitment_tx);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
@@ -1640,13 +1640,13 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo = self.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
-		let mut channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                              &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
-		                                              &self.destination_script, (funding_txo, funding_txo_script),
-		                                              &self.channel_transaction_parameters,
-		                                              funding_redeemscript.clone(), self.channel_value_satoshis,
-		                                              obscure_factor,
-		                                              holder_commitment_tx);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          &self.destination_script, (funding_txo, funding_txo_script),
+		                                          &self.channel_transaction_parameters,
+		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
+		                                          obscure_factor,
+		                                          holder_commitment_tx);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 

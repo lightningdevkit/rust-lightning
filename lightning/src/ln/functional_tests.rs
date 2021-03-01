@@ -8228,8 +8228,8 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	{
 		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
 		if let Some(monitor) = monitors.get(&OutPoint { txid: chan.3.txid(), index: 0 }) {
-			assert!(monitor.onchain_tx_handler.pending_claim_requests.is_empty());
-			assert!(monitor.onchain_tx_handler.claimable_outpoints.is_empty());
+			assert!(monitor.inner.lock().unwrap().onchain_tx_handler.pending_claim_requests.is_empty());
+			assert!(monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints.is_empty());
 		}
 	}
 }
