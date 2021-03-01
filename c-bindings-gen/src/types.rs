@@ -1946,11 +1946,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 									if !self.write_c_path_intern(w, &$p_arg.path, generics, true, true, true) { return false; }
 								}
 							} else {
-								if $p_arg.path.segments.len() == 1 {
-									write!(w, "{}", $p_arg.path.segments.iter().next().unwrap().ident).unwrap();
-								} else {
-									return false;
-								}
+								write!(w, "{}", $p_arg.path.segments.last().unwrap().ident).unwrap();
 							}
 						} else if self.is_known_container(&subtype, is_ref) || self.is_transparent_container(&subtype, is_ref) {
 							if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path), generics,
