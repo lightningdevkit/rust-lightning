@@ -353,6 +353,44 @@ macro_rules! encode_msg {
 	}}
 }
 
+impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, L> where
+		CM::Target: ChannelMessageHandler,
+		L::Target: Logger {
+	/// Constructs a new PeerManager with the given ChannelMessageHandler. No routing message
+	/// handler is used and network graph messages are ignored.
+	///
+	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// cryptographically secure random bytes.
+	///
+	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
+	pub fn new_channel_only(channel_message_handler: CM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+		Self::new(MessageHandler {
+			chan_handler: channel_message_handler,
+			route_handler: IgnoringMessageHandler{},
+		}, our_node_secret, ephemeral_random_data, logger)
+	}
+}
+
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, L> where
+		RM::Target: RoutingMessageHandler,
+		L::Target: Logger {
+	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message
+	/// handler is used and messages related to channels will be ignored (or generate error
+	/// messages). Note that some other lightning implementations time-out connections after some
+	/// time if no channel is built with the peer.
+	///
+	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// cryptographically secure random bytes.
+	///
+	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
+	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+		Self::new(MessageHandler {
+			chan_handler: ErroringMessageHandler::new(),
+			route_handler: routing_message_handler,
+		}, our_node_secret, ephemeral_random_data, logger)
+	}
+}
+
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
 /// PeerIds may repeat, but only after socket_disconnected() has been called.
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<Descriptor, CM, RM, L> where
