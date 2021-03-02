@@ -1682,6 +1682,19 @@ impl Writeable for ReplyShortChannelIdsEnd {
 	}
 }
 
+impl QueryChannelRange {
+	/**
+	 * Calculates the overflow safe ending block height for the query.
+	 * Overflow returns `0xffffffff`, otherwise returns `first_blocknum + number_of_blocks`
+	 */
+	pub fn end_blocknum(&self) -> u32 {
+		match self.first_blocknum.checked_add(self.number_of_blocks) {
+			Some(block) => block,
+			None => 0xffffffff,
+		}
+	}
+}
+
 impl Readable for QueryChannelRange {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: BlockHash = Readable::read(r)?;
@@ -2521,6 +2534,24 @@ mod tests {
 		} else { panic!(); }
 		assert_eq!(msg.amt_to_forward, 0x0badf00d01020304);
 		assert_eq!(msg.outgoing_cltv_value, 0xffffffff);
+	}
+
+	#[test]
+	fn query_channel_range_end_blocknum() {
+		let tests: Vec<(u32, u32, u32)> = vec![
+			(10000, 1500, 11500),
+			(0, 0xffffffff, 0xffffffff),
+			(1, 0xffffffff, 0xffffffff),
+		];
+
+		for (first_blocknum, number_of_blocks, expected) in tests.into_iter() {
+			let sut = msgs::QueryChannelRange {
+				chain_hash: BlockHash::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap(),
+				first_blocknum,
+				number_of_blocks,
+			};
+			assert_eq!(sut.end_blocknum(), expected);
+		}
 	}
 
 	#[test]
