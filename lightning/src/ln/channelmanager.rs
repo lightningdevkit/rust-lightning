@@ -389,7 +389,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
 /// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for (Sha256dHash, ChannelManager), which
+/// Note that the deserializer is only implemented for (BlockHash, ChannelManager), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
@@ -4005,8 +4005,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
 /// is:
 /// 1) Deserialize all stored ChannelMonitors.
-/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Sha256dHash,
-///    ChannelManager)>::read(reader, args).
+/// 2) Deserialize the ChannelManager by filling in this struct and calling:
+///    <(BlockHash, ChannelManager)>::read(reader, args)
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
 /// 3) If you are not fetching full blocks, register all relevant ChannelMonitor outpoints the same
