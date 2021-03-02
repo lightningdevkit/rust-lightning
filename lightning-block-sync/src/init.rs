@@ -61,7 +61,7 @@ use lightning::chain;
 /// ) {
 /// 	// Read a serialized channel monitor paired with the block hash when it was persisted.
 /// 	let serialized_monitor = "...";
-/// 	let (monitor_block_hash, mut monitor) = <(BlockHash, ChannelMonitor<S>)>::read(
+/// 	let (monitor_block_hash_option, mut monitor) = <(Option<BlockHash>, ChannelMonitor<S>)>::read(
 /// 		&mut Cursor::new(&serialized_monitor), keys_manager).unwrap();
 ///
 /// 	// Read the channel manager paired with the block hash when it was persisted.
@@ -83,9 +83,10 @@ use lightning::chain;
 /// 	// Synchronize any channel monitors and the channel manager to be on the best block.
 /// 	let mut cache = UnboundedCache::new();
 /// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
-/// 	let mut listeners = vec![
-/// 		(monitor_block_hash, &mut monitor_listener as &mut dyn chain::Listen),
-/// 	];
+/// 	let mut listeners = vec![];
+/// 	if let Some(monitor_block_hash) = monitor_block_hash_option {
+/// 		listeners.push((monitor_block_hash, &mut monitor_listener as &mut dyn chain::Listen))
+/// 	}
 /// 	if let Some(manager_block_hash) = manager_block_hash_option {
 /// 		listeners.push((manager_block_hash, &mut manager as &mut dyn chain::Listen))
 /// 	}
