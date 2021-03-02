@@ -33,22 +33,133 @@ use routing::network_graph::NetGraphMsgHandler;
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{cmp,error,hash,fmt};
+use std::{cmp, error, hash, fmt, mem};
 use std::ops::Deref;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 
+/// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
+/// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
+struct IgnoringMessageHandler{}
+impl MessageSendEventsProvider for IgnoringMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
+}
+impl RoutingMessageHandler for IgnoringMessageHandler {
+	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
+	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
+	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
+	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
+	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) ->
+		Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { Vec::new() }
+	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> { Vec::new() }
+	fn sync_routing_table(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
+	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
+	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
+	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+}
+impl Deref for IgnoringMessageHandler {
+	type Target = IgnoringMessageHandler;
+	fn deref(&self) -> &Self { self }
+}
+
+/// A dummy struct which implements `ChannelMessageHandler` without having any channels.
+/// You can provide one of these as the route_handler in a MessageHandler.
+struct ErroringMessageHandler {
+	message_queue: Mutex<Vec<MessageSendEvent>>
+}
+impl ErroringMessageHandler {
+	/// Constructs a new ErroringMessageHandler
+	pub fn new() -> Self {
+		Self { message_queue: Mutex::new(Vec::new()) }
+	}
+	fn push_error(&self, node_id: &PublicKey, channel_id: [u8; 32]) {
+		self.message_queue.lock().unwrap().push(MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage {
+				msg: msgs::ErrorMessage { channel_id, data: "We do not support channel messages, sorry.".to_owned() },
+			},
+			node_id: node_id.clone(),
+		});
+	}
+}
+impl MessageSendEventsProvider for ErroringMessageHandler {
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+		let mut res = Vec::new();
+		mem::swap(&mut res, &mut self.message_queue.lock().unwrap());
+		res
+	}
+}
+impl ChannelMessageHandler for ErroringMessageHandler {
+	// Any messages which are related to a specific channel generate an error message to let the
+	// peer know we don't care about channels.
+	fn handle_open_channel(&self, their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::OpenChannel) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+	}
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::AcceptChannel) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+	}
+	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+	}
+	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_shutdown(&self, their_node_id: &PublicKey, _their_features: &InitFeatures, msg: &msgs::Shutdown) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFee) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
+	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
+}
+impl Deref for ErroringMessageHandler {
+	type Target = ErroringMessageHandler;
+	fn deref(&self) -> &Self { self }
+}
+
 /// Provides references to trait impls which handle different types of messages.
 pub struct MessageHandler<CM: Deref, RM: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler {
 	/// A message handler which handles messages specific to channels. Usually this is just a
-	/// ChannelManager object.
+	/// ChannelManager object or a ErroringMessageHandler.
 	pub chan_handler: CM,
 	/// A message handler which handles messages updating our knowledge of the network channel
-	/// graph. Usually this is just a NetGraphMsgHandlerMonitor object.
+	/// graph. Usually this is just a NetGraphMsgHandlerMonitor object or an IgnoringMessageHandler.
 	pub route_handler: RM,
 }
 
@@ -240,6 +351,44 @@ macro_rules! encode_msg {
 		wire::write($msg, &mut buffer).unwrap();
 		buffer.0
 	}}
+}
+
+impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, L> where
+		CM::Target: ChannelMessageHandler,
+		L::Target: Logger {
+	/// Constructs a new PeerManager with the given ChannelMessageHandler. No routing message
+	/// handler is used and network graph messages are ignored.
+	///
+	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// cryptographically secure random bytes.
+	///
+	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
+	pub fn new_channel_only(channel_message_handler: CM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+		Self::new(MessageHandler {
+			chan_handler: channel_message_handler,
+			route_handler: IgnoringMessageHandler{},
+		}, our_node_secret, ephemeral_random_data, logger)
+	}
+}
+
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, L> where
+		RM::Target: RoutingMessageHandler,
+		L::Target: Logger {
+	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message
+	/// handler is used and messages related to channels will be ignored (or generate error
+	/// messages). Note that some other lightning implementations time-out connections after some
+	/// time if no channel is built with the peer.
+	///
+	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// cryptographically secure random bytes.
+	///
+	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
+	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+		Self::new(MessageHandler {
+			chan_handler: ErroringMessageHandler::new(),
+			route_handler: routing_message_handler,
+		}, our_node_secret, ephemeral_random_data, logger)
+	}
 }
 
 /// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
