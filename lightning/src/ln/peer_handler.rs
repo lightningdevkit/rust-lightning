@@ -42,7 +42,7 @@ use bitcoin::hashes::{HashEngine, Hash};
 
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
 /// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
-struct IgnoringMessageHandler{}
+pub struct IgnoringMessageHandler{}
 impl MessageSendEventsProvider for IgnoringMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> { Vec::new() }
 }
@@ -67,7 +67,7 @@ impl Deref for IgnoringMessageHandler {
 
 /// A dummy struct which implements `ChannelMessageHandler` without having any channels.
 /// You can provide one of these as the route_handler in a MessageHandler.
-struct ErroringMessageHandler {
+pub struct ErroringMessageHandler {
 	message_queue: Mutex<Vec<MessageSendEvent>>
 }
 impl ErroringMessageHandler {
