@@ -172,7 +172,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				for (_, old_monitor) in old_monitors.iter() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					old_monitor.write(&mut w).unwrap();
-					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+					let (_, deserialized_monitor) = <(Option<BlockHash>, ChannelMonitor<EnforcingSigner>)>::read(
 						&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}

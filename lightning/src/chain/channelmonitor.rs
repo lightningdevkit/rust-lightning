@@ -2317,7 +2317,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
-		for (BlockHash, ChannelMonitor<Signer>) {
+		for (Option<BlockHash>, ChannelMonitor<Signer>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -2560,7 +2560,12 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
-		Ok((last_block_hash.clone(), ChannelMonitor {
+		let mut last_seen_block_hash = Some(last_block_hash.clone());
+		if last_block_hash == Default::default() {
+			last_seen_block_hash = None;
+		}
+
+		Ok((last_seen_block_hash, ChannelMonitor {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
 
