@@ -7,6 +7,18 @@ use bitcoin::network::constants::Network;
 
 use lightning::chain;
 
+/// Returns a validated block header of the source's best chain tip.
+///
+/// Upon success, the returned header can be used to initialize [`SpvClient`]. Useful during a fresh
+/// start when there are no chain listeners to sync yet.
+pub async fn validate_best_block_header<B: BlockSource>(block_source: &mut B) ->
+BlockSourceResult<ValidatedBlockHeader> {
+	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
+	block_source
+		.get_header(&best_block_hash, best_block_height).await?
+		.validate(best_block_hash)
+}
+
 /// Performs a one-time sync of chain listeners using a single *trusted* block source, bringing each
 /// listener's view of the chain from its paired block hash to `block_source`'s best chain tip.
 ///
@@ -110,10 +122,7 @@ pub async fn synchronize_listeners<B: BlockSource, C: Cache>(
 	header_cache: &mut C,
 	mut chain_listeners: Vec<(BlockHash, &mut dyn chain::Listen)>,
 ) -> BlockSourceResult<ValidatedBlockHeader> {
-	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
-	let best_header = block_source
-		.get_header(&best_block_hash, best_block_height).await?
-		.validate(best_block_hash)?;
+	let best_header = validate_best_block_header(block_source).await?;
 
 	// Fetch the header for the block hash paired with each listener.
 	let mut chain_listeners_with_old_headers = Vec::new();
