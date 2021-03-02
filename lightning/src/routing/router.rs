@@ -372,8 +372,43 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// 8. Choose the best route by the lowest total fee.
 
 	// As for the actual search algorithm,
-	// we do a payee-to-payer Dijkstra's sorting by each node's distance from the payee
-	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
+	// we do a payee-to-payer pseudo-Dijkstra's sorting by each node's distance from the payee
+	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty pseudo-A*").
+	//
+	// We are not a faithful Dijkstra's implementation because we can change values which impact
+	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
+	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) then
+	// the value we are currently attempting to send over a path, we simply reduce the value being
+	// sent along the path for any hops after that channel. This may imply that later fees (which
+	// we've already tabulated) are lower because a smaller value is passing through the channels
+	// (and the proportional fee is thus lower). There isn't a trivial way to recalculate the
+	// channels which were selected earlier (and which may still be used for other paths without a
+	// lower liquidity limit), so we simply accept that some liquidity-limited paths may be
+	// de-preferenced.
+	//
+	// One potentially problematic case for this algorithm would be if there are many
+	// liquidity-limited paths which are liquidity-limited near the destination (ie early in our
+	// graph walking), we may never find a path which is not liquidity-limited and has lower
+	// proportional fee (and only lower absolute fee when considering the ultimate value sent).
+	// Because we only consider paths with at least 5% of the total value being sent, the damage
+	// from such a case should be limited, however this could be further reduced in the future by
+	// calculating fees on the amount we wish to route over a path, ie ignoring the liquidity
+	// limits for the purposes of fee calculation.
+	//
+	// Alternatively, we could store more detailed path information in the heap (targets, below)
+	// and index the best-path map (dist, below) by node *and* HTLC limits, however that would blow
+	// up the runtime significantly both algorithmically (as we'd traverse nodes multiple times)
+	// and practically (as we would need to store dynamically-allocated path information in heap
+	// objects, increasing malloc traffic and indirect memory access significantly). Further, the
+	// results of such an algorithm would likely be biased towards lower-value paths.
+	//
+	// Further, we could return to a faithful Dijkstra's algorithm by rejecting paths with limits
+	// outside of our current search value, running a path search more times to gather candidate
+	// paths at different values. While this may be acceptable, further path searches may increase
+	// runtime for little gain. Specifically, the current algorithm rather efficiently explores the
+	// graph for candidate paths, calculating the maximum value which can realistically be sent at
+	// the same time, remaining generic across different payment values.
+	//
 	// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
 	// to use as the A* heuristic beyond just the cost to get one node further than the current
 	// one.
