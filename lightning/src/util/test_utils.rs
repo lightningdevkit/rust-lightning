@@ -133,7 +133,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
-		let monitors = self.chain_monitor.monitors.lock().unwrap();
+		let monitors = self.chain_monitor.monitors.read().unwrap();
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();

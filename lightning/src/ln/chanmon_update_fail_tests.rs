@@ -102,7 +102,7 @@ fn test_monitor_and_persister_update_fail() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
 	let chain_mon = {
-		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.lock().unwrap();
+		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();

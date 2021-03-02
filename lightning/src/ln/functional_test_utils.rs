@@ -168,7 +168,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let feeest = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 			let mut deserialized_monitors = Vec::new();
 			{
-				let old_monitors = self.chain_monitor.chain_monitor.monitors.lock().unwrap();
+				let old_monitors = self.chain_monitor.chain_monitor.monitors.read().unwrap();
 				for (_, old_monitor) in old_monitors.iter() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					old_monitor.write(&mut w).unwrap();
@@ -305,9 +305,9 @@ macro_rules! get_feerate {
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
-			let mut monitors = $node.chain_monitor.chain_monitor.monitors.lock().unwrap();
+			let monitors = $node.chain_monitor.chain_monitor.monitors.read().unwrap();
 			let mut commitment_txn = None;
-			for (funding_txo, monitor) in monitors.iter_mut() {
+			for (funding_txo, monitor) in monitors.iter() {
 				if funding_txo.to_channel_id() == $channel_id {
 					commitment_txn = Some(monitor.unsafe_get_latest_holder_commitment_txn(&$node.logger));
 					break;

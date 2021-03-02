@@ -38,7 +38,6 @@ use lightning::chain;
 ///
 /// use lightning_block_sync::*;
 ///
-/// use std::cell::RefCell;
 /// use std::io::Cursor;
 ///
 /// async fn init_sync<
@@ -83,7 +82,7 @@ use lightning::chain;
 ///
 /// 	// Synchronize any channel monitors and the channel manager to be on the best block.
 /// 	let mut cache = UnboundedCache::new();
-/// 	let mut monitor_listener = (RefCell::new(monitor), &*tx_broadcaster, &*fee_estimator, &*logger);
+/// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
 /// 	let listeners = vec![
 /// 		(monitor_block_hash, &mut monitor_listener as &mut dyn chain::Listen),
 /// 		(manager_block_hash, &mut manager as &mut dyn chain::Listen),
@@ -92,7 +91,7 @@ use lightning::chain;
 /// 		block_source, Network::Bitcoin, &mut cache, listeners).await.unwrap();
 ///
 /// 	// Allow the chain monitor to watch any channels.
-/// 	let monitor = monitor_listener.0.into_inner();
+/// 	let monitor = monitor_listener.0;
 /// 	chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 ///
 /// 	// Create an SPV client to notify the chain monitor and channel manager of block events.
