@@ -156,6 +156,14 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 	}
 }
 
+impl TryInto<serde_json::Value> for JsonResponse {
+	type Error = std::io::Error;
+
+	fn try_into(self) -> std::io::Result<serde_json::Value> {
+		Ok(self.0)
+	}
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
 	use super::*;
