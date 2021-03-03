@@ -231,7 +231,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								proportional_millionths: slice_to_be32(get_slice!(4)),
 							},
 							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
-							htlc_minimum_msat: slice_to_be64(get_slice!(8)),
+							htlc_minimum_msat: Some(slice_to_be64(get_slice!(8))),
+							htlc_maximum_msat: None,
 						});
 					}
 				}

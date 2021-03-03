@@ -3325,7 +3325,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
 			// to use full capacity. This is an effort to reduce routing failures, because in many cases
 			// channel might have been used to route very small values (either by honest users or as DoS).
-			self.channel_value_satoshis * 9 / 10,
+			self.channel_value_satoshis * 1000 * 9 / 10,
 
 			Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
 		);
