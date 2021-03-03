@@ -461,6 +461,24 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	logger: L,
 }
 
+/// Chain-related parameters used to construct a new `ChannelManager`.
+///
+/// Typically, the block-specific parameters are derived from the best block hash for the network,
+/// as a newly constructed `ChannelManager` will not have created any channels yet. These parameters
+/// are not needed when deserializing a previously constructed `ChannelManager`.
+pub struct ChainParameters {
+	/// The network for determining the `chain_hash` in Lightning messages.
+	pub network: Network,
+
+	/// The hash of the latest block successfully connected.
+	pub latest_hash: BlockHash,
+
+	/// The height of the latest block successfully connected.
+	///
+	/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
+	pub latest_height: usize,
+}
+
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
 /// desirable to notify any listeners on `wait_timeout`/`wait` that new updates are available for
 /// persistence. Therefore, this struct is responsible for locking the total consistency lock and,
@@ -770,24 +788,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	///
-	/// Users must provide the current blockchain height from which to track onchain channel
-	/// funding outpoints and send payments with reliable timelocks.
-	///
 	/// Users need to notify the new ChannelManager when a new block is connected or
-	/// disconnected using its `block_connected` and `block_disconnected` methods.
-	pub fn new(network: Network, fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
+	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
+	/// from after `params.latest_hash`.
+	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
 		ChannelManager {
 			default_configuration: config.clone(),
-			genesis_hash: genesis_block(network).header.block_hash(),
+			genesis_hash: genesis_block(params.network).header.block_hash(),
 			fee_estimator: fee_est,
 			chain_monitor,
 			tx_broadcaster,
 
-			latest_block_height: AtomicUsize::new(current_blockchain_height),
-			last_block_hash: Mutex::new(Default::default()),
+			latest_block_height: AtomicUsize::new(params.latest_height),
+			last_block_hash: Mutex::new(params.latest_hash),
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
