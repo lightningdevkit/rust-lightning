@@ -946,7 +946,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
 				// so that the sender pays less fees overall. And also htlc_minimum_msat.
 				cur_route.sort_by_key(|path| { path.hops.iter().map(|hop| hop.channel_fees.proportional_millionths as u64).sum::<u64>() });
-				let mut expensive_payment_path = cur_route.first_mut().unwrap();
+				let expensive_payment_path = cur_route.first_mut().unwrap();
 				// We already dropped all the small channels above, meaning all the
 				// remaining channels are larger than remaining overpaid_value_msat.
 				// Thus, this can't be negative.
@@ -961,7 +961,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// Step (8).
 	// Select the best route by lowest total fee.
 	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
-	let mut selected_paths = Vec::<Vec::<RouteHop>>::new();
+	let mut selected_paths = vec![];
 	for payment_path in drawn_routes.first().unwrap() {
 		selected_paths.push(payment_path.hops.iter().map(|payment_hop| payment_hop.route_hop.clone()).collect());
 	}
