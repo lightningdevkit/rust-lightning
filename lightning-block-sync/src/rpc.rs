@@ -34,7 +34,7 @@ impl RpcClient {
 	}
 
 	/// Calls a method with the response encoded in JSON format and interpreted as type `T`.
-	async fn call_method<T>(&mut self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
+	pub async fn call_method<T>(&mut self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
 	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = self.endpoint.path();

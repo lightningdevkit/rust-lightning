@@ -24,7 +24,7 @@ impl RestClient {
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
-	async fn request_resource<F, T>(&mut self, resource_path: &str) -> std::io::Result<T>
+	pub async fn request_resource<F, T>(&mut self, resource_path: &str) -> std::io::Result<T>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
