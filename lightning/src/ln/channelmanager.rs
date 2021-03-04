@@ -3255,8 +3255,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
-		let header_hash = header.block_hash();
-		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "Block {} at height {} connected", block_hash, height);
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
@@ -3347,7 +3347,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header_hash;
+		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = block_hash;
 		loop {
 			// Update last_node_announcement_serial to be the max of its current value and the
 			// block timestamp. This should keep us close to the current time without relying on
