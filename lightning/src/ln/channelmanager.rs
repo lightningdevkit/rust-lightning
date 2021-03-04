@@ -3377,7 +3377,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
-		*self.last_block_hash.write().unwrap() = header.block_hash();
+		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
 
 		let mut failed_channels = Vec::new();
 		{

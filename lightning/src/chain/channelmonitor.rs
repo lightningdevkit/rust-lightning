@@ -2090,8 +2090,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
-		let block_hash = header.block_hash();
-		log_trace!(logger, "Block {} at height {} disconnected", block_hash, height);
+		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
 
 		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
@@ -2101,7 +2100,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
-		self.last_block_hash = block_hash;
+		self.last_block_hash = header.prev_blockhash;
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
