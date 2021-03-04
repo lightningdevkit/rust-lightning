@@ -544,6 +544,10 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
+	/// Fee charged by this node per transaction.
+	pub fee_base_msat: u32,
+	/// Fee charged by this node proportional to the amount routed.
+	pub fee_proportional_millionths: u32,
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
@@ -863,6 +867,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
 					is_live: channel.is_live(),
+					fee_base_msat: channel.get_holder_fee_base_msat(&self.fee_estimator),
+					fee_proportional_millionths: channel.get_fee_proportional_millionths(),
 				});
 			}
 		}

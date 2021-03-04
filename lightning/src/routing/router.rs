@@ -1443,6 +1443,8 @@ mod tests {
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)) {
@@ -1757,6 +1759,8 @@ mod tests {
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
@@ -1804,6 +1808,8 @@ mod tests {
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
@@ -1868,6 +1874,8 @@ mod tests {
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
@@ -2004,6 +2012,8 @@ mod tests {
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 		let mut last_hops = last_hops(&nodes);
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -2132,6 +2142,8 @@ mod tests {
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
 
@@ -2261,6 +2273,8 @@ mod tests {
 			outbound_capacity_msat: 200_000_000,
 			inbound_capacity_msat: 0,
 			is_live: true,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
 		}];
 
 		{
