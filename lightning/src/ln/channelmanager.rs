@@ -4153,10 +4153,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
 			let mut channel: Channel<Signer> = Channel::read(reader, &args.keys_manager)?;
-			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
-				return Err(DecodeError::InvalidValue);
-			}
-
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {

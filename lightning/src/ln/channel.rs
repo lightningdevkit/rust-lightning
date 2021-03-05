@@ -39,7 +39,6 @@ use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
 
 use std;
-use std::default::Default;
 use std::{cmp,mem,fmt};
 use std::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -368,8 +367,6 @@ pub(super) struct Channel<Signer: Sign> {
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	short_channel_id: Option<u64>,
-	/// Used to verify consistency during ChannelManager deserialization (hence pub(super)).
-	pub(super) last_block_connected: BlockHash,
 	funding_tx_confirmations: u64,
 
 	counterparty_dust_limit_satoshis: u64,
@@ -568,7 +565,6 @@ impl<Signer: Sign> Channel<Signer> {
 
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
-			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
 			feerate_per_kw: feerate,
@@ -804,7 +800,6 @@ impl<Signer: Sign> Channel<Signer> {
 
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
-			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
 			feerate_per_kw: msg.feerate_per_kw,
@@ -3568,7 +3563,6 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		self.last_block_connected = header.block_hash();
 		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
 		if self.funding_tx_confirmations > 0 {
 			if self.funding_tx_confirmations == self.minimum_depth as u64 {
@@ -3590,7 +3584,7 @@ impl<Signer: Sign> Channel<Signer> {
 					// funding_tx_confirmed_in and return.
 					false
 				};
-				self.funding_tx_confirmed_in = Some(self.last_block_connected);
+				self.funding_tx_confirmed_in = Some(header.block_hash());
 
 				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
@@ -3623,8 +3617,7 @@ impl<Signer: Sign> Channel<Signer> {
 				return true;
 			}
 		}
-		self.last_block_connected = header.block_hash();
-		if Some(self.last_block_connected) == self.funding_tx_confirmed_in {
+		if Some(header.block_hash()) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
 		false
@@ -4433,8 +4426,6 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.funding_tx_confirmed_in.write(writer)?;
 		self.short_channel_id.write(writer)?;
-
-		self.last_block_connected.write(writer)?;
 		self.funding_tx_confirmations.write(writer)?;
 
 		self.counterparty_dust_limit_satoshis.write(writer)?;
@@ -4595,8 +4586,6 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
 		let short_channel_id = Readable::read(reader)?;
-
-		let last_block_connected = Readable::read(reader)?;
 		let funding_tx_confirmations = Readable::read(reader)?;
 
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
@@ -4667,7 +4656,6 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 			funding_tx_confirmed_in,
 			short_channel_id,
-			last_block_connected,
 			funding_tx_confirmations,
 
 			counterparty_dust_limit_satoshis,
