@@ -140,6 +140,17 @@ mod sealed {
 		required_features: [],
 		optional_features: [],
 	});
+	define_context!(InvoiceContext {
+		required_features: [,,,],
+		optional_features: [
+			// Byte 0
+			,
+			// Byte 1
+			VariableLengthOnion | PaymentSecret,
+			// Byte 2
+			BasicMPP,
+		],
+	});
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
@@ -252,13 +263,13 @@ mod sealed {
 		"Feature flags for `option_upfront_shutdown_script`.");
 	define_feature!(7, GossipQueries, [InitContext, NodeContext],
 		"Feature flags for `gossip_queries`.");
-	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext],
+	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `var_onion_optin`.");
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext],
 		"Feature flags for `option_static_remotekey`.");
-	define_feature!(15, PaymentSecret, [InitContext, NodeContext],
+	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `payment_secret`.");
-	define_feature!(17, BasicMPP, [InitContext, NodeContext],
+	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `basic_mpp`.");
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.");
@@ -323,6 +334,8 @@ pub type InitFeatures = Features<sealed::InitContext>;
 pub type NodeFeatures = Features<sealed::NodeContext>;
 /// Features used within a `channel_announcement` message.
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
+/// Features used within an invoice.
+pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
 
 impl InitFeatures {
 	/// Writes all features present up to, and including, 13.
@@ -354,6 +367,14 @@ impl InitFeatures {
 
 	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
 	/// are included in the result.
+	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
+		self.to_context_internal()
+	}
+}
+
+impl InvoiceFeatures {
+	/// Converts `InvoiceFeatures` to `Features<C>`. Only known `InvoiceFeatures` relevant to
+	/// context `C` are included in the result.
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
