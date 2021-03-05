@@ -980,7 +980,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	                  channel_parameters: &ChannelTransactionParameters,
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
-	                  initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<Signer> {
+	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
+	                  last_block_hash: BlockHash) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
@@ -1067,7 +1068,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
 
-				last_block_hash: Default::default(),
+				last_block_hash,
 				secp_ctx,
 			}),
 		}
@@ -2789,6 +2790,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
@@ -2798,6 +2800,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hash_types::Txid;
+	use bitcoin::network::constants::Network;
 	use hex;
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::transaction::OutPoint;
@@ -2897,12 +2900,13 @@ mod tests {
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
+		let last_block_hash = genesis_block(Network::Testnet).block_hash();
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 		                                  &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                  &channel_parameters,
 		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy());
+		                                  HolderCommitmentTransaction::dummy(), last_block_hash);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		let dummy_txid = dummy_tx.txid();
