@@ -368,8 +368,7 @@ pub(super) struct Channel<Signer: Sign> {
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	short_channel_id: Option<u64>,
-	/// Used to deduplicate block_connected callbacks, also used to verify consistency during
-	/// ChannelManager deserialization (hence pub(super))
+	/// Used to verify consistency during ChannelManager deserialization (hence pub(super)).
 	pub(super) last_block_connected: BlockHash,
 	funding_tx_confirmations: u64,
 
@@ -3517,12 +3516,12 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => true
 			}
 		});
-		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if header.block_hash() != self.last_block_connected {
-			if self.funding_tx_confirmations > 0 {
-				self.funding_tx_confirmations += 1;
-			}
+
+		if self.funding_tx_confirmations > 0 {
+			self.funding_tx_confirmations += 1;
 		}
+
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for &(index_in_block, tx) in txdata.iter() {
 				let funding_txo = self.get_funding_txo().unwrap();
@@ -3568,46 +3567,45 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
-		if header.block_hash() != self.last_block_connected {
-			self.last_block_connected = header.block_hash();
-			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
-			if self.funding_tx_confirmations > 0 {
-				if self.funding_tx_confirmations == self.minimum_depth as u64 {
-					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
-						self.channel_state |= ChannelState::OurFundingLocked as u32;
-						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-						self.update_time_counter += 1;
-						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
-						// We got a reorg but not enough to trigger a force close, just update
-						// funding_tx_confirmed_in and return.
-						false
-					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-						panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
-					} else {
-						// We got a reorg but not enough to trigger a force close, just update
-						// funding_tx_confirmed_in and return.
-						false
-					};
-					self.funding_tx_confirmed_in = Some(self.last_block_connected);
 
-					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-					//a protocol oversight, but I assume I'm just missing something.
-					if need_commitment_update {
-						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-							let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-							return Ok((Some(msgs::FundingLocked {
-								channel_id: self.channel_id,
-								next_per_commitment_point,
-							}), timed_out_htlcs));
-						} else {
-							self.monitor_pending_funding_locked = true;
-							return Ok((None, timed_out_htlcs));
-						}
+		self.last_block_connected = header.block_hash();
+		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
+		if self.funding_tx_confirmations > 0 {
+			if self.funding_tx_confirmations == self.minimum_depth as u64 {
+				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
+					self.channel_state |= ChannelState::OurFundingLocked as u32;
+					true
+				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+					self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+					self.update_time_counter += 1;
+					true
+				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+					// We got a reorg but not enough to trigger a force close, just update
+					// funding_tx_confirmed_in and return.
+					false
+				} else if self.channel_state < ChannelState::ChannelFunded as u32 {
+					panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
+				} else {
+					// We got a reorg but not enough to trigger a force close, just update
+					// funding_tx_confirmed_in and return.
+					false
+				};
+				self.funding_tx_confirmed_in = Some(self.last_block_connected);
+
+				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
+				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
+				//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
+				//a protocol oversight, but I assume I'm just missing something.
+				if need_commitment_update {
+					if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+						let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+						return Ok((Some(msgs::FundingLocked {
+							channel_id: self.channel_id,
+							next_per_commitment_point,
+						}), timed_out_htlcs));
+					} else {
+						self.monitor_pending_funding_locked = true;
+						return Ok((None, timed_out_htlcs));
 					}
 				}
 			}
