@@ -238,7 +238,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 				let last_hops = &last_hops_vec[..];
 				for target in node_pks.iter() {
-					let _ = get_route(&our_pubkey, &net_graph, target,
+					let _ = get_route(&our_pubkey, &net_graph, target, None,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
 						&last_hops.iter().collect::<Vec<_>>(),
 						slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger));
