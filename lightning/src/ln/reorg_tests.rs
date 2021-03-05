@@ -21,7 +21,9 @@ use util::test_utils;
 use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
+use bitcoin::network::constants::Network;
 
 use std::collections::HashMap;
 use std::mem;
@@ -208,7 +210,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 	mem::drop(channel_state);
 
 	let mut headers = Vec::new();
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: genesis_block(Network::Testnet).header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	headers.push(header.clone());
 	for _i in 2..100 {
 		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -319,7 +321,7 @@ fn test_set_outpoints_partial_claiming() {
 	check_spends!(remote_txn[2], remote_txn[0]);
 
 	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
-	let prev_header_100 = connect_blocks(&nodes[1], 100, 0, false, Default::default());
+	let block_hash_100 = connect_blocks(&nodes[1], 100, 0, false, genesis_block(Network::Testnet).header.block_hash());
 	// Provide node A with both preimage
 	nodes[0].node.claim_funds(payment_preimage_1, &None, 3_000_000);
 	nodes[0].node.claim_funds(payment_preimage_2, &None, 3_000_000);
@@ -328,8 +330,8 @@ fn test_set_outpoints_partial_claiming() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Connect blocks on node A commitment transaction
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: prev_header_100, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header, txdata: vec![remote_txn[0].clone()] }, 101);
+	let header_101 = BlockHeader { version: 0x20000000, prev_blockhash: block_hash_100, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header: header_101, txdata: vec![remote_txn[0].clone()] }, 101);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
@@ -361,8 +363,8 @@ fn test_set_outpoints_partial_claiming() {
 	};
 
 	// Broadcast partial claim on node A, should regenerate a claiming tx with HTLC dropped
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header, txdata: vec![partial_claim_tx.clone()] }, 102);
+	let header_102 = BlockHeader { version: 0x20000000, prev_blockhash: header_101.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header: header_102, txdata: vec![partial_claim_tx.clone()] }, 102);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -373,7 +375,7 @@ fn test_set_outpoints_partial_claiming() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Disconnect last block on node A, should regenerate a claiming tx with HTLC dropped
-	disconnect_block(&nodes[0], &header, 102);
+	disconnect_block(&nodes[0], &header_102, 102);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -383,8 +385,8 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	//// Disconnect one more block and then reconnect multiple no transaction should be generated
-	disconnect_block(&nodes[0], &header, 101);
-	connect_blocks(&nodes[1], 15, 101, false, prev_header_100);
+	disconnect_block(&nodes[0], &header_101, 101);
+	connect_blocks(&nodes[1], 15, 101, false, block_hash_100);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);

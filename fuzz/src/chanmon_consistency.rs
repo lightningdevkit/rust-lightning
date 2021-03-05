@@ -432,7 +432,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	macro_rules! confirm_txn {
 		($node: expr) => { {
-			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
+			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			$node.block_connected(&header, &txdata, 1);
 			for i in 2..100 {
