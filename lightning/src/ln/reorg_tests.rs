@@ -240,7 +240,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 		new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
 		nodes[0].chain_monitor = &new_chain_monitor;
 		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-		let (_, mut chan_0_monitor) = <(Option<BlockHash>, ChannelMonitor<EnforcingSigner>)>::read(
+		let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 			&mut chan_0_monitor_read, keys_manager).unwrap();
 		assert!(chan_0_monitor_read.is_empty());
 
@@ -249,7 +249,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 		nodes_0_deserialized = {
 			let mut channel_monitors = HashMap::new();
 			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-			<(Option<BlockHash>, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster,
+			<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster,
 			  &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(
 				&mut nodes_0_read, ChannelManagerReadArgs {
 					default_config: config,

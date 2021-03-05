@@ -389,7 +389,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
 /// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for (Option<BlockHash>, ChannelManager), which
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelManager), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
@@ -4005,7 +4005,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
 /// is:
 /// 1) Deserialize all stored ChannelMonitors.
-/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Option<BlockHash>,
+/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Sha256dHash,
 ///    ChannelManager)>::read(reader, args).
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
@@ -4097,7 +4097,7 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (Option<BlockHash>, Arc<ChannelManager<Signer, M, T, K, F, L>>)
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
@@ -4105,13 +4105,13 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
         L::Target: Logger,
 {
 	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(Option<BlockHash>, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (Option<BlockHash>, ChannelManager<Signer, M, T, K, F, L>)
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
@@ -4273,12 +4273,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		let last_seen_block_hash = if last_block_hash == Default::default() {
-			None
-		} else {
-			Some(last_block_hash)
-		};
-		Ok((last_seen_block_hash, channel_manager))
+		Ok((last_block_hash.clone(), channel_manager))
 	}
 }
 

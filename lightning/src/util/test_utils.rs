@@ -109,7 +109,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(Option<BlockHash>, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
@@ -150,7 +150,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let monitor = monitors.get(&funding_txo).unwrap();
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
-		let new_monitor = <(Option<BlockHash>, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));

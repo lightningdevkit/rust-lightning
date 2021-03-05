@@ -620,7 +620,7 @@ impl Readable for ChannelMonitorUpdateStep {
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
 ///
-/// Note that the deserializer is only implemented for (Option<BlockHash>, ChannelMonitor), which
+/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
@@ -2492,7 +2492,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
-		for (Option<BlockHash>, ChannelMonitor<Signer>) {
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -2735,13 +2735,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
-		let last_seen_block_hash = if last_block_hash == Default::default() {
-			None
-		} else {
-			Some(last_block_hash)
-		};
-
-		Ok((last_seen_block_hash, ChannelMonitor {
+		Ok((last_block_hash.clone(), ChannelMonitor {
 			inner: Mutex::new(ChannelMonitorImpl {
 				latest_update_id,
 				commitment_transaction_number_obscure_factor,
