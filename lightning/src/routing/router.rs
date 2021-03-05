@@ -3438,4 +3438,35 @@ mod benches {
 			idx += 1;
 		});
 	}
+
+	#[bench]
+	fn generate_mpp_routes(bench: &mut Bencher) {
+		let mut d = File::open("net_graph-2021-02-12.bin").expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+		let graph = NetworkGraph::read(&mut d).unwrap();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut path_endpoints = Vec::new();
+		let mut seed: usize = 0xdeadbeef;
+		'load_endpoints: for _ in 0..100 {
+			loop {
+				seed *= 0xdeadbeef;
+				let src = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				seed *= 0xdeadbeef;
+				let dst = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				let amt = seed as u64 % 1_000_000;
+				if get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok() {
+					path_endpoints.push((src, dst, amt));
+					continue 'load_endpoints;
+				}
+			}
+		}
+
+		// ...then benchmark finding paths between the nodes we learned.
+		let mut idx = 0;
+		bench.iter(|| {
+			let (src, dst, amt) = path_endpoints[idx % path_endpoints.len()];
+			assert!(get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok());
+			idx += 1;
+		});
+	}
 }
