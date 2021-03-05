@@ -574,7 +574,6 @@ impl<T: sealed::BasicMPP> Features<T> {
 		<T as sealed::BasicMPP>::requires_feature(&self.flags)
 	}
 	// We currently never test for this since we don't actually *generate* multipath routes.
-	#[allow(dead_code)]
 	pub(crate) fn supports_basic_mpp(&self) -> bool {
 		<T as sealed::BasicMPP>::supports_feature(&self.flags)
 	}

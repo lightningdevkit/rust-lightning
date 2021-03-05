@@ -15,7 +15,7 @@
 use bitcoin::secp256k1::key::PublicKey;
 
 use ln::channelmanager::ChannelDetails;
-use ln::features::{ChannelFeatures, NodeFeatures, InvoiceFeatures};
+use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
@@ -314,6 +314,9 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 
 /// Gets a route from us (payer) to the given target node (payee).
 ///
+/// If the payee provided features in their invoice, they should be provided via payee_features.
+/// Without this, MPP will only be used if the payee's features are available in the network graph.
+///
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
 ///
@@ -395,6 +398,17 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// and then select the best combination among them.
 	const ROUTE_CAPACITY_PROVISION_FACTOR: u64 = 3;
 	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
+
+	// Allow MPP only if we have a features set from somewhere that indicates the payee supports
+	// it. If the payee supports it they're supposed to include it in the invoice, so that should
+	// work reliably.
+	let allow_mpp = if let Some(features) = &payee_features {
+		features.supports_basic_mpp()
+	} else if let Some(node) = network.get_nodes().get(&payee) {
+		if let Some(node_info) = node.announcement_info.as_ref() {
+			node_info.features.supports_basic_mpp()
+		} else { false }
+	} else { false };
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
@@ -484,8 +498,13 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// the absolute liquidity contribution is lowered,
 					// thus increasing the number of potential channels to be selected.
 
-					// Derive the minimal liquidity contribution with a ratio of 20 (5%, rounded up).
-					let minimal_value_contribution_msat: u64 = (recommended_value_msat - already_collected_value_msat + 19) / 20;
+					// Derive the minimal liquidity contribution with a ratio of 20 (5%, rounded up)
+					// or 100% if we're not allowed to do multipath payments.
+					let minimal_value_contribution_msat: u64 = if allow_mpp {
+						(recommended_value_msat - already_collected_value_msat + 19) / 20
+					} else {
+						final_value_msat
+					};
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 
@@ -864,6 +883,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat);
 				},
 			}
+		}
+
+		if !allow_mpp {
+			// If we don't support MPP, no use trying to gather more value ever.
+			break 'paths_collection;
 		}
 
 		// Step (3).
