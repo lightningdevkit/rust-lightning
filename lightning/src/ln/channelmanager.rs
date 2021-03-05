@@ -3302,6 +3302,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
+
+		// This assertion should be enforced in tests, however we have a number of tests that
+		// were written before this requirement and do not meet it.
+		#[cfg(not(test))]
+		{
+			assert_eq!(*self.last_block_hash.read().unwrap(), header.prev_blockhash,
+				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+			assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
+				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+		}
 		self.latest_block_height.store(height as usize, Ordering::Release);
 		*self.last_block_hash.write().unwrap() = block_hash;
 
@@ -3418,6 +3428,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// See the docs for `ChannelManagerReadArgs` for more.
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
+		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
+			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
 		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
 		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
 

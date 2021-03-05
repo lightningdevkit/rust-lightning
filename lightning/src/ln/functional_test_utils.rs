@@ -50,7 +50,7 @@ pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Tran
 	let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
 	let dummy_tx_count = tx.version as usize;
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![dummy_tx; dummy_tx_count],
 	};
 	block.txdata.push(tx.clone());
@@ -85,12 +85,14 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
 	node.node.test_process_background_events();
+	node.blocks.borrow_mut().push((block.header, height));
 }
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
 	node.node.block_disconnected(header);
 	node.node.test_process_background_events();
+	node.blocks.borrow_mut().pop();
 }
 
 pub struct TestChanMonCfg {
@@ -123,6 +125,15 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
+	pub blocks: RefCell<Vec<(BlockHeader, u32)>>,
+}
+impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
+	pub fn best_block_hash(&self) -> BlockHash {
+		self.blocks.borrow_mut().last().unwrap().0.block_hash()
+	}
+	pub fn best_block_info(&self) -> (BlockHash, u32) {
+		self.blocks.borrow_mut().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
+	}
 }
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
@@ -1189,6 +1200,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
+		                 blocks: RefCell::new(vec![(genesis_block(Network::Testnet).header, 0)])
 		})
 	}
 
