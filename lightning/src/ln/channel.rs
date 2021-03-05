@@ -4179,7 +4179,11 @@ impl<Signer: Sign> Channel<Signer> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<OutPoint>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>) {
+		// Note that we MUST only generate a monitor update that indicates force-closure - we're
+		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
+		// being fully configured in some cases. Thus, its likely any monitor events we generate will
+		// be delayed in being processed! See the docs for `ChannelManagerReadArgs` for more.
 		assert!(self.channel_state != ChannelState::ShutdownComplete as u32);
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
@@ -4193,7 +4197,7 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => {}
 			}
 		}
-		let funding_txo = if let Some(funding_txo) = self.get_funding_txo() {
+		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
 			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
 			// returning a channel monitor update here would imply a channel monitor update before
 			// we even registered the channel monitor to begin with, which is invalid.
@@ -4202,17 +4206,17 @@ impl<Signer: Sign> Channel<Signer> {
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
 			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelFunded as u32 | ChannelState::ShutdownComplete as u32) != 0 {
-				Some(funding_txo.clone())
+				self.latest_monitor_update_id += 1;
+				Some((funding_txo, ChannelMonitorUpdate {
+					update_id: self.latest_monitor_update_id,
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+				}))
 			} else { None }
 		} else { None };
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		self.latest_monitor_update_id += 1;
-		(funding_txo, ChannelMonitorUpdate {
-			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
-		}, dropped_outbound_htlcs)
+		(monitor_update, dropped_outbound_htlcs)
 	}
 }
 

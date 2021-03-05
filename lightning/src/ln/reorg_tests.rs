@@ -9,14 +9,22 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use chain::channelmonitor::ANTI_REORG_DELAY;
+use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
+use chain::Watch;
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
+use util::config::UserConfig;
+use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::test_utils;
+use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::hash_types::BlockHash;
 
-use std::default::Default;
+use std::collections::HashMap;
+use std::mem;
 
 use ln::functional_test_utils::*;
 
@@ -179,4 +187,207 @@ fn test_onchain_htlc_claim_reorg_remote_commitment() {
 #[test]
 fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
+}
+
+fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
+	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
+	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
+	// around freeing background events which store monitor updates during block_[dis]connected.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+
+	let channel_state = nodes[0].node.channel_state.lock().unwrap();
+	assert_eq!(channel_state.by_id.len(), 1);
+	assert_eq!(channel_state.short_to_id.len(), 1);
+	mem::drop(channel_state);
+
+	let mut headers = Vec::new();
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	headers.push(header.clone());
+	for _i in 2..100 {
+		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		headers.push(header.clone());
+	}
+	if !reorg_after_reload {
+		while !headers.is_empty() {
+			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		check_closed_broadcast!(nodes[0], false);
+		{
+			let channel_state = nodes[0].node.channel_state.lock().unwrap();
+			assert_eq!(channel_state.by_id.len(), 0);
+			assert_eq!(channel_state.short_to_id.len(), 0);
+		}
+	}
+
+	if reload_node {
+		// Since we currently have a background event pending, it's good to test that we survive a
+		// serialization roundtrip. Further, this tests the somewhat awkward edge-case of dropping
+		// the Channel object from the ChannelManager, but still having a monitor event pending for
+		// it when we go to deserialize, and then use the ChannelManager.
+		let nodes_0_serialized = nodes[0].node.encode();
+		let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+
+		persister = test_utils::TestPersister::new();
+		let keys_manager = &chanmon_cfgs[0].keys_manager;
+		new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+		nodes[0].chain_monitor = &new_chain_monitor;
+		let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+		let (_, mut chan_0_monitor) = <(Option<BlockHash>, ChannelMonitor<EnforcingSigner>)>::read(
+			&mut chan_0_monitor_read, keys_manager).unwrap();
+		assert!(chan_0_monitor_read.is_empty());
+
+		let mut nodes_0_read = &nodes_0_serialized[..];
+		let config = UserConfig::default();
+		nodes_0_deserialized = {
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+			<(Option<BlockHash>, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster,
+			  &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(
+				&mut nodes_0_read, ChannelManagerReadArgs {
+					default_config: config,
+					keys_manager,
+					fee_estimator: node_cfgs[0].fee_estimator,
+					chain_monitor: nodes[0].chain_monitor,
+					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+					logger: nodes[0].logger,
+					channel_monitors,
+			}).unwrap().1
+		};
+		nodes[0].node = &nodes_0_deserialized;
+		assert!(nodes_0_read.is_empty());
+
+		nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor).unwrap();
+		check_added_monitors!(nodes[0], 1);
+	}
+
+	if reorg_after_reload {
+		while !headers.is_empty() {
+			nodes[0].node.block_disconnected(&headers.pop().unwrap());
+		}
+		check_closed_broadcast!(nodes[0], false);
+		{
+			let channel_state = nodes[0].node.channel_state.lock().unwrap();
+			assert_eq!(channel_state.by_id.len(), 0);
+			assert_eq!(channel_state.short_to_id.len(), 0);
+		}
+	}
+
+	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
+	// is a ChannelForcClosed on the right channel with should_broadcast set.
+	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan_id, true));
+	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
+	check_added_monitors!(nodes[0], 1);
+}
+
+#[test]
+fn test_unconf_chan() {
+	do_test_unconf_chan(true, true);
+	do_test_unconf_chan(false, true);
+	do_test_unconf_chan(true, false);
+	do_test_unconf_chan(false, false);
+}
+
+#[test]
+fn test_set_outpoints_partial_claiming() {
+	// - remote party claim tx, new bump tx
+	// - disconnect remote claiming tx, new bump
+	// - disconnect tx, see no tx anymore
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
+	let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
+	let payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
+
+	// Remote commitment txn with 4 outputs: to_local, to_remote, 2 outgoing HTLC
+	let remote_txn = get_local_commitment_txn!(nodes[1], chan.2);
+	assert_eq!(remote_txn.len(), 3);
+	assert_eq!(remote_txn[0].output.len(), 4);
+	assert_eq!(remote_txn[0].input.len(), 1);
+	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
+	check_spends!(remote_txn[1], remote_txn[0]);
+	check_spends!(remote_txn[2], remote_txn[0]);
+
+	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
+	let prev_header_100 = connect_blocks(&nodes[1], 100, 0, false, Default::default());
+	// Provide node A with both preimage
+	nodes[0].node.claim_funds(payment_preimage_1, &None, 3_000_000);
+	nodes[0].node.claim_funds(payment_preimage_2, &None, 3_000_000);
+	check_added_monitors!(nodes[0], 2);
+	nodes[0].node.get_and_clear_pending_events();
+	nodes[0].node.get_and_clear_pending_msg_events();
+
+	// Connect blocks on node A commitment transaction
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: prev_header_100, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header, txdata: vec![remote_txn[0].clone()] }, 101);
+	check_closed_broadcast!(nodes[0], false);
+	check_added_monitors!(nodes[0], 1);
+	// Verify node A broadcast tx claiming both HTLCs
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		// ChannelMonitor: claim tx, ChannelManager: local commitment tx + HTLC-Success*2
+		assert_eq!(node_txn.len(), 4);
+		check_spends!(node_txn[0], remote_txn[0]);
+		check_spends!(node_txn[1], chan.3);
+		check_spends!(node_txn[2], node_txn[1]);
+		check_spends!(node_txn[3], node_txn[1]);
+		assert_eq!(node_txn[0].input.len(), 2);
+		node_txn.clear();
+	}
+
+	// Connect blocks on node B
+	connect_blocks(&nodes[1], 135, 0, false, Default::default());
+	check_closed_broadcast!(nodes[1], false);
+	check_added_monitors!(nodes[1], 1);
+	// Verify node B broadcast 2 HTLC-timeout txn
+	let partial_claim_tx = {
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 3);
+		check_spends!(node_txn[1], node_txn[0]);
+		check_spends!(node_txn[2], node_txn[0]);
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[2].input.len(), 1);
+		node_txn[1].clone()
+	};
+
+	// Broadcast partial claim on node A, should regenerate a claiming tx with HTLC dropped
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header, txdata: vec![partial_claim_tx.clone()] }, 102);
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], remote_txn[0]);
+		assert_eq!(node_txn[0].input.len(), 1); //dropped HTLC
+		node_txn.clear();
+	}
+	nodes[0].node.get_and_clear_pending_msg_events();
+
+	// Disconnect last block on node A, should regenerate a claiming tx with HTLC dropped
+	disconnect_block(&nodes[0], &header, 102);
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], remote_txn[0]);
+		assert_eq!(node_txn[0].input.len(), 2); //resurrected HTLC
+		node_txn.clear();
+	}
+
+	//// Disconnect one more block and then reconnect multiple no transaction should be generated
+	disconnect_block(&nodes[0], &header, 101);
+	connect_blocks(&nodes[1], 15, 101, false, prev_header_100);
+	{
+		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 0);
+		node_txn.clear();
+	}
 }

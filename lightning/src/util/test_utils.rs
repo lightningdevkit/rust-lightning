@@ -82,9 +82,13 @@ pub struct TestChainMonitor<'a> {
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
-	// If this is set to Some(), after the next return, we'll always return this until update_ret
-	// is changed:
+	/// If this is set to Some(), after the next return, we'll always return this until update_ret
+	/// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
+	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
+	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
+	/// boolean.
+	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
@@ -95,6 +99,7 @@ impl<'a> TestChainMonitor<'a> {
 			keys_manager,
 			update_ret: Mutex::new(None),
 			next_update_ret: Mutex::new(None),
+			expect_channel_force_closed: Mutex::new(None),
 		}
 	}
 }
@@ -128,6 +133,14 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		update.write(&mut w).unwrap();
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
 				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
+
+		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
+			assert_eq!(funding_txo.to_channel_id(), exp.0);
+			assert_eq!(update.updates.len(), 1);
+			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
+				assert_eq!(should_broadcast, exp.1);
+			} else { panic!(); }
+		}
 
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);

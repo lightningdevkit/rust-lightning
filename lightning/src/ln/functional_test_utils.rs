@@ -83,11 +83,13 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
+	node.node.test_process_background_events();
 }
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
 	node.node.block_disconnected(header);
+	node.node.test_process_background_events();
 }
 
 pub struct TestChanMonCfg {
