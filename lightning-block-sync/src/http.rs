@@ -399,10 +399,10 @@ enum HttpMessageLength {
 }
 
 /// An HTTP response body in binary format.
-pub(crate) struct BinaryResponse(pub(crate) Vec<u8>);
+pub struct BinaryResponse(pub Vec<u8>);
 
 /// An HTTP response body in JSON format.
-pub(crate) struct JsonResponse(pub(crate) serde_json::Value);
+pub struct JsonResponse(pub serde_json::Value);
 
 /// Interprets bytes from an HTTP response body as binary data.
 impl TryFrom<Vec<u8>> for BinaryResponse {
