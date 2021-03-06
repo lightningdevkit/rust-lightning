@@ -39,7 +39,6 @@ use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
 
 use std;
-use std::default::Default;
 use std::{cmp,mem,fmt};
 use std::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -368,9 +367,6 @@ pub(super) struct Channel<Signer: Sign> {
 	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	short_channel_id: Option<u64>,
-	/// Used to deduplicate block_connected callbacks, also used to verify consistency during
-	/// ChannelManager deserialization (hence pub(super))
-	pub(super) last_block_connected: BlockHash,
 	funding_tx_confirmations: u64,
 
 	counterparty_dust_limit_satoshis: u64,
@@ -569,7 +565,6 @@ impl<Signer: Sign> Channel<Signer> {
 
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
-			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
 			feerate_per_kw: feerate,
@@ -805,7 +800,6 @@ impl<Signer: Sign> Channel<Signer> {
 
 			funding_tx_confirmed_in: None,
 			short_channel_id: None,
-			last_block_connected: Default::default(),
 			funding_tx_confirmations: 0,
 
 			feerate_per_kw: msg.feerate_per_kw,
@@ -1522,7 +1516,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, last_block_hash: BlockHash, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError> where L::Target: Logger {
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -1576,7 +1570,7 @@ impl<Signer: Sign> Channel<Signer> {
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx);
+		                                          holder_commitment_tx, last_block_hash);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
@@ -1593,7 +1587,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, logger: &L) -> Result<ChannelMonitor<Signer>, ChannelError> where L::Target: Logger {
+	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, last_block_hash: BlockHash, logger: &L) -> Result<ChannelMonitor<Signer>, ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -1646,7 +1640,7 @@ impl<Signer: Sign> Channel<Signer> {
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx);
+		                                          holder_commitment_tx, last_block_hash);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
@@ -3517,12 +3511,12 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => true
 			}
 		});
-		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if header.block_hash() != self.last_block_connected {
-			if self.funding_tx_confirmations > 0 {
-				self.funding_tx_confirmations += 1;
-			}
+
+		if self.funding_tx_confirmations > 0 {
+			self.funding_tx_confirmations += 1;
 		}
+
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for &(index_in_block, tx) in txdata.iter() {
 				let funding_txo = self.get_funding_txo().unwrap();
@@ -3568,46 +3562,44 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
-		if header.block_hash() != self.last_block_connected {
-			self.last_block_connected = header.block_hash();
-			self.update_time_counter = cmp::max(self.update_time_counter, header.time);
-			if self.funding_tx_confirmations > 0 {
-				if self.funding_tx_confirmations == self.minimum_depth as u64 {
-					let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
-						self.channel_state |= ChannelState::OurFundingLocked as u32;
-						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-						self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-						self.update_time_counter += 1;
-						true
-					} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
-						// We got a reorg but not enough to trigger a force close, just update
-						// funding_tx_confirmed_in and return.
-						false
-					} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-						panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
-					} else {
-						// We got a reorg but not enough to trigger a force close, just update
-						// funding_tx_confirmed_in and return.
-						false
-					};
-					self.funding_tx_confirmed_in = Some(self.last_block_connected);
 
-					//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-					//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-					//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-					//a protocol oversight, but I assume I'm just missing something.
-					if need_commitment_update {
-						if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-							let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-							return Ok((Some(msgs::FundingLocked {
-								channel_id: self.channel_id,
-								next_per_commitment_point,
-							}), timed_out_htlcs));
-						} else {
-							self.monitor_pending_funding_locked = true;
-							return Ok((None, timed_out_htlcs));
-						}
+		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
+		if self.funding_tx_confirmations > 0 {
+			if self.funding_tx_confirmations == self.minimum_depth as u64 {
+				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
+					self.channel_state |= ChannelState::OurFundingLocked as u32;
+					true
+				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+					self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+					self.update_time_counter += 1;
+					true
+				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+					// We got a reorg but not enough to trigger a force close, just update
+					// funding_tx_confirmed_in and return.
+					false
+				} else if self.channel_state < ChannelState::ChannelFunded as u32 {
+					panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
+				} else {
+					// We got a reorg but not enough to trigger a force close, just update
+					// funding_tx_confirmed_in and return.
+					false
+				};
+				self.funding_tx_confirmed_in = Some(header.block_hash());
+
+				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
+				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
+				//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
+				//a protocol oversight, but I assume I'm just missing something.
+				if need_commitment_update {
+					if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+						let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+						return Ok((Some(msgs::FundingLocked {
+							channel_id: self.channel_id,
+							next_per_commitment_point,
+						}), timed_out_htlcs));
+					} else {
+						self.monitor_pending_funding_locked = true;
+						return Ok((None, timed_out_htlcs));
 					}
 				}
 			}
@@ -3625,8 +3617,7 @@ impl<Signer: Sign> Channel<Signer> {
 				return true;
 			}
 		}
-		self.last_block_connected = header.block_hash();
-		if Some(self.last_block_connected) == self.funding_tx_confirmed_in {
+		if Some(header.block_hash()) == self.funding_tx_confirmed_in {
 			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
 		false
@@ -4435,8 +4426,6 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.funding_tx_confirmed_in.write(writer)?;
 		self.short_channel_id.write(writer)?;
-
-		self.last_block_connected.write(writer)?;
 		self.funding_tx_confirmations.write(writer)?;
 
 		self.counterparty_dust_limit_satoshis.write(writer)?;
@@ -4597,8 +4586,6 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
 		let short_channel_id = Readable::read(reader)?;
-
-		let last_block_connected = Readable::read(reader)?;
 		let funding_tx_confirmations = Readable::read(reader)?;
 
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
@@ -4669,7 +4656,6 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 			funding_tx_confirmed_in,
 			short_channel_id,
-			last_block_connected,
 			funding_tx_confirmations,
 
 			counterparty_dust_limit_satoshis,
@@ -4924,6 +4910,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
+		let chain_hash = genesis_block(network).header.block_hash();
+		let last_block_hash = chain_hash;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		// Go through the flow of opening a channel between two nodes.
@@ -4934,7 +4922,7 @@ mod tests {
 		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
@@ -4949,10 +4937,10 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, &&logger).unwrap();
+		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, last_block_hash, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed
-		let _ = node_a_chan.funding_signed(&funding_signed_msg, &&logger);
+		let _ = node_a_chan.funding_signed(&funding_signed_msg, last_block_hash, &&logger);
 
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.

@@ -124,7 +124,7 @@ impl FilesystemPersister {
 				if contents.is_err() { return Err(ChannelMonitorUpdateErr::PermanentFailure); }
 
 				if let Ok((_, loaded_monitor)) =
-					<(Option<BlockHash>, ChannelMonitor<Keys::Signer>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
+					<(BlockHash, ChannelMonitor<Keys::Signer>)>::read(&mut Cursor::new(&contents.unwrap()), keys) {
 						res.insert(OutPoint { txid: txid.unwrap(), index: index.unwrap() }, loaded_monitor);
 					} else {
 						return Err(ChannelMonitorUpdateErr::PermanentFailure);

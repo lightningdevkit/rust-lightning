@@ -19,6 +19,7 @@
 //! channel being force-closed.
 
 use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
@@ -35,7 +36,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
-use lightning::ln::channelmanager::{ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
@@ -126,7 +127,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 			hash_map::Entry::Occupied(entry) => entry,
 			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
 		};
-		let deserialized_monitor = <(Option<BlockHash>, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
+		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
 			read(&mut Cursor::new(&map_entry.get().1), &OnlyReadsKeysInterface {}).unwrap().1;
 		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &&FuzzEstimator{}, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
@@ -318,7 +319,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
 			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
-			(ChannelManager::new(Network::Bitcoin, fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, 0),
+			let network = Network::Bitcoin;
+			let params = ChainParameters {
+				network,
+				latest_hash: genesis_block(network).block_hash(),
+				latest_height: 0,
+			};
+			(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
 			monitor, keys_manager)
 		} }
 	}
@@ -337,7 +344,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
-				monitors.insert(outpoint, <(Option<BlockHash>, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), &OnlyReadsKeysInterface {}).expect("Failed to read monitor").1);
+				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&monitor_ser), &OnlyReadsKeysInterface {}).expect("Failed to read monitor").1);
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
 			let mut monitor_refs = HashMap::new();
@@ -355,7 +362,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				channel_monitors: monitor_refs,
 			};
 
-			(<(Option<BlockHash>, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
+			(<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor)
 		} }
 	}
 

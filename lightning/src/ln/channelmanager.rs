@@ -389,7 +389,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
 /// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for (Option<BlockHash>, ChannelManager), which
+/// Note that the deserializer is only implemented for (BlockHash, ChannelManager), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
@@ -423,7 +423,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	pub(super) latest_block_height: AtomicUsize,
 	#[cfg(not(test))]
 	latest_block_height: AtomicUsize,
-	last_block_hash: Mutex<BlockHash>,
+	last_block_hash: RwLock<BlockHash>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -459,6 +459,24 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	keys_manager: K,
 
 	logger: L,
+}
+
+/// Chain-related parameters used to construct a new `ChannelManager`.
+///
+/// Typically, the block-specific parameters are derived from the best block hash for the network,
+/// as a newly constructed `ChannelManager` will not have created any channels yet. These parameters
+/// are not needed when deserializing a previously constructed `ChannelManager`.
+pub struct ChainParameters {
+	/// The network for determining the `chain_hash` in Lightning messages.
+	pub network: Network,
+
+	/// The hash of the latest block successfully connected.
+	pub latest_hash: BlockHash,
+
+	/// The height of the latest block successfully connected.
+	///
+	/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
+	pub latest_height: usize,
 }
 
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
@@ -770,24 +788,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 	///
-	/// Users must provide the current blockchain height from which to track onchain channel
-	/// funding outpoints and send payments with reliable timelocks.
-	///
 	/// Users need to notify the new ChannelManager when a new block is connected or
-	/// disconnected using its `block_connected` and `block_disconnected` methods.
-	pub fn new(network: Network, fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, current_blockchain_height: usize) -> Self {
+	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
+	/// from after `params.latest_hash`.
+	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
 		ChannelManager {
 			default_configuration: config.clone(),
-			genesis_hash: genesis_block(network).header.block_hash(),
+			genesis_hash: genesis_block(params.network).header.block_hash(),
 			fee_estimator: fee_est,
 			chain_monitor,
 			tx_broadcaster,
 
-			latest_block_height: AtomicUsize::new(current_blockchain_height),
-			last_block_hash: Mutex::new(Default::default()),
+			latest_block_height: AtomicUsize::new(params.latest_height),
+			last_block_hash: RwLock::new(params.latest_hash),
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
@@ -2438,6 +2454,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let ((funding_msg, monitor), mut chan) = {
+			let last_block_hash = *self.last_block_hash.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
@@ -2445,7 +2462,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					(try_chan_entry!(self, chan.get_mut().funding_created(msg, &self.logger), channel_state, chan), chan.remove())
+					(try_chan_entry!(self, chan.get_mut().funding_created(msg, last_block_hash, &self.logger), channel_state, chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
@@ -2494,6 +2511,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let (funding_txo, user_id) = {
+			let last_block_hash = *self.last_block_hash.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
@@ -2501,7 +2519,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let monitor = match chan.get_mut().funding_signed(&msg, &self.logger) {
+					let monitor = match chan.get_mut().funding_signed(&msg, last_block_hash, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
@@ -3237,9 +3255,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
-		let header_hash = header.block_hash();
-		log_trace!(self.logger, "Block {} at height {} connected", header_hash, height);
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "Block {} at height {} connected", block_hash, height);
+
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		self.latest_block_height.store(height as usize, Ordering::Release);
+		*self.last_block_hash.write().unwrap() = block_hash;
+
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		{
@@ -3328,8 +3351,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
-		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header_hash;
+
 		loop {
 			// Update last_node_announcement_serial to be the max of its current value and the
 			// block timestamp. This should keep us close to the current time without relying on
@@ -3353,6 +3375,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
+		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
+
 		let mut failed_channels = Vec::new();
 		{
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -3376,9 +3402,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			});
 		}
+
 		self.handle_init_event_channel_failures(failed_channels);
-		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
-		*self.last_block_hash.try_lock().expect("block_(dis)connected must not be called in parallel") = header.block_hash();
 	}
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool
@@ -3934,7 +3959,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 
 		self.genesis_hash.write(writer)?;
 		(self.latest_block_height.load(Ordering::Acquire) as u32).write(writer)?;
-		self.last_block_hash.lock().unwrap().write(writer)?;
+		self.last_block_hash.read().unwrap().write(writer)?;
 
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut unfunded_channels = 0;
@@ -4005,8 +4030,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
 /// is:
 /// 1) Deserialize all stored ChannelMonitors.
-/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Option<BlockHash>,
-///    ChannelManager)>::read(reader, args).
+/// 2) Deserialize the ChannelManager by filling in this struct and calling:
+///    <(BlockHash, ChannelManager)>::read(reader, args)
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
 /// 3) If you are not fetching full blocks, register all relevant ChannelMonitor outpoints the same
@@ -4097,7 +4122,7 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (Option<BlockHash>, Arc<ChannelManager<Signer, M, T, K, F, L>>)
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
@@ -4105,13 +4130,13 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
         L::Target: Logger,
 {
 	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(Option<BlockHash>, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (Option<BlockHash>, ChannelManager<Signer, M, T, K, F, L>)
+	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface<Signer = Signer>,
@@ -4137,10 +4162,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
 			let mut channel: Channel<Signer> = Channel::read(reader, &args.keys_manager)?;
-			if channel.last_block_connected != Default::default() && channel.last_block_connected != last_block_hash {
-				return Err(DecodeError::InvalidValue);
-			}
-
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
@@ -4240,7 +4261,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			tx_broadcaster: args.tx_broadcaster,
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
-			last_block_hash: Mutex::new(last_block_hash),
+			last_block_hash: RwLock::new(last_block_hash),
 			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder {
@@ -4273,12 +4294,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		let last_seen_block_hash = if last_block_hash == Default::default() {
-			None
-		} else {
-			Some(last_block_hash)
-		};
-		Ok((last_seen_block_hash, channel_manager))
+		Ok((last_block_hash.clone(), channel_manager))
 	}
 }
 

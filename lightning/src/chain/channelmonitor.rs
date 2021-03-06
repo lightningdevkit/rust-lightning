@@ -620,7 +620,7 @@ impl Readable for ChannelMonitorUpdateStep {
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
 ///
-/// Note that the deserializer is only implemented for (Option<BlockHash>, ChannelMonitor), which
+/// Note that the deserializer is only implemented for (BlockHash, ChannelMonitor), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
@@ -980,7 +980,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	                  channel_parameters: &ChannelTransactionParameters,
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
-	                  initial_holder_commitment_tx: HolderCommitmentTransaction) -> ChannelMonitor<Signer> {
+	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
+	                  last_block_hash: BlockHash) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
@@ -1067,7 +1068,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
 
-				last_block_hash: Default::default(),
+				last_block_hash,
 				secp_ctx,
 			}),
 		}
@@ -2089,8 +2090,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
-		let block_hash = header.block_hash();
-		log_trace!(logger, "Block {} at height {} disconnected", block_hash, height);
+		log_trace!(logger, "Block {} at height {} disconnected", header.block_hash(), height);
 
 		if let Some(_) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
 			//We may discard:
@@ -2100,7 +2100,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
-		self.last_block_hash = block_hash;
+		self.last_block_hash = header.prev_blockhash;
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
@@ -2492,7 +2492,7 @@ where
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
-		for (Option<BlockHash>, ChannelMonitor<Signer>) {
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -2735,13 +2735,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
-		let last_seen_block_hash = if last_block_hash == Default::default() {
-			None
-		} else {
-			Some(last_block_hash)
-		};
-
-		Ok((last_seen_block_hash, ChannelMonitor {
+		Ok((last_block_hash.clone(), ChannelMonitor {
 			inner: Mutex::new(ChannelMonitorImpl {
 				latest_update_id,
 				commitment_transaction_number_obscure_factor,
@@ -2795,6 +2789,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
@@ -2804,6 +2799,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hash_types::Txid;
+	use bitcoin::network::constants::Network;
 	use hex;
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::transaction::OutPoint;
@@ -2903,12 +2899,13 @@ mod tests {
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
+		let last_block_hash = genesis_block(Network::Testnet).block_hash();
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 		                                  &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                  &channel_parameters,
 		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy());
+		                                  HolderCommitmentTransaction::dummy(), last_block_hash);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		let dummy_txid = dummy_tx.txid();
