@@ -72,8 +72,10 @@ int main() {
 	LDKKeysInterface keys_source = KeysManager_as_KeysInterface(&keys);
 
 	LDKUserConfig config = UserConfig_default();
-
-	LDKChannelManager cm = ChannelManager_new(net, fee_est, mon, broadcast, logger, keys_source, config, 0);
+	LDKThirtyTwoBytes chain_tip;
+	memset(&chain_tip, 0, 32);
+	LDKChainParameters chain = ChainParameters_new(net, chain_tip, 0);
+	LDKChannelManager cm = ChannelManager_new(fee_est, mon, broadcast, logger, keys_source, config, chain);
 
 	LDKCVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm);
 	assert((unsigned long)channels.data < 4096); // There's an offset, but it should still be an offset against null in the 0 page
