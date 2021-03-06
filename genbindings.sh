@@ -179,8 +179,16 @@ else
 	echo "WARNING: Can't use address sanitizer on non-Linux, non-OSX non-x86 platforms"
 fi
 
-cargo rustc -v --target=wasm32-wasi -- -C embed-bitcode=yes || echo "WARNING: Failed to generate WASM LLVM-bitcode-embedded library"
-CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release --target=wasm32-wasi -- -C opt-level=s -C linker-plugin-lto -C lto || echo "WARNING: Failed to generate WASM LLVM-bitcode-embedded optimized library"
+if [ "$(rustc --print target-list | grep wasm32-wasi)" != "" ]; then
+	# Test to see if clang supports wasm32 as a target (which is needed to build rust-secp256k1)
+	echo "int main() {}" > genbindings_wasm_test_file.c
+	clang -nostdlib -o /dev/null --target=wasm32-wasi -Wl,--no-entry genbindings_wasm_test_file.c > /dev/null 2>&1 &&
+	# And if it does, build a WASM binary without capturing errors
+	cargo rustc -v --target=wasm32-wasi -- -C embed-bitcode=yes &&
+	CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release --target=wasm32-wasi -- -C opt-level=s -C linker-plugin-lto -C lto ||
+	echo "Cannot build WASM lib as clang does not seem to support the wasm32-wasi target"
+	rm genbindings_wasm_test_file.c
+fi
 
 # Now build with LTO on on both C++ and rust, but without cross-language LTO:
 CARGO_PROFILE_RELEASE_LTO=true cargo rustc -v --release -- -C lto
