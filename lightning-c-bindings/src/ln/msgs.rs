@@ -35,7 +35,7 @@ pub struct DecodeError {
 
 impl Drop for DecodeError {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeDecodeError>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -60,7 +60,7 @@ impl DecodeError {
 impl Clone for DecodeError {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeDecodeError>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -91,7 +91,7 @@ pub struct Init {
 
 impl Drop for Init {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeInit>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -134,7 +134,7 @@ pub extern "C" fn Init_new(mut features_arg: crate::ln::features::InitFeatures) 
 impl Clone for Init {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeInit>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -165,7 +165,7 @@ pub struct ErrorMessage {
 
 impl Drop for ErrorMessage {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeErrorMessage>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -226,7 +226,7 @@ pub extern "C" fn ErrorMessage_new(mut channel_id_arg: crate::c_types::ThirtyTwo
 impl Clone for ErrorMessage {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeErrorMessage>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -257,7 +257,7 @@ pub struct Ping {
 
 impl Drop for Ping {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativePing>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -314,7 +314,7 @@ pub extern "C" fn Ping_new(mut ponglen_arg: u16, mut byteslen_arg: u16) -> Ping 
 impl Clone for Ping {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativePing>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -345,7 +345,7 @@ pub struct Pong {
 
 impl Drop for Pong {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativePong>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -390,7 +390,7 @@ pub extern "C" fn Pong_new(mut byteslen_arg: u16) -> Pong {
 impl Clone for Pong {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativePong>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -421,7 +421,7 @@ pub struct OpenChannel {
 
 impl Drop for OpenChannel {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeOpenChannel>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -644,7 +644,7 @@ pub extern "C" fn OpenChannel_set_channel_flags(this_ptr: &mut OpenChannel, mut 
 impl Clone for OpenChannel {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeOpenChannel>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -675,7 +675,7 @@ pub struct AcceptChannel {
 
 impl Drop for AcceptChannel {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeAcceptChannel>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -854,7 +854,7 @@ pub extern "C" fn AcceptChannel_set_first_per_commitment_point(this_ptr: &mut Ac
 impl Clone for AcceptChannel {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeAcceptChannel>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -885,7 +885,7 @@ pub struct FundingCreated {
 
 impl Drop for FundingCreated {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeFundingCreated>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -964,7 +964,7 @@ pub extern "C" fn FundingCreated_new(mut temporary_channel_id_arg: crate::c_type
 impl Clone for FundingCreated {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeFundingCreated>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -995,7 +995,7 @@ pub struct FundingSigned {
 
 impl Drop for FundingSigned {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeFundingSigned>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1050,7 +1050,7 @@ pub extern "C" fn FundingSigned_new(mut channel_id_arg: crate::c_types::ThirtyTw
 impl Clone for FundingSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeFundingSigned>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1081,7 +1081,7 @@ pub struct FundingLocked {
 
 impl Drop for FundingLocked {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeFundingLocked>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1136,7 +1136,7 @@ pub extern "C" fn FundingLocked_new(mut channel_id_arg: crate::c_types::ThirtyTw
 impl Clone for FundingLocked {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeFundingLocked>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1167,7 +1167,7 @@ pub struct Shutdown {
 
 impl Drop for Shutdown {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeShutdown>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1224,7 +1224,7 @@ pub extern "C" fn Shutdown_new(mut channel_id_arg: crate::c_types::ThirtyTwoByte
 impl Clone for Shutdown {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeShutdown>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1255,7 +1255,7 @@ pub struct ClosingSigned {
 
 impl Drop for ClosingSigned {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeClosingSigned>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1322,7 +1322,7 @@ pub extern "C" fn ClosingSigned_new(mut channel_id_arg: crate::c_types::ThirtyTw
 impl Clone for ClosingSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeClosingSigned>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1353,7 +1353,7 @@ pub struct UpdateAddHTLC {
 
 impl Drop for UpdateAddHTLC {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUpdateAddHTLC>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1433,7 +1433,7 @@ pub extern "C" fn UpdateAddHTLC_set_cltv_expiry(this_ptr: &mut UpdateAddHTLC, mu
 impl Clone for UpdateAddHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUpdateAddHTLC>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1464,7 +1464,7 @@ pub struct UpdateFulfillHTLC {
 
 impl Drop for UpdateFulfillHTLC {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUpdateFulfillHTLC>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1531,7 +1531,7 @@ pub extern "C" fn UpdateFulfillHTLC_new(mut channel_id_arg: crate::c_types::Thir
 impl Clone for UpdateFulfillHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUpdateFulfillHTLC>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1562,7 +1562,7 @@ pub struct UpdateFailHTLC {
 
 impl Drop for UpdateFailHTLC {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUpdateFailHTLC>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1609,7 +1609,7 @@ pub extern "C" fn UpdateFailHTLC_set_htlc_id(this_ptr: &mut UpdateFailHTLC, mut 
 impl Clone for UpdateFailHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUpdateFailHTLC>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1640,7 +1640,7 @@ pub struct UpdateFailMalformedHTLC {
 
 impl Drop for UpdateFailMalformedHTLC {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUpdateFailMalformedHTLC>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1698,7 +1698,7 @@ pub extern "C" fn UpdateFailMalformedHTLC_set_failure_code(this_ptr: &mut Update
 impl Clone for UpdateFailMalformedHTLC {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUpdateFailMalformedHTLC>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1729,7 +1729,7 @@ pub struct CommitmentSigned {
 
 impl Drop for CommitmentSigned {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeCommitmentSigned>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1792,7 +1792,7 @@ pub extern "C" fn CommitmentSigned_new(mut channel_id_arg: crate::c_types::Thirt
 impl Clone for CommitmentSigned {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeCommitmentSigned>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1823,7 +1823,7 @@ pub struct RevokeAndACK {
 
 impl Drop for RevokeAndACK {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeRevokeAndACK>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1890,7 +1890,7 @@ pub extern "C" fn RevokeAndACK_new(mut channel_id_arg: crate::c_types::ThirtyTwo
 impl Clone for RevokeAndACK {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeRevokeAndACK>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1921,7 +1921,7 @@ pub struct UpdateFee {
 
 impl Drop for UpdateFee {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUpdateFee>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1976,7 +1976,7 @@ pub extern "C" fn UpdateFee_new(mut channel_id_arg: crate::c_types::ThirtyTwoByt
 impl Clone for UpdateFee {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUpdateFee>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2010,7 +2010,7 @@ pub struct DataLossProtect {
 
 impl Drop for DataLossProtect {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeDataLossProtect>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2067,7 +2067,7 @@ pub extern "C" fn DataLossProtect_new(mut your_last_per_commitment_secret_arg: c
 impl Clone for DataLossProtect {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeDataLossProtect>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2098,7 +2098,7 @@ pub struct ChannelReestablish {
 
 impl Drop for ChannelReestablish {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelReestablish>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2156,7 +2156,7 @@ pub extern "C" fn ChannelReestablish_set_next_remote_commitment_number(this_ptr:
 impl Clone for ChannelReestablish {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelReestablish>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2187,7 +2187,7 @@ pub struct AnnouncementSignatures {
 
 impl Drop for AnnouncementSignatures {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeAnnouncementSignatures>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2266,7 +2266,7 @@ pub extern "C" fn AnnouncementSignatures_new(mut channel_id_arg: crate::c_types:
 impl Clone for AnnouncementSignatures {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeAnnouncementSignatures>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2490,7 +2490,7 @@ pub struct UnsignedNodeAnnouncement {
 
 impl Drop for UnsignedNodeAnnouncement {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUnsignedNodeAnnouncement>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2580,7 +2580,7 @@ pub extern "C" fn UnsignedNodeAnnouncement_set_addresses(this_ptr: &mut Unsigned
 impl Clone for UnsignedNodeAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUnsignedNodeAnnouncement>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2611,7 +2611,7 @@ pub struct NodeAnnouncement {
 
 impl Drop for NodeAnnouncement {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNodeAnnouncement>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2666,7 +2666,7 @@ pub extern "C" fn NodeAnnouncement_new(mut signature_arg: crate::c_types::Signat
 impl Clone for NodeAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeNodeAnnouncement>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2697,7 +2697,7 @@ pub struct UnsignedChannelAnnouncement {
 
 impl Drop for UnsignedChannelAnnouncement {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUnsignedChannelAnnouncement>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2799,7 +2799,7 @@ pub extern "C" fn UnsignedChannelAnnouncement_set_bitcoin_key_2(this_ptr: &mut U
 impl Clone for UnsignedChannelAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUnsignedChannelAnnouncement>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2830,7 +2830,7 @@ pub struct ChannelAnnouncement {
 
 impl Drop for ChannelAnnouncement {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelAnnouncement>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -2921,7 +2921,7 @@ pub extern "C" fn ChannelAnnouncement_new(mut node_signature_1_arg: crate::c_typ
 impl Clone for ChannelAnnouncement {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelAnnouncement>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -2952,7 +2952,7 @@ pub struct UnsignedChannelUpdate {
 
 impl Drop for UnsignedChannelUpdate {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUnsignedChannelUpdate>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3065,7 +3065,7 @@ pub extern "C" fn UnsignedChannelUpdate_set_fee_proportional_millionths(this_ptr
 impl Clone for UnsignedChannelUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUnsignedChannelUpdate>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3096,7 +3096,7 @@ pub struct ChannelUpdate {
 
 impl Drop for ChannelUpdate {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelUpdate>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3151,7 +3151,7 @@ pub extern "C" fn ChannelUpdate_new(mut signature_arg: crate::c_types::Signature
 impl Clone for ChannelUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelUpdate>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3185,7 +3185,7 @@ pub struct QueryChannelRange {
 
 impl Drop for QueryChannelRange {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeQueryChannelRange>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3252,7 +3252,7 @@ pub extern "C" fn QueryChannelRange_new(mut chain_hash_arg: crate::c_types::Thir
 impl Clone for QueryChannelRange {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeQueryChannelRange>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3289,7 +3289,7 @@ pub struct ReplyChannelRange {
 
 impl Drop for ReplyChannelRange {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeReplyChannelRange>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3376,7 +3376,7 @@ pub extern "C" fn ReplyChannelRange_new(mut chain_hash_arg: crate::c_types::Thir
 impl Clone for ReplyChannelRange {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeReplyChannelRange>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3414,7 +3414,7 @@ pub struct QueryShortChannelIds {
 
 impl Drop for QueryShortChannelIds {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeQueryShortChannelIds>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3465,7 +3465,7 @@ pub extern "C" fn QueryShortChannelIds_new(mut chain_hash_arg: crate::c_types::T
 impl Clone for QueryShortChannelIds {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeQueryShortChannelIds>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3499,7 +3499,7 @@ pub struct ReplyShortChannelIdsEnd {
 
 impl Drop for ReplyShortChannelIdsEnd {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeReplyShortChannelIdsEnd>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3556,7 +3556,7 @@ pub extern "C" fn ReplyShortChannelIdsEnd_new(mut chain_hash_arg: crate::c_types
 impl Clone for ReplyShortChannelIdsEnd {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeReplyShortChannelIdsEnd>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3589,7 +3589,7 @@ pub struct GossipTimestampFilter {
 
 impl Drop for GossipTimestampFilter {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeGossipTimestampFilter>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3656,7 +3656,7 @@ pub extern "C" fn GossipTimestampFilter_new(mut chain_hash_arg: crate::c_types::
 impl Clone for GossipTimestampFilter {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeGossipTimestampFilter>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3784,7 +3784,7 @@ pub struct LightningError {
 
 impl Drop for LightningError {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeLightningError>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3839,7 +3839,7 @@ pub extern "C" fn LightningError_new(mut err_arg: crate::c_types::derived::CVec_
 impl Clone for LightningError {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeLightningError>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -3871,7 +3871,7 @@ pub struct CommitmentUpdate {
 
 impl Drop for CommitmentUpdate {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeCommitmentUpdate>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -3961,7 +3961,7 @@ pub extern "C" fn CommitmentUpdate_new(mut update_add_htlcs_arg: crate::c_types:
 impl Clone for CommitmentUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeCommitmentUpdate>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}

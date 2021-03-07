@@ -23,7 +23,7 @@ pub struct RouteHop {
 
 impl Drop for RouteHop {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeRouteHop>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -93,13 +93,17 @@ pub extern "C" fn RouteHop_get_channel_features(this_ptr: &RouteHop) -> crate::l
 pub extern "C" fn RouteHop_set_channel_features(this_ptr: &mut RouteHop, mut val: crate::ln::features::ChannelFeatures) {
 	unsafe { &mut *this_ptr.inner }.channel_features = *unsafe { Box::from_raw(val.take_inner()) };
 }
-/// The fee taken on this hop. For the last hop, this should be the full value of the payment.
+/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+/// For the last hop, this should be the full value of the payment (might be more than
+/// requested if we had to match htlc_minimum_msat).
 #[no_mangle]
 pub extern "C" fn RouteHop_get_fee_msat(this_ptr: &RouteHop) -> u64 {
 	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.fee_msat;
 	(*inner_val)
 }
-/// The fee taken on this hop. For the last hop, this should be the full value of the payment.
+/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+/// For the last hop, this should be the full value of the payment (might be more than
+/// requested if we had to match htlc_minimum_msat).
 #[no_mangle]
 pub extern "C" fn RouteHop_set_fee_msat(this_ptr: &mut RouteHop, mut val: u64) {
 	unsafe { &mut *this_ptr.inner }.fee_msat = val;
@@ -132,7 +136,7 @@ pub extern "C" fn RouteHop_new(mut pubkey_arg: crate::c_types::PublicKey, mut no
 impl Clone for RouteHop {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeRouteHop>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -164,7 +168,7 @@ pub struct Route {
 
 impl Drop for Route {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeRoute>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -208,7 +212,7 @@ pub extern "C" fn Route_new(mut paths_arg: crate::c_types::derived::CVec_CVec_Ro
 impl Clone for Route {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeRoute>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -253,7 +257,7 @@ pub struct RouteHint {
 
 impl Drop for RouteHint {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeRouteHint>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -319,32 +323,10 @@ pub extern "C" fn RouteHint_get_cltv_expiry_delta(this_ptr: &RouteHint) -> u16 {
 pub extern "C" fn RouteHint_set_cltv_expiry_delta(this_ptr: &mut RouteHint, mut val: u16) {
 	unsafe { &mut *this_ptr.inner }.cltv_expiry_delta = val;
 }
-/// The minimum value, in msat, which must be relayed to the next hop.
-#[no_mangle]
-pub extern "C" fn RouteHint_get_htlc_minimum_msat(this_ptr: &RouteHint) -> u64 {
-	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.htlc_minimum_msat;
-	(*inner_val)
-}
-/// The minimum value, in msat, which must be relayed to the next hop.
-#[no_mangle]
-pub extern "C" fn RouteHint_set_htlc_minimum_msat(this_ptr: &mut RouteHint, mut val: u64) {
-	unsafe { &mut *this_ptr.inner }.htlc_minimum_msat = val;
-}
-#[must_use]
-#[no_mangle]
-pub extern "C" fn RouteHint_new(mut src_node_id_arg: crate::c_types::PublicKey, mut short_channel_id_arg: u64, mut fees_arg: crate::routing::network_graph::RoutingFees, mut cltv_expiry_delta_arg: u16, mut htlc_minimum_msat_arg: u64) -> RouteHint {
-	RouteHint { inner: Box::into_raw(Box::new(nativeRouteHint {
-		src_node_id: src_node_id_arg.into_rust(),
-		short_channel_id: short_channel_id_arg,
-		fees: *unsafe { Box::from_raw(fees_arg.take_inner()) },
-		cltv_expiry_delta: cltv_expiry_delta_arg,
-		htlc_minimum_msat: htlc_minimum_msat_arg,
-	})), is_owned: true }
-}
 impl Clone for RouteHint {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeRouteHint>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -359,27 +341,27 @@ pub(crate) extern "C" fn RouteHint_clone_void(this_ptr: *const c_void) -> *mut c
 pub extern "C" fn RouteHint_clone(orig: &RouteHint) -> RouteHint {
 	orig.clone()
 }
-/// Gets a route from us to the given target node.
+/// Gets a route from us (payer) to the given target node (payee).
 ///
 /// Extra routing hops between known nodes and the target will be used if they are included in
 /// last_hops.
 ///
 /// If some channels aren't announced, it may be useful to fill in a first_hops with the
 /// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
-/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those in first_hops
-/// will be used.
+/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those
+/// in first_hops will be used.
 ///
 /// Panics if first_hops contains channels without short_channel_ids
 /// (ChannelManager::list_usable_channels will never include such channels).
 ///
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
-/// equal), however the enabled/disabled bit on such channels as well as the htlc_minimum_msat
-/// *is* checked as they may change based on the receiving node.
+/// equal), however the enabled/disabled bit on such channels as well as the
+/// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
 #[no_mangle]
-pub extern "C" fn get_route(mut our_node_id: crate::c_types::PublicKey, network: &crate::routing::network_graph::NetworkGraph, mut target: crate::c_types::PublicKey, first_hops: *mut crate::c_types::derived::CVec_ChannelDetailsZ, mut last_hops: crate::c_types::derived::CVec_RouteHintZ, mut final_value_msat: u64, mut final_cltv: u32, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CResult_RouteLightningErrorZ {
+pub extern "C" fn get_route(mut our_node_id: crate::c_types::PublicKey, network: &crate::routing::network_graph::NetworkGraph, mut payee: crate::c_types::PublicKey, first_hops: *mut crate::c_types::derived::CVec_ChannelDetailsZ, mut last_hops: crate::c_types::derived::CVec_RouteHintZ, mut final_value_msat: u64, mut final_cltv: u32, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CResult_RouteLightningErrorZ {
 	let mut local_first_hops_base = if first_hops == std::ptr::null_mut() { None } else { Some( { let mut local_first_hops_0 = Vec::new(); for mut item in unsafe { &mut *first_hops }.as_slice().iter() { local_first_hops_0.push( { unsafe { &*item.inner } }); }; local_first_hops_0 }) }; let mut local_first_hops = local_first_hops_base.as_ref().map(|a| &a[..]);
 	let mut local_last_hops = Vec::new(); for mut item in last_hops.as_slice().iter() { local_last_hops.push( { unsafe { &*item.inner } }); };
-	let mut ret = lightning::routing::router::get_route(&our_node_id.into_rust(), unsafe { &*network.inner }, &target.into_rust(), local_first_hops, &local_last_hops[..], final_value_msat, final_cltv, logger);
+	let mut ret = lightning::routing::router::get_route(&our_node_id.into_rust(), unsafe { &*network.inner }, &payee.into_rust(), local_first_hops, &local_last_hops[..], final_value_msat, final_cltv, logger);
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { crate::routing::router::Route { inner: Box::into_raw(Box::new(o)), is_owned: true } }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }

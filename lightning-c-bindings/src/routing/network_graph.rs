@@ -20,7 +20,7 @@ pub struct NetworkGraph {
 
 impl Drop for NetworkGraph {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNetworkGraph>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -45,7 +45,7 @@ impl NetworkGraph {
 impl Clone for NetworkGraph {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeNetworkGraph>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -78,7 +78,7 @@ pub struct LockedNetworkGraph {
 
 impl Drop for LockedNetworkGraph {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeLockedNetworkGraph>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -120,7 +120,7 @@ pub struct NetGraphMsgHandler {
 
 impl Drop for NetGraphMsgHandler {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNetGraphMsgHandler>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -163,6 +163,15 @@ pub extern "C" fn NetGraphMsgHandler_from_net_graph(chain_access: *mut crate::ch
 	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
 	let mut ret = lightning::routing::network_graph::NetGraphMsgHandler::from_net_graph(local_chain_access, logger, *unsafe { Box::from_raw(network_graph.take_inner()) });
 	NetGraphMsgHandler { inner: Box::into_raw(Box::new(ret)), is_owned: true }
+}
+
+/// Adds a provider used to check new announcements. Does not affect
+/// existing announcements unless they are updated.
+/// Add, update or remove the provider would replace the current one.
+#[no_mangle]
+pub extern "C" fn NetGraphMsgHandler_add_chain_access(this_arg: &mut NetGraphMsgHandler, chain_access: *mut crate::chain::Access) {
+	let mut local_chain_access = if chain_access == std::ptr::null_mut() { None } else { Some( { unsafe { *Box::from_raw(chain_access) } }) };
+	unsafe { &mut (*(this_arg.inner as *mut nativeNetGraphMsgHandler)) }.add_chain_access(local_chain_access)
 }
 
 /// Take a read lock on the network_graph and return it in the C-bindings
@@ -217,72 +226,71 @@ pub extern "C" fn NetGraphMsgHandler_as_RoutingMessageHandler(this_arg: &NetGrap
 		},
 	}
 }
-use lightning::ln::msgs::RoutingMessageHandler as RoutingMessageHandlerTraitImport;
+
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_node_announcement(this_arg: *const c_void, msg: &crate::ln::msgs::NodeAnnouncement) -> crate::c_types::derived::CResult_boolLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_node_announcement(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_node_announcement(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { o }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_channel_announcement(this_arg: *const c_void, msg: &crate::ln::msgs::ChannelAnnouncement) -> crate::c_types::derived::CResult_boolLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_channel_announcement(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_channel_announcement(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { o }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_htlc_fail_channel_update(this_arg: *const c_void, update: &crate::ln::msgs::HTLCFailChannelUpdate) {
-	<nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_htlc_fail_channel_update(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &update.to_native())
+	<nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_htlc_fail_channel_update(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &update.to_native())
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_channel_update(this_arg: *const c_void, msg: &crate::ln::msgs::ChannelUpdate) -> crate::c_types::derived::CResult_boolLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_channel_update(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_channel_update(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, unsafe { &*msg.inner });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { o }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_get_next_channel_announcements(this_arg: *const c_void, mut starting_point: u64, mut batch_amount: u8) -> crate::c_types::derived::CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::get_next_channel_announcements(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, starting_point, batch_amount);
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::get_next_channel_announcements(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, starting_point, batch_amount);
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1, mut orig_ret_0_2) = item; let mut local_orig_ret_0_1 = crate::ln::msgs::ChannelUpdate { inner: if orig_ret_0_1.is_none() { std::ptr::null_mut() } else {  { Box::into_raw(Box::new((orig_ret_0_1.unwrap()))) } }, is_owned: true }; let mut local_orig_ret_0_2 = crate::ln::msgs::ChannelUpdate { inner: if orig_ret_0_2.is_none() { std::ptr::null_mut() } else {  { Box::into_raw(Box::new((orig_ret_0_2.unwrap()))) } }, is_owned: true }; let mut local_ret_0 = (crate::ln::msgs::ChannelAnnouncement { inner: Box::into_raw(Box::new(orig_ret_0_0)), is_owned: true }, local_orig_ret_0_1, local_orig_ret_0_2).into(); local_ret_0 }); };
 	local_ret.into()
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_get_next_node_announcements(this_arg: *const c_void, mut starting_point: crate::c_types::PublicKey, mut batch_amount: u8) -> crate::c_types::derived::CVec_NodeAnnouncementZ {
 	let mut local_starting_point_base = if starting_point.is_null() { None } else { Some( { starting_point.into_rust() }) }; let mut local_starting_point = local_starting_point_base.as_ref();
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::get_next_node_announcements(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, local_starting_point, batch_amount);
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::get_next_node_announcements(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, local_starting_point, batch_amount);
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::ln::msgs::NodeAnnouncement { inner: Box::into_raw(Box::new(item)), is_owned: true } }); };
 	local_ret.into()
 }
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_sync_routing_table(this_arg: *const c_void, mut their_node_id: crate::c_types::PublicKey, init_msg: &crate::ln::msgs::Init) {
-	<nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::sync_routing_table(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), unsafe { &*init_msg.inner })
+	<nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::sync_routing_table(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), unsafe { &*init_msg.inner })
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_reply_channel_range(this_arg: *const c_void, mut their_node_id: crate::c_types::PublicKey, mut msg: crate::ln::msgs::ReplyChannelRange) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_reply_channel_range(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), *unsafe { Box::from_raw(msg.take_inner()) });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_reply_channel_range(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), *unsafe { Box::from_raw(msg.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_reply_short_channel_ids_end(this_arg: *const c_void, mut their_node_id: crate::c_types::PublicKey, mut msg: crate::ln::msgs::ReplyShortChannelIdsEnd) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_reply_short_channel_ids_end(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), *unsafe { Box::from_raw(msg.take_inner()) });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_reply_short_channel_ids_end(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &their_node_id.into_rust(), *unsafe { Box::from_raw(msg.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_query_channel_range(this_arg: *const c_void, mut _their_node_id: crate::c_types::PublicKey, mut _msg: crate::ln::msgs::QueryChannelRange) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_query_channel_range(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &_their_node_id.into_rust(), *unsafe { Box::from_raw(_msg.take_inner()) });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_query_channel_range(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &_their_node_id.into_rust(), *unsafe { Box::from_raw(_msg.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_handle_query_short_channel_ids(this_arg: *const c_void, mut _their_node_id: crate::c_types::PublicKey, mut _msg: crate::ln::msgs::QueryShortChannelIds) -> crate::c_types::derived::CResult_NoneLightningErrorZ {
-	let mut ret = <nativeNetGraphMsgHandler as RoutingMessageHandlerTraitImport<>>::handle_query_short_channel_ids(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &_their_node_id.into_rust(), *unsafe { Box::from_raw(_msg.take_inner()) });
+	let mut ret = <nativeNetGraphMsgHandler as lightning::ln::msgs::RoutingMessageHandler<>>::handle_query_short_channel_ids(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, &_their_node_id.into_rust(), *unsafe { Box::from_raw(_msg.take_inner()) });
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::ln::msgs::LightningError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
-use lightning::util::events::MessageSendEventsProvider as nativeMessageSendEventsProviderTrait;
 #[must_use]
 extern "C" fn NetGraphMsgHandler_RoutingMessageHandler_get_and_clear_pending_msg_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_MessageSendEventZ {
-	let mut ret = <nativeNetGraphMsgHandler as MessageSendEventsProviderTraitImport<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, );
+	let mut ret = <nativeNetGraphMsgHandler as lightning::util::events::MessageSendEventsProvider<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, );
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::MessageSendEvent::native_into(item) }); };
 	local_ret.into()
 }
@@ -305,10 +313,10 @@ pub extern "C" fn NetGraphMsgHandler_as_MessageSendEventsProvider(this_arg: &Net
 		get_and_clear_pending_msg_events: NetGraphMsgHandler_MessageSendEventsProvider_get_and_clear_pending_msg_events,
 	}
 }
-use lightning::util::events::MessageSendEventsProvider as MessageSendEventsProviderTraitImport;
+
 #[must_use]
 extern "C" fn NetGraphMsgHandler_MessageSendEventsProvider_get_and_clear_pending_msg_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_MessageSendEventZ {
-	let mut ret = <nativeNetGraphMsgHandler as MessageSendEventsProviderTraitImport<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, );
+	let mut ret = <nativeNetGraphMsgHandler as lightning::util::events::MessageSendEventsProvider<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeNetGraphMsgHandler) }, );
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::MessageSendEvent::native_into(item) }); };
 	local_ret.into()
 }
@@ -330,7 +338,7 @@ pub struct DirectionalChannelInfo {
 
 impl Drop for DirectionalChannelInfo {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeDirectionalChannelInfo>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -431,7 +439,7 @@ pub extern "C" fn DirectionalChannelInfo_set_last_update_message(this_ptr: &mut 
 impl Clone for DirectionalChannelInfo {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeDirectionalChannelInfo>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -477,7 +485,7 @@ pub struct ChannelInfo {
 
 impl Drop for ChannelInfo {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelInfo>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -580,7 +588,7 @@ pub extern "C" fn ChannelInfo_set_announcement_message(this_ptr: &mut ChannelInf
 impl Clone for ChannelInfo {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelInfo>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -625,7 +633,7 @@ pub struct RoutingFees {
 
 impl Drop for RoutingFees {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeRoutingFees>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -682,7 +690,7 @@ pub extern "C" fn RoutingFees_new(mut base_msat_arg: u32, mut proportional_milli
 impl Clone for RoutingFees {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeRoutingFees>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -727,7 +735,7 @@ pub struct NodeAnnouncementInfo {
 
 impl Drop for NodeAnnouncementInfo {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNodeAnnouncementInfo>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -841,7 +849,7 @@ pub extern "C" fn NodeAnnouncementInfo_new(mut features_arg: crate::ln::features
 impl Clone for NodeAnnouncementInfo {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeNodeAnnouncementInfo>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -886,7 +894,7 @@ pub struct NodeInfo {
 
 impl Drop for NodeInfo {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNodeInfo>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -963,7 +971,7 @@ pub extern "C" fn NodeInfo_new(mut channels_arg: crate::c_types::derived::CVec_u
 impl Clone for NodeInfo {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeNodeInfo>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}

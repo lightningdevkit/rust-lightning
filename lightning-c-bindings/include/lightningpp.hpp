@@ -165,6 +165,36 @@ public:
 	const LDKTrustedCommitmentTransaction* operator &() const { return &self; }
 	const LDKTrustedCommitmentTransaction* operator ->() const { return &self; }
 };
+class IgnoringMessageHandler {
+private:
+	LDKIgnoringMessageHandler self;
+public:
+	IgnoringMessageHandler(const IgnoringMessageHandler&) = delete;
+	IgnoringMessageHandler(IgnoringMessageHandler&& o) : self(o.self) { memset(&o, 0, sizeof(IgnoringMessageHandler)); }
+	IgnoringMessageHandler(LDKIgnoringMessageHandler&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKIgnoringMessageHandler)); }
+	operator LDKIgnoringMessageHandler() && { LDKIgnoringMessageHandler res = self; memset(&self, 0, sizeof(LDKIgnoringMessageHandler)); return res; }
+	~IgnoringMessageHandler() { IgnoringMessageHandler_free(self); }
+	IgnoringMessageHandler& operator=(IgnoringMessageHandler&& o) { IgnoringMessageHandler_free(self); self = o.self; memset(&o, 0, sizeof(IgnoringMessageHandler)); return *this; }
+	LDKIgnoringMessageHandler* operator &() { return &self; }
+	LDKIgnoringMessageHandler* operator ->() { return &self; }
+	const LDKIgnoringMessageHandler* operator &() const { return &self; }
+	const LDKIgnoringMessageHandler* operator ->() const { return &self; }
+};
+class ErroringMessageHandler {
+private:
+	LDKErroringMessageHandler self;
+public:
+	ErroringMessageHandler(const ErroringMessageHandler&) = delete;
+	ErroringMessageHandler(ErroringMessageHandler&& o) : self(o.self) { memset(&o, 0, sizeof(ErroringMessageHandler)); }
+	ErroringMessageHandler(LDKErroringMessageHandler&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKErroringMessageHandler)); }
+	operator LDKErroringMessageHandler() && { LDKErroringMessageHandler res = self; memset(&self, 0, sizeof(LDKErroringMessageHandler)); return res; }
+	~ErroringMessageHandler() { ErroringMessageHandler_free(self); }
+	ErroringMessageHandler& operator=(ErroringMessageHandler&& o) { ErroringMessageHandler_free(self); self = o.self; memset(&o, 0, sizeof(ErroringMessageHandler)); return *this; }
+	LDKErroringMessageHandler* operator &() { return &self; }
+	LDKErroringMessageHandler* operator ->() { return &self; }
+	const LDKErroringMessageHandler* operator &() const { return &self; }
+	const LDKErroringMessageHandler* operator ->() const { return &self; }
+};
 class MessageHandler {
 private:
 	LDKMessageHandler self;
@@ -805,6 +835,21 @@ public:
 	LDKChannelManager* operator ->() { return &self; }
 	const LDKChannelManager* operator &() const { return &self; }
 	const LDKChannelManager* operator ->() const { return &self; }
+};
+class ChainParameters {
+private:
+	LDKChainParameters self;
+public:
+	ChainParameters(const ChainParameters&) = delete;
+	ChainParameters(ChainParameters&& o) : self(o.self) { memset(&o, 0, sizeof(ChainParameters)); }
+	ChainParameters(LDKChainParameters&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKChainParameters)); }
+	operator LDKChainParameters() && { LDKChainParameters res = self; memset(&self, 0, sizeof(LDKChainParameters)); return res; }
+	~ChainParameters() { ChainParameters_free(self); }
+	ChainParameters& operator=(ChainParameters&& o) { ChainParameters_free(self); self = o.self; memset(&o, 0, sizeof(ChainParameters)); return *this; }
+	LDKChainParameters* operator &() { return &self; }
+	LDKChainParameters* operator ->() { return &self; }
+	const LDKChainParameters* operator &() const { return &self; }
+	const LDKChainParameters* operator ->() const { return &self; }
 };
 class ChannelDetails {
 private:
@@ -2741,21 +2786,6 @@ public:
 	const LDKCResult_TrustedCommitmentTransactionNoneZ* operator &() const { return &self; }
 	const LDKCResult_TrustedCommitmentTransactionNoneZ* operator ->() const { return &self; }
 };
-class CResult_NonePeerHandleErrorZ {
-private:
-	LDKCResult_NonePeerHandleErrorZ self;
-public:
-	CResult_NonePeerHandleErrorZ(const CResult_NonePeerHandleErrorZ&) = delete;
-	CResult_NonePeerHandleErrorZ(CResult_NonePeerHandleErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_NonePeerHandleErrorZ)); }
-	CResult_NonePeerHandleErrorZ(LDKCResult_NonePeerHandleErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_NonePeerHandleErrorZ)); }
-	operator LDKCResult_NonePeerHandleErrorZ() && { LDKCResult_NonePeerHandleErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_NonePeerHandleErrorZ)); return res; }
-	~CResult_NonePeerHandleErrorZ() { CResult_NonePeerHandleErrorZ_free(self); }
-	CResult_NonePeerHandleErrorZ& operator=(CResult_NonePeerHandleErrorZ&& o) { CResult_NonePeerHandleErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_NonePeerHandleErrorZ)); return *this; }
-	LDKCResult_NonePeerHandleErrorZ* operator &() { return &self; }
-	LDKCResult_NonePeerHandleErrorZ* operator ->() { return &self; }
-	const LDKCResult_NonePeerHandleErrorZ* operator &() const { return &self; }
-	const LDKCResult_NonePeerHandleErrorZ* operator ->() const { return &self; }
-};
 class CResult_NoneLightningErrorZ {
 private:
 	LDKCResult_NoneLightningErrorZ self;
@@ -2770,6 +2800,21 @@ public:
 	LDKCResult_NoneLightningErrorZ* operator ->() { return &self; }
 	const LDKCResult_NoneLightningErrorZ* operator &() const { return &self; }
 	const LDKCResult_NoneLightningErrorZ* operator ->() const { return &self; }
+};
+class CResult_NonePeerHandleErrorZ {
+private:
+	LDKCResult_NonePeerHandleErrorZ self;
+public:
+	CResult_NonePeerHandleErrorZ(const CResult_NonePeerHandleErrorZ&) = delete;
+	CResult_NonePeerHandleErrorZ(CResult_NonePeerHandleErrorZ&& o) : self(o.self) { memset(&o, 0, sizeof(CResult_NonePeerHandleErrorZ)); }
+	CResult_NonePeerHandleErrorZ(LDKCResult_NonePeerHandleErrorZ&& m_self) : self(m_self) { memset(&m_self, 0, sizeof(LDKCResult_NonePeerHandleErrorZ)); }
+	operator LDKCResult_NonePeerHandleErrorZ() && { LDKCResult_NonePeerHandleErrorZ res = self; memset(&self, 0, sizeof(LDKCResult_NonePeerHandleErrorZ)); return res; }
+	~CResult_NonePeerHandleErrorZ() { CResult_NonePeerHandleErrorZ_free(self); }
+	CResult_NonePeerHandleErrorZ& operator=(CResult_NonePeerHandleErrorZ&& o) { CResult_NonePeerHandleErrorZ_free(self); self = o.self; memset(&o, 0, sizeof(CResult_NonePeerHandleErrorZ)); return *this; }
+	LDKCResult_NonePeerHandleErrorZ* operator &() { return &self; }
+	LDKCResult_NonePeerHandleErrorZ* operator ->() { return &self; }
+	const LDKCResult_NonePeerHandleErrorZ* operator &() const { return &self; }
+	const LDKCResult_NonePeerHandleErrorZ* operator ->() const { return &self; }
 };
 class CResult_CVec_SignatureZNoneZ {
 private:

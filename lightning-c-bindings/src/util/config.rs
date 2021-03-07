@@ -23,7 +23,7 @@ pub struct ChannelHandshakeConfig {
 
 impl Drop for ChannelHandshakeConfig {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelHandshakeConfig>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -132,7 +132,7 @@ pub extern "C" fn ChannelHandshakeConfig_new(mut minimum_depth_arg: u32, mut our
 impl Clone for ChannelHandshakeConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelHandshakeConfig>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -178,7 +178,7 @@ pub struct ChannelHandshakeLimits {
 
 impl Drop for ChannelHandshakeLimits {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelHandshakeLimits>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -415,7 +415,7 @@ pub extern "C" fn ChannelHandshakeLimits_new(mut min_funding_satoshis_arg: u64, 
 impl Clone for ChannelHandshakeLimits {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelHandshakeLimits>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -452,7 +452,7 @@ pub struct ChannelConfig {
 
 impl Drop for ChannelConfig {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelConfig>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -567,7 +567,7 @@ pub extern "C" fn ChannelConfig_new(mut fee_proportional_millionths_arg: u32, mu
 impl Clone for ChannelConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelConfig>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -620,7 +620,7 @@ pub struct UserConfig {
 
 impl Drop for UserConfig {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeUserConfig>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -687,7 +687,7 @@ pub extern "C" fn UserConfig_new(mut own_channel_config_arg: crate::util::config
 impl Clone for UserConfig {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeUserConfig>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}

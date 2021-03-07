@@ -34,7 +34,7 @@ pub struct ChannelMonitorUpdate {
 
 impl Drop for ChannelMonitorUpdate {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelMonitorUpdate>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -94,7 +94,7 @@ pub extern "C" fn ChannelMonitorUpdate_set_update_id(this_ptr: &mut ChannelMonit
 impl Clone for ChannelMonitorUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelMonitorUpdate>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -243,7 +243,7 @@ pub struct MonitorUpdateError {
 
 impl Drop for MonitorUpdateError {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeMonitorUpdateError>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -268,7 +268,7 @@ impl MonitorUpdateError {
 impl Clone for MonitorUpdateError {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeMonitorUpdateError>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -386,7 +386,7 @@ pub struct HTLCUpdate {
 
 impl Drop for HTLCUpdate {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeHTLCUpdate>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -411,7 +411,7 @@ impl HTLCUpdate {
 impl Clone for HTLCUpdate {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeHTLCUpdate>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -455,7 +455,7 @@ type nativeChannelMonitor = nativeChannelMonitorImport<crate::chain::keysinterfa
 /// reloaded at deserialize-time. Thus, you must ensure that, when handling events, all events
 /// gotten are fully handled before re-serializing the new state.
 ///
-/// Note that the deserializer is only implemented for (Sha256dHash, ChannelMonitor), which
+/// Note that the deserializer is only implemented for (BlockHash, ChannelMonitor), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the \"reorg path\" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
@@ -471,7 +471,7 @@ pub struct ChannelMonitor {
 
 impl Drop for ChannelMonitor {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelMonitor>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -507,8 +507,8 @@ pub(crate) extern "C" fn ChannelMonitor_write_void(obj: *const c_void) -> crate:
 /// panics if the given update is not the next update by update_id.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_update_monitor(this_arg: &mut ChannelMonitor, updates: &crate::chain::channelmonitor::ChannelMonitorUpdate, broadcaster: &crate::chain::chaininterface::BroadcasterInterface, fee_estimator: &crate::chain::chaininterface::FeeEstimator, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CResult_NoneMonitorUpdateErrorZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.update_monitor(unsafe { &*updates.inner }, broadcaster, fee_estimator, logger);
+pub extern "C" fn ChannelMonitor_update_monitor(this_arg: &ChannelMonitor, updates: &crate::chain::channelmonitor::ChannelMonitorUpdate, broadcaster: &crate::chain::chaininterface::BroadcasterInterface, fee_estimator: &crate::chain::chaininterface::FeeEstimator, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CResult_NoneMonitorUpdateErrorZ {
+	let mut ret = unsafe { &*this_arg.inner }.update_monitor(unsafe { &*updates.inner }, broadcaster, fee_estimator, logger);
 	let mut local_ret = match ret { Ok(mut o) => crate::c_types::CResultTempl::ok( { 0u8 /*o*/ }).into(), Err(mut e) => crate::c_types::CResultTempl::err( { crate::chain::channelmonitor::MonitorUpdateError { inner: Box::into_raw(Box::new(e)), is_owned: true } }).into() };
 	local_ret
 }
@@ -527,7 +527,7 @@ pub extern "C" fn ChannelMonitor_get_latest_update_id(this_arg: &ChannelMonitor)
 #[no_mangle]
 pub extern "C" fn ChannelMonitor_get_funding_txo(this_arg: &ChannelMonitor) -> crate::c_types::derived::C2Tuple_OutPointScriptZ {
 	let mut ret = unsafe { &*this_arg.inner }.get_funding_txo();
-	let (ref orig_ret_0, ref orig_ret_1) = ret; let mut local_ret = (crate::chain::transaction::OutPoint { inner: unsafe { ( (&(*orig_ret_0) as *const _) as *mut _) }, is_owned: false }, orig_ret_1.clone().into_bytes().into()).into();
+	let (mut orig_ret_0, mut orig_ret_1) = ret; let mut local_ret = (crate::chain::transaction::OutPoint { inner: Box::into_raw(Box::new(orig_ret_0)), is_owned: true }, orig_ret_1.into_bytes().into()).into();
 	local_ret
 }
 
@@ -537,8 +537,8 @@ pub extern "C" fn ChannelMonitor_get_funding_txo(this_arg: &ChannelMonitor) -> c
 /// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: &mut ChannelMonitor) -> crate::c_types::derived::CVec_MonitorEventZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_and_clear_pending_monitor_events();
+pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: &ChannelMonitor) -> crate::c_types::derived::CVec_MonitorEventZ {
+	let mut ret = unsafe { &*this_arg.inner }.get_and_clear_pending_monitor_events();
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::chain::channelmonitor::MonitorEvent::native_into(item) }); };
 	local_ret.into()
 }
@@ -551,8 +551,8 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_monitor_events(this_arg: 
 /// no internal locking in ChannelMonitors.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut ChannelMonitor) -> crate::c_types::derived::CVec_EventZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_and_clear_pending_events();
+pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &ChannelMonitor) -> crate::c_types::derived::CVec_EventZ {
+	let mut ret = unsafe { &*this_arg.inner }.get_and_clear_pending_events();
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
 	local_ret.into()
 }
@@ -568,8 +568,8 @@ pub extern "C" fn ChannelMonitor_get_and_clear_pending_events(this_arg: &mut Cha
 /// In any-case, choice is up to the user.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut ChannelMonitor, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CVec_TransactionZ {
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.get_latest_holder_commitment_txn(logger);
+pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &ChannelMonitor, logger: &crate::util::logger::Logger) -> crate::c_types::derived::CVec_TransactionZ {
+	let mut ret = unsafe { &*this_arg.inner }.get_latest_holder_commitment_txn(logger);
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { let mut local_ret_0 = ::bitcoin::consensus::encode::serialize(&item); crate::c_types::Transaction::from_vec(local_ret_0) }); };
 	local_ret.into()
 }
@@ -587,9 +587,9 @@ pub extern "C" fn ChannelMonitor_get_latest_holder_commitment_txn(this_arg: &mut
 /// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_block_connected(this_arg: &mut ChannelMonitor, header: *const [u8; 80], mut txdata: crate::c_types::derived::CVec_C2Tuple_usizeTransactionZZ, mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ {
+pub extern "C" fn ChannelMonitor_block_connected(this_arg: &ChannelMonitor, header: *const [u8; 80], mut txdata: crate::c_types::derived::CVec_C2Tuple_usizeTransactionZZ, mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) -> crate::c_types::derived::CVec_C2Tuple_TxidCVec_C2Tuple_u32TxOutZZZZ {
 	let mut local_txdata = Vec::new(); for mut item in txdata.into_rust().drain(..) { local_txdata.push( { let (mut orig_txdata_0_0, mut orig_txdata_0_1) = item.to_rust(); let mut local_txdata_0 = (orig_txdata_0_0, orig_txdata_0_1.into_bitcoin()); local_txdata_0 }); };
-	let mut ret = unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.block_connected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), &local_txdata.iter().map(|(a, b)| (*a, b)).collect::<Vec<_>>()[..], height, broadcaster, fee_estimator, logger);
+	let mut ret = unsafe { &*this_arg.inner }.block_connected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), &local_txdata.iter().map(|(a, b)| (*a, b)).collect::<Vec<_>>()[..], height, broadcaster, fee_estimator, logger);
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { let (mut orig_ret_0_0, mut orig_ret_0_1) = item; let mut local_orig_ret_0_1 = Vec::new(); for mut item in orig_ret_0_1.drain(..) { local_orig_ret_0_1.push( { let (mut orig_orig_ret_0_1_0_0, mut orig_orig_ret_0_1_0_1) = item; let mut local_orig_ret_0_1_0 = (orig_orig_ret_0_1_0_0, crate::c_types::TxOut::from_rust(orig_orig_ret_0_1_0_1)).into(); local_orig_ret_0_1_0 }); }; let mut local_ret_0 = (crate::c_types::ThirtyTwoBytes { data: orig_ret_0_0.into_inner() }, local_orig_ret_0_1.into()).into(); local_ret_0 }); };
 	local_ret.into()
 }
@@ -597,8 +597,8 @@ pub extern "C" fn ChannelMonitor_block_connected(this_arg: &mut ChannelMonitor, 
 /// Determines if the disconnected block contained any transactions of interest and updates
 /// appropriately.
 #[no_mangle]
-pub extern "C" fn ChannelMonitor_block_disconnected(this_arg: &mut ChannelMonitor, header: *const [u8; 80], mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) {
-	unsafe { &mut (*(this_arg.inner as *mut nativeChannelMonitor)) }.block_disconnected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), height, broadcaster, fee_estimator, logger)
+pub extern "C" fn ChannelMonitor_block_disconnected(this_arg: &ChannelMonitor, header: *const [u8; 80], mut height: u32, mut broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut fee_estimator: crate::chain::chaininterface::FeeEstimator, mut logger: crate::util::logger::Logger) {
+	unsafe { &*this_arg.inner }.block_disconnected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), height, broadcaster, fee_estimator, logger)
 }
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean

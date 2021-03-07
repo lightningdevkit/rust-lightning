@@ -23,7 +23,7 @@ pub struct OutPoint {
 
 impl Drop for OutPoint {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeOutPoint>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -78,7 +78,7 @@ pub extern "C" fn OutPoint_new(mut txid_arg: crate::c_types::ThirtyTwoBytes, mut
 impl Clone for OutPoint {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeOutPoint>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}

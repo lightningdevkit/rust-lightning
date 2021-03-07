@@ -36,7 +36,7 @@ type nativeChannelManager = nativeChannelManagerImport<crate::chain::keysinterfa
 /// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
 /// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for (Sha256dHash, ChannelManager), which
+/// Note that the deserializer is only implemented for (BlockHash, ChannelManager), which
 /// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
 /// the \"reorg path\" (ie call block_disconnected() until you get to a common block and then call
 /// block_connected() to step towards your best block) upon deserialization before using the
@@ -64,7 +64,7 @@ pub struct ChannelManager {
 
 impl Drop for ChannelManager {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelManager>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -87,6 +87,94 @@ impl ChannelManager {
 	}
 }
 
+use lightning::ln::channelmanager::ChainParameters as nativeChainParametersImport;
+type nativeChainParameters = nativeChainParametersImport;
+
+/// Chain-related parameters used to construct a new `ChannelManager`.
+///
+/// Typically, the block-specific parameters are derived from the best block hash for the network,
+/// as a newly constructed `ChannelManager` will not have created any channels yet. These parameters
+/// are not needed when deserializing a previously constructed `ChannelManager`.
+#[must_use]
+#[repr(C)]
+pub struct ChainParameters {
+	/// Nearly everywhere, inner must be non-null, however in places where
+	/// the Rust equivalent takes an Option, it may be set to null to indicate None.
+	pub inner: *mut nativeChainParameters,
+	pub is_owned: bool,
+}
+
+impl Drop for ChainParameters {
+	fn drop(&mut self) {
+		if self.is_owned && !<*mut nativeChainParameters>::is_null(self.inner) {
+			let _ = unsafe { Box::from_raw(self.inner) };
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn ChainParameters_free(this_ptr: ChainParameters) { }
+#[allow(unused)]
+/// Used only if an object of this type is returned as a trait impl by a method
+extern "C" fn ChainParameters_free_void(this_ptr: *mut c_void) {
+	unsafe { let _ = Box::from_raw(this_ptr as *mut nativeChainParameters); }
+}
+#[allow(unused)]
+/// When moving out of the pointer, we have to ensure we aren't a reference, this makes that easy
+impl ChainParameters {
+	pub(crate) fn take_inner(mut self) -> *mut nativeChainParameters {
+		assert!(self.is_owned);
+		let ret = self.inner;
+		self.inner = std::ptr::null_mut();
+		ret
+	}
+}
+/// The network for determining the `chain_hash` in Lightning messages.
+#[no_mangle]
+pub extern "C" fn ChainParameters_get_network(this_ptr: &ChainParameters) -> crate::bitcoin::network::Network {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.network;
+	crate::bitcoin::network::Network::from_bitcoin((*inner_val))
+}
+/// The network for determining the `chain_hash` in Lightning messages.
+#[no_mangle]
+pub extern "C" fn ChainParameters_set_network(this_ptr: &mut ChainParameters, mut val: crate::bitcoin::network::Network) {
+	unsafe { &mut *this_ptr.inner }.network = val.into_bitcoin();
+}
+/// The hash of the latest block successfully connected.
+#[no_mangle]
+pub extern "C" fn ChainParameters_get_latest_hash(this_ptr: &ChainParameters) -> *const [u8; 32] {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.latest_hash;
+	(*inner_val).as_inner()
+}
+/// The hash of the latest block successfully connected.
+#[no_mangle]
+pub extern "C" fn ChainParameters_set_latest_hash(this_ptr: &mut ChainParameters, mut val: crate::c_types::ThirtyTwoBytes) {
+	unsafe { &mut *this_ptr.inner }.latest_hash = ::bitcoin::hash_types::BlockHash::from_slice(&val.data[..]).unwrap();
+}
+/// The height of the latest block successfully connected.
+///
+/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
+#[no_mangle]
+pub extern "C" fn ChainParameters_get_latest_height(this_ptr: &ChainParameters) -> usize {
+	let mut inner_val = &mut unsafe { &mut *this_ptr.inner }.latest_height;
+	(*inner_val)
+}
+/// The height of the latest block successfully connected.
+///
+/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
+#[no_mangle]
+pub extern "C" fn ChainParameters_set_latest_height(this_ptr: &mut ChainParameters, mut val: usize) {
+	unsafe { &mut *this_ptr.inner }.latest_height = val;
+}
+#[must_use]
+#[no_mangle]
+pub extern "C" fn ChainParameters_new(mut network_arg: crate::bitcoin::network::Network, mut latest_hash_arg: crate::c_types::ThirtyTwoBytes, mut latest_height_arg: usize) -> ChainParameters {
+	ChainParameters { inner: Box::into_raw(Box::new(nativeChainParameters {
+		network: network_arg.into_bitcoin(),
+		latest_hash: ::bitcoin::hash_types::BlockHash::from_slice(&latest_hash_arg.data[..]).unwrap(),
+		latest_height: latest_height_arg,
+	})), is_owned: true }
+}
+
 use lightning::ln::channelmanager::ChannelDetails as nativeChannelDetailsImport;
 type nativeChannelDetails = nativeChannelDetailsImport;
 
@@ -102,7 +190,7 @@ pub struct ChannelDetails {
 
 impl Drop for ChannelDetails {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelDetails>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -241,7 +329,7 @@ pub extern "C" fn ChannelDetails_set_is_live(this_ptr: &mut ChannelDetails, mut 
 impl Clone for ChannelDetails {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelDetails>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -431,15 +519,13 @@ pub extern "C" fn PaymentSendFailure_clone(orig: &PaymentSendFailure) -> Payment
 ///
 /// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
 ///
-/// Users must provide the current blockchain height from which to track onchain channel
-/// funding outpoints and send payments with reliable timelocks.
-///
 /// Users need to notify the new ChannelManager when a new block is connected or
-/// disconnected using its `block_connected` and `block_disconnected` methods.
+/// disconnected using its `block_connected` and `block_disconnected` methods, starting
+/// from after `params.latest_hash`.
 #[must_use]
 #[no_mangle]
-pub extern "C" fn ChannelManager_new(mut network: crate::bitcoin::network::Network, mut fee_est: crate::chain::chaininterface::FeeEstimator, mut chain_monitor: crate::chain::Watch, mut tx_broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut logger: crate::util::logger::Logger, mut keys_manager: crate::chain::keysinterface::KeysInterface, mut config: crate::util::config::UserConfig, mut current_blockchain_height: usize) -> ChannelManager {
-	let mut ret = lightning::ln::channelmanager::ChannelManager::new(network.into_bitcoin(), fee_est, chain_monitor, tx_broadcaster, logger, keys_manager, *unsafe { Box::from_raw(config.take_inner()) }, current_blockchain_height);
+pub extern "C" fn ChannelManager_new(mut fee_est: crate::chain::chaininterface::FeeEstimator, mut chain_monitor: crate::chain::Watch, mut tx_broadcaster: crate::chain::chaininterface::BroadcasterInterface, mut logger: crate::util::logger::Logger, mut keys_manager: crate::chain::keysinterface::KeysInterface, mut config: crate::util::config::UserConfig, mut params: crate::ln::channelmanager::ChainParameters) -> ChannelManager {
+	let mut ret = lightning::ln::channelmanager::ChannelManager::new(fee_est, chain_monitor, tx_broadcaster, logger, keys_manager, *unsafe { Box::from_raw(config.take_inner()) }, *unsafe { Box::from_raw(params.take_inner()) });
 	ChannelManager { inner: Box::into_raw(Box::new(ret)), is_owned: true }
 }
 
@@ -612,6 +698,8 @@ pub extern "C" fn ChannelManager_process_pending_htlc_forwards(this_arg: &Channe
 /// to inform the network about the uselessness of these channels.
 ///
 /// This method handles all the details, and must be called roughly once per minute.
+///
+/// Note that in some rare cases this may generate a `chain::Watch::update_channel` call.
 #[no_mangle]
 pub extern "C" fn ChannelManager_timer_chan_freshness_every_min(this_arg: &ChannelManager) {
 	unsafe { &*this_arg.inner }.timer_chan_freshness_every_min()
@@ -704,10 +792,10 @@ pub extern "C" fn ChannelManager_as_MessageSendEventsProvider(this_arg: &Channel
 		get_and_clear_pending_msg_events: ChannelManager_MessageSendEventsProvider_get_and_clear_pending_msg_events,
 	}
 }
-use lightning::util::events::MessageSendEventsProvider as MessageSendEventsProviderTraitImport;
+
 #[must_use]
 extern "C" fn ChannelManager_MessageSendEventsProvider_get_and_clear_pending_msg_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_MessageSendEventZ {
-	let mut ret = <nativeChannelManager as MessageSendEventsProviderTraitImport<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
+	let mut ret = <nativeChannelManager as lightning::util::events::MessageSendEventsProvider<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::MessageSendEvent::native_into(item) }); };
 	local_ret.into()
 }
@@ -730,10 +818,10 @@ pub extern "C" fn ChannelManager_as_EventsProvider(this_arg: &ChannelManager) ->
 		get_and_clear_pending_events: ChannelManager_EventsProvider_get_and_clear_pending_events,
 	}
 }
-use lightning::util::events::EventsProvider as EventsProviderTraitImport;
+
 #[must_use]
 extern "C" fn ChannelManager_EventsProvider_get_and_clear_pending_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_EventZ {
-	let mut ret = <nativeChannelManager as EventsProviderTraitImport<>>::get_and_clear_pending_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
+	let mut ret = <nativeChannelManager as lightning::util::events::EventsProvider<>>::get_and_clear_pending_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::Event::native_into(item) }); };
 	local_ret.into()
 }
@@ -757,12 +845,12 @@ pub extern "C" fn ChannelManager_as_Listen(this_arg: &ChannelManager) -> crate::
 		block_disconnected: ChannelManager_Listen_block_disconnected,
 	}
 }
-use lightning::chain::Listen as ListenTraitImport;
+
 extern "C" fn ChannelManager_Listen_block_connected(this_arg: *const c_void, mut block: crate::c_types::u8slice, mut height: u32) {
-	<nativeChannelManager as ListenTraitImport<>>::block_connected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &::bitcoin::consensus::encode::deserialize(block.to_slice()).unwrap(), height)
+	<nativeChannelManager as lightning::chain::Listen<>>::block_connected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &::bitcoin::consensus::encode::deserialize(block.to_slice()).unwrap(), height)
 }
 extern "C" fn ChannelManager_Listen_block_disconnected(this_arg: *const c_void, header: *const [u8; 80], mut _height: u32) {
-	<nativeChannelManager as ListenTraitImport<>>::block_disconnected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), _height)
+	<nativeChannelManager as lightning::chain::Listen<>>::block_disconnected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap(), _height)
 }
 
 /// Updates channel state based on transactions seen in a connected block.
@@ -781,8 +869,9 @@ pub extern "C" fn ChannelManager_block_disconnected(this_arg: &ChannelManager, h
 	unsafe { &*this_arg.inner }.block_disconnected(&::bitcoin::consensus::encode::deserialize(unsafe { &*header }).unwrap())
 }
 
-/// Blocks until ChannelManager needs to be persisted. Only one listener on `wait` is
-/// guaranteed to be woken up.
+/// Blocks until ChannelManager needs to be persisted. Only one listener on
+/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
+/// up.
 #[no_mangle]
 pub extern "C" fn ChannelManager_await_persistable_update(this_arg: &ChannelManager) {
 	unsafe { &*this_arg.inner }.await_persistable_update()
@@ -829,68 +918,67 @@ pub extern "C" fn ChannelManager_as_ChannelMessageHandler(this_arg: &ChannelMana
 		},
 	}
 }
-use lightning::ln::msgs::ChannelMessageHandler as ChannelMessageHandlerTraitImport;
+
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_open_channel(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::OpenChannel) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_open_channel(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_inner()) }, unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_open_channel(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_inner()) }, unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_accept_channel(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, mut their_features: crate::ln::features::InitFeatures, msg: &crate::ln::msgs::AcceptChannel) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_accept_channel(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_inner()) }, unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_accept_channel(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), *unsafe { Box::from_raw(their_features.take_inner()) }, unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_created(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingCreated) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_funding_created(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_funding_created(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_signed(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingSigned) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_funding_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_funding_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_funding_locked(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::FundingLocked) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_funding_locked(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_funding_locked(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_shutdown(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, their_features: &crate::ln::features::InitFeatures, msg: &crate::ln::msgs::Shutdown) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_shutdown(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*their_features.inner }, unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_shutdown(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*their_features.inner }, unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_closing_signed(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ClosingSigned) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_closing_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_closing_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_add_htlc(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateAddHTLC) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_update_add_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_update_add_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fulfill_htlc(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFulfillHTLC) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_update_fulfill_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_update_fulfill_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_htlc(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailHTLC) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_update_fail_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_update_fail_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fail_malformed_htlc(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFailMalformedHTLC) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_update_fail_malformed_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_update_fail_malformed_htlc(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_commitment_signed(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::CommitmentSigned) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_commitment_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_commitment_signed(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_revoke_and_ack(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::RevokeAndACK) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_revoke_and_ack(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_revoke_and_ack(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_update_fee(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::UpdateFee) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_update_fee(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_update_fee(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_announcement_signatures(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::AnnouncementSignatures) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_announcement_signatures(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_announcement_signatures(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_channel_reestablish(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ChannelReestablish) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_channel_reestablish(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_channel_reestablish(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_peer_disconnected(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, mut no_connection_possible: bool) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::peer_disconnected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), no_connection_possible)
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::peer_disconnected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), no_connection_possible)
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_peer_connected(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, init_msg: &crate::ln::msgs::Init) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::peer_connected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*init_msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::peer_connected(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*init_msg.inner })
 }
 extern "C" fn ChannelManager_ChannelMessageHandler_handle_error(this_arg: *const c_void, mut counterparty_node_id: crate::c_types::PublicKey, msg: &crate::ln::msgs::ErrorMessage) {
-	<nativeChannelManager as ChannelMessageHandlerTraitImport<>>::handle_error(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
+	<nativeChannelManager as lightning::ln::msgs::ChannelMessageHandler<>>::handle_error(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, &counterparty_node_id.into_rust(), unsafe { &*msg.inner })
 }
-use lightning::util::events::MessageSendEventsProvider as nativeMessageSendEventsProviderTrait;
 #[must_use]
 extern "C" fn ChannelManager_ChannelMessageHandler_get_and_clear_pending_msg_events(this_arg: *const c_void) -> crate::c_types::derived::CVec_MessageSendEventZ {
-	let mut ret = <nativeChannelManager as MessageSendEventsProviderTraitImport<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
+	let mut ret = <nativeChannelManager as lightning::util::events::MessageSendEventsProvider<>>::get_and_clear_pending_msg_events(unsafe { &mut *(this_arg as *mut nativeChannelManager) }, );
 	let mut local_ret = Vec::new(); for mut item in ret.drain(..) { local_ret.push( { crate::util::events::MessageSendEvent::native_into(item) }); };
 	local_ret.into()
 }
@@ -912,15 +1000,26 @@ type nativeChannelManagerReadArgs = nativeChannelManagerReadArgsImport<'static, 
 /// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
 /// is:
 /// 1) Deserialize all stored ChannelMonitors.
-/// 2) Deserialize the ChannelManager by filling in this struct and calling <(Sha256dHash,
-///    ChannelManager)>::read(reader, args).
+/// 2) Deserialize the ChannelManager by filling in this struct and calling:
+///    <(BlockHash, ChannelManager)>::read(reader, args)
 ///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
 ///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
-/// 3) Register all relevant ChannelMonitor outpoints with your chain watch mechanism using
-///    ChannelMonitor::get_outputs_to_watch() and ChannelMonitor::get_funding_txo().
+/// 3) If you are not fetching full blocks, register all relevant ChannelMonitor outpoints the same
+///    way you would handle a `chain::Filter` call using ChannelMonitor::get_outputs_to_watch() and
+///    ChannelMonitor::get_funding_txo().
 /// 4) Reconnect blocks on your ChannelMonitors.
-/// 5) Move the ChannelMonitors into your local chain::Watch.
-/// 6) Disconnect/connect blocks on the ChannelManager.
+/// 5) Disconnect/connect blocks on the ChannelManager.
+/// 6) Move the ChannelMonitors into your local chain::Watch.
+///
+/// Note that the ordering of #4-6 is not of importance, however all three must occur before you
+/// call any other methods on the newly-deserialized ChannelManager.
+///
+/// Note that because some channels may be closed during deserialization, it is critical that you
+/// always deserialize only the latest version of a ChannelManager and ChannelMonitors available to
+/// you. If you deserialize an old ChannelManager (during which force-closure transactions may be
+/// broadcast), and then later deserialize a newer version of the same ChannelManager (which will
+/// not force-close the same channels but consider them live), you may end up revoking a state for
+/// which you've already broadcasted the transaction.
 #[must_use]
 #[repr(C)]
 pub struct ChannelManagerReadArgs {
@@ -932,7 +1031,7 @@ pub struct ChannelManagerReadArgs {
 
 impl Drop for ChannelManagerReadArgs {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelManagerReadArgs>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
