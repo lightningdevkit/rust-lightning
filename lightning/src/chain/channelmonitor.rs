@@ -45,6 +45,7 @@ use chain;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
+use chain::Filter;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
@@ -1169,6 +1170,20 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// (C-not exported) because we have no HashMap bindings
 	pub fn get_outputs_to_watch(&self) -> HashMap<Txid, Vec<(u32, Script)>> {
 		self.inner.lock().unwrap().get_outputs_to_watch().clone()
+	}
+
+	/// Loads the funding txo and outputs to watch into the given `chain::Filter` by repeatedly
+	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
+	/// have been registered.
+	pub fn load_outputs_to_watch<F: Deref>(&self, filter: F) where F::Target: chain::Filter {
+		let lock = self.inner.lock().unwrap();
+		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
+		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
+			for (index, script_pubkey) in outputs.iter() {
+				assert!(*index <= u16::max_value() as u32);
+				filter.register_output(&OutPoint { txid: *txid, index: *index as u16 }, script_pubkey);
+			}
+		}
 	}
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
