@@ -5,6 +5,7 @@ pub enum Network {
 	Bitcoin,
 	Testnet,
 	Regtest,
+	Signet,
 }
 
 impl Network {
@@ -13,6 +14,15 @@ impl Network {
 			Network::Bitcoin => BitcoinNetwork::Bitcoin,
 			Network::Testnet => BitcoinNetwork::Testnet,
 			Network::Regtest => BitcoinNetwork::Regtest,
+			Network::Signet => BitcoinNetwork::Signet,
+		}
+	}
+	pub(crate) fn from_bitcoin(net: BitcoinNetwork) -> Self {
+		match net {
+			BitcoinNetwork::Bitcoin => Network::Bitcoin,
+			BitcoinNetwork::Testnet => Network::Testnet,
+			BitcoinNetwork::Regtest => Network::Regtest,
+			BitcoinNetwork::Signet => Network::Signet,
 		}
 	}
 }

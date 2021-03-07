@@ -842,6 +842,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::transaction::Transaction" => Some("crate::c_types::Transaction::from_vec(local_"),
 			"bitcoin::blockdata::transaction::OutPoint" => Some("crate::c_types::bitcoin_to_C_outpoint("),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some("crate::c_types::TxOut::from_rust("),
+			"bitcoin::network::constants::Network" => Some("crate::bitcoin::network::Network::from_bitcoin("),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some("&local_"),
 			"bitcoin::blockdata::block::Block" if is_ref => Some("crate::c_types::u8slice::from_slice(&local_"),
 
@@ -899,6 +900,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 			"bitcoin::blockdata::transaction::Transaction" => Some(")"),
 			"bitcoin::blockdata::transaction::OutPoint" => Some(")"),
 			"bitcoin::blockdata::transaction::TxOut" if !is_ref => Some(")"),
+			"bitcoin::network::constants::Network" => Some(")"),
 			"bitcoin::blockdata::block::BlockHeader" if is_ref => Some(""),
 			"bitcoin::blockdata::block::Block" if is_ref => Some(")"),
 
@@ -1944,11 +1946,7 @@ impl<'a, 'c: 'a> TypeResolver<'a, 'c> {
 									if !self.write_c_path_intern(w, &$p_arg.path, generics, true, true, true) { return false; }
 								}
 							} else {
-								if $p_arg.path.segments.len() == 1 {
-									write!(w, "{}", $p_arg.path.segments.iter().next().unwrap().ident).unwrap();
-								} else {
-									return false;
-								}
+								write!(w, "{}", $p_arg.path.segments.last().unwrap().ident).unwrap();
 							}
 						} else if self.is_known_container(&subtype, is_ref) || self.is_transparent_container(&subtype, is_ref) {
 							if !self.write_c_mangled_container_path_intern(w, Self::path_to_generic_args(&$p_arg.path), generics,

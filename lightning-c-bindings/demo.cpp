@@ -292,6 +292,8 @@ int main() {
 	memset(&null_pk, 0, sizeof(null_pk));
 
 	LDKThirtyTwoBytes random_bytes;
+	LDKThirtyTwoBytes chain_tip;
+	memset(&chain_tip, 0, sizeof(chain_tip)); // channel_open_header's prev_blockhash is all-0s
 
 	LDKNetwork network = LDKNetwork_Testnet;
 
@@ -352,7 +354,7 @@ int main() {
 		LDK::KeysInterface keys_source1 = KeysManager_as_KeysInterface(&keys1);
 		node_secret1 = keys_source1->get_node_secret(keys_source1->this_arg);
 
-		LDK::ChannelManager cm1 = ChannelManager_new(network, fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), UserConfig_default(), 0);
+		LDK::ChannelManager cm1 = ChannelManager_new(fee_est, mon1, broadcast, logger1, KeysManager_as_KeysInterface(&keys1), UserConfig_default(), ChainParameters_new(network, chain_tip, 0));
 
 		LDK::CVec_ChannelDetailsZ channels = ChannelManager_list_channels(&cm1);
 		assert(channels->datalen == 0);
@@ -379,7 +381,7 @@ int main() {
 		LDK::UserConfig config2 = UserConfig_default();
 		UserConfig_set_own_channel_config(&config2, std::move(handshake_config2));
 
-		LDK::ChannelManager cm2 = ChannelManager_new(network, fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), std::move(config2), 0);
+		LDK::ChannelManager cm2 = ChannelManager_new(fee_est, mon2, broadcast, logger2, KeysManager_as_KeysInterface(&keys2), std::move(config2), ChainParameters_new(network, chain_tip, 0));
 
 		LDK::CVec_ChannelDetailsZ channels2 = ChannelManager_list_channels(&cm2);
 		assert(channels2->datalen == 0);

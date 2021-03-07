@@ -23,7 +23,7 @@ use crate::c_types::*;
 impl Clone for InitFeatures {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeInitFeatures>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -41,7 +41,7 @@ pub extern "C" fn InitFeatures_clone(orig: &InitFeatures) -> InitFeatures {
 impl Clone for NodeFeatures {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeNodeFeatures>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -59,7 +59,7 @@ pub extern "C" fn NodeFeatures_clone(orig: &NodeFeatures) -> NodeFeatures {
 impl Clone for ChannelFeatures {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelFeatures>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -90,7 +90,7 @@ pub struct InitFeatures {
 
 impl Drop for InitFeatures {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeInitFeatures>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -128,7 +128,7 @@ pub struct NodeFeatures {
 
 impl Drop for NodeFeatures {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeNodeFeatures>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -166,7 +166,7 @@ pub struct ChannelFeatures {
 
 impl Drop for ChannelFeatures {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelFeatures>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}

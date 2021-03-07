@@ -950,6 +950,312 @@ impl Clone for CResult_CVec_SignatureZNoneZ {
 #[no_mangle]
 pub extern "C" fn CResult_CVec_SignatureZNoneZ_clone(orig: &CResult_CVec_SignatureZNoneZ) -> CResult_CVec_SignatureZNoneZ { orig.clone() }
 #[repr(C)]
+pub struct CVec_MessageSendEventZ {
+	pub data: *mut crate::util::events::MessageSendEvent,
+	pub datalen: usize
+}
+impl CVec_MessageSendEventZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::util::events::MessageSendEvent> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::util::events::MessageSendEvent] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::util::events::MessageSendEvent>> for CVec_MessageSendEventZ {
+	fn from(v: Vec<crate::util::events::MessageSendEvent>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_MessageSendEventZ_free(_res: CVec_MessageSendEventZ) { }
+impl Drop for CVec_MessageSendEventZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_MessageSendEventZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub union CResult_boolLightningErrorZPtr {
+	pub result: *mut bool,
+	pub err: *mut crate::ln::msgs::LightningError,
+}
+#[repr(C)]
+pub struct CResult_boolLightningErrorZ {
+	pub contents: CResult_boolLightningErrorZPtr,
+	pub result_ok: bool,
+}
+#[no_mangle]
+pub extern "C" fn CResult_boolLightningErrorZ_ok(o: bool) -> CResult_boolLightningErrorZ {
+	CResult_boolLightningErrorZ {
+		contents: CResult_boolLightningErrorZPtr {
+			result: Box::into_raw(Box::new(o)),
+		},
+		result_ok: true,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_boolLightningErrorZ_err(e: crate::ln::msgs::LightningError) -> CResult_boolLightningErrorZ {
+	CResult_boolLightningErrorZ {
+		contents: CResult_boolLightningErrorZPtr {
+			err: Box::into_raw(Box::new(e)),
+		},
+		result_ok: false,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_boolLightningErrorZ_free(_res: CResult_boolLightningErrorZ) { }
+impl Drop for CResult_boolLightningErrorZ {
+	fn drop(&mut self) {
+		if self.result_ok {
+			if unsafe { !(self.contents.result as *mut ()).is_null() } {
+				let _ = unsafe { Box::from_raw(self.contents.result) };
+			}
+		} else {
+			if unsafe { !(self.contents.err as *mut ()).is_null() } {
+				let _ = unsafe { Box::from_raw(self.contents.err) };
+			}
+		}
+	}
+}
+impl From<crate::c_types::CResultTempl<bool, crate::ln::msgs::LightningError>> for CResult_boolLightningErrorZ {
+	fn from(mut o: crate::c_types::CResultTempl<bool, crate::ln::msgs::LightningError>) -> Self {
+		let contents = if o.result_ok {
+			let result = unsafe { o.contents.result };
+			unsafe { o.contents.result = std::ptr::null_mut() };
+			CResult_boolLightningErrorZPtr { result }
+		} else {
+			let err = unsafe { o.contents.err };
+			unsafe { o.contents.err = std::ptr::null_mut(); }
+			CResult_boolLightningErrorZPtr { err }
+		};
+		Self {
+			contents,
+			result_ok: o.result_ok,
+		}
+	}
+}
+impl Clone for CResult_boolLightningErrorZ {
+	fn clone(&self) -> Self {
+		if self.result_ok {
+			Self { result_ok: true, contents: CResult_boolLightningErrorZPtr {
+				result: Box::into_raw(Box::new(<bool>::clone(unsafe { &*self.contents.result })))
+			} }
+		} else {
+			Self { result_ok: false, contents: CResult_boolLightningErrorZPtr {
+				err: Box::into_raw(Box::new(<crate::ln::msgs::LightningError>::clone(unsafe { &*self.contents.err })))
+			} }
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_boolLightningErrorZ_clone(orig: &CResult_boolLightningErrorZ) -> CResult_boolLightningErrorZ { orig.clone() }
+#[repr(C)]
+pub struct C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
+	pub a: crate::ln::msgs::ChannelAnnouncement,
+	pub b: crate::ln::msgs::ChannelUpdate,
+	pub c: crate::ln::msgs::ChannelUpdate,
+}
+impl From<(crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate)> for C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
+	fn from (tup: (crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate)) -> Self {
+		Self {
+			a: tup.0,
+			b: tup.1,
+			c: tup.2,
+		}
+	}
+}
+impl C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
+	#[allow(unused)] pub(crate) fn to_rust(mut self) -> (crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate) {
+		(self.a, self.b, self.c)
+	}
+}
+impl Clone for C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
+	fn clone(&self) -> Self {
+		Self {
+			a: self.a.clone(),
+			b: self.b.clone(),
+			c: self.c.clone(),
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_clone(orig: &C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ) -> C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ { orig.clone() }
+#[no_mangle]
+pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_new(a: crate::ln::msgs::ChannelAnnouncement, b: crate::ln::msgs::ChannelUpdate, c: crate::ln::msgs::ChannelUpdate) -> C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
+	C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ { a, b, c, }
+}
+
+#[no_mangle]
+pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_free(_res: C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ) { }
+#[repr(C)]
+pub struct CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
+	pub data: *mut crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ,
+	pub datalen: usize
+}
+impl CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ>> for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
+	fn from(v: Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ_free(_res: CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ) { }
+impl Drop for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub struct CVec_NodeAnnouncementZ {
+	pub data: *mut crate::ln::msgs::NodeAnnouncement,
+	pub datalen: usize
+}
+impl CVec_NodeAnnouncementZ {
+	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::ln::msgs::NodeAnnouncement> {
+		if self.datalen == 0 { return Vec::new(); }
+		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
+		self.data = std::ptr::null_mut();
+		self.datalen = 0;
+		ret
+	}
+	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::ln::msgs::NodeAnnouncement] {
+		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
+	}
+}
+impl From<Vec<crate::ln::msgs::NodeAnnouncement>> for CVec_NodeAnnouncementZ {
+	fn from(v: Vec<crate::ln::msgs::NodeAnnouncement>) -> Self {
+		let datalen = v.len();
+		let data = Box::into_raw(v.into_boxed_slice());
+		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
+	}
+}
+#[no_mangle]
+pub extern "C" fn CVec_NodeAnnouncementZ_free(_res: CVec_NodeAnnouncementZ) { }
+impl Drop for CVec_NodeAnnouncementZ {
+	fn drop(&mut self) {
+		if self.datalen == 0 { return; }
+		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
+	}
+}
+impl Clone for CVec_NodeAnnouncementZ {
+	fn clone(&self) -> Self {
+		let mut res = Vec::new();
+		if self.datalen == 0 { return Self::from(res); }
+		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
+		Self::from(res)
+	}
+}
+#[repr(C)]
+pub union CResult_NoneLightningErrorZPtr {
+	/// Note that this value is always NULL, as there are no contents in the OK variant
+	pub result: *mut std::ffi::c_void,
+	pub err: *mut crate::ln::msgs::LightningError,
+}
+#[repr(C)]
+pub struct CResult_NoneLightningErrorZ {
+	pub contents: CResult_NoneLightningErrorZPtr,
+	pub result_ok: bool,
+}
+#[no_mangle]
+pub extern "C" fn CResult_NoneLightningErrorZ_ok() -> CResult_NoneLightningErrorZ {
+	CResult_NoneLightningErrorZ {
+		contents: CResult_NoneLightningErrorZPtr {
+			result: std::ptr::null_mut(),
+		},
+		result_ok: true,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_NoneLightningErrorZ_err(e: crate::ln::msgs::LightningError) -> CResult_NoneLightningErrorZ {
+	CResult_NoneLightningErrorZ {
+		contents: CResult_NoneLightningErrorZPtr {
+			err: Box::into_raw(Box::new(e)),
+		},
+		result_ok: false,
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_NoneLightningErrorZ_free(_res: CResult_NoneLightningErrorZ) { }
+impl Drop for CResult_NoneLightningErrorZ {
+	fn drop(&mut self) {
+		if self.result_ok {
+		} else {
+			if unsafe { !(self.contents.err as *mut ()).is_null() } {
+				let _ = unsafe { Box::from_raw(self.contents.err) };
+			}
+		}
+	}
+}
+impl From<crate::c_types::CResultTempl<u8, crate::ln::msgs::LightningError>> for CResult_NoneLightningErrorZ {
+	fn from(mut o: crate::c_types::CResultTempl<u8, crate::ln::msgs::LightningError>) -> Self {
+		let contents = if o.result_ok {
+			let _ = unsafe { Box::from_raw(o.contents.result) };
+			o.contents.result = std::ptr::null_mut();
+			CResult_NoneLightningErrorZPtr { result: std::ptr::null_mut() }
+		} else {
+			let err = unsafe { o.contents.err };
+			unsafe { o.contents.err = std::ptr::null_mut(); }
+			CResult_NoneLightningErrorZPtr { err }
+		};
+		Self {
+			contents,
+			result_ok: o.result_ok,
+		}
+	}
+}
+impl Clone for CResult_NoneLightningErrorZ {
+	fn clone(&self) -> Self {
+		if self.result_ok {
+			Self { result_ok: true, contents: CResult_NoneLightningErrorZPtr {
+				result: std::ptr::null_mut()
+			} }
+		} else {
+			Self { result_ok: false, contents: CResult_NoneLightningErrorZPtr {
+				err: Box::into_raw(Box::new(<crate::ln::msgs::LightningError>::clone(unsafe { &*self.contents.err })))
+			} }
+		}
+	}
+}
+#[no_mangle]
+pub extern "C" fn CResult_NoneLightningErrorZ_clone(orig: &CResult_NoneLightningErrorZ) -> CResult_NoneLightningErrorZ { orig.clone() }
+#[repr(C)]
 pub struct CVec_PublicKeyZ {
 	pub data: *mut crate::c_types::PublicKey,
 	pub datalen: usize
@@ -1499,312 +1805,6 @@ impl Clone for CResult_ChannelConfigDecodeErrorZ {
 }
 #[no_mangle]
 pub extern "C" fn CResult_ChannelConfigDecodeErrorZ_clone(orig: &CResult_ChannelConfigDecodeErrorZ) -> CResult_ChannelConfigDecodeErrorZ { orig.clone() }
-#[repr(C)]
-pub union CResult_boolLightningErrorZPtr {
-	pub result: *mut bool,
-	pub err: *mut crate::ln::msgs::LightningError,
-}
-#[repr(C)]
-pub struct CResult_boolLightningErrorZ {
-	pub contents: CResult_boolLightningErrorZPtr,
-	pub result_ok: bool,
-}
-#[no_mangle]
-pub extern "C" fn CResult_boolLightningErrorZ_ok(o: bool) -> CResult_boolLightningErrorZ {
-	CResult_boolLightningErrorZ {
-		contents: CResult_boolLightningErrorZPtr {
-			result: Box::into_raw(Box::new(o)),
-		},
-		result_ok: true,
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_boolLightningErrorZ_err(e: crate::ln::msgs::LightningError) -> CResult_boolLightningErrorZ {
-	CResult_boolLightningErrorZ {
-		contents: CResult_boolLightningErrorZPtr {
-			err: Box::into_raw(Box::new(e)),
-		},
-		result_ok: false,
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_boolLightningErrorZ_free(_res: CResult_boolLightningErrorZ) { }
-impl Drop for CResult_boolLightningErrorZ {
-	fn drop(&mut self) {
-		if self.result_ok {
-			if unsafe { !(self.contents.result as *mut ()).is_null() } {
-				let _ = unsafe { Box::from_raw(self.contents.result) };
-			}
-		} else {
-			if unsafe { !(self.contents.err as *mut ()).is_null() } {
-				let _ = unsafe { Box::from_raw(self.contents.err) };
-			}
-		}
-	}
-}
-impl From<crate::c_types::CResultTempl<bool, crate::ln::msgs::LightningError>> for CResult_boolLightningErrorZ {
-	fn from(mut o: crate::c_types::CResultTempl<bool, crate::ln::msgs::LightningError>) -> Self {
-		let contents = if o.result_ok {
-			let result = unsafe { o.contents.result };
-			unsafe { o.contents.result = std::ptr::null_mut() };
-			CResult_boolLightningErrorZPtr { result }
-		} else {
-			let err = unsafe { o.contents.err };
-			unsafe { o.contents.err = std::ptr::null_mut(); }
-			CResult_boolLightningErrorZPtr { err }
-		};
-		Self {
-			contents,
-			result_ok: o.result_ok,
-		}
-	}
-}
-impl Clone for CResult_boolLightningErrorZ {
-	fn clone(&self) -> Self {
-		if self.result_ok {
-			Self { result_ok: true, contents: CResult_boolLightningErrorZPtr {
-				result: Box::into_raw(Box::new(<bool>::clone(unsafe { &*self.contents.result })))
-			} }
-		} else {
-			Self { result_ok: false, contents: CResult_boolLightningErrorZPtr {
-				err: Box::into_raw(Box::new(<crate::ln::msgs::LightningError>::clone(unsafe { &*self.contents.err })))
-			} }
-		}
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_boolLightningErrorZ_clone(orig: &CResult_boolLightningErrorZ) -> CResult_boolLightningErrorZ { orig.clone() }
-#[repr(C)]
-pub struct C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	pub a: crate::ln::msgs::ChannelAnnouncement,
-	pub b: crate::ln::msgs::ChannelUpdate,
-	pub c: crate::ln::msgs::ChannelUpdate,
-}
-impl From<(crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate)> for C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	fn from (tup: (crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate)) -> Self {
-		Self {
-			a: tup.0,
-			b: tup.1,
-			c: tup.2,
-		}
-	}
-}
-impl C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	#[allow(unused)] pub(crate) fn to_rust(mut self) -> (crate::ln::msgs::ChannelAnnouncement, crate::ln::msgs::ChannelUpdate, crate::ln::msgs::ChannelUpdate) {
-		(self.a, self.b, self.c)
-	}
-}
-impl Clone for C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	fn clone(&self) -> Self {
-		Self {
-			a: self.a.clone(),
-			b: self.b.clone(),
-			c: self.c.clone(),
-		}
-	}
-}
-#[no_mangle]
-pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_clone(orig: &C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ) -> C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ { orig.clone() }
-#[no_mangle]
-pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_new(a: crate::ln::msgs::ChannelAnnouncement, b: crate::ln::msgs::ChannelUpdate, c: crate::ln::msgs::ChannelUpdate) -> C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ {
-	C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ { a, b, c, }
-}
-
-#[no_mangle]
-pub extern "C" fn C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ_free(_res: C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ) { }
-#[repr(C)]
-pub struct CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	pub data: *mut crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ,
-	pub datalen: usize
-}
-impl CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ> {
-		if self.datalen == 0 { return Vec::new(); }
-		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
-		self.data = std::ptr::null_mut();
-		self.datalen = 0;
-		ret
-	}
-	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ] {
-		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
-	}
-}
-impl From<Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ>> for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	fn from(v: Vec<crate::c_types::derived::C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZ>) -> Self {
-		let datalen = v.len();
-		let data = Box::into_raw(v.into_boxed_slice());
-		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
-	}
-}
-#[no_mangle]
-pub extern "C" fn CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ_free(_res: CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ) { }
-impl Drop for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	fn drop(&mut self) {
-		if self.datalen == 0 { return; }
-		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
-	}
-}
-impl Clone for CVec_C3Tuple_ChannelAnnouncementChannelUpdateChannelUpdateZZ {
-	fn clone(&self) -> Self {
-		let mut res = Vec::new();
-		if self.datalen == 0 { return Self::from(res); }
-		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
-		Self::from(res)
-	}
-}
-#[repr(C)]
-pub struct CVec_NodeAnnouncementZ {
-	pub data: *mut crate::ln::msgs::NodeAnnouncement,
-	pub datalen: usize
-}
-impl CVec_NodeAnnouncementZ {
-	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::ln::msgs::NodeAnnouncement> {
-		if self.datalen == 0 { return Vec::new(); }
-		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
-		self.data = std::ptr::null_mut();
-		self.datalen = 0;
-		ret
-	}
-	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::ln::msgs::NodeAnnouncement] {
-		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
-	}
-}
-impl From<Vec<crate::ln::msgs::NodeAnnouncement>> for CVec_NodeAnnouncementZ {
-	fn from(v: Vec<crate::ln::msgs::NodeAnnouncement>) -> Self {
-		let datalen = v.len();
-		let data = Box::into_raw(v.into_boxed_slice());
-		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
-	}
-}
-#[no_mangle]
-pub extern "C" fn CVec_NodeAnnouncementZ_free(_res: CVec_NodeAnnouncementZ) { }
-impl Drop for CVec_NodeAnnouncementZ {
-	fn drop(&mut self) {
-		if self.datalen == 0 { return; }
-		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
-	}
-}
-impl Clone for CVec_NodeAnnouncementZ {
-	fn clone(&self) -> Self {
-		let mut res = Vec::new();
-		if self.datalen == 0 { return Self::from(res); }
-		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
-		Self::from(res)
-	}
-}
-#[repr(C)]
-pub union CResult_NoneLightningErrorZPtr {
-	/// Note that this value is always NULL, as there are no contents in the OK variant
-	pub result: *mut std::ffi::c_void,
-	pub err: *mut crate::ln::msgs::LightningError,
-}
-#[repr(C)]
-pub struct CResult_NoneLightningErrorZ {
-	pub contents: CResult_NoneLightningErrorZPtr,
-	pub result_ok: bool,
-}
-#[no_mangle]
-pub extern "C" fn CResult_NoneLightningErrorZ_ok() -> CResult_NoneLightningErrorZ {
-	CResult_NoneLightningErrorZ {
-		contents: CResult_NoneLightningErrorZPtr {
-			result: std::ptr::null_mut(),
-		},
-		result_ok: true,
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_NoneLightningErrorZ_err(e: crate::ln::msgs::LightningError) -> CResult_NoneLightningErrorZ {
-	CResult_NoneLightningErrorZ {
-		contents: CResult_NoneLightningErrorZPtr {
-			err: Box::into_raw(Box::new(e)),
-		},
-		result_ok: false,
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_NoneLightningErrorZ_free(_res: CResult_NoneLightningErrorZ) { }
-impl Drop for CResult_NoneLightningErrorZ {
-	fn drop(&mut self) {
-		if self.result_ok {
-		} else {
-			if unsafe { !(self.contents.err as *mut ()).is_null() } {
-				let _ = unsafe { Box::from_raw(self.contents.err) };
-			}
-		}
-	}
-}
-impl From<crate::c_types::CResultTempl<u8, crate::ln::msgs::LightningError>> for CResult_NoneLightningErrorZ {
-	fn from(mut o: crate::c_types::CResultTempl<u8, crate::ln::msgs::LightningError>) -> Self {
-		let contents = if o.result_ok {
-			let _ = unsafe { Box::from_raw(o.contents.result) };
-			o.contents.result = std::ptr::null_mut();
-			CResult_NoneLightningErrorZPtr { result: std::ptr::null_mut() }
-		} else {
-			let err = unsafe { o.contents.err };
-			unsafe { o.contents.err = std::ptr::null_mut(); }
-			CResult_NoneLightningErrorZPtr { err }
-		};
-		Self {
-			contents,
-			result_ok: o.result_ok,
-		}
-	}
-}
-impl Clone for CResult_NoneLightningErrorZ {
-	fn clone(&self) -> Self {
-		if self.result_ok {
-			Self { result_ok: true, contents: CResult_NoneLightningErrorZPtr {
-				result: std::ptr::null_mut()
-			} }
-		} else {
-			Self { result_ok: false, contents: CResult_NoneLightningErrorZPtr {
-				err: Box::into_raw(Box::new(<crate::ln::msgs::LightningError>::clone(unsafe { &*self.contents.err })))
-			} }
-		}
-	}
-}
-#[no_mangle]
-pub extern "C" fn CResult_NoneLightningErrorZ_clone(orig: &CResult_NoneLightningErrorZ) -> CResult_NoneLightningErrorZ { orig.clone() }
-#[repr(C)]
-pub struct CVec_MessageSendEventZ {
-	pub data: *mut crate::util::events::MessageSendEvent,
-	pub datalen: usize
-}
-impl CVec_MessageSendEventZ {
-	#[allow(unused)] pub(crate) fn into_rust(&mut self) -> Vec<crate::util::events::MessageSendEvent> {
-		if self.datalen == 0 { return Vec::new(); }
-		let ret = unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) }.into();
-		self.data = std::ptr::null_mut();
-		self.datalen = 0;
-		ret
-	}
-	#[allow(unused)] pub(crate) fn as_slice(&self) -> &[crate::util::events::MessageSendEvent] {
-		unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) }
-	}
-}
-impl From<Vec<crate::util::events::MessageSendEvent>> for CVec_MessageSendEventZ {
-	fn from(v: Vec<crate::util::events::MessageSendEvent>) -> Self {
-		let datalen = v.len();
-		let data = Box::into_raw(v.into_boxed_slice());
-		Self { datalen, data: unsafe { (*data).as_mut_ptr() } }
-	}
-}
-#[no_mangle]
-pub extern "C" fn CVec_MessageSendEventZ_free(_res: CVec_MessageSendEventZ) { }
-impl Drop for CVec_MessageSendEventZ {
-	fn drop(&mut self) {
-		if self.datalen == 0 { return; }
-		unsafe { Box::from_raw(std::slice::from_raw_parts_mut(self.data, self.datalen)) };
-	}
-}
-impl Clone for CVec_MessageSendEventZ {
-	fn clone(&self) -> Self {
-		let mut res = Vec::new();
-		if self.datalen == 0 { return Self::from(res); }
-		res.extend_from_slice(unsafe { std::slice::from_raw_parts_mut(self.data, self.datalen) });
-		Self::from(res)
-	}
-}
 #[repr(C)]
 pub union CResult_DirectionalChannelInfoDecodeErrorZPtr {
 	pub result: *mut crate::routing::network_graph::DirectionalChannelInfo,

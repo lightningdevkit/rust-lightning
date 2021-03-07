@@ -97,7 +97,7 @@ pub struct TxCreationKeys {
 
 impl Drop for TxCreationKeys {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeTxCreationKeys>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -192,7 +192,7 @@ pub extern "C" fn TxCreationKeys_new(mut per_commitment_point_arg: crate::c_type
 impl Clone for TxCreationKeys {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeTxCreationKeys>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -237,7 +237,7 @@ pub struct ChannelPublicKeys {
 
 impl Drop for ChannelPublicKeys {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelPublicKeys>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -346,7 +346,7 @@ pub extern "C" fn ChannelPublicKeys_new(mut funding_pubkey_arg: crate::c_types::
 impl Clone for ChannelPublicKeys {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelPublicKeys>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -423,7 +423,7 @@ pub struct HTLCOutputInCommitment {
 
 impl Drop for HTLCOutputInCommitment {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeHTLCOutputInCommitment>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -500,7 +500,7 @@ pub extern "C" fn HTLCOutputInCommitment_set_payment_hash(this_ptr: &mut HTLCOut
 impl Clone for HTLCOutputInCommitment {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeHTLCOutputInCommitment>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -573,7 +573,7 @@ pub struct ChannelTransactionParameters {
 
 impl Drop for ChannelTransactionParameters {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeChannelTransactionParameters>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -674,7 +674,7 @@ pub extern "C" fn ChannelTransactionParameters_new(mut holder_pubkeys_arg: crate
 impl Clone for ChannelTransactionParameters {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeChannelTransactionParameters>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -705,7 +705,7 @@ pub struct CounterpartyChannelTransactionParameters {
 
 impl Drop for CounterpartyChannelTransactionParameters {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeCounterpartyChannelTransactionParameters>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -760,7 +760,7 @@ pub extern "C" fn CounterpartyChannelTransactionParameters_new(mut pubkeys_arg: 
 impl Clone for CounterpartyChannelTransactionParameters {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeCounterpartyChannelTransactionParameters>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -853,7 +853,7 @@ pub struct DirectedChannelTransactionParameters {
 
 impl Drop for DirectedChannelTransactionParameters {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeDirectedChannelTransactionParameters>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -937,7 +937,7 @@ pub struct HolderCommitmentTransaction {
 
 impl Drop for HolderCommitmentTransaction {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeHolderCommitmentTransaction>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -979,7 +979,7 @@ pub extern "C" fn HolderCommitmentTransaction_set_counterparty_htlc_sigs(this_pt
 impl Clone for HolderCommitmentTransaction {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeHolderCommitmentTransaction>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1034,7 +1034,7 @@ pub struct BuiltCommitmentTransaction {
 
 impl Drop for BuiltCommitmentTransaction {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeBuiltCommitmentTransaction>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1096,7 +1096,7 @@ pub extern "C" fn BuiltCommitmentTransaction_new(mut transaction_arg: crate::c_t
 impl Clone for BuiltCommitmentTransaction {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeBuiltCommitmentTransaction>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1165,7 +1165,7 @@ pub struct CommitmentTransaction {
 
 impl Drop for CommitmentTransaction {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeCommitmentTransaction>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
@@ -1190,7 +1190,7 @@ impl CommitmentTransaction {
 impl Clone for CommitmentTransaction {
 	fn clone(&self) -> Self {
 		Self {
-			inner: if self.inner.is_null() { std::ptr::null_mut() } else {
+			inner: if <*mut nativeCommitmentTransaction>::is_null(self.inner) { std::ptr::null_mut() } else {
 				Box::into_raw(Box::new(unsafe { &*self.inner }.clone())) },
 			is_owned: true,
 		}
@@ -1299,7 +1299,7 @@ pub struct TrustedCommitmentTransaction {
 
 impl Drop for TrustedCommitmentTransaction {
 	fn drop(&mut self) {
-		if self.is_owned && !self.inner.is_null() {
+		if self.is_owned && !<*mut nativeTrustedCommitmentTransaction>::is_null(self.inner) {
 			let _ = unsafe { Box::from_raw(self.inner) };
 		}
 	}
