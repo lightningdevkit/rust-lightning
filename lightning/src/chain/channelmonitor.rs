@@ -1166,16 +1166,15 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
 	/// transaction), which we must learn about spends of via block_connected().
-	///
-	/// (C-not exported) because we have no HashMap bindings
-	pub fn get_outputs_to_watch(&self) -> HashMap<Txid, Vec<(u32, Script)>> {
-		self.inner.lock().unwrap().get_outputs_to_watch().clone()
+	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, Script)>)> {
+		self.inner.lock().unwrap().get_outputs_to_watch()
+			.iter().map(|(txid, outputs)| (*txid, outputs.clone())).collect()
 	}
 
 	/// Loads the funding txo and outputs to watch into the given `chain::Filter` by repeatedly
 	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
 	/// have been registered.
-	pub fn load_outputs_to_watch<F: Deref>(&self, filter: F) where F::Target: chain::Filter {
+	pub fn load_outputs_to_watch<F: Deref>(&self, filter: &F) where F::Target: chain::Filter {
 		let lock = self.inner.lock().unwrap();
 		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
