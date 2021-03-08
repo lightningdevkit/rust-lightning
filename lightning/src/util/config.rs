@@ -129,8 +129,8 @@ pub struct ChannelHandshakeLimits {
 	/// Not checking this value would be a security issue, as our peer would be able to set it to
 	/// max relative lock-time (a year) and we would "lose" money as it would be locked for a long time.
 	///
-	/// Default value: MAX_LOCAL_BREAKDOWN_TIMEOUT (1008), which we also enforce as a maximum value
-	/// so you can tweak config to reduce the loss of having useless locked funds (if your peer accepts)
+	/// Default value: 2016, which we also enforce as a maximum value so you can tweak config to
+	/// reduce the loss of having useless locked funds (if your peer accepts)
 	pub their_to_self_delay: u16
 }
 
