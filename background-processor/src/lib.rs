@@ -268,7 +268,7 @@ mod tests {
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let desired_log = "Calling manager's timer_chan_freshness_every_min".to_string();
-			if log_entries.get(&("background_processor".to_string(), desired_log)).is_some() {
+			if log_entries.get(&("lightning_background_processor".to_string(), desired_log)).is_some() {
 				break
 			}
 		}

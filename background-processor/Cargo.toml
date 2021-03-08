@@ -1,6 +1,6 @@
 [package]
-name = "background-processor"
-version = "0.1.0"
+name = "lightning-background-processor"
+version = "0.0.1"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 edition = "2018"
 
