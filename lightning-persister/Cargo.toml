@@ -1,6 +1,6 @@
 [package]
 name = "lightning-persister"
-version = "0.0.1"
+version = "0.0.13"
 authors = ["Valentine Wallace", "Matt Corallo"]
 license = "Apache-2.0"
 description = """
@@ -9,7 +9,7 @@ Utilities to manage channel data persistence and retrieval.
 
 [dependencies]
 bitcoin = "0.26"
-lightning = { version = "0.0.12", path = "../lightning" }
+lightning = { version = "0.0.13", path = "../lightning" }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
@@ -20,4 +20,4 @@ version = "0.26"
 features = ["bitcoinconsensus"]
 
 [dev-dependencies]
-lightning = { version = "0.0.12", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.13", path = "../lightning", features = ["_test_utils"] }

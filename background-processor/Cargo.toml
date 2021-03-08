@@ -1,6 +1,6 @@
 [package]
 name = "lightning-background-processor"
-version = "0.0.1"
+version = "0.0.13"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 edition = "2018"
 
@@ -8,8 +8,8 @@ edition = "2018"
 
 [dependencies]
 bitcoin = "0.26"
-lightning = { version = "0.0.12", path = "../lightning", features = ["allow_wallclock_use"] }
-lightning-persister = { version = "0.0.1", path = "../lightning-persister" }
+lightning = { version = "0.0.13", path = "../lightning", features = ["allow_wallclock_use"] }
+lightning-persister = { version = "0.0.13", path = "../lightning-persister" }
 
 [dev-dependencies]
-lightning = { version = "0.0.12", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.13", path = "../lightning", features = ["_test_utils"] }
