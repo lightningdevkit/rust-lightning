@@ -193,12 +193,7 @@ where C::Target: chain::Filter,
 			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
 
 			if let Some(ref chain_source) = self.chain_source {
-				chain_source.register_tx(&funding_txo.0.txid, &funding_txo.1);
-				for (txid, outputs) in monitor.get_outputs_to_watch().iter() {
-					for (idx, script_pubkey) in outputs.iter() {
-						chain_source.register_output(&OutPoint { txid: *txid, index: *idx as u16 }, script_pubkey);
-					}
-				}
+				monitor.load_outputs_to_watch(chain_source);
 			}
 		}
 		entry.insert(monitor);
