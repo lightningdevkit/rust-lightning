@@ -206,46 +206,6 @@ jobs:
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh
 
-  check_bindings:
-    runs-on: ubuntu-latest
-    # Ubuntu's version of rustc uses its own LLVM instead of being a real native package.
-    # This leaves us with an incompatible LLVM version when linking. Instead, use a real OS.
-    # We further (temporarily) use Debian experimental since testing links rustc against the
-    # brand-new llvm-10, but clang/llvm still default to LLVM 9.
-    container: debian:experimental
-    env:
-      TOOLCHAIN: stable
-    steps:
-      - name: Install native Rust toolchain, Valgrind, and build utilitis
-        run: |
-          echo 'Package: llvm llvm-runtime clang lld' > /etc/apt/preferences.d/99-llvm10
-          echo 'Pin: release n=experimental' >> /etc/apt/preferences.d/99-llvm10
-          echo 'Pin-Priority: 995' >> /etc/apt/preferences.d/99-llvm10
-          apt-get update
-          apt-get -y dist-upgrade
-          apt-get -y install cargo valgrind lld git g++ clang
-      - name: Checkout source code
-        uses: actions/checkout@v2
-      - name: Sanity test bindings
-        working-directory: lightning-c-bindings
-        run: cargo check
-      - name: Install cbindgen
-        run: cargo install --force cbindgen
-      - name: Rebuild bindings, and check the sample app builds + links
-        run: ./genbindings.sh
-      - name: Check that the latest bindings are in git
-        run: |
-          if [ "$(git diff)" != "" ]; then
-            # cbindgen's bindings output order can be FS-dependant, so check that the lines are all the same:
-            mv lightning-c-bindings/include/lightning.h lightning-c-bindings/include/lightning.h.new
-            git checkout lightning-c-bindings/include/lightning.h
-            cat lightning-c-bindings/include/lightning.h | grep -v "Generated with cbindgen:[0-9\.]*" | sort > lightning-c-bindings/include/lightning.h.sorted
-            cat lightning-c-bindings/include/lightning.h.new | grep -v "Generated with cbindgen:[0-9\.]*" | sort > lightning-c-bindings/include/lightning.h.new.sorted
-            diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted
-            [ "$(diff lightning-c-bindings/include/lightning.h.sorted lightning-c-bindings/include/lightning.h.new.sorted)" != "" ] && exit 2
-            git diff --exit-code
-          fi
-
   linting:
     runs-on: ubuntu-latest
     env:
