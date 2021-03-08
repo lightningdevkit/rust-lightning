@@ -1345,7 +1345,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	/// It will send pings to each peer and disconnect those which did not respond to the last round of pings.
 
 	/// Will most likely call send_data on all of the registered descriptors, thus, be very careful with reentrancy issues!
-	pub fn timer_tick_occured(&self) {
+	pub fn timer_tick_occurred(&self) {
 		let mut peers_lock = self.peers.lock().unwrap();
 		{
 			let peers = &mut *peers_lock;
@@ -1518,11 +1518,11 @@ mod tests {
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
 		// peers[0] awaiting_pong is set to true, but the Peer is still connected
-		peers[0].timer_tick_occured();
+		peers[0].timer_tick_occurred();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-		// Since timer_tick_occured() is called again when awaiting_pong is true, all Peers are disconnected
-		peers[0].timer_tick_occured();
+		// Since timer_tick_occurred() is called again when awaiting_pong is true, all Peers are disconnected
+		peers[0].timer_tick_occurred();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 
