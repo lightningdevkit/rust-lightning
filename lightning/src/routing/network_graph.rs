@@ -369,9 +369,8 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		drop(network_graph);
 
 		let mut pending_events = self.pending_events.lock().unwrap();
-		let mut batch_index = 0;
 		let batch_count = batches.len();
-		for batch in batches.into_iter() {
+		for (batch_index, batch) in batches.into_iter().enumerate() {
 			// Per spec, the initial first_blocknum needs to be <= the query's first_blocknum.
 			// Use the query's values since we don't use pre-processed reply ranges.
 			let first_blocknum = if batch_index == 0 {
@@ -409,8 +408,6 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 					short_channel_ids: batch,
 				}
 			});
-
-			batch_index += 1;
 		}
 
 		Ok(())
