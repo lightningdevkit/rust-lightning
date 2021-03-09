@@ -30,7 +30,7 @@ use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::Logger;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::scid_utils::{block_from_scid, scid_from_parts};
+use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
 use std::{cmp, fmt};
 use std::sync::{RwLock, RwLockReadGuard};
@@ -329,11 +329,11 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 
 		let network_graph = self.network_graph.read().unwrap();
 
-		let start_scid = scid_from_parts(msg.first_blocknum, 0, 0);
+		let start_scid = scid_from_parts(msg.first_blocknum as u64, 0, 0);
 
 		// We receive valid queries with end_blocknum that would overflow SCID conversion.
 		// Manually cap the ending block to avoid this overflow.
-		let exclusive_end_scid = scid_from_parts(cmp::min(msg.end_blocknum(), 0xffffff), 0, 0);
+		let exclusive_end_scid = scid_from_parts(cmp::min(msg.end_blocknum() as u64, MAX_SCID_BLOCK), 0, 0);
 
 		// Per spec, we must reply to a query. Send an empty message when things are invalid.
 		if msg.chain_hash != network_graph.genesis_hash || start_scid.is_err() || exclusive_end_scid.is_err() {
