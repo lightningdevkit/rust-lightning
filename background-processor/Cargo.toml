@@ -13,3 +13,7 @@ lightning-persister = { version = "0.0.13", path = "../lightning-persister" }
 
 [dev-dependencies]
 lightning = { version = "0.0.13", path = "../lightning", features = ["_test_utils"] }
+
+[dev-dependencies.bitcoin]
+version = "0.26"
+features = ["bitcoinconsensus"]
