@@ -1174,7 +1174,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// Loads the funding txo and outputs to watch into the given `chain::Filter` by repeatedly
 	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
 	/// have been registered.
-	pub fn load_outputs_to_watch<F: Deref>(&self, filter: &F) where F::Target: chain::Filter {
+	pub(super) fn load_outputs_to_watch<F: Deref>(&self, filter: &F) where F::Target: chain::Filter {
 		let lock = self.inner.lock().unwrap();
 		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
