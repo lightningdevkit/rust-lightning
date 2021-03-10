@@ -82,22 +82,39 @@ where C::Target: chain::Filter,
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		let mut dependent_txdata = Vec::new();
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
 			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
+			// Register any new outputs with the chain source for filtering, storing any dependent
+			// transactions from within the block that previously had not been included in txdata.
 			if let Some(ref chain_source) = self.chain_source {
 				let block_hash = header.block_hash();
 				for (txid, outputs) in txn_outputs.drain(..) {
 					for (idx, output) in outputs.iter() {
-						chain_source.register_output(WatchedOutput {
+						// Register any new outputs with the chain source for filtering and recurse
+						// if it indicates that there are dependent transactions within the block
+						// that had not been previously included in txdata.
+						let output = WatchedOutput {
 							block_hash: Some(block_hash),
 							outpoint: OutPoint { txid, index: *idx as u16 },
 							script_pubkey: output.script_pubkey.clone(),
-						});
+						};
+						if let Some(tx) = chain_source.register_output(output) {
+							dependent_txdata.push(tx);
+						}
 					}
 				}
 			}
+		}
+
+		// Recursively call for any dependent transactions that were identified by the chain source.
+		if !dependent_txdata.is_empty() {
+			dependent_txdata.sort_unstable_by_key(|(index, _tx)| *index);
+			dependent_txdata.dedup_by_key(|(index, _tx)| *index);
+			let txdata: Vec<_> = dependent_txdata.iter().map(|(index, tx)| (*index, tx)).collect();
+			self.block_connected(header, &txdata, height);
 		}
 	}
 
