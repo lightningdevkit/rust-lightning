@@ -394,8 +394,7 @@ fn test_multi_flight_update_fee() {
 	check_added_monitors!(nodes[1], 1);
 }
 
-#[test]
-fn test_1_conf_open() {
+fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	// Previously, if the minium_depth config was set to 1, we'd never send a funding_locked. This
 	// tests that we properly send one in that case.
 	let mut alice_config = UserConfig::default();
@@ -409,7 +408,8 @@ fn test_1_conf_open() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 	mine_transaction(&nodes[1], &tx);
@@ -424,6 +424,12 @@ fn test_1_conf_open() {
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
 		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	}
+}
+#[test]
+fn test_1_conf_open() {
+	do_test_1_conf_open(ConnectStyle::BestBlockFirst);
+	do_test_1_conf_open(ConnectStyle::TransactionsFirst);
+	do_test_1_conf_open(ConnectStyle::FullBlockViaListen);
 }
 
 fn do_test_sanity_on_in_flight_opens(steps: u8) {

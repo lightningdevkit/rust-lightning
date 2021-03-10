@@ -184,7 +184,7 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
 }
 
-fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
+fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_style: ConnectStyle) {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
 	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
 	// around freeing background events which store monitor updates during block_[dis]connected.
@@ -195,6 +195,8 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
+
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -272,10 +274,18 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 #[test]
 fn test_unconf_chan() {
-	do_test_unconf_chan(true, true);
-	do_test_unconf_chan(false, true);
-	do_test_unconf_chan(true, false);
-	do_test_unconf_chan(false, false);
+	do_test_unconf_chan(true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+}
+
+#[test]
+fn test_unconf_chan_via_listen() {
+	do_test_unconf_chan(true, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(true, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, false, ConnectStyle::FullBlockViaListen);
 }
 
 #[test]

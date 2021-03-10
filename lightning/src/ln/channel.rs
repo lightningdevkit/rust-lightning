@@ -3501,11 +3501,57 @@ impl<Signer: Sign> Channel<Signer> {
 		self.network_sync == UpdateStatus::DisabledMarked
 	}
 
+	fn check_get_funding_locked(&mut self, height: u32) -> Option<msgs::FundingLocked> {
+		if self.funding_tx_confirmation_height == 0 {
+			return None;
+		}
+
+		let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations <= 0 {
+			self.funding_tx_confirmation_height = 0;
+		}
+
+		if funding_tx_confirmations < self.minimum_depth as i64 {
+			return None;
+		}
+
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+		let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
+			self.channel_state |= ChannelState::OurFundingLocked as u32;
+			true
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+			self.update_time_counter += 1;
+			true
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+			// We got a reorg but not enough to trigger a force close, just ignore.
+			false
+		} else if self.channel_state < ChannelState::ChannelFunded as u32 {
+			panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
+		} else {
+			// We got a reorg but not enough to trigger a force close, just ignore.
+			false
+		};
+
+		if need_commitment_update {
+			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+				let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+				return Some(msgs::FundingLocked {
+					channel_id: self.channel_id,
+					next_per_commitment_point,
+				});
+			} else {
+				self.monitor_pending_funding_locked = true;
+			}
+		}
+		None
+	}
+
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
-			-> Result<(), msgs::ErrorMessage> where L::Target: Logger {
+			-> Result<Option<msgs::FundingLocked>, msgs::ErrorMessage> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		for &(index_in_block, tx) in txdata.iter() {
 			if let Some(funding_txo) = self.get_funding_txo() {
@@ -3550,6 +3596,12 @@ impl<Signer: Sign> Channel<Signer> {
 							}
 						}
 					}
+					// If we allow 1-conf funding, we may need to check for funding_locked here and
+					// send it immediately instead of waiting for an update_best_block call (which
+					// may have already happened for this block).
+					if let Some(funding_locked) = self.check_get_funding_locked(height) {
+						return Ok(Some(funding_locked));
+					}
 				}
 				for inp in tx.input.iter() {
 					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
@@ -3562,7 +3614,7 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
-		Ok(())
+		Ok(None)
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -3592,58 +3644,31 @@ impl<Signer: Sign> Channel<Signer> {
 		});
 
 		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
-		if self.funding_tx_confirmation_height > 0 {
-			let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
-			if funding_tx_confirmations <= 0 {
-				self.funding_tx_confirmation_height = 0;
+
+		if let Some(funding_locked) = self.check_get_funding_locked(height) {
+			return Ok((Some(funding_locked), timed_out_htlcs));
+		}
+
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+		if non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
+		   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32 {
+			let mut funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+			if self.funding_tx_confirmation_height == 0 {
+				// Note that check_get_funding_locked may reset funding_tx_confirmation_height to
+				// zero if it has been reorged out, however in either case, our state flags
+				// indicate we've already sent a funding_locked
+				funding_tx_confirmations = 0;
 			}
 
-			let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-			if (non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
-			   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32) &&
-			    funding_tx_confirmations < self.minimum_depth as i64 / 2 {
+			// If we've sent funding_locked (or have both sent and received funding_locked), and
+			// the funding transaction's confirmation count has dipped below minimum_depth / 2,
+			// close the channel and hope we can get the latest state on chain (because presumably
+			// the funding transaction is at least still in the mempool of most nodes).
+			if funding_tx_confirmations < self.minimum_depth as i64 / 2 {
 				return Err(msgs::ErrorMessage {
 					channel_id: self.channel_id(),
 					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth, funding_tx_confirmations),
 				});
-			}
-
-			if funding_tx_confirmations == self.minimum_depth as i64 {
-				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
-					self.channel_state |= ChannelState::OurFundingLocked as u32;
-					true
-				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-					self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-					self.update_time_counter += 1;
-					true
-				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
-					// We got a reorg but not enough to trigger a force close, just update
-					// funding_tx_confirmed_in and return.
-					false
-				} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-					panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
-				} else {
-					// We got a reorg but not enough to trigger a force close, just update
-					// funding_tx_confirmed_in and return.
-					false
-				};
-
-				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-				//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-				//a protocol oversight, but I assume I'm just missing something.
-				if need_commitment_update {
-					if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-						let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-						return Ok((Some(msgs::FundingLocked {
-							channel_id: self.channel_id,
-							next_per_commitment_point,
-						}), timed_out_htlcs));
-					} else {
-						self.monitor_pending_funding_locked = true;
-						return Ok((None, timed_out_htlcs));
-					}
-				}
 			}
 		}
 

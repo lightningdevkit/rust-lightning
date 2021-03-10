@@ -436,11 +436,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			$node.transactions_confirmed(&header, 1, &txdata);
-			$node.update_best_block(&header, 1);
-			for i in 2..100 {
+			for _ in 2..100 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-				$node.update_best_block(&header, i);
 			}
+			$node.update_best_block(&header, 99);
 		} }
 	}
 
