@@ -2,11 +2,12 @@
 name = "lightning-block-sync"
 version = "0.0.13"
 authors = ["Jeffrey Czyz", "Matt Corallo"]
-license = "Apache-2.0"
-edition = "2018"
+license = "MIT OR Apache-2.0"
+repository = "http://github.com/rust-bitcoin/rust-lightning"
 description = """
 Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
 """
+edition = "2018"
 
 [features]
 rest-client = [ "serde", "serde_json", "chunked_transfer" ]

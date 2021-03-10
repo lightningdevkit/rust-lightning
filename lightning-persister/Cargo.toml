@@ -2,9 +2,10 @@
 name = "lightning-persister"
 version = "0.0.13"
 authors = ["Valentine Wallace", "Matt Corallo"]
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rust-bitcoin/rust-lightning/"
 description = """
-Utilities to manage channel data persistence and retrieval.
+Utilities to manage Rust-Lightning channel data persistence and retrieval.
 """
 
 [dependencies]

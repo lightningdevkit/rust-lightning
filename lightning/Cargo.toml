@@ -2,7 +2,7 @@
 name = "lightning"
 version = "0.0.13"
 authors = ["Matt Corallo"]
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-bitcoin/rust-lightning/"
 description = """
 A Bitcoin Lightning library in Rust.
