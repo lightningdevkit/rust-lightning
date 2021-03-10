@@ -11,7 +11,7 @@
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::TxOut;
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent};
@@ -131,7 +131,10 @@ pub trait Filter: Send + Sync {
 
 	/// Registers interest in spends of a transaction output identified by `outpoint` having
 	/// `script_pubkey` as the spending condition.
-	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script);
+	///
+	/// Optionally, returns any transaction dependent on the output. This is useful for Electrum
+	/// clients to facilitate registering in-block descendants.
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) -> Option<(usize, Transaction)>;
 }
 
 impl<T: Listen> Listen for std::ops::Deref<Target = T> {

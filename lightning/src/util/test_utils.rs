@@ -546,7 +546,8 @@ impl chain::Filter for TestChainSource {
 		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
-	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) {
+	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) -> Option<(usize, Transaction)> {
 		self.watched_outputs.lock().unwrap().insert((*outpoint, script_pubkey.clone()));
+		None
 	}
 }
