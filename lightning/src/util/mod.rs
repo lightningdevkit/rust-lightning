@@ -28,7 +28,7 @@ pub(crate) mod ser_macros;
 
 /// Logging macro utilities.
 #[macro_use]
-pub mod macro_logger;
+pub(crate) mod macro_logger;
 
 // These have to come after macro_logger to build
 pub mod logger;
