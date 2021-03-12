@@ -281,6 +281,18 @@ impl HTLCCandidate {
 	}
 }
 
+/// Information needed for constructing an invoice route hint for this channel.
+pub struct CounterpartyForwardingInfo {
+	/// Base routing fee in millisatoshis.
+	pub fee_base_msat: u32,
+	/// Amount in millionths of a satoshi the channel will charge per transferred satoshi.
+	pub fee_proportional_millionths: u32,
+	/// The minimum difference in cltv_expiry between an ingoing HTLC and its outgoing counterpart,
+	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
+	/// `cltv_expiry_delta` for more details.
+	pub cltv_expiry_delta: u16,
+}
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -390,6 +402,8 @@ pub(super) struct Channel<Signer: Sign> {
 	counterparty_max_accepted_htlcs: u16,
 	//implied by OUR_MAX_HTLCS: max_accepted_htlcs: u16,
 	minimum_depth: u32,
+
+	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 
@@ -576,6 +590,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
+
+			counterparty_forwarding_info: None,
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -812,6 +828,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
 			minimum_depth: config.own_channel_config.minimum_depth,
+
+			counterparty_forwarding_info: None,
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -4437,6 +4455,16 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.counterparty_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
+		match &self.counterparty_forwarding_info {
+			Some(info) => {
+				1u8.write(writer)?;
+				info.fee_base_msat.write(writer)?;
+				info.fee_proportional_millionths.write(writer)?;
+				info.cltv_expiry_delta.write(writer)?;
+			},
+			None => 0u8.write(writer)?
+		}
+
 		self.channel_transaction_parameters.write(writer)?;
 		self.counterparty_cur_commitment_point.write(writer)?;
 
@@ -4597,6 +4625,16 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
+		let counterparty_forwarding_info = match <u8 as Readable>::read(reader)? {
+			0 => None,
+			1 => Some(CounterpartyForwardingInfo {
+				fee_base_msat: Readable::read(reader)?,
+				fee_proportional_millionths: Readable::read(reader)?,
+				cltv_expiry_delta: Readable::read(reader)?,
+			}),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
 		let channel_parameters = Readable::read(reader)?;
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
 
@@ -4666,6 +4704,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			holder_htlc_minimum_msat,
 			counterparty_max_accepted_htlcs,
 			minimum_depth,
+
+			counterparty_forwarding_info,
 
 			channel_transaction_parameters: channel_parameters,
 			counterparty_cur_commitment_point,
