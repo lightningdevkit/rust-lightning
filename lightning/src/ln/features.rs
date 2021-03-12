@@ -32,6 +32,8 @@ use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
 mod sealed {
+	use ln::features::Features;
+
 	/// The context in which [`Features`] are applicable. Defines which features are required and
 	/// which are optional for the context.
 	///
@@ -157,7 +159,8 @@ mod sealed {
 	///
 	/// [`Context`]: trait.Context.html
 	macro_rules! define_feature {
-		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr) => {
+		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
+		 $required_setter: ident) => {
 			#[doc = $doc]
 			///
 			/// See [BOLT #9] for details.
@@ -242,6 +245,20 @@ mod sealed {
 				}
 			}
 
+			impl <T: $feature> Features<T> {
+				/// Set this feature as optional.
+				pub fn $optional_setter(mut self) -> Self {
+					<T as $feature>::set_optional_bit(&mut self.flags);
+					self
+				}
+
+				/// Set this feature as required.
+				pub fn $required_setter(mut self) -> Self {
+					<T as $feature>::set_required_bit(&mut self.flags);
+					self
+				}
+			}
+
 			$(
 				impl $feature for $context {
 					// EVEN_BIT % 2 == 0
@@ -251,28 +268,34 @@ mod sealed {
 					const ASSERT_ODD_BIT_PARITY: usize = (<Self as $feature>::ODD_BIT % 2) - 1;
 				}
 			)*
+
 		}
 	}
 
 	define_feature!(1, DataLossProtect, [InitContext, NodeContext],
-		"Feature flags for `option_data_loss_protect`.");
+		"Feature flags for `option_data_loss_protect`.", set_data_loss_protect_optional,
+		set_data_loss_protect_required);
 	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
-	define_feature!(3, InitialRoutingSync, [InitContext],
-		"Feature flags for `initial_routing_sync`.");
+	define_feature!(3, InitialRoutingSync, [InitContext], "Feature flags for `initial_routing_sync`.",
+		set_initial_routing_sync_optional, set_initial_routing_sync_required);
 	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
-		"Feature flags for `option_upfront_shutdown_script`.");
+		"Feature flags for `option_upfront_shutdown_script`.", set_upfront_shutdown_script_optional,
+		set_upfront_shutdown_script_required);
 	define_feature!(7, GossipQueries, [InitContext, NodeContext],
-		"Feature flags for `gossip_queries`.");
+		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required);
 	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
-		"Feature flags for `var_onion_optin`.");
+		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
+		set_variable_length_onion_required);
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext],
-		"Feature flags for `option_static_remotekey`.");
+		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
+		set_static_remote_key_required);
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
-		"Feature flags for `payment_secret`.");
+		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required);
 	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
-		"Feature flags for `basic_mpp`.");
+		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
-		"Feature flags for `opt_shutdown_anysegwit`.");
+		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
+		set_shutdown_any_segwit_required);
 
 	#[cfg(test)]
 	define_context!(TestingContext {
@@ -296,7 +319,8 @@ mod sealed {
 
 	#[cfg(test)]
 	define_feature!(23, UnknownFeature, [TestingContext],
-		"Feature flags for an unknown feature used in testing.");
+		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
+		set_unknown_feature_required);
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -614,7 +638,7 @@ impl<T: sealed::Context> Readable for Features<T> {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use super::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 
 	#[test]
 	fn sanity_test_known_features() {
@@ -717,5 +741,16 @@ mod tests {
 		assert!(!features.initial_routing_sync());
 		assert!(!features.supports_upfront_shutdown_script());
 		assert!(!init_features.supports_gossip_queries());
+	}
+
+	#[test]
+	fn set_feature_bits() {
+		let features = InvoiceFeatures::empty()
+			.set_basic_mpp_optional()
+			.set_payment_secret_required();
+		assert!(features.supports_basic_mpp());
+		assert!(!features.requires_basic_mpp());
+		assert!(features.requires_payment_secret());
+		assert!(features.supports_payment_secret());
 	}
 }
