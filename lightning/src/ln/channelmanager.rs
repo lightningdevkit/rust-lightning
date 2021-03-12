@@ -39,6 +39,9 @@ use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
+// Since this struct is returned in `list_channels` methods, expose it here in case users want to
+// construct one themselves.
+pub use ln::channel::CounterpartyForwardingInfo;
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
@@ -574,6 +577,10 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
+
+	/// Information on the fees and requirements that the counterparty requires when forwarding
+	/// payments to us through this channel.
+	pub counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
@@ -892,6 +899,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
 					is_live: channel.is_live(),
+					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
 			}
 		}
