@@ -796,6 +796,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider + Send + Sync {
 	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
+	/// Handle an incoming channel update from the given peer.
+	fn handle_channel_update(&self, their_node_id: &PublicKey, msg: &ChannelUpdate);
+
 	// Error:
 	/// Handle an incoming error message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);

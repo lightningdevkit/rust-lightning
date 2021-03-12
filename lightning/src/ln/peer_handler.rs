@@ -142,6 +142,8 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
+	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
@@ -970,6 +972,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 			},
 			wire::Message::ChannelUpdate(msg) => {
+				self.message_handler.chan_handler.handle_channel_update(&peer.their_node_id.unwrap(), &msg);
 				let should_forward = match self.message_handler.route_handler.handle_channel_update(&msg) {
 					Ok(v) => v,
 					Err(e) => { return Err(e.into()); },

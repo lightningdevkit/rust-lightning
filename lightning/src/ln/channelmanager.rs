@@ -2994,6 +2994,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		let chan_id = match channel_state.short_to_id.get(&msg.contents.short_channel_id) {
+			Some(chan_id) => chan_id.clone(),
+			None => {
+				// It's not a local channel
+				return Ok(())
+			}
+		};
+		match channel_state.by_id.entry(chan_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					// TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), chan_id));
+				}
+				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
+			},
+			hash_map::Entry::Vacant(_) => unreachable!()
+		}
+		Ok(())
+	}
+
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -3515,6 +3538,11 @@ impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sy
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {

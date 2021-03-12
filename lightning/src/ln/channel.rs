@@ -4132,6 +4132,20 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
+	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
+		let usable_channel_value_msat = (self.channel_value_satoshis - self.counterparty_selected_channel_reserve_satoshis) * 1000;
+		if msg.contents.htlc_minimum_msat >= usable_channel_value_msat {
+			return Err(ChannelError::Close("Minimum htlc value is greater than channel value".to_string()));
+		}
+		self.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
+			fee_base_msat: msg.contents.fee_base_msat,
+			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
+			cltv_expiry_delta: msg.contents.cltv_expiry_delta
+		});
+
+		Ok(())
+	}
+
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
 	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, PaymentHash)>), APIError> {
