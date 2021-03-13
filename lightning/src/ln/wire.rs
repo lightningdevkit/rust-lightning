@@ -105,8 +105,8 @@ impl MessageType {
 	}
 }
 
-impl ::std::fmt::Display for MessageType {
-	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl ::core::fmt::Display for MessageType {
+	fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
 		write!(f, "{}", self.0)
 	}
 }
@@ -352,6 +352,9 @@ mod tests {
 	use super::*;
 	use util::byte_utils;
 
+	#[macro_use]
+	use alloc::{vec, vec::Vec};
+
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];
 
@@ -396,12 +399,12 @@ mod tests {
 
 	#[test]
 	fn read_unknown_message() {
-		let buffer = &byte_utils::be16_to_array(::std::u16::MAX);
+		let buffer = &byte_utils::be16_to_array(::core::u16::MAX);
 		let mut reader = ::std::io::Cursor::new(buffer);
 		let message = read(&mut reader).unwrap();
 		match message {
-			Message::Unknown(MessageType(::std::u16::MAX)) => (),
-			_ => panic!("Expected message type {}; found: {}", ::std::u16::MAX, message.type_id()),
+			Message::Unknown(MessageType(::core::u16::MAX)) => (),
+			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
 		}
 	}
 
@@ -411,7 +414,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		assert!(write(&message, &mut buffer).is_ok());
 
-		let type_length = ::std::mem::size_of::<u16>();
+		let type_length = ::core::mem::size_of::<u16>();
 		let (type_bytes, payload_bytes) = buffer.split_at(type_length);
 		assert_eq!(byte_utils::slice_to_be16(type_bytes), msgs::Pong::TYPE);
 		assert_eq!(payload_bytes, &ENCODED_PONG[type_length..]);

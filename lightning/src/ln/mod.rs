@@ -71,6 +71,7 @@ pub struct PaymentSecret(pub [u8;32]);
 
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+use alloc::vec::Vec;
 
 impl FromBase32 for PaymentSecret {
 	type Err = bech32::Error;

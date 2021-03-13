@@ -22,8 +22,9 @@
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use std::{cmp, fmt};
-use std::marker::PhantomData;
+#[macro_use]
+use alloc::{vec, vec::Vec};
+use core::{cmp, fmt, marker::PhantomData};
 
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
@@ -31,6 +32,7 @@ use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
 mod sealed {
+    use alloc::vec::Vec;
 	use ln::features::Features;
 
 	/// The context in which [`Features`] are applicable. Defines which features are required and
@@ -199,14 +201,14 @@ mod sealed {
 
 				/// Returns whether the feature is required by the given flags.
 				#[inline]
-				fn requires_feature(flags: &Vec<u8>) -> bool {
+				fn requires_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & Self::REQUIRED_MASK) != 0
 				}
 
 				/// Returns whether the feature is supported by the given flags.
 				#[inline]
-				fn supports_feature(flags: &Vec<u8>) -> bool {
+				fn supports_feature(flags: &[u8]) -> bool {
 					flags.len() > Self::BYTE_OFFSET &&
 						(flags[Self::BYTE_OFFSET] & (Self::REQUIRED_MASK | Self::OPTIONAL_MASK)) != 0
 				}
@@ -217,7 +219,6 @@ mod sealed {
 					if flags.len() <= Self::BYTE_OFFSET {
 						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
-
 					flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
 				}
 
@@ -227,7 +228,6 @@ mod sealed {
 					if flags.len() <= Self::BYTE_OFFSET {
 						flags.resize(Self::BYTE_OFFSET + 1, 0u8);
 					}
-
 					flags[Self::BYTE_OFFSET] |= Self::OPTIONAL_MASK;
 				}
 
@@ -700,6 +700,9 @@ impl<T: sealed::Context> Readable for Features<T> {
 mod tests {
 	use super::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
+
+    #[macro_use]
+    use alloc::{vec, vec::Vec};
 
 	#[test]
 	fn sanity_test_known_features() {

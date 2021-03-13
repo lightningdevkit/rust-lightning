@@ -21,14 +21,18 @@ max_level_error = []
 max_level_warn = []
 max_level_info = []
 max_level_debug = []
+std = []
+core = ["hashbrown"]
 # Allow signing of local transactions that may have been revoked or will be revoked, for functional testing (e.g. justice tx handling).
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
 unstable = []
+default = ["std"]
 
 [dependencies]
 bitcoin = "0.26"
 
+hashbrown = { version = "0.9", optional = true }
 hex = { version = "0.3", optional = true }
 regex = { version = "0.1.80", optional = true }
 

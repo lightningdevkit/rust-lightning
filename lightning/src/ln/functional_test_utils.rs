@@ -39,11 +39,13 @@ use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::key::PublicKey;
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Mutex;
-use std::mem;
-use std::collections::HashMap;
+use core::{cell::RefCell, mem};
+use crate::HashMap;
+
+#[macro_use]
+use alloc::{vec, vec::Vec};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 

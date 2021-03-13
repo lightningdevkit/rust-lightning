@@ -7,7 +7,7 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
-use std::cmp::min;
+use core::cmp::min;
 use util::byte_utils::{slice_to_le32, le32_to_array};
 
 #[derive(Clone, Copy)]
@@ -205,7 +205,7 @@ impl Poly1305 {
 
 #[cfg(test)]
 mod test {
-	use std::iter::repeat;
+	use core::iter::repeat;
 
 	use util::poly1305::Poly1305;
 

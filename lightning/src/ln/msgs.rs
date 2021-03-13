@@ -32,8 +32,9 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
-use std::{cmp, fmt};
-use std::fmt::Debug;
+#[macro_use]
+use alloc::{vec, string::String, vec::Vec};
+use core::{cmp, fmt::{self, Debug}};
 use std::io::Read;
 
 use util::events::MessageSendEventsProvider;
@@ -866,6 +867,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 
 mod fuzzy_internal_msgs {
 	use ln::PaymentSecret;
+    use alloc::vec::Vec;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1839,6 +1841,8 @@ mod tests {
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
 
+    #[macro_use]
+    use alloc::{string::String, vec, vec::Vec};
 	use std::io::Cursor;
 
 	#[test]

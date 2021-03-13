@@ -30,15 +30,16 @@ use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
-use std::collections::{HashMap,hash_map,HashSet,LinkedList};
+use crate::{HashMap, HashSet, hash_map};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{cmp, error, hash, fmt, mem};
-use std::ops::Deref;
+use alloc::collections::LinkedList;
+use core::{cmp, hash, fmt, mem, ops::Deref, sync::atomic::{AtomicUsize, Ordering}};
+use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
+use alloc::vec::Vec;
 
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
 /// or doing any processing. You can provide one of these as the route_handler in a MessageHandler.
@@ -1416,9 +1417,10 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
-	use std;
 	use std::sync::{Arc, Mutex};
-	use std::sync::atomic::Ordering;
+	use core::{hash::{Hash, Hasher}, sync::atomic::Ordering};
+
+    use alloc::vec::Vec;
 
 	#[derive(Clone)]
 	struct FileDescriptor {
@@ -1431,8 +1433,8 @@ mod tests {
 		}
 	}
 	impl Eq for FileDescriptor { }
-	impl std::hash::Hash for FileDescriptor {
-		fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+	impl Hash for FileDescriptor {
+		fn hash<H: Hasher>(&self, hasher: &mut H) {
 			self.fd.hash(hasher)
 		}
 	}

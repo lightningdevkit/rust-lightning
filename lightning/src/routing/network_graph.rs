@@ -32,13 +32,11 @@ use util::logger::Logger;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
-use std::{cmp, fmt};
+#[macro_use]
+use alloc::{format, collections::{BTreeMap, btree_map::Entry as BtreeEntry}, string::String, vec, vec::Vec};
+use core::{cmp, fmt, ops::Deref, sync::atomic::{AtomicUsize, Ordering}};
 use std::sync::{RwLock, RwLockReadGuard};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::collections::BTreeMap;
-use std::collections::btree_map::Entry as BtreeEntry;
-use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
 /// The maximum number of extra bytes which we do not understand in a gossip message before we will
@@ -1129,6 +1127,8 @@ mod tests {
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 
+    #[macro_use]
+    use alloc::{vec, vec::Vec};
 	use std::sync::Arc;
 
 	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>) {

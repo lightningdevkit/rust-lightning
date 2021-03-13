@@ -37,9 +37,11 @@ use util::logger::Logger;
 use util::events;
 use util::events::Event;
 
-use std::collections::{HashMap, hash_map};
+use alloc::vec::Vec;
+use core::ops::Deref;
+use crate::{HashMap, hash_map};
 use std::sync::RwLock;
-use std::ops::Deref;
+
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///
@@ -323,6 +325,9 @@ mod tests {
 	use util::events::EventsProvider;
 	use util::events::MessageSendEventsProvider;
 	use util::test_utils::{OnRegisterOutput, TxOutReference};
+
+    #[macro_use]
+    use alloc::vec;
 
 	/// Tests that in-block dependent transactions are processed by `block_connected` when not
 	/// included in `txdata` but returned by [`chain::Filter::register_output`]. For instance,

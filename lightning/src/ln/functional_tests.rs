@@ -50,8 +50,10 @@ use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 use regex;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::default::Default;
+#[macro_use]
+use alloc::{collections::BTreeSet, vec, vec::Vec};
+use core::default::Default;
+use crate::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use ln::functional_test_utils::*;

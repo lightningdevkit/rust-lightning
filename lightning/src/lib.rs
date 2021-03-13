@@ -21,6 +21,7 @@
 #![cfg_attr(not(any(feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), forbid(unsafe_code))]
 #![deny(broken_intra_doc_links)]
+#![cfg_attr(feature = "core", no_std)]
 
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints
@@ -34,6 +35,15 @@
 extern crate bitcoin;
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))] extern crate regex;
+
+extern crate alloc;
+#[cfg(feature = "std")] extern crate core;
+#[cfg(feature = "core")] extern crate hashbrown;
+
+#[cfg(feature = "core")]
+use hashbrown::{HashMap, HashSet, hash_map};
+#[cfg(feature = "std")]
+use std::collections::{HashMap, HashSet, hash_map};
 
 #[macro_use]
 pub mod util;

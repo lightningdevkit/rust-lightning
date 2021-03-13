@@ -36,12 +36,14 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 
 use regex;
 
-use std::time::Duration;
 use std::sync::{Mutex, Arc};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{cmp, mem};
-use std::collections::{HashMap, HashSet, VecDeque};
+use alloc::collections::VecDeque;
+use core::{cmp, mem, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, time::Duration};
+use crate::{HashMap, HashSet};
 use chain::keysinterface::InMemorySigner;
+
+#[macro_use]
+use alloc::{format, vec, vec::Vec};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {

@@ -185,6 +185,8 @@ mod tests {
 	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
 
+    use alloc::vec::Vec;
+
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since
 	// the encoding layer in the BOLTs has no such concept, though it makes our macros easier to
 	// work with so they're baked into the decoder. Thus, we have a few additional tests below

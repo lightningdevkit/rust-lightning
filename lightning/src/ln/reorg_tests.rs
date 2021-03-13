@@ -22,8 +22,10 @@ use util::ser::{ReadableArgs, Writeable};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 
-use std::collections::HashMap;
-use std::mem;
+#[macro_use]
+use alloc::{vec, vec::Vec};
+use core::mem;
+use crate::HashMap;
 
 use ln::functional_test_utils::*;
 

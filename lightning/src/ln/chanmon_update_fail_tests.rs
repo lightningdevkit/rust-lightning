@@ -37,6 +37,9 @@ use ln::functional_test_utils::*;
 
 use util::test_utils;
 
+#[macro_use]
+use alloc::{vec, vec::Vec};
+
 // If persister_fail is true, we have the persister return a PermanentFailure
 // instead of the higher-level ChainMonitor.
 fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {

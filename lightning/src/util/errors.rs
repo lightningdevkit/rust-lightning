@@ -9,7 +9,8 @@
 
 //! Error types live here.
 
-use std::fmt;
+use alloc::string::String;
+use core::fmt;
 
 /// Indicates an error on the client's part (usually some variant of attempting to use too-low or
 /// too-high values)

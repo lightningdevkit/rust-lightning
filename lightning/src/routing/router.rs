@@ -21,9 +21,11 @@ use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
-use std::cmp;
-use std::collections::{HashMap, BinaryHeap};
-use std::ops::Deref;
+#[macro_use]
+use alloc::{collections::BinaryHeap, vec, vec::Vec};
+use core::{cmp, ops::Deref};
+use crate::HashMap;
+
 
 /// A hop in a route
 #[derive(Clone, PartialEq)]
@@ -1186,6 +1188,8 @@ mod tests {
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, All};
 
+    #[macro_use]
+    use alloc::{vec, vec::Vec};
 	use std::sync::Arc;
 
 	// Using the same keys for LN and BTC ids

@@ -39,9 +39,9 @@ use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
 use util::scid_utils::scid_from_parts;
 
-use std;
-use std::{cmp,mem,fmt};
-use std::ops::Deref;
+#[macro_use]
+use alloc::{format, boxed::Box, string::String, vec, vec::Vec};
+use core::{cmp, mem, fmt, ops::Deref};
 #[cfg(any(test, feature = "fuzztarget"))]
 use std::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
@@ -1220,7 +1220,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
 		// these, but for now we just have to treat them as normal.
 
-		let mut pending_idx = std::usize::MAX;
+		let mut pending_idx = core::usize::MAX;
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				assert_eq!(htlc.payment_hash, payment_hash_calc);
@@ -1243,7 +1243,7 @@ impl<Signer: Sign> Channel<Signer> {
 				break;
 			}
 		}
-		if pending_idx == std::usize::MAX {
+		if pending_idx == core::usize::MAX {
 			return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID".to_owned()));
 		}
 
@@ -1342,7 +1342,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
 		// these, but for now we just have to treat them as normal.
 
-		let mut pending_idx = std::usize::MAX;
+		let mut pending_idx = core::usize::MAX;
 		for (idx, htlc) in self.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
@@ -1359,7 +1359,7 @@ impl<Signer: Sign> Channel<Signer> {
 				pending_idx = idx;
 			}
 		}
-		if pending_idx == std::usize::MAX {
+		if pending_idx == core::usize::MAX {
 			return Err(ChannelError::Ignore("Unable to find a pending HTLC which matched the given HTLC ID".to_owned()));
 		}
 
@@ -4410,8 +4410,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		let mut key_data = VecWriter(Vec::new());
 		self.holder_signer.write(&mut key_data)?;
-		assert!(key_data.0.len() < std::usize::MAX);
-		assert!(key_data.0.len() < std::u32::MAX as usize);
+		assert!(key_data.0.len() < core::usize::MAX);
+		assert!(key_data.0.len() < core::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
 		writer.write_all(&key_data.0[..])?;
 
@@ -4878,6 +4878,9 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use std::sync::Arc;
+
+	#[macro_use]
+	use alloc::{vec, vec::Vec};
 
 	struct TestFeeEstimator {
 		fee_est: u32
