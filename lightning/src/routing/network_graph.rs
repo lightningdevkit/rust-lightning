@@ -45,6 +45,10 @@ use bitcoin::hashes::hex::ToHex;
 /// refuse to relay the message.
 const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 
+/// Maximum number of short_channel_ids that will be encoded in one gossip reply message.
+/// This value ensures a reply fits within the 65k payload limit and is consistent with other implementations.
+const MAX_SCIDS_PER_REPLY: usize = 8000;
+
 /// Represents the network as nodes and channels between them
 #[derive(Clone, PartialEq)]
 pub struct NetworkGraph {
@@ -71,11 +75,6 @@ pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
-
-	/// Maximum number of short_channel_ids that will be encoded in one gossip reply message.
-	/// Default is 8000 which ensures a reply fits within the 65k payload limit and is
-	/// consistent with other implementations.
-	max_reply_scids: usize,
 }
 
 impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
@@ -92,7 +91,6 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 			chain_access,
 			pending_events: Mutex::new(vec![]),
 			logger,
-			max_reply_scids: 8000,
 		}
 	}
 
@@ -106,7 +104,6 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 			chain_access,
 			pending_events: Mutex::new(vec![]),
 			logger,
-			max_reply_scids: 8000,
 		}
 	}
 
@@ -354,12 +351,12 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		// Creates channel batches. We are not checking if the channel is routable
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
-		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(self.max_reply_scids)];
+		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
 		for (_, ref chan) in network_graph.get_channels().range(start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
 				if batches.last().unwrap().len() == batches.last().unwrap().capacity() {
-					batches.push(Vec::with_capacity(self.max_reply_scids));
+					batches.push(Vec::with_capacity(MAX_SCIDS_PER_REPLY));
 				}
 
 				let batch = batches.last_mut().unwrap();
@@ -1121,6 +1118,7 @@ mod tests {
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
 	use util::events::{MessageSendEvent, MessageSendEventsProvider};
+	use util::scid_utils::scid_from_parts;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
@@ -2181,7 +2179,7 @@ mod tests {
 
 	#[test]
 	fn handling_query_channel_range() {
-		let (secp_ctx, mut net_graph_msg_handler) = create_net_graph_msg_handler();
+		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler();
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2193,16 +2191,19 @@ mod tests {
 		let bitcoin_key_1 = PublicKey::from_secret_key(&secp_ctx, node_1_btckey);
 		let bitcoin_key_2 = PublicKey::from_secret_key(&secp_ctx, node_2_btckey);
 
-		let scids: Vec<u64> = vec![
-			0x000000_000000_0000, // 0x0x0
-			0x000001_000000_0000, // 1x0x0
-			0x000002_000000_0000, // 2x0x0
-			0x000002_000001_0000, // 2x1x0
-			0x000100_000000_0000, // 256x0x0
-			0x000101_000000_0000, // 257x0x0
-			0xfffffe_ffffff_ffff, // max
-			0xffffff_ffffff_ffff, // never
+		let mut scids: Vec<u64> = vec![
+			scid_from_parts(0xfffffe, 0xffffff, 0xffff).unwrap(), // max
+			scid_from_parts(0xffffff, 0xffffff, 0xffff).unwrap(), // never
 		];
+
+		// used for testing multipart reply across blocks
+		for block in 100000..=108001 {
+			scids.push(scid_from_parts(block, 0, 0).unwrap());
+		}
+
+		// used for testing resumption on same block
+		scids.push(scid_from_parts(108001, 1, 0).unwrap());
+		scids.push(scid_from_parts(108001, 2, 0).unwrap());
 
 		for scid in scids {
 			let unsigned_announcement = UnsignedChannelAnnouncement {
@@ -2231,7 +2232,7 @@ mod tests {
 		}
 
 		// Empty reply when number_of_blocks=0
-		test_handling_query_channel_range(
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
@@ -2249,7 +2250,7 @@ mod tests {
 		);
 
 		// Empty when wrong chain
-		test_handling_query_channel_range(
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
@@ -2267,26 +2268,26 @@ mod tests {
 		);
 
 		// Empty reply when first_blocknum > 0xffffff
-		test_handling_query_channel_range(
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0x01000000,
-				number_of_blocks: 0xffffffff,
+				number_of_blocks: 0xffff_ffff,
 			},
 			vec![ReplyChannelRange {
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0x01000000,
-				number_of_blocks: 0xffffffff,
+				number_of_blocks: 0xffff_ffff,
 				sync_complete: true,
 				short_channel_ids: vec![]
 			}]
 		);
 
 		// Empty reply when max valid SCID block num.
-		// Unlike prior test this is a valid but no results are found
-		test_handling_query_channel_range(
+		// Unlike prior test this is a valid query but no results are found
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
@@ -2306,18 +2307,18 @@ mod tests {
 		);
 
 		// No results in valid query range
-		test_handling_query_channel_range(
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
-				first_blocknum: 0x00100000,
+				first_blocknum: 0x00800000,
 				number_of_blocks: 1000,
 			},
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0x00100000,
+					first_blocknum: 0x00800000,
 					number_of_blocks: 1000,
 					sync_complete: true,
 					short_channel_ids: vec![],
@@ -2325,182 +2326,93 @@ mod tests {
 			]
 		);
 
-		// Single reply - all blocks
-		test_handling_query_channel_range(
+		// Overflow first_blocknum + number_of_blocks
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
-				first_blocknum: 0,
+				first_blocknum: 0xfe0000,
 				number_of_blocks: 0xffffffff,
 			},
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 0xffffffff,
+					first_blocknum: 0xfe0000,
+					number_of_blocks: 0xffffffff - 0xfe0000,
 					sync_complete: true,
 					short_channel_ids: vec![
-						0x000000_000000_0000, // 0x0x0
-						0x000001_000000_0000, // 1x0x0
-						0x000002_000000_0000, // 2x0x0
-						0x000002_000001_0000, // 2x1x0
-						0x000100_000000_0000, // 256x0x0
-						0x000101_000000_0000, // 257x0x0
 						0xfffffe_ffffff_ffff, // max
 					]
 				}
 			]
 		);
 
-		// Single reply - overflow of first_blocknum + number_of_blocks
-		test_handling_query_channel_range(
+		// Multiple split on new block
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
-				first_blocknum: 1,
-				number_of_blocks: 0xffffffff,
+				first_blocknum: 100000,
+				number_of_blocks: 8001,
 			},
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 1,
-					number_of_blocks: 0xfffffffe,
+					first_blocknum: 100000,
+					number_of_blocks: 8000,
+					sync_complete: false,
+					short_channel_ids: (100000..=107999)
+						.map(|block| scid_from_parts(block, 0, 0).unwrap())
+						.collect(),
+				},
+				ReplyChannelRange {
+					chain_hash: chain_hash.clone(),
+					first_blocknum: 108000,
+					number_of_blocks: 1,
 					sync_complete: true,
 					short_channel_ids: vec![
-						0x000001_000000_0000, // 1x0x0
-						0x000002_000000_0000, // 2x0x0
-						0x000002_000001_0000, // 2x1x0
-						0x000100_000000_0000, // 256x0x0
-						0x000101_000000_0000, // 257x0x0
-						0xfffffe_ffffff_ffff, // max
-					]
+						scid_from_parts(108000, 0, 0).unwrap(),
+					],
 				}
 			]
 		);
 
-		// Single reply - query larger than found results
-		test_handling_query_channel_range(
+		// Multiple split on same block
+		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
-				first_blocknum: 100,
-				number_of_blocks: 1000,
+				first_blocknum: 100002,
+				number_of_blocks: 8000,
 			},
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 100,
-					number_of_blocks: 1000,
-					sync_complete: true,
-					short_channel_ids: vec![
-						0x000100_000000_0000, // 256x0x0
-						0x000101_000000_0000, // 257x0x0
-					]
-				}
-			]
-		);
-
-		// Tests below here will chunk replies
-		net_graph_msg_handler.max_reply_scids = 1;
-
-		// Multipart - new block per messages
-		test_handling_query_channel_range(
-			&net_graph_msg_handler,
-			&node_id_2,
-			QueryChannelRange {
-				chain_hash: chain_hash.clone(),
-				first_blocknum: 0,
-				number_of_blocks: 2,
-			},
-			vec![
-				ReplyChannelRange {
-					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 1,
+					first_blocknum: 100002,
+					number_of_blocks: 8000,
 					sync_complete: false,
-					short_channel_ids: vec![
-						0x000000_000000_0000, // 0x0x0
-					]
+					short_channel_ids: (100002..=108001)
+						.map(|block| scid_from_parts(block, 0, 0).unwrap())
+						.collect(),
 				},
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 1,
+					first_blocknum: 108001,
 					number_of_blocks: 1,
 					sync_complete: true,
 					short_channel_ids: vec![
-						0x000001_000000_0000, // 1x0x0
-					]
-				},
-			]
-		);
-
-		// Multiplart - resumption of same block
-		test_handling_query_channel_range(
-			&net_graph_msg_handler,
-			&node_id_2,
-			QueryChannelRange {
-				chain_hash: chain_hash.clone(),
-				first_blocknum: 2,
-				number_of_blocks: 1,
-			},
-			vec![
-				ReplyChannelRange {
-					chain_hash: chain_hash.clone(),
-					first_blocknum: 2,
-					number_of_blocks: 1,
-					sync_complete: false,
-					short_channel_ids: vec![
-						0x000002_000000_0000, // 2x0x0
-					]
-				},
-				ReplyChannelRange {
-					chain_hash: chain_hash.clone(),
-					first_blocknum: 2,
-					number_of_blocks: 1,
-					sync_complete: true,
-					short_channel_ids: vec![
-						0x000002_000001_0000, // 2x1x0
-					]
-				}
-			]
-		);
-
-		// Multipart - query larger than found results, similar to single reply
-		test_handling_query_channel_range(
-			&net_graph_msg_handler,
-			&node_id_2,
-			QueryChannelRange {
-				chain_hash: chain_hash.clone(),
-				first_blocknum: 100,
-				number_of_blocks: 1000,
-			},
-			vec![
-				ReplyChannelRange {
-					chain_hash: chain_hash.clone(),
-					first_blocknum: 100,	// <=  query first_blocknum
-					number_of_blocks: 157,
-					sync_complete: false,
-					short_channel_ids: vec![
-						0x000100_000000_0000, // 256x0x0
-					]
-				},
-				ReplyChannelRange {
-					chain_hash: chain_hash.clone(),
-					first_blocknum: 257,
-					number_of_blocks: 843, // >= query first_blocknum+number_of_blocks
-					sync_complete: true,
-					short_channel_ids: vec![
-						0x000101_000000_0000, // 257x0x0
-					]
+						scid_from_parts(108001, 1, 0).unwrap(),
+						scid_from_parts(108001, 2, 0).unwrap(),
+					],
 				}
 			]
 		);
 	}
 
-	fn test_handling_query_channel_range(
+	fn do_handling_query_channel_range(
 		net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		test_node_id: &PublicKey,
 		msg: QueryChannelRange,
