@@ -317,23 +317,26 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		Ok(())
 	}
 
-	/// Processes a query from a peer by finding channels whose funding UTXOs
+	/// Processes a query from a peer by finding announced/public channels whose funding UTXOs
 	/// are in the specified block range. Due to message size limits, large range
 	/// queries may result in several reply messages. This implementation enqueues
-	/// all reply messages into pending events.
+	/// all reply messages into pending events. Each message will allocate just under 65KiB. A full
+	/// sync of the public routing table with 128k channels will generated 16 messages and allocate ~1MB.
+	/// Logic can be changed to reduce allocation if/when a full sync of the routing table impacts
+	/// memory constrained systems.
 	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError> {
 		log_debug!(self.logger, "Handling query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks);
 
 		let network_graph = self.network_graph.read().unwrap();
 
-		let start_scid = scid_from_parts(msg.first_blocknum as u64, 0, 0);
+		let inclusive_start_scid = scid_from_parts(msg.first_blocknum as u64, 0, 0);
 
-		// We receive valid queries with end_blocknum that would overflow SCID conversion.
-		// Manually cap the ending block to avoid this overflow.
+		// We might receive valid queries with end_blocknum that would overflow SCID conversion.
+		// If so, we manually cap the ending block to avoid this overflow.
 		let exclusive_end_scid = scid_from_parts(cmp::min(msg.end_blocknum() as u64, MAX_SCID_BLOCK), 0, 0);
 
 		// Per spec, we must reply to a query. Send an empty message when things are invalid.
-		if msg.chain_hash != network_graph.genesis_hash || start_scid.is_err() || exclusive_end_scid.is_err() {
+		if msg.chain_hash != network_graph.genesis_hash || inclusive_start_scid.is_err() || exclusive_end_scid.is_err() || msg.number_of_blocks == 0 {
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
@@ -345,14 +348,17 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 					short_channel_ids: vec![],
 				}
 			});
-			return Ok(());
+			return Err(LightningError {
+				err: String::from("query_channel_range could not be processed"),
+				action: ErrorAction::IgnoreError,
+			});
 		}
 
 		// Creates channel batches. We are not checking if the channel is routable
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
 		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
-		for (_, ref chan) in network_graph.get_channels().range(start_scid.unwrap()..exclusive_end_scid.unwrap()) {
+		for (_, ref chan) in network_graph.get_channels().range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
 				if batches.last().unwrap().len() == batches.last().unwrap().capacity() {
@@ -374,12 +380,12 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 				msg.first_blocknum
 			}
 			// Subsequent replies must be >= the last sent first_blocknum. Use the first block
-			// in the new batch.
+			// in the new batch. Batches beyond the first one cannot be empty.
 			else {
 				block_from_scid(batch.first().unwrap())
 			};
 
-			// Per spec, the last end_block needs to be >= the query's end_block. Last
+			// Per spec, the last end_blocknum needs to be >= the query's end_blocknum. Last
 			// reply calculates difference between the query's end_blocknum and the start of the reply.
 			// Overflow safe since end_blocknum=msg.first_block_num+msg.number_of_blocks and first_blocknum
 			// will be either msg.first_blocknum or a higher block height.
@@ -2231,7 +2237,7 @@ mod tests {
 			};
 		}
 
-		// Empty reply when number_of_blocks=0
+		// Error when number_of_blocks=0
 		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
@@ -2240,6 +2246,7 @@ mod tests {
 				first_blocknum: 0,
 				number_of_blocks: 0,
 			},
+			false,
 			vec![ReplyChannelRange {
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0,
@@ -2249,7 +2256,7 @@ mod tests {
 			}]
 		);
 
-		// Empty when wrong chain
+		// Error when wrong chain
 		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
@@ -2258,6 +2265,7 @@ mod tests {
 				first_blocknum: 0,
 				number_of_blocks: 0xffff_ffff,
 			},
+			false,
 			vec![ReplyChannelRange {
 				chain_hash: genesis_block(Network::Bitcoin).header.block_hash(),
 				first_blocknum: 0,
@@ -2267,7 +2275,7 @@ mod tests {
 			}]
 		);
 
-		// Empty reply when first_blocknum > 0xffffff
+		// Error when first_blocknum > 0xffffff
 		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
@@ -2276,6 +2284,7 @@ mod tests {
 				first_blocknum: 0x01000000,
 				number_of_blocks: 0xffff_ffff,
 			},
+			false,
 			vec![ReplyChannelRange {
 				chain_hash: chain_hash.clone(),
 				first_blocknum: 0x01000000,
@@ -2285,8 +2294,7 @@ mod tests {
 			}]
 		);
 
-		// Empty reply when max valid SCID block num.
-		// Unlike prior test this is a valid query but no results are found
+		// Empty reply when max valid SCID block num
 		do_handling_query_channel_range(
 			&net_graph_msg_handler,
 			&node_id_2,
@@ -2295,6 +2303,7 @@ mod tests {
 				first_blocknum: 0xffffff,
 				number_of_blocks: 1,
 			},
+			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
@@ -2315,6 +2324,7 @@ mod tests {
 				first_blocknum: 0x00800000,
 				number_of_blocks: 1000,
 			},
+			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
@@ -2335,6 +2345,7 @@ mod tests {
 				first_blocknum: 0xfe0000,
 				number_of_blocks: 0xffffffff,
 			},
+			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
@@ -2348,6 +2359,29 @@ mod tests {
 			]
 		);
 
+		// Single block exactly full
+		do_handling_query_channel_range(
+			&net_graph_msg_handler,
+			&node_id_2,
+			QueryChannelRange {
+				chain_hash: chain_hash.clone(),
+				first_blocknum: 100000,
+				number_of_blocks: 8000,
+			},
+			true,
+			vec![
+				ReplyChannelRange {
+					chain_hash: chain_hash.clone(),
+					first_blocknum: 100000,
+					number_of_blocks: 8000,
+					sync_complete: true,
+					short_channel_ids: (100000..=107999)
+						.map(|block| scid_from_parts(block, 0, 0).unwrap())
+						.collect(),
+				},
+			]
+		);
+
 		// Multiple split on new block
 		do_handling_query_channel_range(
 			&net_graph_msg_handler,
@@ -2357,6 +2391,7 @@ mod tests {
 				first_blocknum: 100000,
 				number_of_blocks: 8001,
 			},
+			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
@@ -2388,6 +2423,7 @@ mod tests {
 				first_blocknum: 100002,
 				number_of_blocks: 8000,
 			},
+			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
@@ -2416,10 +2452,16 @@ mod tests {
 		net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		test_node_id: &PublicKey,
 		msg: QueryChannelRange,
+		expected_ok: bool,
 		expected_replies: Vec<ReplyChannelRange>
 	) {
 		let result = net_graph_msg_handler.handle_query_channel_range(test_node_id, msg);
-		assert!(result.is_ok());
+
+		if expected_ok {
+			assert!(result.is_ok());
+		} else {
+			assert!(result.is_err());
+		}
 
 		let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), expected_replies.len());
