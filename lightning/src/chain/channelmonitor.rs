@@ -1501,8 +1501,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
-					} else {
+					} else if !self.holder_tx_signed {
 						log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
+					} else {
+						// If we generated a MonitorEvent::CommitmentTxBroadcasted, the ChannelManager
+						// will still give us a ChannelForceClosed event with !should_broadcast, but we
+						// shouldn't print the scary warning above.
+						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
 					}
 				}
 			}
