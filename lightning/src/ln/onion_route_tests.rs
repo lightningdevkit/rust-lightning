@@ -23,7 +23,6 @@ use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsPro
 use util::ser::{Writeable, Writer};
 use util::config::UserConfig;
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -33,7 +32,6 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::SecretKey;
 
 use std::default::Default;
-use std::sync::atomic::Ordering;
 use std::io;
 
 use ln::functional_test_utils::*;
@@ -57,16 +55,6 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				F2: for <'a> FnMut(&'a mut msgs::UpdateFailHTLC),
 				F3: FnMut(),
 {
-
-	// reset block height
-	let block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-		txdata: vec![],
-	};
-	for ix in 0..nodes.len() {
-		connect_block(&nodes[ix], &block, 1);
-	}
-
 	macro_rules! expect_event {
 		($node: expr, $event_type: path) => {{
 			let events = $node.node.get_and_clear_pending_events();
@@ -289,7 +277,7 @@ fn test_onion_failure() {
 	// intermediate node failure
 	run_onion_failure_test("invalid_realm", 0, &nodes, &route, &payment_hash, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let cur_height = nodes[0].best_block_info().1 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, &None, cur_height).unwrap();
 		let mut new_payloads = Vec::new();
@@ -305,7 +293,7 @@ fn test_onion_failure() {
 	// final node failure
 	run_onion_failure_test("invalid_realm", 3, &nodes, &route, &payment_hash, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
-		let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let cur_height = nodes[0].best_block_info().1 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, &None, cur_height).unwrap();
 		let mut new_payloads = Vec::new();
@@ -443,12 +431,9 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("expiry_too_soon", 0, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
-
-		connect_block(&nodes[1], &block, height);
+		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
@@ -457,12 +442,9 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
-
-		connect_block(&nodes[2], &block, height);
+		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
 	}, || {}, true, Some(17), None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {
@@ -500,7 +482,7 @@ fn test_onion_failure() {
 	run_onion_failure_test("expiry_too_far", 0, &nodes, &route, &payment_hash, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let mut route = route.clone();
-		let height = 1;
+		let height = nodes[2].best_block_info().1;
 		route.paths[0][1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.paths[0][0].cltv_expiry_delta + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, &None, height).unwrap();
