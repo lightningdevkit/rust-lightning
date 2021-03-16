@@ -374,28 +374,18 @@ impl<C: Deref + Sync + Send, L: Deref + Sync + Send> RoutingMessageHandler for N
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let batch_count = batches.len();
 		for (batch_index, batch) in batches.into_iter().enumerate() {
-			// Per spec, the initial first_blocknum needs to be <= the query's first_blocknum.
-			// Use the query's values since we don't use pre-processed reply ranges.
-			let first_blocknum = if batch_index == 0 {
-				msg.first_blocknum
-			}
-			// Subsequent replies must be >= the last sent first_blocknum. Use the first block
-			// in the new batch. Batches beyond the first one cannot be empty.
-			else {
-				block_from_scid(batch.first().unwrap())
-			};
+			// Per spec, the initial first_blocknum needs to be <= the query's first_blocknum and subsequent
+			// must be >= the prior reply. We'll simplify this by using zero since its still spec compliant and
+			// sequence completion is now explicitly.
+			let first_blocknum = 0;
 
-			// Per spec, the last end_blocknum needs to be >= the query's end_blocknum. Last
-			// reply calculates difference between the query's end_blocknum and the start of the reply.
-			// Overflow safe since end_blocknum=msg.first_block_num+msg.number_of_blocks and first_blocknum
-			// will be either msg.first_blocknum or a higher block height.
+			// Per spec, the final end_blocknum needs to be >= the query's end_blocknum, so we'll use the
+			// query's value. Prior batches must use the number of blocks that fit into the message. We'll
+			// base this off the last SCID in the batch since we've somewhat abusing first_blocknum.
 			let number_of_blocks = if batch_index == batch_count-1 {
-				msg.end_blocknum() - first_blocknum
-			}
-			// Prior replies should use the number of blocks that fit into the reply. Overflow
-			// safe since first_blocknum is always <= last SCID's block.
-			else {
-				block_from_scid(batch.last().unwrap()) - first_blocknum + 1
+				msg.end_blocknum()
+			} else {
+				block_from_scid(batch.last().unwrap()) + 1
 			};
 
 			// Only true for the last message in a sequence
@@ -2209,7 +2199,6 @@ mod tests {
 
 		// used for testing resumption on same block
 		scids.push(scid_from_parts(108001, 1, 0).unwrap());
-		scids.push(scid_from_parts(108001, 2, 0).unwrap());
 
 		for scid in scids {
 			let unsigned_announcement = UnsignedChannelAnnouncement {
@@ -2307,8 +2296,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0xffffff,
-					number_of_blocks: 1,
+					first_blocknum: 0,
+					number_of_blocks: 0x01000000,
 					sync_complete: true,
 					short_channel_ids: vec![]
 				},
@@ -2321,15 +2310,15 @@ mod tests {
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
-				first_blocknum: 0x00800000,
+				first_blocknum: 1000,
 				number_of_blocks: 1000,
 			},
 			true,
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0x00800000,
-					number_of_blocks: 1000,
+					first_blocknum: 0,
+					number_of_blocks: 2000,
 					sync_complete: true,
 					short_channel_ids: vec![],
 				}
@@ -2349,8 +2338,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0xfe0000,
-					number_of_blocks: 0xffffffff - 0xfe0000,
+					first_blocknum: 0,
+					number_of_blocks: 0xffffffff,
 					sync_complete: true,
 					short_channel_ids: vec![
 						0xfffffe_ffffff_ffff, // max
@@ -2372,8 +2361,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 100000,
-					number_of_blocks: 8000,
+					first_blocknum: 0,
+					number_of_blocks: 108000,
 					sync_complete: true,
 					short_channel_ids: (100000..=107999)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2395,8 +2384,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 100000,
-					number_of_blocks: 8000,
+					first_blocknum: 0,
+					number_of_blocks: 108000,
 					sync_complete: false,
 					short_channel_ids: (100000..=107999)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2404,8 +2393,8 @@ mod tests {
 				},
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 108000,
-					number_of_blocks: 1,
+					first_blocknum: 0,
+					number_of_blocks: 108001,
 					sync_complete: true,
 					short_channel_ids: vec![
 						scid_from_parts(108000, 0, 0).unwrap(),
@@ -2427,8 +2416,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 100002,
-					number_of_blocks: 8000,
+					first_blocknum: 0,
+					number_of_blocks: 108002,
 					sync_complete: false,
 					short_channel_ids: (100002..=108001)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2436,12 +2425,11 @@ mod tests {
 				},
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 108001,
-					number_of_blocks: 1,
+					first_blocknum: 0,
+					number_of_blocks: 108002,
 					sync_complete: true,
 					short_channel_ids: vec![
 						scid_from_parts(108001, 1, 0).unwrap(),
-						scid_from_parts(108001, 2, 0).unwrap(),
 					],
 				}
 			]
