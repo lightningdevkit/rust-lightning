@@ -1792,7 +1792,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// transaction fee with 0 HTLCs (183 sats)).
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98817000, InitFeatures::known(), InitFeatures::known());
 
-	let dust_amt = 546000; // Dust amount
+	let dust_amt = 329000; // Dust amount
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
 	// commitment transaction fee.
