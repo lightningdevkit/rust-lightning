@@ -16,6 +16,7 @@ pub mod events;
 pub mod errors;
 pub mod ser;
 pub mod zbase32;
+pub mod message_signing;
 
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
