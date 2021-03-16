@@ -376,13 +376,10 @@ pub(super) struct Channel<Signer: Sign> {
 
 	last_sent_closing_fee: Option<(u32, u64, Signature)>, // (feerate, fee, holder_sig)
 
-	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
-	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
-	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
-	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
+	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
+	funding_tx_confirmation_height: u64,
 	short_channel_id: Option<u64>,
-	funding_tx_confirmations: u64,
 
 	counterparty_dust_limit_satoshis: u64,
 	#[cfg(test)]
@@ -441,10 +438,6 @@ struct CommitmentTxInfoCached {
 }
 
 pub const OUR_MAX_HTLCS: u16 = 50; //TODO
-/// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
-/// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
-/// really allow for this, so instead we're stuck closing it out at that point.
-const UNCONF_THRESHOLD: u32 = 6;
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 
@@ -581,8 +574,8 @@ impl<Signer: Sign> Channel<Signer> {
 			last_sent_closing_fee: None,
 
 			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
-			funding_tx_confirmations: 0,
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
@@ -818,8 +811,8 @@ impl<Signer: Sign> Channel<Signer> {
 			last_sent_closing_fee: None,
 
 			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
-			funding_tx_confirmations: 0,
 
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
@@ -3537,10 +3530,6 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		});
 
-		if self.funding_tx_confirmations > 0 {
-			self.funding_tx_confirmations += 1;
-		}
-
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for &(index_in_block, tx) in txdata.iter() {
@@ -3575,7 +3564,8 @@ impl<Signer: Sign> Channel<Signer> {
 								}
 							}
 						}
-						self.funding_tx_confirmations = 1;
+						self.funding_tx_confirmation_height = height as u64;
+						self.funding_tx_confirmed_in = Some(header.block_hash());
 						self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 							Ok(scid) => Some(scid),
 							Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
@@ -3585,9 +3575,11 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+
 		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
-		if self.funding_tx_confirmations > 0 {
-			if self.funding_tx_confirmations == self.minimum_depth as u64 {
+		if self.funding_tx_confirmation_height > 0 {
+			let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+			if funding_tx_confirmations == self.minimum_depth as i64 {
 				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 					self.channel_state |= ChannelState::OurFundingLocked as u32;
 					true
@@ -3606,7 +3598,6 @@ impl<Signer: Sign> Channel<Signer> {
 					// funding_tx_confirmed_in and return.
 					false
 				};
-				self.funding_tx_confirmed_in = Some(header.block_hash());
 
 				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
 				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
@@ -3632,15 +3623,19 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Called by channelmanager based on chain blocks being disconnected.
 	/// Returns true if we need to close the channel now due to funding transaction
 	/// unconfirmation/reorg.
-	pub fn block_disconnected(&mut self, header: &BlockHeader) -> bool {
-		if self.funding_tx_confirmations > 0 {
-			self.funding_tx_confirmations -= 1;
-			if self.funding_tx_confirmations == UNCONF_THRESHOLD as u64 {
+	pub fn block_disconnected(&mut self, header: &BlockHeader, height: u32) -> bool {
+		if self.funding_tx_confirmation_height > 0 {
+			let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+			if funding_tx_confirmations <= 0 {
+				self.funding_tx_confirmation_height = 0;
+			}
+
+			let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+			if (non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
+			   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32) &&
+			    funding_tx_confirmations < self.minimum_depth as i64 / 2 {
 				return true;
 			}
-		}
-		if Some(header.block_hash()) == self.funding_tx_confirmed_in {
-			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
 		}
 		false
 	}
@@ -4466,8 +4461,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		}
 
 		self.funding_tx_confirmed_in.write(writer)?;
+		self.funding_tx_confirmation_height.write(writer)?;
 		self.short_channel_id.write(writer)?;
-		self.funding_tx_confirmations.write(writer)?;
 
 		self.counterparty_dust_limit_satoshis.write(writer)?;
 		self.holder_dust_limit_satoshis.write(writer)?;
@@ -4636,8 +4631,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		};
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
+		let funding_tx_confirmation_height = Readable::read(reader)?;
 		let short_channel_id = Readable::read(reader)?;
-		let funding_tx_confirmations = Readable::read(reader)?;
 
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
@@ -4716,8 +4711,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			last_sent_closing_fee,
 
 			funding_tx_confirmed_in,
+			funding_tx_confirmation_height,
 			short_channel_id,
-			funding_tx_confirmations,
 
 			counterparty_dust_limit_satoshis,
 			holder_dust_limit_satoshis,

@@ -3424,7 +3424,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
 			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
+		let new_height = self.latest_block_height.fetch_sub(1, Ordering::AcqRel) as u32 - 1;
 		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
 
 		let mut failed_channels = Vec::new();
@@ -3434,7 +3434,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_,  v| {
-				if v.block_disconnected(header) {
+				if v.block_disconnected(header, new_height) {
 					if let Some(short_id) = v.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
