@@ -8,6 +8,7 @@
 // licenses.
 
 use chain;
+use chain::WatchedOutput;
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
 use chain::chainmonitor;
@@ -546,8 +547,8 @@ impl chain::Filter for TestChainSource {
 		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
-	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) -> Option<(usize, Transaction)> {
-		self.watched_outputs.lock().unwrap().insert((*outpoint, script_pubkey.clone()));
+	fn register_output(&self, output: WatchedOutput) -> Option<(usize, Transaction)> {
+		self.watched_outputs.lock().unwrap().insert((output.outpoint, output.script_pubkey));
 		None
 	}
 }

@@ -26,7 +26,7 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 
 use chain;
-use chain::Filter;
+use chain::{Filter, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist};
@@ -87,9 +87,14 @@ where C::Target: chain::Filter,
 			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
 			if let Some(ref chain_source) = self.chain_source {
+				let block_hash = header.block_hash();
 				for (txid, outputs) in txn_outputs.drain(..) {
 					for (idx, output) in outputs.iter() {
-						chain_source.register_output(&OutPoint { txid, index: *idx as u16 }, &output.script_pubkey);
+						chain_source.register_output(WatchedOutput {
+							block_hash: Some(block_hash),
+							outpoint: OutPoint { txid, index: *idx as u16 },
+							script_pubkey: output.script_pubkey.clone(),
+						});
 					}
 				}
 			}

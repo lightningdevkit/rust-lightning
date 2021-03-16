@@ -40,6 +40,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLC
 use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
+use chain::WatchedOutput;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
@@ -1174,7 +1175,11 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
 			for (index, script_pubkey) in outputs.iter() {
 				assert!(*index <= u16::max_value() as u32);
-				filter.register_output(&OutPoint { txid: *txid, index: *index as u16 }, script_pubkey);
+				filter.register_output(WatchedOutput {
+					block_hash: None,
+					outpoint: OutPoint { txid: *txid, index: *index as u16 },
+					script_pubkey: script_pubkey.clone(),
+				});
 			}
 		}
 	}

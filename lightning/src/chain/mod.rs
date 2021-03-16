@@ -129,12 +129,38 @@ pub trait Filter: Send + Sync {
 	/// a spending condition.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
-	/// Registers interest in spends of a transaction output identified by `outpoint` having
-	/// `script_pubkey` as the spending condition.
+	/// Registers interest in spends of a transaction output.
 	///
-	/// Optionally, returns any transaction dependent on the output. This is useful for Electrum
-	/// clients to facilitate registering in-block descendants.
-	fn register_output(&self, outpoint: &OutPoint, script_pubkey: &Script) -> Option<(usize, Transaction)>;
+	/// Optionally, when `output.block_hash` is set, should return any transaction spending the
+	/// output that is found in the corresponding block along with its index.
+	///
+	/// This return value is useful for Electrum clients in order to supply in-block descendant
+	/// transactions which otherwise were not included. This is not necessary for other clients if
+	/// such descendant transactions were already included (e.g., when a BIP 157 client provides the
+	/// full block).
+	fn register_output(&self, output: WatchedOutput) -> Option<(usize, Transaction)>;
+}
+
+/// A transaction output watched by a [`ChannelMonitor`] for spends on-chain.
+///
+/// Used to convey to a [`Filter`] such an output with a given spending condition. Any transaction
+/// spending the output must be given to [`ChannelMonitor::block_connected`] either directly or via
+/// the return value of [`Filter::register_output`].
+///
+/// If `block_hash` is `Some`, this indicates the output was created in the corresponding block and
+/// may have been spent there. See [`Filter::register_output`] for details.
+///
+/// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
+/// [`ChannelMonitor::block_connected`]: channelmonitor::ChannelMonitor::block_connected
+pub struct WatchedOutput {
+	/// First block where the transaction output may have been spent.
+	pub block_hash: Option<BlockHash>,
+
+	/// Outpoint identifying the transaction output.
+	pub outpoint: OutPoint,
+
+	/// Spending condition of the transaction output.
+	pub script_pubkey: Script,
 }
 
 impl<T: Listen> Listen for std::ops::Deref<Target = T> {
