@@ -3502,34 +3502,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.network_sync == UpdateStatus::DisabledMarked
 	}
 
-	/// When we receive a new block, we (a) check whether the block contains the funding
-	/// transaction (which would start us counting blocks until we send the funding_signed), and
-	/// (b) check the height of the block against outbound holding cell HTLCs in case we need to
-	/// give up on them prematurely and time them out. Everything else (e.g. commitment
-	/// transaction broadcasts, channel closure detection, HTLC transaction broadcasting, etc) is
-	/// handled by the ChannelMonitor.
-	///
-	/// If we return Err, the channel may have been closed, at which point the standard
-	/// requirements apply - no calls may be made except those explicitly stated to be allowed
-	/// post-shutdown.
-	/// Only returns an ErrorAction of DisconnectPeer, if Err.
-	///
-	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
-	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
-		let mut timed_out_htlcs = Vec::new();
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
-					if *cltv_expiry <= height + HTLC_FAIL_BACK_BUFFER {
-						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
-						false
-					} else { true }
-				},
-				_ => true
-			}
-		});
-
+	pub fn transactions_confirmed(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData) -> Result<(), msgs::ErrorMessage> {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
 			for &(index_in_block, tx) in txdata.iter() {
@@ -3565,7 +3538,7 @@ impl<Signer: Sign> Channel<Signer> {
 							}
 						}
 						self.funding_tx_confirmation_height = height as u64;
-						self.funding_tx_confirmed_in = Some(header.block_hash());
+						self.funding_tx_confirmed_in = Some(*block_hash);
 						self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 							Ok(scid) => Some(scid),
 							Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
@@ -3574,11 +3547,52 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
+		Ok(())
+	}
 
+	/// When a new block is connected, we check the height of the block against outbound holding
+	/// cell HTLCs in case we need to give up on them prematurely and time them out. Everything
+	/// else (e.g. commitment transaction broadcasts, HTLC transaction broadcasting, etc) is
+	/// handled by the ChannelMonitor.
+	///
+	/// If we return Err, the channel may have been closed, at which point the standard
+	/// requirements apply - no calls may be made except those explicitly stated to be allowed
+	/// post-shutdown.
+	///
+	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
+	/// back.
+	pub fn update_best_block(&mut self, height: u32, highest_header_time: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+		let mut timed_out_htlcs = Vec::new();
+		let unforwarded_htlc_cltv_limit = height + HTLC_FAIL_BACK_BUFFER;
+		self.holding_cell_htlc_updates.retain(|htlc_update| {
+			match htlc_update {
+				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
+					if *cltv_expiry <= unforwarded_htlc_cltv_limit {
+						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
+						false
+					} else { true }
+				},
+				_ => true
+			}
+		});
 
-		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
+		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
 		if self.funding_tx_confirmation_height > 0 {
 			let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+			if funding_tx_confirmations <= 0 {
+				self.funding_tx_confirmation_height = 0;
+			}
+
+			let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+			if (non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
+			   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32) &&
+			    funding_tx_confirmations < self.minimum_depth as i64 / 2 {
+				return Err(msgs::ErrorMessage {
+					channel_id: self.channel_id(),
+					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth, funding_tx_confirmations),
+				});
+			}
+
 			if funding_tx_confirmations == self.minimum_depth as i64 {
 				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
 					self.channel_state |= ChannelState::OurFundingLocked as u32;
@@ -3617,25 +3631,35 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
+
 		Ok((None, timed_out_htlcs))
+	}
+
+	/// When we receive a new block, we (a) check whether the block contains the funding
+	/// transaction (which would start us counting blocks until we send the funding_signed), and
+	/// (b) check the height of the block against outbound holding cell HTLCs in case we need to
+	/// give up on them prematurely and time them out. Everything else (e.g. commitment
+	/// transaction broadcasts, channel closure detection, HTLC transaction broadcasting, etc) is
+	/// handled by the ChannelMonitor.
+	///
+	/// If we return Err, the channel may have been closed, at which point the standard
+	/// requirements apply - no calls may be made except those explicitly stated to be allowed
+	/// post-shutdown.
+	/// Only returns an ErrorAction of DisconnectPeer, if Err.
+	///
+	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
+	/// back.
+	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+		self.transactions_confirmed(&header.block_hash(), height, txdata)?;
+		self.update_best_block(height, header.time)
 	}
 
 	/// Called by channelmanager based on chain blocks being disconnected.
 	/// Returns true if we need to close the channel now due to funding transaction
 	/// unconfirmation/reorg.
-	pub fn block_disconnected(&mut self, header: &BlockHeader, height: u32) -> bool {
-		if self.funding_tx_confirmation_height > 0 {
-			let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
-			if funding_tx_confirmations <= 0 {
-				self.funding_tx_confirmation_height = 0;
-			}
-
-			let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-			if (non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
-			   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32) &&
-			    funding_tx_confirmations < self.minimum_depth as i64 / 2 {
-				return true;
-			}
+	pub fn block_disconnected(&mut self, header: &BlockHeader, new_height: u32) -> bool {
+		if self.update_best_block(new_height, header.time).is_err() {
+			return true;
 		}
 		false
 	}
