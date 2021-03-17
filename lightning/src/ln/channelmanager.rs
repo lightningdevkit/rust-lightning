@@ -39,6 +39,9 @@ use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
+// Since this struct is returned in `list_channels` methods, expose it here in case users want to
+// construct one themselves.
+pub use ln::channel::CounterpartyForwardingInfo;
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
@@ -574,6 +577,10 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
+
+	/// Information on the fees and requirements that the counterparty requires when forwarding
+	/// payments to us through this channel.
+	pub counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
@@ -892,6 +899,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
 					is_live: channel.is_live(),
+					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
 			}
 		}
@@ -2994,6 +3002,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		let chan_id = match channel_state.short_to_id.get(&msg.contents.short_channel_id) {
+			Some(chan_id) => chan_id.clone(),
+			None => {
+				// It's not a local channel
+				return Ok(())
+			}
+		};
+		match channel_state.by_id.entry(chan_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					// TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), chan_id));
+				}
+				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
+			},
+			hash_map::Entry::Vacant(_) => unreachable!()
+		}
+		Ok(())
+	}
+
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -3515,6 +3546,11 @@ impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sy
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {

@@ -282,6 +282,19 @@ impl HTLCCandidate {
 	}
 }
 
+/// Information needed for constructing an invoice route hint for this channel.
+#[derive(Clone)]
+pub struct CounterpartyForwardingInfo {
+	/// Base routing fee in millisatoshis.
+	pub fee_base_msat: u32,
+	/// Amount in millionths of a satoshi the channel will charge per transferred satoshi.
+	pub fee_proportional_millionths: u32,
+	/// The minimum difference in cltv_expiry between an ingoing HTLC and its outgoing counterpart,
+	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
+	/// `cltv_expiry_delta` for more details.
+	pub cltv_expiry_delta: u16,
+}
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -391,6 +404,8 @@ pub(super) struct Channel<Signer: Sign> {
 	counterparty_max_accepted_htlcs: u16,
 	//implied by OUR_MAX_HTLCS: max_accepted_htlcs: u16,
 	minimum_depth: u32,
+
+	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
 
@@ -577,6 +592,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
 			minimum_depth: 0, // Filled in in accept_channel
+
+			counterparty_forwarding_info: None,
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -813,6 +830,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
 			minimum_depth: config.own_channel_config.minimum_depth,
+
+			counterparty_forwarding_info: None,
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
@@ -4112,6 +4131,25 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
+	/// Get forwarding information for the counterparty.
+	pub fn counterparty_forwarding_info(&self) -> Option<CounterpartyForwardingInfo> {
+		self.counterparty_forwarding_info.clone()
+	}
+
+	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
+		let usable_channel_value_msat = (self.channel_value_satoshis - self.counterparty_selected_channel_reserve_satoshis) * 1000;
+		if msg.contents.htlc_minimum_msat >= usable_channel_value_msat {
+			return Err(ChannelError::Close("Minimum htlc value is greater than channel value".to_string()));
+		}
+		self.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
+			fee_base_msat: msg.contents.fee_base_msat,
+			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
+			cltv_expiry_delta: msg.contents.cltv_expiry_delta
+		});
+
+		Ok(())
+	}
+
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
 	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, PaymentHash)>), APIError> {
@@ -4435,6 +4473,16 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.counterparty_max_accepted_htlcs.write(writer)?;
 		self.minimum_depth.write(writer)?;
 
+		match &self.counterparty_forwarding_info {
+			Some(info) => {
+				1u8.write(writer)?;
+				info.fee_base_msat.write(writer)?;
+				info.fee_proportional_millionths.write(writer)?;
+				info.cltv_expiry_delta.write(writer)?;
+			},
+			None => 0u8.write(writer)?
+		}
+
 		self.channel_transaction_parameters.write(writer)?;
 		self.counterparty_cur_commitment_point.write(writer)?;
 
@@ -4595,6 +4643,16 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
 		let minimum_depth = Readable::read(reader)?;
 
+		let counterparty_forwarding_info = match <u8 as Readable>::read(reader)? {
+			0 => None,
+			1 => Some(CounterpartyForwardingInfo {
+				fee_base_msat: Readable::read(reader)?,
+				fee_proportional_millionths: Readable::read(reader)?,
+				cltv_expiry_delta: Readable::read(reader)?,
+			}),
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
 		let channel_parameters = Readable::read(reader)?;
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
 
@@ -4665,6 +4723,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			counterparty_max_accepted_htlcs,
 			minimum_depth,
 
+			counterparty_forwarding_info,
+
 			channel_transaction_parameters: channel_parameters,
 			counterparty_cur_commitment_point,
 
@@ -4700,7 +4760,7 @@ mod tests {
 	use ln::channel::{Channel,Sign,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
-	use ln::msgs::{OptionalField, DataLossProtect, DecodeError};
+	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -4711,6 +4771,7 @@ mod tests {
 	use util::test_utils;
 	use util::logger::Logger;
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
+	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
@@ -4964,6 +5025,54 @@ mod tests {
 				assert_eq!(your_last_per_commitment_secret, [0; 32]);
 			},
 			_ => panic!()
+		}
+	}
+
+	#[test]
+	fn channel_update() {
+		let feeest = TestFeeEstimator{fee_est: 15000};
+		let secp_ctx = Secp256k1::new();
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let chain_hash = genesis_block(network).header.block_hash();
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+
+		// Create a channel.
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		assert!(node_a_chan.counterparty_forwarding_info.is_none());
+		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
+		assert!(node_a_chan.counterparty_forwarding_info().is_none());
+
+		// Make sure that receiving a channel update will update the Channel as expected.
+		let update = ChannelUpdate {
+			contents: UnsignedChannelUpdate {
+				chain_hash,
+				short_channel_id: 0,
+				timestamp: 0,
+				flags: 0,
+				cltv_expiry_delta: 100,
+				htlc_minimum_msat: 5,
+				htlc_maximum_msat: OptionalField::Absent,
+				fee_base_msat: 110,
+				fee_proportional_millionths: 11,
+				excess_data: Vec::new(),
+			},
+			signature: Signature::from(unsafe { FFISignature::new() })
+		};
+		node_a_chan.channel_update(&update).unwrap();
+
+		// The counterparty can send an update with a higher minimum HTLC, but that shouldn't
+		// change our official htlc_minimum_msat.
+		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1);
+		match node_a_chan.counterparty_forwarding_info() {
+			Some(info) => {
+				assert_eq!(info.cltv_expiry_delta, 100);
+				assert_eq!(info.fee_base_msat, 110);
+				assert_eq!(info.fee_proportional_millionths, 11);
+			},
+			None => panic!("expected counterparty forwarding info to be Some")
 		}
 	}
 

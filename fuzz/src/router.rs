@@ -212,6 +212,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								inbound_capacity_msat: 0,
 								is_live: true,
 								outbound_capacity_msat: 0,
+								counterparty_forwarding_info: None,
 							});
 						}
 						Some(&first_hops_vec[..])
