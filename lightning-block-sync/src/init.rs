@@ -1,3 +1,6 @@
+//! Utilities to assist in the initial sync required to initialize or reload Rust-Lightning objects
+//! from disk.
+
 use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
 

@@ -1,3 +1,6 @@
+//! Simple RPC client implementation which implements [`BlockSource`] against a Bitcoin Core RPC
+//! endpoint.
+
 use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{HttpClient, HttpEndpoint, JsonResponse};
 

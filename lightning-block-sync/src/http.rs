@@ -1,3 +1,6 @@
+//! Simple HTTP implementation which supports both async and traditional execution environments
+//! with minimal dependencies. This is used as the basis for REST and RPC clients.
+
 use chunked_transfer;
 use serde_json;
 

@@ -1,4 +1,9 @@
+//! Utilities that take care of tasks that (1) need to happen periodically to keep Rust-Lightning
+//! running properly, and (2) either can or should be run in the background. See docs for
+//! [`BackgroundProcessor`] for more details on the nitty-gritty.
+
 #![deny(broken_intra_doc_links)]
+#![deny(missing_docs)]
 #![deny(unsafe_code)]
 
 #[macro_use] extern crate lightning;
