@@ -20,6 +20,7 @@
 
 #![cfg_attr(not(any(feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), forbid(unsafe_code))]
+#![deny(broken_intra_doc_links)]
 
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints

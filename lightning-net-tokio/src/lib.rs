@@ -72,6 +72,9 @@
 //! }
 //! ```
 
+#![deny(broken_intra_doc_links)]
+#![deny(missing_docs)]
+
 use bitcoin::secp256k1::key::PublicKey;
 
 use tokio::net::TcpStream;

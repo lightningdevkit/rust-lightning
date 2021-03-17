@@ -16,6 +16,9 @@
 //! [`SpvClient`]: struct.SpvClient.html
 //! [`BlockSource`]: trait.BlockSource.html
 
+#![deny(broken_intra_doc_links)]
+#![deny(unsafe_code)]
+
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http;
 

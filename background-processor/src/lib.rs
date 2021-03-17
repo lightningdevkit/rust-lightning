@@ -1,3 +1,6 @@
+#![deny(broken_intra_doc_links)]
+#![deny(unsafe_code)]
+
 #[macro_use] extern crate lightning;
 
 use lightning::chain;

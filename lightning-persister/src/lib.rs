@@ -1,3 +1,5 @@
+#![deny(broken_intra_doc_links)]
+
 mod util;
 
 extern crate lightning;
