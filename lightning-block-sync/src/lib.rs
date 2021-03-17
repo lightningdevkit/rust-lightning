@@ -12,9 +12,6 @@
 //!
 //! Both features support either blocking I/O using `std::net::TcpStream` or, with feature `tokio`,
 //! non-blocking I/O using `tokio::net::TcpStream` from inside a Tokio runtime.
-//!
-//! [`SpvClient`]: struct.SpvClient.html
-//! [`BlockSource`]: trait.BlockSource.html
 
 #![deny(broken_intra_doc_links)]
 #![deny(missing_docs)]
@@ -73,8 +70,7 @@ pub trait BlockSource : Sync + Send {
 	/// When polling a block source, [`Poll`] implementations may pass the height to [`get_header`]
 	/// to allow for a more efficient lookup.
 	///
-	/// [`Poll`]: poll/trait.Poll.html
-	/// [`get_header`]: #tymethod.get_header
+	/// [`get_header`]: Self::get_header
 	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
 }
 
@@ -180,8 +176,6 @@ where L::Target: chain::Listen {
 /// Implementations may define how long to retain headers such that it's unlikely they will ever be
 /// needed to disconnect a block.  In cases where block sources provide access to headers on stale
 /// forks reliably, caches may be entirely unnecessary.
-///
-/// [`ChainNotifier`]: struct.ChainNotifier.html
 pub trait Cache {
 	/// Retrieves the block header keyed by the given block hash.
 	fn look_up(&self, block_hash: &BlockHash) -> Option<&ValidatedBlockHeader>;
@@ -222,7 +216,7 @@ impl<'a, P: Poll, C: Cache, L: Deref> SpvClient<'a, P, C, L> where L::Target: ch
 	/// * `header_cache` is used to look up and store headers on the best chain
 	/// * `chain_listener` is notified of any blocks connected or disconnected
 	///
-	/// [`poll_best_tip`]: struct.SpvClient.html#method.poll_best_tip
+	/// [`poll_best_tip`]: SpvClient::poll_best_tip
 	pub fn new(
 		chain_tip: ValidatedBlockHeader,
 		chain_poller: P,
@@ -277,7 +271,7 @@ impl<'a, P: Poll, C: Cache, L: Deref> SpvClient<'a, P, C, L> where L::Target: ch
 
 /// Notifies [listeners] of blocks that have been connected or disconnected from the chain.
 ///
-/// [listeners]: ../../lightning/chain/trait.Listen.html
+/// [listeners]: lightning::chain::Listen
 pub struct ChainNotifier<'a, C: Cache, L: Deref> where L::Target: chain::Listen {
 	/// Cache for looking up headers before fetching from a block source.
 	header_cache: &'a mut C,

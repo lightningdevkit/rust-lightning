@@ -25,8 +25,6 @@ pub mod transaction;
 pub mod keysinterface;
 
 /// An error when accessing the chain via [`Access`].
-///
-/// [`Access`]: trait.Access.html
 #[derive(Clone)]
 pub enum AccessError {
 	/// The requested chain is unknown.
@@ -77,9 +75,9 @@ pub trait Listen {
 /// funds in the channel. See [`ChannelMonitorUpdateErr`] for more details about how to handle
 /// multiple instances.
 ///
-/// [`ChannelMonitor`]: channelmonitor/struct.ChannelMonitor.html
-/// [`ChannelMonitorUpdateErr`]: channelmonitor/enum.ChannelMonitorUpdateErr.html
-/// [`PermanentFailure`]: channelmonitor/enum.ChannelMonitorUpdateErr.html#variant.PermanentFailure
+/// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
+/// [`ChannelMonitorUpdateErr`]: channelmonitor::ChannelMonitorUpdateErr
+/// [`PermanentFailure`]: channelmonitor::ChannelMonitorUpdateErr::PermanentFailure
 pub trait Watch<ChannelSigner: Sign>: Send + Sync {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
@@ -87,9 +85,9 @@ pub trait Watch<ChannelSigner: Sign>: Send + Sync {
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
 	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
-	/// [`get_outputs_to_watch`]: channelmonitor/struct.ChannelMonitor.html#method.get_outputs_to_watch
-	/// [`block_connected`]: channelmonitor/struct.ChannelMonitor.html#method.block_connected
-	/// [`block_disconnected`]: channelmonitor/struct.ChannelMonitor.html#method.block_disconnected
+	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
+	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
+	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
@@ -97,8 +95,8 @@ pub trait Watch<ChannelSigner: Sign>: Send + Sync {
 	/// Implementations must call [`update_monitor`] with the given update. See
 	/// [`ChannelMonitorUpdateErr`] for invariants around returning an error.
 	///
-	/// [`update_monitor`]: channelmonitor/struct.ChannelMonitor.html#method.update_monitor
-	/// [`ChannelMonitorUpdateErr`]: channelmonitor/enum.ChannelMonitorUpdateErr.html
+	/// [`update_monitor`]: channelmonitor::ChannelMonitor::update_monitor
+	/// [`ChannelMonitorUpdateErr`]: channelmonitor::ChannelMonitorUpdateErr
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
@@ -120,11 +118,10 @@ pub trait Watch<ChannelSigner: Sign>: Send + Sync {
 ///
 /// Note that use as part of a [`Watch`] implementation involves reentrancy. Therefore, the `Filter`
 /// should not block on I/O. Implementations should instead queue the newly monitored data to be
-/// processed later. Then, in order to block until the data has been processed, any `Watch`
+/// processed later. Then, in order to block until the data has been processed, any [`Watch`]
 /// invocation that has called the `Filter` must return [`TemporaryFailure`].
 ///
-/// [`Watch`]: trait.Watch.html
-/// [`TemporaryFailure`]: channelmonitor/enum.ChannelMonitorUpdateErr.html#variant.TemporaryFailure
+/// [`TemporaryFailure`]: channelmonitor::ChannelMonitorUpdateErr::TemporaryFailure
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
 pub trait Filter: Send + Sync {

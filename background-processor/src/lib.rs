@@ -48,18 +48,21 @@ impl BackgroundProcessor {
 	/// Start a background thread that takes care of responsibilities enumerated in the top-level
 	/// documentation.
 	///
-	/// If `persist_manager` returns an error, then this thread will return said error (and `start()`
-	/// will need to be called again to restart the `BackgroundProcessor`). Users should wait on
-	/// [`thread_handle`]'s `join()` method to be able to tell if and when an error is returned, or
-	/// implement `persist_manager` such that an error is never returned to the `BackgroundProcessor`
+	/// If `persist_manager` returns an error, then this thread will return said error (and
+	/// `start()` will need to be called again to restart the `BackgroundProcessor`). Users should
+	/// wait on [`thread_handle`]'s `join()` method to be able to tell if and when an error is
+	/// returned, or implement `persist_manager` such that an error is never returned to the
+	/// `BackgroundProcessor`
 	///
-	/// `persist_manager` is responsible for writing out the `ChannelManager` to disk, and/or uploading
-	/// to one or more backup services. See [`ChannelManager::write`] for writing out a `ChannelManager`.
-	/// See [`FilesystemPersister::persist_manager`] for Rust-Lightning's provided implementation.
+	/// `persist_manager` is responsible for writing out the [`ChannelManager`] to disk, and/or
+	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
+	/// [`ChannelManager`]. See [`FilesystemPersister::persist_manager`] for Rust-Lightning's
+	/// provided implementation.
 	///
-	/// [`thread_handle`]: struct.BackgroundProcessor.html#structfield.thread_handle
-	/// [`ChannelManager::write`]: ../lightning/ln/channelmanager/struct.ChannelManager.html#method.write
-	/// [`FilesystemPersister::persist_manager`]: ../lightning_persister/struct.FilesystemPersister.html#impl
+	/// [`thread_handle`]: BackgroundProcessor::thread_handle
+	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
+	/// [`FilesystemPersister::persist_manager`]: lightning_persister::FilesystemPersister::persist_manager
 	pub fn start<PM, Signer, M, T, K, F, L>(persist_manager: PM, manager: Arc<ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>>, logger: Arc<L>) -> Self
 	where Signer: 'static + Sign,
 	      M: 'static + chain::Watch<Signer>,

@@ -19,8 +19,6 @@
 //! ChannelMonitors should do so). Thus, if you're building rust-lightning into an HSM or other
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
-//!
-//! [`chain::Watch`]: ../trait.Watch.html
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
@@ -75,8 +73,6 @@ pub struct ChannelMonitorUpdate {
 	/// The only instance where update_id values are not strictly increasing is the case where we
 	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
 	/// its docs for more details.
-	///
-	/// [`CLOSED_CHANNEL_UPDATE_ID`]: constant.CLOSED_CHANNEL_UPDATE_ID.html
 	pub update_id: u64,
 }
 
@@ -193,8 +189,6 @@ pub enum MonitorEvent {
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
-///
-/// [`chain::Watch`]: ../trait.Watch.html
 #[derive(Clone, PartialEq)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
@@ -1187,8 +1181,6 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
-	///
-	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
 	}
@@ -2450,11 +2442,8 @@ pub trait Persist<ChannelSigner: Sign>: Send + Sync {
 	/// stored channel data). Note that you **must** persist every new monitor to
 	/// disk. See the `Persist` trait documentation for more details.
 	///
-	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
 	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	///
-	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
-	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
 	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 
 	/// Update one channel's data. The provided `ChannelMonitor` has already
@@ -2476,14 +2465,9 @@ pub trait Persist<ChannelSigner: Sign>: Send + Sync {
 	/// them in batches. The size of each monitor grows `O(number of state updates)`
 	/// whereas updates are small and `O(1)`.
 	///
-	/// See [`ChannelMonitor::serialize_for_disk`] for writing out a `ChannelMonitor`,
+	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
 	/// [`ChannelMonitorUpdate::write`] for writing out an update, and
 	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	///
-	/// [`ChannelMonitor::update_monitor`]: struct.ChannelMonitor.html#impl-1
-	/// [`ChannelMonitor::serialize_for_disk`]: struct.ChannelMonitor.html#method.serialize_for_disk
-	/// [`ChannelMonitorUpdate::write`]: struct.ChannelMonitorUpdate.html#method.write
-	/// [`ChannelMonitorUpdateErr`]: enum.ChannelMonitorUpdateErr.html
 	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
