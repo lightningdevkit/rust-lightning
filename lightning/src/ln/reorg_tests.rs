@@ -209,17 +209,8 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 	assert_eq!(channel_state.short_to_id.len(), 1);
 	mem::drop(channel_state);
 
-	let mut headers = Vec::new();
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: genesis_block(Network::Testnet).header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	headers.push(header.clone());
-	for _i in 2..100 {
-		header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		headers.push(header.clone());
-	}
 	if !reorg_after_reload {
-		while !headers.is_empty() {
-			nodes[0].node.block_disconnected(&headers.pop().unwrap());
-		}
+		disconnect_all_blocks(&nodes[0]);
 		check_closed_broadcast!(nodes[0], false);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -271,9 +262,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 	}
 
 	if reorg_after_reload {
-		while !headers.is_empty() {
-			nodes[0].node.block_disconnected(&headers.pop().unwrap());
-		}
+		disconnect_all_blocks(&nodes[0]);
 		check_closed_broadcast!(nodes[0], false);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -281,7 +270,6 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 			assert_eq!(channel_state.short_to_id.len(), 0);
 		}
 	}
-
 	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
 	// is a ChannelForcClosed on the right channel with should_broadcast set.
 	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan_id, true));
@@ -331,7 +319,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A commitment transaction
 	let header_101 = BlockHeader { version: 0x20000000, prev_blockhash: block_hash_100, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_101, txdata: vec![remote_txn[0].clone()] }, 101);
+	connect_block(&nodes[0], &Block { header: header_101, txdata: vec![remote_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
@@ -364,7 +352,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Broadcast partial claim on node A, should regenerate a claiming tx with HTLC dropped
 	let header_102 = BlockHeader { version: 0x20000000, prev_blockhash: header_101.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_102, txdata: vec![partial_claim_tx.clone()] }, 102);
+	connect_block(&nodes[0], &Block { header: header_102, txdata: vec![partial_claim_tx.clone()] }, CHAN_CONFIRM_DEPTH + 2);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -375,7 +363,7 @@ fn test_set_outpoints_partial_claiming() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Disconnect last block on node A, should regenerate a claiming tx with HTLC dropped
-	disconnect_block(&nodes[0], &header_102, 102);
+	disconnect_block(&nodes[0], &header_102, CHAN_CONFIRM_DEPTH + 2);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -385,7 +373,7 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	//// Disconnect one more block and then reconnect multiple no transaction should be generated
-	disconnect_block(&nodes[0], &header_101, 101);
+	disconnect_block(&nodes[0], &header_101, CHAN_CONFIRM_DEPTH + 1);
 	connect_blocks(&nodes[1], 15, 101, false, block_hash_100);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();

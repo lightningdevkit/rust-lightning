@@ -497,7 +497,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	};
 
 	if steps & 0x0f == 6 { return; }
-	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx);
+	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx, 2);
 
 	if steps & 0x0f == 7 { return; }
 	confirm_transaction(&nodes[0], &tx);
@@ -2663,12 +2663,11 @@ fn claim_htlc_outputs_shared_tx() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1, 3_000_000);
 
 	{
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-		connect_block(&nodes[0], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		mine_transaction(&nodes[0], &revoked_local_txn[0]);
 		check_added_monitors!(nodes[0], 1);
-		connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+		mine_transaction(&nodes[1], &revoked_local_txn[0]);
 		check_added_monitors!(nodes[1], 1);
-		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, CHAN_CONFIRM_DEPTH + 1, false, Default::default());
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -2978,7 +2977,6 @@ fn test_htlc_on_chain_timeout() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000, 8_000_000);
 
 	let (_payment_preimage, payment_hash) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 
 	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
@@ -3000,7 +2998,8 @@ fn test_htlc_on_chain_timeout() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	connect_block(&nodes[2], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 1);
+	let last_block = nodes[2].best_block_info();
+	mine_transaction(&nodes[2], &commitment_tx[0]);
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
 	let node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 (commitment tx)
@@ -3010,30 +3009,44 @@ fn test_htlc_on_chain_timeout() {
 
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
-	connect_block(&nodes[1], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+	connect_blocks(&nodes[1], 200 - last_block.1 - 1, last_block.1, false, Default::default());
+	mine_transaction(&nodes[1], &commitment_tx[0]);
 	let timeout_tx;
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 5); // ChannelManager : 2 (commitment tx, HTLC-Timeout tx), ChannelMonitor : 2 (local commitment tx + HTLC-timeout), 1 timeout tx
-		assert_eq!(node_txn[1], node_txn[3]);
-		assert_eq!(node_txn[2], node_txn[4]);
+		assert_eq!(node_txn[0], node_txn[3]);
+		assert_eq!(node_txn[1], node_txn[4]);
 
-		check_spends!(node_txn[0], commitment_tx[0]);
-		assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[2], commitment_tx[0]);
+		assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 
-		check_spends!(node_txn[1], chan_2.3);
-		check_spends!(node_txn[2], node_txn[1]);
-		assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), 71);
-		assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[0], chan_2.3);
+		check_spends!(node_txn[1], node_txn[0]);
+		assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), 71);
+		assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 
-		timeout_tx = node_txn[0].clone();
+		timeout_tx = node_txn[2].clone();
 		node_txn.clear();
 	}
 
-	connect_block(&nodes[1], &Block { header, txdata: vec![timeout_tx]}, 1);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 1, true, header.block_hash());
+	mine_transaction(&nodes[1], &timeout_tx);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], false);
+	{
+		// B will rebroadcast a fee-bumped timeout transaction here.
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], commitment_tx[0]);
+	}
+
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 201, false, Default::default());
+	{
+		// B will rebroadcast its own holder commitment transaction here...just because
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(node_txn.len(), 1);
+		check_spends!(node_txn[0], chan_2.3);
+	}
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
@@ -3049,14 +3062,13 @@ fn test_htlc_on_chain_timeout() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // Well... here we detect our own htlc_timeout_tx so no tx to be generated
-	assert_eq!(node_txn.len(), 0);
 
 	// Broadcast legit commitment tx from B on A's chain
 	let commitment_tx = get_local_commitment_txn!(nodes[1], chan_1.2);
 	check_spends!(commitment_tx[0], chan_1.3);
 
-	connect_block(&nodes[0], &Block { header, txdata: vec![commitment_tx[0].clone()]}, 200);
+	mine_transaction(&nodes[0], &commitment_tx[0]);
+
 	check_closed_broadcast!(nodes[0], false);
 	check_added_monitors!(nodes[0], 1);
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (commitment tx, HTLC-Timeout tx), ChannelMonitor : 1 timeout tx
@@ -4054,7 +4066,8 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		let payment_secret = PaymentSecret([0xdb; 32]);
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, CHAN_CONFIRM_DEPTH).unwrap();
+		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, cur_height).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -4067,12 +4080,12 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	};
 
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	connect_block(&nodes[0], &block, 101);
-	connect_block(&nodes[1], &block, 101);
-	for i in 102..TEST_FINAL_CLTV + 100 + 1 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
+	connect_block(&nodes[0], &block, CHAN_CONFIRM_DEPTH + 1);
+	connect_block(&nodes[1], &block, CHAN_CONFIRM_DEPTH + 1);
+	for i in CHAN_CONFIRM_DEPTH + 2 ..TEST_FINAL_CLTV + CHAN_CONFIRM_DEPTH + 2 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
 		block.header.prev_blockhash = block.block_hash();
 		connect_block(&nodes[0], &block, i);
 		connect_block(&nodes[1], &block, i);
@@ -4089,9 +4102,9 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
-	// 100_000 msat as u64, followed by a height of 123 as u32
+	// 100_000 msat as u64, followed by a height of TEST_FINAL_CLTV + 2 as u32
 	let mut expected_failure_data = byte_utils::be64_to_array(100_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(123));
+	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(TEST_FINAL_CLTV + 2));
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
 }
 
@@ -4109,6 +4122,12 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+
+	// Make sure all nodes are at the same starting height
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
+
 	let logger = test_utils::TestLogger::new();
 
 	// Route a first payment to get the 1 -> 2 channel in awaiting_raa...
@@ -4140,21 +4159,10 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 		check_added_monitors!(nodes[1], 0);
 	}
 
-	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-		txdata: vec![],
-	};
-	connect_block(&nodes[1], &block, 101);
-	for i in 102..TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
-		block.header.prev_blockhash = block.block_hash();
-		connect_block(&nodes[1], &block, i);
-	}
-
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS, nodes[1].best_block_info().1, false, Default::default());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-
-	block.header.prev_blockhash = block.block_hash();
-	connect_block(&nodes[1], &block, TEST_FINAL_CLTV + 100 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS);
+	connect_blocks(&nodes[1], 1, nodes[1].best_block_info().1, false, Default::default());
 
 	if forwarded_htlc {
 		expect_pending_htlcs_forwardable!(nodes[1]);
@@ -5749,11 +5757,12 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_updates.0);
 	check_added_monitors!(nodes[1], 1);
 
+	let starting_block = nodes[1].best_block_info();
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: starting_block.0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	for i in 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + CHAN_CONFIRM_DEPTH + 1 {
+	for i in starting_block.1 + 1..TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + starting_block.1 + 2 {
 		connect_block(&nodes[1], &block, i);
 		block.header.prev_blockhash = block.block_hash();
 	}
@@ -5782,9 +5791,10 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	// transaction, however it is not in A's latest local commitment, so we can just broadcast that
 	// to "time out" the HTLC.
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let starting_block = nodes[1].best_block_info();
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: starting_block.0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 
-	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
+	for i in starting_block.1 + 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + starting_block.1 + 2 {
 		connect_block(&nodes[0], &Block { header, txdata: Vec::new()}, i);
 		header.prev_blockhash = header.block_hash();
 	}
@@ -5826,11 +5836,12 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 		check_added_monitors!(nodes[0], 1);
 	}
 
+	let starting_block = nodes[1].best_block_info();
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: starting_block.0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	for i in 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 1 {
+	for i in starting_block.1 + 1..TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + CHAN_CONFIRM_DEPTH + 2 {
 		connect_block(&nodes[0], &block, i);
 		block.header.prev_blockhash = block.block_hash();
 	}
@@ -7577,9 +7588,9 @@ fn test_check_htlc_underpaying() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlc);
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
-	// 10_000 msat as u64, followed by a height of 99 as u32
+	// 10_000 msat as u64, followed by a height of CHAN_CONFIRM_DEPTH as u32
 	let mut expected_failure_data = byte_utils::be64_to_array(10_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(99));
+	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(CHAN_CONFIRM_DEPTH));
 	expect_payment_failed!(nodes[0], payment_hash, true, 0x4000|15, &expected_failure_data[..]);
 	nodes[1].node.get_and_clear_pending_events();
 }
@@ -7659,7 +7670,6 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
-
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 	let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 3000000, 30, &logger).unwrap();
@@ -7680,12 +7690,13 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	}
 
 	// Connect blocks to change height_timer range to see if we use right soonest_timelock
-	let header_114 = connect_blocks(&nodes[1], 114, 0, false, Default::default());
+	let starting_height = nodes[1].best_block_info().1;
+	let header_114 = connect_blocks(&nodes[1], 14, starting_height, false, Default::default());
 
 	// Actually revoke tx by claiming a HTLC
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: header_114, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_txn[0].clone()] }, 115);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_txn[0].clone()] }, 15 + starting_height);
 	check_added_monitors!(nodes[1], 1);
 
 	// One or more justice tx should have been broadcast, check it
@@ -7704,7 +7715,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	};
 
 	// After exhaustion of height timer, a new bumped justice tx should have been broadcast, check it
-	let header = connect_blocks(&nodes[1], 3, 115,  true, header.block_hash());
+	let header = connect_blocks(&nodes[1], 15, 15 + starting_height,  true, header.block_hash());
 	let mut penalty_2 = penalty_1;
 	let mut feerate_2 = 0;
 	{
@@ -7727,7 +7738,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	assert_ne!(feerate_2, 0);
 
 	// After exhaustion of height timer for a 2nd time, a new bumped justice tx should have been broadcast, check it
-	connect_blocks(&nodes[1], 3, 118, true, header);
+	connect_blocks(&nodes[1], 1, 30 + starting_height, true, header);
 	let penalty_3;
 	let mut feerate_3 = 0;
 	{
@@ -7776,9 +7787,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// Revoke local commitment tx
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
 
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	// B will generate both revoked HTLC-timeout/HTLC-preimage txn from revoked commitment tx
-	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, 1);
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 1);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 
@@ -7801,11 +7812,12 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	}
 
 	// Broadcast set of revoked txn on A
-	let header_128 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_128, txdata: vec![revoked_local_txn[0].clone()] }, 128);
+	let hash_128 = connect_blocks(&nodes[0], 40, CHAN_CONFIRM_DEPTH, false, Default::default());
+	let header_11 = BlockHeader { version: 0x20000000, prev_blockhash: hash_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header: header_11, txdata: vec![revoked_local_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 40 + 1);
+	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_11.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, CHAN_CONFIRM_DEPTH + 40 + 2);
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
-	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_128.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] }, 129);
 	let first;
 	let feerate_1;
 	let penalty_txn;
@@ -7856,9 +7868,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	// Connect one more block to see if bumped penalty are issued for HTLC txn
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: header_129.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn }, 130);
+	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn }, CHAN_CONFIRM_DEPTH + 40 + 3);
 	let header_131 = BlockHeader { version: 0x20000000, prev_blockhash: header_130.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_131, txdata: Vec::new() }, 131);
+	connect_block(&nodes[0], &Block { header: header_131, txdata: Vec::new() }, CHAN_CONFIRM_DEPTH + 40 + 4);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 2); // 2 bumped penalty txn on revoked commitment tx
@@ -7877,9 +7889,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 
 	// Few more blocks to confirm penalty txn
-	let header_135 = connect_blocks(&nodes[0], 4, 131, true, header_131.block_hash());
+	let header_135 = connect_blocks(&nodes[0], 4, CHAN_CONFIRM_DEPTH + 40 + 4, true, header_131.block_hash());
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-	let header_144 = connect_blocks(&nodes[0], 9, 135, true, header_135);
+	let header_144 = connect_blocks(&nodes[0], 9, CHAN_CONFIRM_DEPTH + 40 + 8, true, header_135);
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -7897,8 +7909,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 	// Broadcast claim txn and confirm blocks to avoid further bumps on this outputs
 	let header_145 = BlockHeader { version: 0x20000000, prev_blockhash: header_144, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_145, txdata: node_txn }, 145);
-	connect_blocks(&nodes[0], 20, 145, true, header_145.block_hash());
+	connect_block(&nodes[0], &Block { header: header_145, txdata: node_txn }, CHAN_CONFIRM_DEPTH + 40 + 8 + 10);
+	connect_blocks(&nodes[0], 20, CHAN_CONFIRM_DEPTH + 40 + 8 + 10, true, header_145.block_hash());
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We verify than no new transaction has been broadcast because previously
@@ -8306,7 +8318,7 @@ fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	watchtower_alice.chain_monitor.block_connected(&header, &vec![], 135);
+	watchtower_alice.chain_monitor.block_connected(&header, &vec![], CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
 	{
@@ -8332,7 +8344,7 @@ fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	watchtower_bob.chain_monitor.block_connected(&header, &vec![], 134);
+	watchtower_bob.chain_monitor.block_connected(&header, &vec![], CHAN_CONFIRM_DEPTH + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Route another payment to generate another update with still previous HTLC pending
 	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
@@ -8358,7 +8370,7 @@ fn test_concurrent_monitor_claim() {
 	check_added_monitors!(nodes[0], 1);
 
 	//// Provide one more block to watchtower Bob, expect broadcast of commitment and HTLC-Timeout
-	watchtower_bob.chain_monitor.block_connected(&header, &vec![], 135);
+	watchtower_bob.chain_monitor.block_connected(&header, &vec![], CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
 	let bob_state_y;
@@ -8370,7 +8382,7 @@ fn test_concurrent_monitor_claim() {
 	};
 
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
-	watchtower_alice.chain_monitor.block_connected(&header, &vec![(0, &bob_state_y)], 136);
+	watchtower_alice.chain_monitor.block_connected(&header, &vec![(0, &bob_state_y)], CHAN_CONFIRM_DEPTH + 2 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 	{
 		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We broadcast twice the transaction, once due to the HTLC-timeout, once due
@@ -8513,8 +8525,8 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 			true => alice_txn.clone(),
 			false => get_local_commitment_txn!(nodes[1], chan_ab.2)
 		};
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-		connect_block(&nodes[1], &Block { header, txdata: vec![txn_to_broadcast[0].clone()]}, 1);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+		connect_block(&nodes[1], &Block { header, txdata: vec![txn_to_broadcast[0].clone()]}, CHAN_CONFIRM_DEPTH * 2 + 1);
 		let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		if broadcast_alice {
 			check_closed_broadcast!(nodes[1], false);
@@ -8592,8 +8604,8 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	let mut txn_to_broadcast = alice_txn.clone();
 	if !broadcast_alice { txn_to_broadcast = get_local_commitment_txn!(nodes[1], chan_ab.2); }
 	if !go_onchain_before_fulfill {
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-		connect_block(&nodes[1], &Block { header, txdata: vec![txn_to_broadcast[0].clone()]}, 1);
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
+		connect_block(&nodes[1], &Block { header, txdata: vec![txn_to_broadcast[0].clone()]}, CHAN_CONFIRM_DEPTH * 2 + 1);
 		// If Bob was the one to force-close, he will have already passed these checks earlier.
 		if broadcast_alice {
 			check_closed_broadcast!(nodes[1], false);
