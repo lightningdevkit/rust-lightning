@@ -83,6 +83,12 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
+	// The next commit drops the height, parent, and prev_blockhash parameters. In order to
+	// demonstrate that they are currently unused, we assert that they always match the new default
+	// parameters here.
+	if parent { assert_eq!(prev_blockhash, node.best_block_hash()); }
+	assert_eq!(node.best_block_info().1, height);
+
 	let mut block = Block {
 		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { node.best_block_hash() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
