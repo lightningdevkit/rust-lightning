@@ -53,9 +53,9 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Make sure all nodes are at the same starting height
-	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
 	let (our_payment_preimage, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
@@ -85,7 +85,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
 
 		// Make sure node 1's height is the same as the !local_commitment case
-		connect_blocks(&nodes[1], 1, CHAN_CONFIRM_DEPTH*2 + 1, false, Default::default());
+		connect_blocks(&nodes[1], 1);
 		// Confirm node 1's commitment txn (and HTLC-Timeout) on node 1
 		header.prev_blockhash = nodes[1].best_block_hash();
 		connect_block(&nodes[1], &Block { header, txdata: node_1_commitment_txn.clone() }, CHAN_CONFIRM_DEPTH*2 + 3);
@@ -118,7 +118,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
 	assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 
@@ -327,7 +327,7 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	// Connect blocks on node B
-	connect_blocks(&nodes[1], 135, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], 135);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
@@ -364,7 +364,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	//// Disconnect one more block and then reconnect multiple no transaction should be generated
 	disconnect_blocks(&nodes[0], 1);
-	connect_blocks(&nodes[0], 15, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], 15);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);

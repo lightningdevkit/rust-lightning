@@ -50,7 +50,7 @@ pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 /// top, giving the given transaction CHAN_CONFIRM_DEPTH confirmations.
 pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
 	confirm_transaction_at(node, tx, node.best_block_info().1 + 1);
-	connect_blocks(node, CHAN_CONFIRM_DEPTH - 1, node.best_block_info().1, false, Default::default());
+	connect_blocks(node, CHAN_CONFIRM_DEPTH - 1);
 }
 /// Mine a signle block containing the given transaction
 pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
@@ -82,17 +82,12 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	connect_block(node, &block, conf_height);
 }
 
-pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32, height: u32, parent: bool, prev_blockhash: BlockHash) -> BlockHash {
-	// The next commit drops the height, parent, and prev_blockhash parameters. In order to
-	// demonstrate that they are currently unused, we assert that they always match the new default
-	// parameters here.
-	if parent { assert_eq!(prev_blockhash, node.best_block_hash()); }
-	assert_eq!(node.best_block_info().1, height);
-
+pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
 	let mut block = Block {
-		header: BlockHeader { version: 0x2000000, prev_blockhash: if parent { prev_blockhash } else { node.best_block_hash() }, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
+	let height = node.best_block_info().1;
 	connect_block(node, &block, height + 1);
 	for i in 2..depth + 1 {
 		block = Block {
@@ -467,7 +462,7 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 
 pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
 	confirm_transaction_at(node_conf, tx, conf_height);
-	connect_blocks(node_conf, CHAN_CONFIRM_DEPTH - 1, node_conf.best_block_info().1, false, Default::default());
+	connect_blocks(node_conf, CHAN_CONFIRM_DEPTH - 1);
 	node_recv.node.handle_funding_locked(&node_conf.node.get_our_node_id(), &get_event_msg!(node_conf, MessageSendEvent::SendFundingLocked, node_recv.node.get_our_node_id()));
 }
 
@@ -495,7 +490,7 @@ pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c, 'd>(node_a: &'a 
 	let conf_height = std::cmp::max(node_a.best_block_info().1 + 1, node_b.best_block_info().1 + 1);
 	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx, conf_height);
 	confirm_transaction_at(node_a, tx, conf_height);
-	connect_blocks(node_a, CHAN_CONFIRM_DEPTH - 1, node_a.best_block_info().1, false, Default::default());
+	connect_blocks(node_a, CHAN_CONFIRM_DEPTH - 1);
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 

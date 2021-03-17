@@ -498,7 +498,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 
 	if steps & 0x0f == 7 { return; }
 	confirm_transaction_at(&nodes[0], &tx, 2);
-	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH, 2, false, Default::default());
+	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH);
 	create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
 }
 
@@ -2319,11 +2319,11 @@ fn channel_monitor_network_test() {
 	let chan_4 = create_announced_chan_between_nodes(&nodes, 3, 4, InitFeatures::known(), InitFeatures::known());
 
 	// Make sure all nodes are at the same starting height
-	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[1], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[2], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[3], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1, nodes[3].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[4], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[4].best_block_info().1, nodes[4].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[3].best_block_info().1);
+	connect_blocks(&nodes[4], 4*CHAN_CONFIRM_DEPTH + 1 - nodes[4].best_block_info().1);
 
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000, 8_000_000);
@@ -2410,7 +2410,7 @@ fn channel_monitor_network_test() {
 	// buffer space).
 
 	let (close_chan_update_1, close_chan_update_2) = {
-		connect_blocks(&nodes[3], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1, nodes[3].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[3], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 		let events = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let close_chan_update_1 = match events[0] {
@@ -2436,7 +2436,7 @@ fn channel_monitor_network_test() {
 		// Claim the payment on nodes[4], giving it knowledge of the preimage
 		claim_funds!(nodes[4], nodes[3], payment_preimage_2, 3_000_000);
 
-		connect_blocks(&nodes[4], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2, nodes[4].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[4], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let close_chan_update_2 = match events[0] {
@@ -2632,7 +2632,7 @@ fn claim_htlc_outputs_shared_tx() {
 		check_added_monitors!(nodes[0], 1);
 		mine_transaction(&nodes[1], &revoked_local_txn[0]);
 		check_added_monitors!(nodes[1], 1);
-		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, CHAN_CONFIRM_DEPTH + 1, false, Default::default());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -2697,7 +2697,7 @@ fn claim_htlc_outputs_single_tx() {
 		check_added_monitors!(nodes[1], 1);
 		expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 
-		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -2963,7 +2963,6 @@ fn test_htlc_on_chain_timeout() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	let last_block = nodes[2].best_block_info();
 	mine_transaction(&nodes[2], &commitment_tx[0]);
 	check_closed_broadcast!(nodes[2], false);
 	check_added_monitors!(nodes[2], 1);
@@ -2974,7 +2973,7 @@ fn test_htlc_on_chain_timeout() {
 
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
-	connect_blocks(&nodes[1], 200 - last_block.1 - 1, last_block.1, false, Default::default());
+	connect_blocks(&nodes[1], 200 - nodes[2].best_block_info().1);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	let timeout_tx;
 	{
@@ -3005,7 +3004,7 @@ fn test_htlc_on_chain_timeout() {
 		check_spends!(node_txn[0], commitment_tx[0]);
 	}
 
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, 201, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	{
 		// B will rebroadcast its own holder commitment transaction here...just because
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3069,7 +3068,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 	let (_, payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3000000);
 
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], false);
 
@@ -3222,7 +3221,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 1 } else { 2 });
@@ -4084,9 +4083,9 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Make sure all nodes are at the same starting height
-	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
-	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
 	let logger = test_utils::TestLogger::new();
 
@@ -4119,10 +4118,10 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 		check_added_monitors!(nodes[1], 0);
 	}
 
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
-	connect_blocks(&nodes[1], 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], 1);
 
 	if forwarded_htlc {
 		expect_pending_htlcs_forwardable!(nodes[1]);
@@ -4667,7 +4666,7 @@ fn test_claim_sizeable_push_msat() {
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4696,7 +4695,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4726,7 +4725,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 3);
@@ -4775,7 +4774,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	check_spends!(node_txn[2], node_txn[1]);
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4819,7 +4818,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	check_spends!(node_txn[2], node_txn[1]);
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -4856,7 +4855,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	check_spends!(node_txn[0], revoked_local_txn[0]);
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -4920,7 +4919,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_spends!(node_txn[2], chan_1.3);
 
 	mine_transaction(&nodes[1], &node_txn[1]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -4992,7 +4991,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	check_spends!(node_txn[2], chan_1.3);
 
 	mine_transaction(&nodes[0], &node_txn[1]);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	// Note that nodes[0]'s tx_broadcaster is still locked, so if we get here the channelmonitor
 	// didn't try to generate any new transactions.
@@ -5178,7 +5177,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	check_spends!(htlc_success_txn[1], commitment_txn[0]);
 
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
@@ -5266,7 +5265,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	};
 
 	mine_transaction(&nodes[1], &node_tx);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
@@ -5408,7 +5407,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	} else {
 		mine_transaction(&nodes[2], &ds_prev_commitment_tx[0]);
 	}
-	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1, nodes[2].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1);
 	check_closed_broadcast!(nodes[2], false);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 3);
@@ -5558,7 +5557,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5626,7 +5625,7 @@ fn test_key_derivation_params() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5651,14 +5650,14 @@ fn test_static_output_closing_tx() {
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
 
 	mine_transaction(&nodes[0], &closing_tx);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[0], 2, node_cfgs[0].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 
 	mine_transaction(&nodes[1], &closing_tx);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 2, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
@@ -6972,7 +6971,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	// Only 2 PaymentFailed events should show up, over-dust HTLC has to be failed by timeout tx
 	assert_eq!(events.len(), 2);
@@ -7034,13 +7033,13 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[0], dust_hash, true);
 		assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		// We fail non-dust-HTLC 2 by broadcast of local HTLC-timeout tx on local commitment tx
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		mine_transaction(&nodes[0], &timeout_tx[0]);
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[0], non_dust_hash, true);
 	} else {
 		// We fail dust-HTLC 1 by broadcast of remote commitment tx. If revoked, fail also non-dust HTLC
@@ -7049,14 +7048,14 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 		if !revoked {
 			expect_payment_failed!(nodes[0], dust_hash, true);
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 			// We fail non-dust-HTLC 2 by broadcast of local timeout tx on remote commitment tx
 			mine_transaction(&nodes[0], &timeout_tx[0]);
 			assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-			connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+			connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 			expect_payment_failed!(nodes[0], non_dust_hash, true);
 		} else {
 			// If revoked, both dust & non-dust HTLCs should have been failed after ANTI_REORG_DELAY confs of revoked
@@ -7474,7 +7473,7 @@ fn test_data_loss_protect() {
 	check_spends!(node_txn[0], chan.3);
 	assert_eq!(node_txn[0].output.len(), 2);
 	mine_transaction(&nodes[0], &node_txn[0]);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 1000000);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
@@ -7622,7 +7621,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 
 	// Connect blocks to change height_timer range to see if we use right soonest_timelock
 	let starting_height = nodes[1].best_block_info().1;
-	let header_114 = connect_blocks(&nodes[1], 14, starting_height, false, Default::default());
+	let header_114 = connect_blocks(&nodes[1], 14);
 
 	// Actually revoke tx by claiming a HTLC
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 3_000_000);
@@ -7646,7 +7645,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	};
 
 	// After exhaustion of height timer, a new bumped justice tx should have been broadcast, check it
-	let header = connect_blocks(&nodes[1], 15, 15 + starting_height,  true, header.block_hash());
+	connect_blocks(&nodes[1], 15);
 	let mut penalty_2 = penalty_1;
 	let mut feerate_2 = 0;
 	{
@@ -7669,7 +7668,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	assert_ne!(feerate_2, 0);
 
 	// After exhaustion of height timer for a 2nd time, a new bumped justice tx should have been broadcast, check it
-	connect_blocks(&nodes[1], 1, 30 + starting_height, true, header);
+	connect_blocks(&nodes[1], 1);
 	let penalty_3;
 	let mut feerate_3 = 0;
 	{
@@ -7743,7 +7742,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	}
 
 	// Broadcast set of revoked txn on A
-	let hash_128 = connect_blocks(&nodes[0], 40, CHAN_CONFIRM_DEPTH, false, Default::default());
+	let hash_128 = connect_blocks(&nodes[0], 40);
 	let header_11 = BlockHeader { version: 0x20000000, prev_blockhash: hash_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_11, txdata: vec![revoked_local_txn[0].clone()] }, CHAN_CONFIRM_DEPTH + 40 + 1);
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_11.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
@@ -7820,9 +7819,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	};
 
 	// Few more blocks to confirm penalty txn
-	let header_135 = connect_blocks(&nodes[0], 4, CHAN_CONFIRM_DEPTH + 40 + 4, true, header_131.block_hash());
+	connect_blocks(&nodes[0], 4);
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-	let header_144 = connect_blocks(&nodes[0], 9, CHAN_CONFIRM_DEPTH + 40 + 8, true, header_135);
+	let header_144 = connect_blocks(&nodes[0], 9);
 	let node_txn = {
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
@@ -7841,7 +7840,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// Broadcast claim txn and confirm blocks to avoid further bumps on this outputs
 	let header_145 = BlockHeader { version: 0x20000000, prev_blockhash: header_144, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_145, txdata: node_txn }, CHAN_CONFIRM_DEPTH + 40 + 8 + 10);
-	connect_blocks(&nodes[0], 20, CHAN_CONFIRM_DEPTH + 40 + 8 + 10, true, header_145.block_hash());
+	connect_blocks(&nodes[0], 20);
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// We verify than no new transaction has been broadcast because previously
@@ -7928,7 +7927,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_ne!(feerate_preimage, 0);
 
 	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
-	connect_blocks(&nodes[1], 15, nodes[1].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[1], 15);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 2);
@@ -8022,7 +8021,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 9_000_000);
 
 	// Broadcast set of revoked txn on A
-	connect_blocks(&nodes[0], 52 - CHAN_CONFIRM_DEPTH, CHAN_CONFIRM_DEPTH,  false, Default::default());
+	connect_blocks(&nodes[0], 52 - CHAN_CONFIRM_DEPTH);
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
@@ -8041,7 +8040,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	};
 	let header_130 = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn }, nodes[0].best_block_info().1 + 1);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1,  false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	{
 		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap();
 		if let Some(monitor) = monitors.get(&OutPoint { txid: chan.3.txid(), index: 0 }) {
@@ -8403,7 +8402,7 @@ fn test_htlc_no_detection() {
 
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] }, nodes[0].best_block_info().1 + 1);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1, nodes[0].best_block_info().1, false, Default::default());
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 }
 

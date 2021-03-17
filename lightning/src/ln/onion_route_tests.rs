@@ -431,9 +431,9 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("expiry_too_soon", 0, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
-		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
-		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
+		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1);
+		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1);
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, |_| {}, || {
@@ -442,9 +442,9 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
-		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1, nodes[0].best_block_info().1, false, Default::default());
-		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1, nodes[1].best_block_info().1, false, Default::default());
-		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1, nodes[2].best_block_info().1, false, Default::default());
+		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
+		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1);
+		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1);
 	}, || {}, true, Some(17), None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, |_| {}, || {
