@@ -161,6 +161,26 @@ pub struct ChannelConfig {
 	///
 	/// Default value: 0.
 	pub fee_proportional_millionths: u32,
+	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
+	/// the channel this config applies to.
+	///
+	/// This is analogous to [`ChannelHandshakeConfig::our_to_self_delay`] but applies to in-flight
+	/// HTLC balance when a channel appears on-chain whereas
+	/// [`ChannelHandshakeConfig::our_to_self_delay`] applies to the remaining
+	/// (non-HTLC-encumbered) balance.
+	///
+	/// Thus, for HTLC-encumbered balances to be enforced on-chain when a channel is force-closed,
+	/// we (or one of our watchtowers) MUST be online to check for broadcast of the current
+	/// commitment transaction at least once per this many blocks (minus some margin to allow us
+	/// enough time to broadcast and confirm a transaction, possibly with time in between to RBF
+	/// the spending transaction).
+	///
+	/// Default value: 72 (12 hours at an average of 6 blocks/hour).
+	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`], any values less than this will be treated as
+	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.
+	///
+	/// [`MIN_CLTV_EXPIRY_DELTA`]: crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA
+	pub cltv_expiry_delta: u16,
 	/// Set to announce the channel publicly and notify all nodes that they can route via this
 	/// channel.
 	///
@@ -192,6 +212,7 @@ impl Default for ChannelConfig {
 	fn default() -> Self {
 		ChannelConfig {
 			fee_proportional_millionths: 0,
+			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 		}
@@ -199,8 +220,9 @@ impl Default for ChannelConfig {
 }
 
 //Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 8+1+1, {
+impl_writeable!(ChannelConfig, 8+2+1+1, {
 	fee_proportional_millionths,
+	cltv_expiry_delta,
 	announced_channel,
 	commit_upfront_shutdown_pubkey
 });
