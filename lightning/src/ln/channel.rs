@@ -37,6 +37,7 @@ use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
+use util::scid_utils::scid_from_parts;
 
 use std;
 use std::{cmp,mem,fmt};
@@ -3550,14 +3551,11 @@ impl<Signer: Sign> Channel<Signer> {
 								}
 							}
 						}
-						if height > 0xff_ff_ff || (index_in_block) > 0xff_ff_ff {
-							panic!("Block was bogus - either height 16 million or had > 16 million transactions");
-						}
-						assert!(txo_idx <= 0xffff); // txo_idx is a (u16 as usize), so this is just listed here for completeness
 						self.funding_tx_confirmations = 1;
-						self.short_channel_id = Some(((height as u64)         << (5*8)) |
-						                             ((index_in_block as u64) << (2*8)) |
-						                             ((txo_idx as u64)        << (0*8)));
+						self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
+							Ok(scid) => Some(scid),
+							Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
+						}
 					}
 				}
 			}

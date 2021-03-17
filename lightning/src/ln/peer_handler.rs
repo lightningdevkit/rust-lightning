@@ -1281,6 +1281,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						self.do_attempt_write_data(&mut descriptor, peer);
 					}
+					MessageSendEvent::SendReplyChannelRange { ref node_id, ref msg } => {
+						log_trace!(self.logger, "Handling SendReplyChannelRange event in peer_handler for node {} with num_scids={} first_blocknum={} number_of_blocks={}, sync_complete={}",
+							log_pubkey!(node_id),
+							msg.short_channel_ids.len(),
+							msg.first_blocknum,
+							msg.number_of_blocks,
+							msg.sync_complete);
+						let (mut descriptor, peer) = get_peer_for_forwarding!(node_id, {});
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+						self.do_attempt_write_data(&mut descriptor, peer);
+					}
 				}
 			}
 

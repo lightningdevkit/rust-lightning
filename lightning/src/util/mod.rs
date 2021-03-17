@@ -22,6 +22,7 @@ pub(crate) mod chacha20;
 pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod transaction_utils;
+pub(crate) mod scid_utils;
 
 #[macro_use]
 pub(crate) mod ser_macros;

@@ -3596,6 +3596,7 @@ impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sy
 					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
+					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 				}
 			});
 		}
