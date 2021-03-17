@@ -33,7 +33,7 @@ pub struct ChannelHandshakeConfig {
 	/// case of an honest unilateral channel close, which implicitly decrease the economic value of
 	/// our channel.
 	///
-	/// Default value: BREAKDOWN_TIMEOUT (currently 144), we enforce it as a minimum at channel
+	/// Default value: [`BREAKDOWN_TIMEOUT`] (currently 144), we enforce it as a minimum at channel
 	/// opening so you can tweak config to ask for more security, not less.
 	pub our_to_self_delay: u16,
 	/// Set to the smallest value HTLC we will accept to process.

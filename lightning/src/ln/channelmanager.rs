@@ -513,7 +513,11 @@ impl<'a> Drop for PersistenceNotifierGuard<'a> {
 
 /// The amount of time in blocks we require our counterparty wait to claim their money (ie time
 /// between when we, or our watchtower, must check for them having broadcast a theft transaction).
-pub(crate) const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
+///
+/// This can be increased (but not decreased) through [`ChannelHandshakeConfig::our_to_self_delay`]
+///
+/// [`ChannelHandshakeConfig::our_to_self_delay`]: crate::util::config::ChannelHandshakeConfig::our_to_self_delay
+pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
 /// The amount of time in blocks we're willing to wait to claim money back to us. This matches
 /// the maximum required amount in lnd as of March 2021.
 pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
