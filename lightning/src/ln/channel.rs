@@ -96,6 +96,7 @@ enum InboundHTLCState {
 	/// is used to derive commitment keys, which are used to construct the
 	/// signatures in a commitment_signed message.
 	/// Implies AwaitingRemoteRevoke.
+	///
 	/// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
 	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
