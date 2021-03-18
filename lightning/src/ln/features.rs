@@ -12,8 +12,7 @@
 //! Lightning nodes advertise a supported set of operation through feature flags. Features are
 //! applicable for a specific context as indicated in some [messages]. [`Features`] encapsulates
 //! behavior for specifying and checking feature flags for a particular context. Each feature is
-//! defined internally by a trait specifying the corresponding flags (i.e., even and odd bits). A
-//! [`Context`] is used to parameterize [`Features`] and defines which features it can support.
+//! defined internally by a trait specifying the corresponding flags (i.e., even and odd bits).
 //!
 //! Whether a feature is considered "known" or "unknown" is relative to the implementation, whereas
 //! the term "supports" is used in reference to a particular set of [`Features`]. That is, a node
@@ -21,9 +20,7 @@
 //! And the implementation can interpret a feature if the feature is known to it.
 //!
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
-//! [messages]: ../msgs/index.html
-//! [`Features`]: struct.Features.html
-//! [`Context`]: sealed/trait.Context.html
+//! [messages]: crate::ln::msgs
 
 use std::{cmp, fmt};
 use std::marker::PhantomData;
@@ -36,8 +33,6 @@ mod sealed {
 
 	/// The context in which [`Features`] are applicable. Defines which features are required and
 	/// which are optional for the context.
-	///
-	/// [`Features`]: ../struct.Features.html
 	pub trait Context {
 		/// Features that are known to the implementation, where a required feature is indicated by
 		/// its even bit and an optional feature is indicated by its odd bit.
@@ -51,8 +46,6 @@ mod sealed {
 	/// Defines a [`Context`] by stating which features it requires and which are optional. Features
 	/// are specified as a comma-separated list of bytes where each byte is a pipe-delimited list of
 	/// feature identifiers.
-	///
-	/// [`Context`]: trait.Context.html
 	macro_rules! define_context {
 		($context: ident {
 			required_features: [$( $( $required_feature: ident )|*, )*],
@@ -156,8 +149,6 @@ mod sealed {
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
-	///
-	/// [`Context`]: trait.Context.html
 	macro_rules! define_feature {
 		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
 		 $required_setter: ident) => {
@@ -413,9 +404,7 @@ impl<T: sealed::Context> Features<T> {
 		}
 	}
 
-	/// Creates features known by the implementation as defined by [`T::KNOWN_FEATURE_FLAGS`].
-	///
-	/// [`T::KNOWN_FEATURE_FLAGS`]: sealed/trait.Context.html#associatedconstant.KNOWN_FEATURE_FLAGS
+	/// Creates a Features with the bits set which are known by the implementation
 	pub fn known() -> Self {
 		Self {
 			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),

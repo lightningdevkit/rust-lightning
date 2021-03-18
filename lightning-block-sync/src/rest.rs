@@ -1,3 +1,6 @@
+//! Simple REST client implementation which implements [`BlockSource`] against a Bitcoin Core REST
+//! endpoint.
+
 use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
 

@@ -1,3 +1,6 @@
+//! Utilities to assist in the initial sync required to initialize or reload Rust-Lightning objects
+//! from disk.
+
 use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
 
@@ -11,6 +14,8 @@ use lightning::chain;
 ///
 /// Upon success, the returned header can be used to initialize [`SpvClient`]. Useful during a fresh
 /// start when there are no chain listeners to sync yet.
+///
+/// [`SpvClient`]: crate::SpvClient
 pub async fn validate_best_block_header<B: BlockSource>(block_source: &mut B) ->
 BlockSourceResult<ValidatedBlockHeader> {
 	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
@@ -113,9 +118,9 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// }
 /// ```
 ///
-/// [`SpvClient`]: ../struct.SpvClient.html
-/// [`ChannelManager`]: ../../lightning/ln/channelmanager/struct.ChannelManager.html
-/// [`ChannelMonitor`]: ../../lightning/chain/channelmonitor/struct.ChannelMonitor.html
+/// [`SpvClient`]: crate::SpvClient
+/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+/// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 pub async fn synchronize_listeners<B: BlockSource, C: Cache>(
 	block_source: &mut B,
 	network: Network,

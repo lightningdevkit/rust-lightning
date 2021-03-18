@@ -1,3 +1,5 @@
+//! Adapters that make one or more [`BlockSource`]s simpler to poll for new chain tip transitions.
+
 use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
 
 use bitcoin::blockdata::block::Block;

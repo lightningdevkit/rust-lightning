@@ -1,3 +1,8 @@
+//! Utilities that handle persisting Rust-Lightning data to disk via standard filesystem APIs.
+
+#![deny(broken_intra_doc_links)]
+#![deny(missing_docs)]
+
 mod util;
 
 extern crate lightning;
@@ -72,6 +77,7 @@ impl FilesystemPersister {
 		}
 	}
 
+	/// Get the directory which was provided when this persister was initialized.
 	pub fn get_data_dir(&self) -> String {
 		self.path_to_channel_data.clone()
 	}

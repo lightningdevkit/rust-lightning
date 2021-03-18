@@ -9,27 +9,20 @@
 
 //! Wire encoding/decoding for Lightning messages according to [BOLT #1].
 //!
-//! Messages known by this module can be read from the wire using [`read`].
-//! The [`Message`] enum returned by [`read`] wraps the decoded message or the message type (if
+//! Messages known by this module can be read from the wire using [`read()`].
+//! The [`Message`] enum returned by [`read()`] wraps the decoded message or the message type (if
 //! unknown) to use with pattern matching.
 //!
 //! Messages implementing the [`Encode`] trait define a message type and can be sent over the wire
-//! using [`write`].
+//! using [`write()`].
 //!
 //! [BOLT #1]: https://github.com/lightningnetwork/lightning-rfc/blob/master/01-messaging.md
-//! [`read`]: fn.read.html
-//! [`write`]: fn.write.html
-//! [`Encode`]: trait.Encode.html
-//! [`Message`]: enum.Message.html
 
 use ln::msgs;
 use util::ser::{Readable, Writeable, Writer};
 
-/// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
-/// variant contains a message from [`ln::msgs`] or otherwise the message type if unknown.
-///
-/// [`read`]: fn.read.html
-/// [`ln::msgs`]: ../msgs/index.html
+/// A Lightning message returned by [`read()`] when decoding bytes received over the wire. Each
+/// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
 pub enum Message {
 	Init(msgs::Init),
@@ -230,16 +223,13 @@ pub fn write<M: Encode + Writeable, W: Writer>(message: &M, buffer: &mut W) -> R
 
 /// Defines a type-identified encoding for sending messages over the wire.
 ///
-/// Messages implementing this trait specify a type and must be [`Writeable`] to use with [`write`].
-///
-/// [`Writeable`]: ../../util/ser/trait.Writeable.html
-/// [`write`]: fn.write.html
+/// Messages implementing this trait specify a type and must be [`Writeable`] to use with [`write()`].
 pub trait Encode {
 	/// The type identifying the message payload.
 	const TYPE: u16;
 
 	/// Returns the type identifying the message payload. Convenience method for accessing
-	/// [`TYPE`](TYPE).
+	/// [`Self::TYPE`].
 	fn type_id(&self) -> MessageType {
 		MessageType(Self::TYPE)
 	}

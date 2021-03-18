@@ -13,21 +13,15 @@
 //! update [`ChannelMonitor`]s accordingly. If any on-chain events need further processing, it will
 //! make those available as [`MonitorEvent`]s to be consumed.
 //!
-//! `ChainMonitor` is parameterized by an optional chain source, which must implement the
+//! [`ChainMonitor`] is parameterized by an optional chain source, which must implement the
 //! [`chain::Filter`] trait. This provides a mechanism to signal new relevant outputs back to light
 //! clients, such that transactions spending those outputs are included in block data.
 //!
-//! `ChainMonitor` may be used directly to monitor channels locally or as a part of a distributed
-//! setup to monitor channels remotely. In the latter case, a custom `chain::Watch` implementation
+//! [`ChainMonitor`] may be used directly to monitor channels locally or as a part of a distributed
+//! setup to monitor channels remotely. In the latter case, a custom [`chain::Watch`] implementation
 //! would be responsible for routing each update to a remote server and for retrieving monitor
-//! events. The remote server would make use of `ChainMonitor` for block processing and for
-//! servicing `ChannelMonitor` updates from the client.
-//!
-//! [`ChainMonitor`]: struct.ChainMonitor.html
-//! [`chain::Filter`]: ../trait.Filter.html
-//! [`chain::Watch`]: ../trait.Watch.html
-//! [`ChannelMonitor`]: ../channelmonitor/struct.ChannelMonitor.html
-//! [`MonitorEvent`]: ../channelmonitor/enum.MonitorEvent.html
+//! events. The remote server would make use of [`ChainMonitor`] for block processing and for
+//! servicing [`ChannelMonitor`] updates from the client.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 
@@ -53,9 +47,8 @@ use std::ops::Deref;
 /// or used independently to monitor channels remotely. See the [module-level documentation] for
 /// details.
 ///
-/// [`chain::Watch`]: ../trait.Watch.html
-/// [`ChannelManager`]: ../../ln/channelmanager/struct.ChannelManager.html
-/// [module-level documentation]: index.html
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [module-level documentation]: crate::chain::chainmonitor
 pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
@@ -88,10 +81,6 @@ where C::Target: chain::Filter,
 	/// calls must not exclude any transactions matching the new outputs nor any in-block
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
-	///
-	/// [`ChannelMonitor::block_connected`]: ../channelmonitor/struct.ChannelMonitor.html#method.block_connected
-	/// [`chain::Watch::release_pending_monitor_events`]: ../trait.Watch.html#tymethod.release_pending_monitor_events
-	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
@@ -110,8 +99,6 @@ where C::Target: chain::Filter,
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel based on the disconnected block. See [`ChannelMonitor::block_disconnected`] for
 	/// details.
-	///
-	/// [`ChannelMonitor::block_disconnected`]: ../channelmonitor/struct.ChannelMonitor.html#method.block_disconnected
 	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
@@ -126,8 +113,6 @@ where C::Target: chain::Filter,
 	/// pre-filter blocks or only fetch blocks matching a compact filter. Otherwise, clients may
 	/// always need to fetch full blocks absent another means for determining which blocks contain
 	/// transactions relevant to the watched channels.
-	///
-	/// [`chain::Filter`]: ../trait.Filter.html
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
 			monitors: RwLock::new(HashMap::new()),
@@ -174,8 +159,6 @@ where C::Target: chain::Filter,
 	///
 	/// Note that we persist the given `ChannelMonitor` while holding the `ChainMonitor`
 	/// monitors lock.
-	///
-	/// [`chain::Filter`]: ../trait.Filter.html
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
