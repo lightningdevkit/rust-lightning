@@ -766,22 +766,44 @@ macro_rules! handle_error {
 	}
 }
 
+/// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
+macro_rules! convert_chan_err {
+	($self: ident, $err: expr, $short_to_id: expr, $channel: expr, $channel_id: expr) => {
+		match $err {
+			ChannelError::Ignore(msg) => {
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
+			},
+			ChannelError::Close(msg) => {
+				log_trace!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
+				if let Some(short_id) = $channel.get_short_channel_id() {
+					$short_to_id.remove(&short_id);
+				}
+				let shutdown_res = $channel.force_shutdown(true);
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update(&$channel).ok()))
+			},
+			ChannelError::CloseDelayBroadcast(msg) => {
+				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($channel_id[..]), msg);
+				if let Some(short_id) = $channel.get_short_channel_id() {
+					$short_to_id.remove(&short_id);
+				}
+				let shutdown_res = $channel.force_shutdown(false);
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update(&$channel).ok()))
+			}
+		}
+	}
+}
+
 macro_rules! break_chan_entry {
 	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
 		match $res {
 			Ok(res) => res,
-			Err(ChannelError::Ignore(msg)) => {
-				break Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
-			},
-			Err(ChannelError::Close(msg)) => {
-				log_trace!($self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
-				let (channel_id, mut chan) = $entry.remove_entry();
-				if let Some(short_id) = chan.get_short_channel_id() {
-					$channel_state.short_to_id.remove(&short_id);
+			Err(e) => {
+				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $entry.get_mut(), $entry.key());
+				if drop {
+					$entry.remove_entry();
 				}
-				break Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
-			},
-			Err(ChannelError::CloseDelayBroadcast(_)) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
+				break Err(res);
+			}
 		}
 	}
 }
@@ -790,25 +812,12 @@ macro_rules! try_chan_entry {
 	($self: ident, $res: expr, $channel_state: expr, $entry: expr) => {
 		match $res {
 			Ok(res) => res,
-			Err(ChannelError::Ignore(msg)) => {
-				return Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $entry.key().clone()))
-			},
-			Err(ChannelError::Close(msg)) => {
-				log_trace!($self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!($entry.key()[..]), msg);
-				let (channel_id, mut chan) = $entry.remove_entry();
-				if let Some(short_id) = chan.get_short_channel_id() {
-					$channel_state.short_to_id.remove(&short_id);
+			Err(e) => {
+				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $entry.get_mut(), $entry.key());
+				if drop {
+					$entry.remove_entry();
 				}
-				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()))
-			},
-			Err(ChannelError::CloseDelayBroadcast(msg)) => {
-				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($entry.key()[..]), msg);
-				let (channel_id, mut chan) = $entry.remove_entry();
-				if let Some(short_id) = chan.get_short_channel_id() {
-					$channel_state.short_to_id.remove(&short_id);
-				}
-				let shutdown_res = chan.force_shutdown(false);
-				return Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, $self.get_channel_update(&chan).ok()))
+				return Err(res);
 			}
 		}
 	}
