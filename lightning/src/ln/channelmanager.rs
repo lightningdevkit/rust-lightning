@@ -886,16 +886,74 @@ macro_rules! maybe_break_monitor_err {
 }
 
 macro_rules! handle_chan_restoration_locked {
-	($self: expr, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
-	 $raa: expr, $commitment_update: expr, $order: expr,
+	($self: ident, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
+	 $raa: expr, $commitment_update: expr, $order: expr, $chanmon_update: expr,
 	 $pending_forwards: expr, $funding_broadcastable: expr, $funding_locked: expr) => { {
 		let mut htlc_forwards = None;
 		let counterparty_node_id = $channel_entry.get().get_counterparty_node_id();
 
-		{
-			if !$pending_forwards.is_empty() {
+		let chanmon_update: Option<ChannelMonitorUpdate> = $chanmon_update; // Force type-checking to resolve
+		let chanmon_update_is_none = chanmon_update.is_none();
+		let res = loop {
+			let forwards: Vec<(PendingHTLCInfo, u64)> = $pending_forwards; // Force type-checking to resolve
+			if !forwards.is_empty() {
 				htlc_forwards = Some(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
-					$channel_entry.get().get_funding_txo().unwrap(), $pending_forwards));
+					$channel_entry.get().get_funding_txo().unwrap(), forwards));
+			}
+
+			if chanmon_update.is_some() {
+				// On reconnect, we, by definition, only resend a funding_locked if there have been
+				// no commitment updates, so the only channel monitor update which could also be
+				// associated with a funding_locked would be the funding_created/funding_signed
+				// monitor update. That monitor update failing implies that we won't send
+				// funding_locked until it's been updated, so we can't have a funding_locked and a
+				// monitor update here (so we don't bother to handle it correctly below).
+				assert!($funding_locked.is_none());
+				// A channel monitor update makes no sense without either a funding_locked or a
+				// commitment update to process after it. Since we can't have a funding_locked, we
+				// only bother to handle the monitor-update + commitment_update case below.
+				assert!($commitment_update.is_some());
+			}
+
+			if let Some(msg) = $funding_locked {
+				// Similar to the above, this implies that we're letting the funding_locked fly
+				// before it should be allowed to.
+				assert!(chanmon_update.is_none());
+				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+					node_id: counterparty_node_id,
+					msg,
+				});
+				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						node_id: counterparty_node_id,
+						msg: announcement_sigs,
+					});
+				}
+				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), $channel_entry.get().channel_id());
+			}
+
+			let funding_broadcastable: Option<Transaction> = $funding_broadcastable; // Force type-checking to resolve
+			if let Some(monitor_update) = chanmon_update {
+				// We only ever broadcast a funding transaction in response to a funding_signed
+				// message and the resulting monitor update. Thus, on channel_reestablish
+				// message handling we can't have a funding transaction to broadcast. When
+				// processing a monitor update finishing resulting in a funding broadcast, we
+				// cannot have a second monitor update, thus this case would indicate a bug.
+				assert!(funding_broadcastable.is_none());
+				// Given we were just reconnected or finished updating a channel monitor, the
+				// only case where we can get a new ChannelMonitorUpdate would be if we also
+				// have some commitment updates to send as well.
+				assert!($commitment_update.is_some());
+				if let Err(e) = $self.chain_monitor.update_channel($channel_entry.get().get_funding_txo().unwrap(), monitor_update) {
+					// channel_reestablish doesn't guarantee the order it returns is sensical
+					// for the messages it returns, but if we're setting what messages to
+					// re-transmit on monitor update success, we need to make sure it is sane.
+					let mut order = $order;
+					if $raa.is_none() {
+						order = RAACommitmentOrder::CommitmentFirst;
+					}
+					break handle_monitor_err!($self, e, $channel_state, $channel_entry, order, $raa.is_some(), true);
+				}
 			}
 
 			macro_rules! handle_cs { () => {
@@ -924,31 +982,29 @@ macro_rules! handle_chan_restoration_locked {
 					handle_cs!();
 				},
 			}
-			if let Some(tx) = $funding_broadcastable {
+			if let Some(tx) = funding_broadcastable {
 				log_info!($self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
 				$self.tx_broadcaster.broadcast_transaction(&tx);
 			}
-			if let Some(msg) = $funding_locked {
-				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-					node_id: counterparty_node_id,
-					msg,
-				});
-				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
-					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: counterparty_node_id,
-						msg: announcement_sigs,
-					});
-				}
-				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), $channel_entry.get().channel_id());
-			}
+			break Ok(());
+		};
+
+		if chanmon_update_is_none {
+			// If there was no ChannelMonitorUpdate, we should never generate an Err in the res loop
+			// above. Doing so would imply calling handle_err!() from channel_monitor_updated() which
+			// should *never* end up calling back to `chain_monitor.update_channel()`.
+			assert!(res.is_ok());
 		}
-		htlc_forwards
+
+		(htlc_forwards, res, counterparty_node_id)
 	} }
 }
 
 macro_rules! post_handle_chan_restoration {
-	($self: expr, $locked_res: expr) => { {
-		let htlc_forwards = $locked_res;
+	($self: ident, $locked_res: expr) => { {
+		let (htlc_forwards, res, counterparty_node_id) = $locked_res;
+
+		let _ = handle_error!($self, res, counterparty_node_id);
 
 		if let Some(forwards) = htlc_forwards {
 			$self.forward_htlcs(&mut [forwards][..]);
@@ -2676,7 +2732,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			let (raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
-			(pending_failures, handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, pending_forwards, funding_broadcastable, funding_locked))
+			(pending_failures, handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, None, pending_forwards, funding_broadcastable, funding_locked))
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		for failure in pending_failures.drain(..) {
@@ -3292,77 +3348,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
+		let chan_restoration_res = {
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
 
-		match channel_state.by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
-				// Currently, we expect all holding cell update_adds to be dropped on peer
-				// disconnect, so Channel's reestablish will never hand us any holding cell
-				// freed HTLCs to fail backwards. If in the future we no longer drop pending
-				// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-				let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, mut order, shutdown) =
-					try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
-				if let Some(monitor_update) = monitor_update_opt {
-					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-						// channel_reestablish doesn't guarantee the order it returns is sensical
-						// for the messages it returns, but if we're setting what messages to
-						// re-transmit on monitor update success, we need to make sure it is sane.
-						if revoke_and_ack.is_none() {
-							order = RAACommitmentOrder::CommitmentFirst;
-						}
-						if commitment_update.is_none() {
-							order = RAACommitmentOrder::RevokeAndACKFirst;
-						}
-						return_monitor_err!(self, e, channel_state, chan, order, revoke_and_ack.is_some(), commitment_update.is_some());
-						//TODO: Resend the funding_locked if needed once we get the monitor running again
+			match channel_state.by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan) => {
+					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-				}
-				if let Some(msg) = funding_locked {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
-						node_id: counterparty_node_id.clone(),
-						msg
-					});
-				}
-				macro_rules! send_raa { () => {
-					if let Some(msg) = revoke_and_ack {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+					// Currently, we expect all holding cell update_adds to be dropped on peer
+					// disconnect, so Channel's reestablish will never hand us any holding cell
+					// freed HTLCs to fail backwards. If in the future we no longer drop pending
+					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
+					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, shutdown) =
+						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
+					if let Some(msg) = shutdown {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
-							msg
+							msg,
 						});
 					}
-				} }
-				macro_rules! send_cu { () => {
-					if let Some(updates) = commitment_update {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: counterparty_node_id.clone(),
-							updates
-						});
-					}
-				} }
-				match order {
-					RAACommitmentOrder::RevokeAndACKFirst => {
-						send_raa!();
-						send_cu!();
-					},
-					RAACommitmentOrder::CommitmentFirst => {
-						send_cu!();
-						send_raa!();
-					},
-				}
-				if let Some(msg) = shutdown {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: counterparty_node_id.clone(),
-						msg,
-					});
-				}
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
-		}
+					handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked)
+				},
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			}
+		};
+		post_handle_chan_restoration!(self, chan_restoration_res);
+		Ok(())
 	}
 
 	/// Begin Update fee process. Allowed only on an outbound channel.
