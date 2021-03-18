@@ -107,16 +107,12 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 	node.blocks.borrow_mut().push((block.header, height));
 }
 
-pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader) {
-	node.chain_monitor.chain_monitor.block_disconnected(header, node.best_block_info().1);
-	node.node.block_disconnected(header);
-	node.blocks.borrow_mut().pop();
-}
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
-	assert!(node.blocks.borrow_mut().len() as u32 > count); // Cannot disconnect genesis
 	for _ in 0..count {
-		let block_header = node.blocks.borrow().last().unwrap().0;
-		disconnect_block(&node, &block_header);
+		let orig_header = node.blocks.borrow_mut().pop().unwrap();
+		assert!(orig_header.1 > 0); // Cannot disconnect genesis
+		node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
+		node.node.block_disconnected(&orig_header.0);
 	}
 }
 
