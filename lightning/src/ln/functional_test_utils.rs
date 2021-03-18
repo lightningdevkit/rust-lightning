@@ -100,6 +100,7 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
+	assert_eq!(height, node.best_block_info().1 + 1); // height is always equal to the parameter we'll fix it at in the next commit
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
@@ -108,6 +109,7 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, 
 }
 
 pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
+	assert_eq!(height, node.best_block_info().1); // height is always equal to the parameter we'll fix it at in the next commit
 	node.chain_monitor.chain_monitor.block_disconnected(header, height);
 	node.node.block_disconnected(header);
 	node.blocks.borrow_mut().pop();
