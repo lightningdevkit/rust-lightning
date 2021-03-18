@@ -2308,6 +2308,16 @@ impl<Signer: Sign> Channel<Signer> {
 		}, commitment_signed, closing_signed, monitor_update))
 	}
 
+	/// Public version of the below, checking relevant preconditions first.
+	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
+	/// returns `(None, Vec::new())`.
+	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
+		if self.channel_state >= ChannelState::ChannelFunded as u32 &&
+		   (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+			self.free_holding_cell_htlcs(logger)
+		} else { Ok((None, Vec::new())) }
+	}
+
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
 	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {

@@ -827,13 +827,12 @@ macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new())
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
+	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr, $chan_id: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
-				log_error!($self.logger, "Closing channel {} due to monitor update PermanentFailure", log_bytes!($entry.key()[..]));
-				let (channel_id, mut chan) = $entry.remove_entry();
-				if let Some(short_id) = chan.get_short_channel_id() {
-					$channel_state.short_to_id.remove(&short_id);
+				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateErr::PermanentFailure", log_bytes!($chan_id[..]));
+				if let Some(short_id) = $chan.get_short_channel_id() {
+					$short_to_id.remove(&short_id);
 				}
 				// TODO: $failed_fails is dropped here, which will cause other channels to hit the
 				// chain in a confused state! We need to move them into the ChannelMonitor which
@@ -844,12 +843,12 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), channel_id, chan.force_shutdown(true), $self.get_channel_update(&chan).ok()));
-				res
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.force_shutdown(true), $self.get_channel_update(&$chan).ok()));
+				(res, true)
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
 				log_info!($self.logger, "Disabling channel {} due to monitor update TemporaryFailure. On restore will send {} and process {} forwards and {} fails",
-						log_bytes!($entry.key()[..]),
+						log_bytes!($chan_id[..]),
 						if $resend_commitment && $resend_raa {
 								match $action_type {
 									RAACommitmentOrder::CommitmentFirst => { "commitment then RAA" },
@@ -866,11 +865,18 @@ macro_rules! handle_monitor_err {
 				if !$resend_raa {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
-				$entry.get_mut().monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
-				Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$entry.key()))
+				$chan.monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
+				(Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$chan_id)), false)
 			},
 		}
-	}
+	};
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => { {
+		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails, $entry.key());
+		if drop {
+			$entry.remove_entry();
+		}
+		res
+	} };
 }
 
 macro_rules! return_monitor_err {
@@ -3490,6 +3496,57 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
+	/// This should only apply to HTLCs which were added to the holding cell because we were
+	/// waiting on a monitor update to finish. In that case, we don't want to free the holding cell
+	/// directly in `channel_monitor_updated` as it may introduce deadlocks calling back into user
+	/// code to inform them of a channel monitor update.
+	fn check_free_holding_cells(&self) {
+		let mut failed_htlcs = Vec::new();
+		let mut handle_errors = Vec::new();
+		{
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
+			let by_id = &mut channel_state.by_id;
+			let short_to_id = &mut channel_state.short_to_id;
+			let pending_msg_events = &mut channel_state.pending_msg_events;
+
+			by_id.retain(|channel_id, chan| {
+				match chan.maybe_free_holding_cell_htlcs(&self.logger) {
+					Ok((None, ref htlcs)) if htlcs.is_empty() => true,
+					Ok((commitment_opt, holding_cell_failed_htlcs)) => {
+						failed_htlcs.push((holding_cell_failed_htlcs, *channel_id));
+						if let Some((commitment_update, monitor_update)) = commitment_opt {
+							if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+								let (res, close_channel) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, false, true, Vec::new(), Vec::new(), channel_id);
+								handle_errors.push((chan.get_counterparty_node_id(), res));
+								if close_channel { return false; }
+							} else {
+								pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+									node_id: chan.get_counterparty_node_id(),
+									updates: commitment_update,
+								});
+							}
+						}
+						true
+					},
+					Err(e) => {
+						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, chan, channel_id);
+						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
+						!close_channel
+					}
+				}
+			});
+		}
+		for (failures, channel_id) in failed_htlcs.drain(..) {
+			self.fail_holding_cell_htlcs(failures, channel_id);
+		}
+
+		for (counterparty_node_id, err) in handle_errors.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
+		}
+	}
+
 	/// Handle a list of channel failures during a block_connected or block_disconnected call,
 	/// pushing the channel monitor update (if any) to the background events queue and removing the
 	/// Channel object.
@@ -3625,6 +3682,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 		//TODO: This behavior should be documented. It's non-intuitive that we query
 		// ChannelMonitors when clearing other events.
 		self.process_pending_monitor_events();
+
+		self.check_free_holding_cells();
 
 		let mut ret = Vec::new();
 		let mut channel_state = self.channel_state.lock().unwrap();
