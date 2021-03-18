@@ -67,8 +67,8 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	};
 	let height = starting_block.1 + 1;
 	assert!(height <= conf_height);
-	for i in height..conf_height {
-		connect_block(node, &block, i);
+	for _ in height..conf_height {
+		connect_block(node, &block);
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
@@ -79,7 +79,7 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 		block.txdata.push(Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() });
 	}
 	block.txdata.push(tx.clone());
-	connect_block(node, &block, conf_height);
+	connect_block(node, &block);
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
@@ -87,41 +87,36 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	let height = node.best_block_info().1;
-	connect_block(node, &block, height + 1);
-	for i in 2..depth + 1 {
+	connect_block(node, &block);
+	for _ in 2..depth + 1 {
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		connect_block(node, &block, height + i);
+		connect_block(node, &block);
 	}
 	block.header.block_hash()
 }
 
-pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, height: u32) {
-	assert_eq!(height, node.best_block_info().1 + 1); // height is always equal to the parameter we'll fix it at in the next commit
+pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) {
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	let height = node.best_block_info().1 + 1;
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 	node.node.block_connected(&block.header, &txdata, height);
 	node.node.test_process_background_events();
 	node.blocks.borrow_mut().push((block.header, height));
 }
 
-pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader, height: u32) {
-	assert_eq!(height, node.best_block_info().1); // height is always equal to the parameter we'll fix it at in the next commit
-	node.chain_monitor.chain_monitor.block_disconnected(header, height);
+pub fn disconnect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, header: &BlockHeader) {
+	node.chain_monitor.chain_monitor.block_disconnected(header, node.best_block_info().1);
 	node.node.block_disconnected(header);
 	node.blocks.borrow_mut().pop();
 }
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	assert!(node.blocks.borrow_mut().len() as u32 > count); // Cannot disconnect genesis
 	for _ in 0..count {
-		let (block_header, height) = {
-			let blocks = node.blocks.borrow_mut();
-			(blocks[blocks.len() - 1].0, blocks[blocks.len() - 1].1)
-		};
-		disconnect_block(&node, &block_header, height);
+		let block_header = node.blocks.borrow().last().unwrap().0;
+		disconnect_block(&node, &block_header);
 	}
 }
 
