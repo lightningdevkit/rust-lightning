@@ -1345,22 +1345,36 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 
 pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_1.len(), 1);
+	assert_eq!(events_1.len(), 2);
 	let as_update = match events_1[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
+	match events_1[1] {
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			assert_eq!(node_id, nodes[b].node.get_our_node_id());
+			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_2.len(), 1);
+	assert_eq!(events_2.len(), 2);
 	let bs_update = match events_2[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
+	match events_2[1] {
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			assert_eq!(node_id, nodes[a].node.get_our_node_id());
+			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	for node in nodes {
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();

@@ -241,7 +241,7 @@ mod tests {
 		// Force close because cooperative close doesn't result in any persisted
 		// updates.
 		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
-		check_closed_broadcast!(nodes[0], false);
+		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -249,7 +249,7 @@ mod tests {
 
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 		connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[0].clone()]});
-		check_closed_broadcast!(nodes[1], false);
+		check_closed_broadcast!(nodes[1], true);
 		check_added_monitors!(nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.

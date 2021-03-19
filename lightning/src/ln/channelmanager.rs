@@ -1002,16 +1002,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<(), APIError> {
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
 				if let Some(node_id) = peer_node_id {
 					if chan.get().get_counterparty_node_id() != *node_id {
-						// Error or Ok here doesn't matter - the result is only exposed publicly
-						// when peer_node_id is None anyway.
-						return Ok(());
+						return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 					}
 				}
 				if let Some(short_id) = chan.get().get_short_channel_id() {
@@ -1031,14 +1029,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			});
 		}
 
-		Ok(())
+		Ok(chan.get_counterparty_node_id())
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		self.force_close_channel_with_peer(channel_id, None)
+		match self.force_close_channel_with_peer(channel_id, None) {
+			Ok(counterparty_node_id) => {
+				self.channel_state.lock().unwrap().pending_msg_events.push(
+					events::MessageSendEvent::HandleError {
+						node_id: counterparty_node_id,
+						action: msgs::ErrorAction::SendErrorMessage {
+							msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() }
+						},
+					}
+				);
+				Ok(())
+			},
+			Err(e) => Err(e)
+		}
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
@@ -3194,6 +3205,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									msg: update
 								});
 							}
+							pending_msg_events.push(events::MessageSendEvent::HandleError {
+								node_id: chan.get_counterparty_node_id(),
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
+								},
+							});
 						}
 					},
 				}
@@ -3364,6 +3381,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										msg: update
 									});
 								}
+								pending_msg_events.push(events::MessageSendEvent::HandleError {
+									node_id: channel.get_counterparty_node_id(),
+									action: msgs::ErrorAction::SendErrorMessage {
+										msg: msgs::ErrorMessage { channel_id: channel.channel_id(), data: "Commitment or closing transaction was confirmed on chain.".to_owned() }
+									},
+								});
 								return false;
 							}
 						}
@@ -3433,7 +3456,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = &mut *channel_lock;
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|_,  v| {
+			channel_state.by_id.retain(|channel_id,  v| {
 				if v.block_disconnected(header, new_height) {
 					if let Some(short_id) = v.get_short_channel_id() {
 						short_to_id.remove(&short_id);
@@ -3444,6 +3467,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							msg: update
 						});
 					}
+					pending_msg_events.push(events::MessageSendEvent::HandleError {
+						node_id: v.get_counterparty_node_id(),
+						action: msgs::ErrorAction::SendErrorMessage {
+							msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Funding transaction was un-confirmed.".to_owned() }
+						},
+					});
 					false
 				} else {
 					true

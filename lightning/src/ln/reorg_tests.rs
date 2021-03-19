@@ -76,7 +76,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Give node 2 node 1's transactions and get its response (claiming the HTLC instead).
 		connect_block(&nodes[2], &Block { header, txdata: node_1_commitment_txn.clone() });
 		check_added_monitors!(nodes[2], 1);
-		check_closed_broadcast!(nodes[2], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
+		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_2_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Claim, ChannelManger: 1 local commitment tx, 1 Received HTLC-Claim
 		assert_eq!(node_2_commitment_txn[1].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
@@ -116,7 +116,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		node_2_commitment_txn
 	};
 	check_added_monitors!(nodes[1], 1);
-	check_closed_broadcast!(nodes[1], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
+	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
@@ -204,7 +204,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 	if !reorg_after_reload {
 		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], false);
+		check_closed_broadcast!(nodes[0], true);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -256,7 +256,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 	if reorg_after_reload {
 		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], false);
+		check_closed_broadcast!(nodes[0], true);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -311,7 +311,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A commitment transaction
 	mine_transaction(&nodes[0], &remote_txn[0]);
-	check_closed_broadcast!(nodes[0], false);
+	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
 	{
@@ -328,7 +328,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], 135);
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {
