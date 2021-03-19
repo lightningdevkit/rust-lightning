@@ -3334,7 +3334,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let res = channel.block_connected(header, txdata, height);
+				let res = channel.transactions_confirmed(&block_hash, height, txdata, &self.logger)
+					.and_then(|_| channel.update_best_block(height, header.time));
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3360,37 +3361,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 					}
 				} else if let Err(e) = res {
+					if let Some(short_id) = channel.get_short_channel_id() {
+						short_to_id.remove(&short_id);
+					}
+					// It looks like our counterparty went on-chain or funding transaction was
+					// reorged out of the main chain. Close the channel.
+					failed_channels.push(channel.force_shutdown(true));
+					if let Ok(update) = self.get_channel_update(&channel) {
+						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							msg: update
+						});
+					}
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
 					});
 					return false;
-				}
-				if let Some(funding_txo) = channel.get_funding_txo() {
-					for &(_, tx) in txdata.iter() {
-						for inp in tx.input.iter() {
-							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
-								log_trace!(self.logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
-								if let Some(short_id) = channel.get_short_channel_id() {
-									short_to_id.remove(&short_id);
-								}
-								// It looks like our counterparty went on-chain. Close the channel.
-								failed_channels.push(channel.force_shutdown(true));
-								if let Ok(update) = self.get_channel_update(&channel) {
-									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
-								}
-								pending_msg_events.push(events::MessageSendEvent::HandleError {
-									node_id: channel.get_counterparty_node_id(),
-									action: msgs::ErrorAction::SendErrorMessage {
-										msg: msgs::ErrorMessage { channel_id: channel.channel_id(), data: "Commitment or closing transaction was confirmed on chain.".to_owned() }
-									},
-								});
-								return false;
-							}
-						}
-					}
 				}
 				true
 			});
@@ -3456,8 +3442,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = &mut *channel_lock;
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|channel_id,  v| {
-				if v.block_disconnected(header, new_height) {
+			channel_state.by_id.retain(|_,  v| {
+				if let Err(err_msg) = v.update_best_block(new_height, header.time) {
 					if let Some(short_id) = v.get_short_channel_id() {
 						short_to_id.remove(&short_id);
 					}
@@ -3469,9 +3455,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: v.get_counterparty_node_id(),
-						action: msgs::ErrorAction::SendErrorMessage {
-							msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Funding transaction was un-confirmed.".to_owned() }
-						},
+						action: msgs::ErrorAction::SendErrorMessage { msg: err_msg },
 					});
 					false
 				} else {

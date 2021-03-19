@@ -7,7 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
@@ -3502,47 +3501,63 @@ impl<Signer: Sign> Channel<Signer> {
 		self.network_sync == UpdateStatus::DisabledMarked
 	}
 
-	pub fn transactions_confirmed(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData) -> Result<(), msgs::ErrorMessage> {
+	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
+	/// In the first case, we store the confirmation height and calculating the short channel id.
+	/// In the second, we simply return an Err indicating we need to be force-closed now.
+	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
+			-> Result<(), msgs::ErrorMessage> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
-			for &(index_in_block, tx) in txdata.iter() {
-				let funding_txo = self.get_funding_txo().unwrap();
-				if tx.txid() == funding_txo.txid {
-					let txo_idx = funding_txo.index as usize;
-					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
-							tx.output[txo_idx].value != self.channel_value_satoshis {
-						if self.is_outbound() {
-							// If we generated the funding transaction and it doesn't match what it
-							// should, the client is really broken and we should just panic and
-							// tell them off. That said, because hash collisions happen with high
-							// probability in fuzztarget mode, if we're fuzzing we just close the
-							// channel and move on.
-							#[cfg(not(feature = "fuzztarget"))]
-							panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
-						}
-						self.channel_state = ChannelState::ShutdownComplete as u32;
-						self.update_time_counter += 1;
-						return Err(msgs::ErrorMessage {
-							channel_id: self.channel_id(),
-							data: "funding tx had wrong script/value".to_owned()
-						});
-					} else {
-						if self.is_outbound() {
-							for input in tx.input.iter() {
-								if input.witness.is_empty() {
-									// We generated a malleable funding transaction, implying we've
-									// just exposed ourselves to funds loss to our counterparty.
-									#[cfg(not(feature = "fuzztarget"))]
-									panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+		for &(index_in_block, tx) in txdata.iter() {
+			if let Some(funding_txo) = self.get_funding_txo() {
+				// If we haven't yet sent a funding_locked, but are in FundingSent (ignoring
+				// whether they've sent a funding_locked or not), check if we should send one.
+				if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
+					if tx.txid() == funding_txo.txid {
+						let txo_idx = funding_txo.index as usize;
+						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
+								tx.output[txo_idx].value != self.channel_value_satoshis {
+							if self.is_outbound() {
+								// If we generated the funding transaction and it doesn't match what it
+								// should, the client is really broken and we should just panic and
+								// tell them off. That said, because hash collisions happen with high
+								// probability in fuzztarget mode, if we're fuzzing we just close the
+								// channel and move on.
+								#[cfg(not(feature = "fuzztarget"))]
+								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+							}
+							self.channel_state = ChannelState::ShutdownComplete as u32;
+							self.update_time_counter += 1;
+							return Err(msgs::ErrorMessage {
+								channel_id: self.channel_id(),
+								data: "funding tx had wrong script/value or output index".to_owned()
+							});
+						} else {
+							if self.is_outbound() {
+								for input in tx.input.iter() {
+									if input.witness.is_empty() {
+										// We generated a malleable funding transaction, implying we've
+										// just exposed ourselves to funds loss to our counterparty.
+										#[cfg(not(feature = "fuzztarget"))]
+										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+									}
 								}
 							}
+							self.funding_tx_confirmation_height = height as u64;
+							self.funding_tx_confirmed_in = Some(*block_hash);
+							self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
+								Ok(scid) => Some(scid),
+								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
+							}
 						}
-						self.funding_tx_confirmation_height = height as u64;
-						self.funding_tx_confirmed_in = Some(*block_hash);
-						self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
-							Ok(scid) => Some(scid),
-							Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
-						}
+					}
+				}
+				for inp in tx.input.iter() {
+					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
+						log_trace!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(self.channel_id()));
+						return Err(msgs::ErrorMessage {
+							channel_id: self.channel_id(),
+							data: "Commitment or closing transaction was confirmed on chain.".to_owned()
+						});
 					}
 				}
 			}
@@ -3633,35 +3648,6 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		Ok((None, timed_out_htlcs))
-	}
-
-	/// When we receive a new block, we (a) check whether the block contains the funding
-	/// transaction (which would start us counting blocks until we send the funding_signed), and
-	/// (b) check the height of the block against outbound holding cell HTLCs in case we need to
-	/// give up on them prematurely and time them out. Everything else (e.g. commitment
-	/// transaction broadcasts, channel closure detection, HTLC transaction broadcasting, etc) is
-	/// handled by the ChannelMonitor.
-	///
-	/// If we return Err, the channel may have been closed, at which point the standard
-	/// requirements apply - no calls may be made except those explicitly stated to be allowed
-	/// post-shutdown.
-	/// Only returns an ErrorAction of DisconnectPeer, if Err.
-	///
-	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
-	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
-		self.transactions_confirmed(&header.block_hash(), height, txdata)?;
-		self.update_best_block(height, header.time)
-	}
-
-	/// Called by channelmanager based on chain blocks being disconnected.
-	/// Returns true if we need to close the channel now due to funding transaction
-	/// unconfirmation/reorg.
-	pub fn block_disconnected(&mut self, header: &BlockHeader, new_height: u32) -> bool {
-		if self.update_best_block(new_height, header.time).is_err() {
-			return true;
-		}
-		false
 	}
 
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
