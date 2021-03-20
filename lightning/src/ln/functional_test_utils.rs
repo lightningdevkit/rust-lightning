@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain::Watch;
+use chain::{Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
@@ -102,7 +102,7 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 	let height = node.best_block_info().1 + 1;
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-	node.node.block_connected(&block.header, &txdata, height);
+	node.node.block_connected(&block, height);
 	node.node.test_process_background_events();
 	node.blocks.borrow_mut().push((block.header, height));
 }

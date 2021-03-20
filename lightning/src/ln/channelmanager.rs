@@ -3293,8 +3293,13 @@ where
 	L::Target: Logger,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
+		assert_eq!(*self.last_block_hash.read().unwrap(), block.header.prev_blockhash,
+			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+		assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
+			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		ChannelManager::block_connected(self, &block.header, &txdata, height);
+		self.transactions_confirmed(&block.header, height, &txdata);
+		self.update_best_block(&block.header, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, _height: u32) {
@@ -3309,22 +3314,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	/// Updates channel state based on transactions seen in a connected block.
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage>>
+			(&self, height: u32, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
-		let block_hash = header.block_hash();
-		log_trace!(self.logger, "Block {} at height {} connected", block_hash, height);
-
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		assert_eq!(*self.last_block_hash.read().unwrap(), header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.write().unwrap() = block_hash;
 
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
@@ -3334,8 +3328,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let res = channel.transactions_confirmed(&block_hash, height, txdata, &self.logger)
-					.and_then(|_| channel.update_best_block(height, header.time));
+				let res = f(channel);
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3406,6 +3399,64 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
+	}
+
+	/// Updates channel state to take note of transactions which were confirmed in the given block
+	/// at the given height.
+	///
+	/// Note that you must still call (or have called) [`update_best_block`] with the block
+	/// information which is included here.
+	///
+	/// This method may be called before or after [`update_best_block`] for a given block's
+	/// transaction data and may be called multiple times with additional transaction data for a
+	/// given block.
+	///
+	/// This method may be called for a previous block after an [`update_best_block`] call has
+	/// been made for a later block, however it must *not* be called with transaction data from a
+	/// block which is no longer in the best chain (ie where [`update_best_block`] has already
+	/// been informed about a blockchain reorganization which no longer includes the block which
+	/// corresponds to `header`).
+	///
+	/// [`update_best_block`]: `Self::update_best_block`
+	pub fn transactions_confirmed(&self, header: &BlockHeader, height: u32, txdata: &TransactionData) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		self.do_chain_event(height, |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|_| (None, Vec::new())));
+	}
+
+	/// Updates channel state with the current best blockchain tip. You should attempt to call this
+	/// quickly after a new block becomes available, however if multiple new blocks become
+	/// available at the same time, only a single `update_best_block()` call needs to be made.
+	///
+	/// This method should also be called immediately after any block disconnections, once at the
+	/// reorganization fork point, and once with the new chain tip. Calling this method at the
+	/// blockchain reorganization fork point ensures we learn when a funding transaction which was
+	/// previously confirmed is reorganized out of the blockchain, ensuring we do not continue to
+	/// accept payments which cannot be enforced on-chain.
+	///
+	/// In both the block-connection and block-disconnection case, this method may be called either
+	/// once per block connected or disconnected, or simply at the fork point and new tip(s),
+	/// skipping any intermediary blocks.
+	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		self.latest_block_height.store(height as usize, Ordering::Release);
+		*self.last_block_hash.write().unwrap() = block_hash;
+
+		self.do_chain_event(height, |channel| channel.update_best_block(height, header.time));
 
 		loop {
 			// Update last_node_announcement_serial to be the max of its current value and the
