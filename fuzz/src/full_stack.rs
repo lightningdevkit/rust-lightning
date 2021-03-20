@@ -161,7 +161,7 @@ struct MoneyLossDetector<'a> {
 	peers: &'a RefCell<[bool; 256]>,
 	funding_txn: Vec<Transaction>,
 	txids_confirmed: HashMap<Txid, usize>,
-	header_hashes: Vec<BlockHash>,
+	header_hashes: Vec<(BlockHash, u32)>,
 	height: usize,
 	max_height: usize,
 	blocks_connected: u32,
@@ -179,7 +179,7 @@ impl<'a> MoneyLossDetector<'a> {
 			peers,
 			funding_txn: Vec::new(),
 			txids_confirmed: HashMap::new(),
-			header_hashes: vec![Default::default()],
+			header_hashes: vec![(genesis_block(Network::Bitcoin).block_hash(), 0)],
 			height: 0,
 			max_height: 0,
 			blocks_connected: 0,
@@ -199,23 +199,23 @@ impl<'a> MoneyLossDetector<'a> {
 			}
 		}
 
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
-		self.height += 1;
 		self.blocks_connected += 1;
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height].0, merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
+		self.height += 1;
 		self.manager.block_connected(&header, &txdata, self.height as u32);
 		(*self.monitor).block_connected(&header, &txdata, self.height as u32);
 		if self.header_hashes.len() > self.height {
-			self.header_hashes[self.height] = header.block_hash();
+			self.header_hashes[self.height] = (header.block_hash(), self.blocks_connected);
 		} else {
 			assert_eq!(self.header_hashes.len(), self.height);
-			self.header_hashes.push(header.block_hash());
+			self.header_hashes.push((header.block_hash(), self.blocks_connected));
 		}
 		self.max_height = cmp::max(self.height, self.max_height);
 	}
 
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
-			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height], merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height - 1].0, merkle_root: Default::default(), time: self.header_hashes[self.height].1, bits: 42, nonce: 42 };
 			self.manager.block_disconnected(&header);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;
