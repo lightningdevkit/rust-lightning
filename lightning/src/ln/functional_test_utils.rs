@@ -112,7 +112,7 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 		let orig_header = node.blocks.borrow_mut().pop().unwrap();
 		assert!(orig_header.1 > 0); // Cannot disconnect genesis
 		node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
-		node.node.block_disconnected(&orig_header.0);
+		node.node.block_disconnected(&orig_header.0, orig_header.1);
 	}
 }
 

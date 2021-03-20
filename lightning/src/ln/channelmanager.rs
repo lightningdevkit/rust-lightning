@@ -3302,8 +3302,17 @@ where
 		self.update_best_block(&block.header, height);
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, _height: u32) {
-		ChannelManager::block_disconnected(self, header);
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
+			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let new_height = self.latest_block_height.fetch_sub(1, Ordering::AcqRel) as u32 - 1;
+		assert_eq!(new_height, height - 1,
+			"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
+		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
+
+		self.do_chain_event(new_height, |channel| channel.update_best_block(new_height, header.time));
 	}
 }
 
@@ -3470,52 +3479,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				break;
 			}
 		}
-	}
-
-	/// Updates channel state based on a disconnected block.
-	///
-	/// If necessary, the channel may be force-closed without letting the counterparty participate
-	/// in the shutdown.
-	pub fn block_disconnected(&self, header: &BlockHeader) {
-		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
-		// during initialization prior to the chain_monitor being fully configured in some cases.
-		// See the docs for `ChannelManagerReadArgs` for more.
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
-			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-		let new_height = self.latest_block_height.fetch_sub(1, Ordering::AcqRel) as u32 - 1;
-		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
-
-		let mut failed_channels = Vec::new();
-		{
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			let short_to_id = &mut channel_state.short_to_id;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|_,  v| {
-				if let Err(err_msg) = v.update_best_block(new_height, header.time) {
-					if let Some(short_id) = v.get_short_channel_id() {
-						short_to_id.remove(&short_id);
-					}
-					failed_channels.push(v.force_shutdown(true));
-					if let Ok(update) = self.get_channel_update(&v) {
-						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: v.get_counterparty_node_id(),
-						action: msgs::ErrorAction::SendErrorMessage { msg: err_msg },
-					});
-					false
-				} else {
-					true
-				}
-			});
-		}
-
-		self.handle_init_event_channel_failures(failed_channels);
 	}
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool
