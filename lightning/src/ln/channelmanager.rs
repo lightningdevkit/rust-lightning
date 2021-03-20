@@ -523,11 +523,16 @@ pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
 pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 
 /// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
-/// HTLC's CLTV. This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
-/// ie the node we forwarded the payment on to should always have enough room to reliably time out
-/// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
-/// CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
-const CLTV_EXPIRY_DELTA: u16 = 6 * 12; //TODO?
+/// HTLC's CLTV. The current default represents roughly six hours of blocks at six blocks/hour.
+///
+/// This can be increased (but not decreased) through [`ChannelConfig::cltv_expiry_delta`]
+///
+/// [`ChannelConfig::cltv_expiry_delta`]: crate::util::config::ChannelConfig::cltv_expiry_delta
+// This should always be a few blocks greater than channelmonitor::CLTV_CLAIM_BUFFER,
+// i.e. the node we forwarded the payment on to should always have enough room to reliably time out
+// the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
+// CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
+pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 6;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
@@ -538,13 +543,13 @@ pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 // LATENCY_GRACE_PERIOD_BLOCKS.
 #[deny(const_err)]
 #[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
+const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
 
 // Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
 // ChannelMontior::would_broadcast_at_height for a description of why this is needed.
 #[deny(const_err)]
 #[allow(dead_code)]
-const CHECK_CLTV_EXPIRY_SANITY_2: u32 = CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
+const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 /// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
 #[derive(Clone)]
@@ -1271,7 +1276,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
 					}
-					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + chan.get_cltv_expiry_delta() as u64 { // incorrect_cltv_expiry
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
 					}
 					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
@@ -1329,7 +1334,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			short_channel_id,
 			timestamp: chan.get_update_time_counter(),
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
-			cltv_expiry_delta: CLTV_EXPIRY_DELTA,
+			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
 			fee_base_msat: chan.get_holder_fee_base_msat(&self.fee_estimator),
