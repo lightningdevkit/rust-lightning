@@ -341,7 +341,8 @@ macro_rules! get_feerate {
 	}
 }
 
-#[cfg(test)]
+/// Returns any local commitment transactions for the channel.
+#[macro_export]
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
