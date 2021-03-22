@@ -183,7 +183,7 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
 }
 
-fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_style: ConnectStyle) {
+fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
 	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
 	// around freeing background events which store monitor updates during block_[dis]connected.
@@ -196,7 +196,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_styl
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	*nodes[0].connect_style.borrow_mut() = connect_style;
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
@@ -204,8 +204,19 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_styl
 	mem::drop(channel_state);
 
 	if !reorg_after_reload {
-		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], true);
+		if use_funding_unconfirmed {
+			let relevant_txids = nodes[0].node.get_relevant_txids();
+			assert_eq!(&relevant_txids[..], &[chan.3.txid()]);
+			nodes[0].node.transaction_unconfirmed(&relevant_txids[0]);
+		} else {
+			disconnect_all_blocks(&nodes[0]);
+		}
+		if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
+		} else {
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+		}
+		check_added_monitors!(nodes[1], 1);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -249,14 +260,31 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_styl
 		};
 		nodes[0].node = &nodes_0_deserialized;
 		assert!(nodes_0_read.is_empty());
+		if !reorg_after_reload {
+			// If the channel is already closed when we reload the node, we'll broadcast a closing
+			// transaction via the ChannelMonitor which is missing a corresponding channel.
+			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+			nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		}
 
 		nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
 	if reorg_after_reload {
-		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], true);
+		if use_funding_unconfirmed {
+			let relevant_txids = nodes[0].node.get_relevant_txids();
+			assert_eq!(&relevant_txids[..], &[chan.3.txid()]);
+			nodes[0].node.transaction_unconfirmed(&relevant_txids[0]);
+		} else {
+			disconnect_all_blocks(&nodes[0]);
+		}
+		if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
+		} else {
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+		}
+		check_added_monitors!(nodes[1], 1);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -265,25 +293,44 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_styl
 	}
 	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
 	// is a ChannelForcClosed on the right channel with should_broadcast set.
-	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan_id, true));
+	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+
+	// Now check that we can create a new channel
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
 }
 
 #[test]
 fn test_unconf_chan() {
-	do_test_unconf_chan(true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
-	do_test_unconf_chan(false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
-	do_test_unconf_chan(true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
-	do_test_unconf_chan(false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(true, true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(true, false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
 }
 
 #[test]
 fn test_unconf_chan_via_listen() {
-	do_test_unconf_chan(true, true, ConnectStyle::FullBlockViaListen);
-	do_test_unconf_chan(false, true, ConnectStyle::FullBlockViaListen);
-	do_test_unconf_chan(true, false, ConnectStyle::FullBlockViaListen);
-	do_test_unconf_chan(false, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(true, true, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, true, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(true, false, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, false, false, ConnectStyle::FullBlockViaListen);
+}
+
+#[test]
+fn test_unconf_chan_via_funding_unconfirmed() {
+	do_test_unconf_chan(true, true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(true, false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+
+	do_test_unconf_chan(true, true, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, true, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(true, false, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, false, true, ConnectStyle::FullBlockViaListen);
 }
 
 #[test]

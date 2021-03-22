@@ -77,6 +77,7 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 }
 
 /// The possible ways we may notify a ChannelManager of a new block
+#[derive(Clone, Copy, PartialEq)]
 pub enum ConnectStyle {
 	/// Calls update_best_block first, detecting transactions in the block only after receiving the
 	/// header and height information.
@@ -1413,7 +1414,7 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 	res
 }
 
-pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {
+pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize, needs_err_handle: bool, expected_error: &str)  {
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
 	let as_update = match events_1[0] {
@@ -1425,31 +1426,40 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	match events_1[1] {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[b].node.get_our_node_id());
-			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+			assert_eq!(msg.data, expected_error);
+			if needs_err_handle {
+				nodes[b].node.handle_error(&nodes[a].node.get_our_node_id(), msg);
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
 
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_2.len(), 2);
+	assert_eq!(events_2.len(), if needs_err_handle { 1 } else { 2 });
 	let bs_update = match events_2[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
-	match events_2[1] {
-		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
-			assert_eq!(node_id, nodes[a].node.get_our_node_id());
-			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
-		},
-		_ => panic!("Unexpected event"),
+	if !needs_err_handle {
+		match events_2[1] {
+			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+				assert_eq!(node_id, nodes[a].node.get_our_node_id());
+				assert_eq!(msg.data, expected_error);
+			},
+			_ => panic!("Unexpected event"),
+		}
 	}
 
 	for node in nodes {
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
 		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	}
+}
+
+pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {
+	handle_announce_close_broadcast_events(nodes, a, b, false, "Commitment or closing transaction was confirmed on chain.");
 }
 
 #[cfg(test)]
