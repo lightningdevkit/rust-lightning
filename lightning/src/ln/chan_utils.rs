@@ -39,6 +39,7 @@ use std::io::Read;
 use std::ops::Deref;
 use chain;
 
+// Maximum size of a serialized HTLCOutputInCommitment
 const HTLC_OUTPUT_IN_COMMITMENT_SIZE: usize = 1 + 8 + 4 + 32 + 5;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
@@ -320,7 +321,8 @@ pub struct TxCreationKeys {
 	/// Broadcaster's Payment Key (which isn't allowed to be spent from for some delay)
 	pub broadcaster_delayed_payment_key: PublicKey,
 }
-impl_writeable!(TxCreationKeys, 33*6,
+
+impl_writeable!(TxCreationKeys, 33*5,
 	{ per_commitment_point, revocation_key, broadcaster_htlc_key, countersignatory_htlc_key, broadcaster_delayed_payment_key });
 
 /// One counterparty's public keys which do not change over the life of a channel.
@@ -427,7 +429,10 @@ pub struct HTLCOutputInCommitment {
 	pub transaction_output_index: Option<u32>,
 }
 
-impl_writeable!(HTLCOutputInCommitment, HTLC_OUTPUT_IN_COMMITMENT_SIZE, {
+impl_writeable_len_match!(HTLCOutputInCommitment, {
+		{ HTLCOutputInCommitment { transaction_output_index: None, .. }, HTLC_OUTPUT_IN_COMMITMENT_SIZE - 4 },
+		{ _, HTLC_OUTPUT_IN_COMMITMENT_SIZE }
+	}, {
 	offered,
 	amount_msat,
 	cltv_expiry,

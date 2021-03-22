@@ -1396,7 +1396,7 @@ impl Readable for Pong {
 
 impl Writeable for UnsignedChannelAnnouncement {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(2 + 2*32 + 4*33 + self.features.byte_count() + self.excess_data.len());
+		w.size_hint(2 + 32 + 8 + 4*33 + self.features.byte_count() + self.excess_data.len());
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
@@ -1430,7 +1430,7 @@ impl Readable for UnsignedChannelAnnouncement {
 
 impl_writeable_len_match!(ChannelAnnouncement, {
 		{ ChannelAnnouncement { contents: UnsignedChannelAnnouncement {ref features, ref excess_data, ..}, .. },
-			2 + 2*32 + 4*33 + features.byte_count() + excess_data.len() + 4*64 }
+			2 + 32 + 8 + 4*33 + features.byte_count() + excess_data.len() + 4*64 }
 	}, {
 	node_signature_1,
 	node_signature_2,
@@ -1491,8 +1491,8 @@ impl Readable for UnsignedChannelUpdate {
 }
 
 impl_writeable_len_match!(ChannelUpdate, {
-		{ ChannelUpdate { contents: UnsignedChannelUpdate {ref excess_data, ..}, .. },
-			64 + excess_data.len() + 64 }
+		{ ChannelUpdate { contents: UnsignedChannelUpdate {ref excess_data, ref htlc_maximum_msat, ..}, .. },
+			64 + 64 + excess_data.len() + if let OptionalField::Present(_) = htlc_maximum_msat { 8 } else { 0 } }
 	}, {
 	signature,
 	contents
@@ -1528,7 +1528,7 @@ impl Readable for ErrorMessage {
 
 impl Writeable for UnsignedNodeAnnouncement {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		w.size_hint(64 + 76 + self.features.byte_count() + self.addresses.len()*38 + self.excess_address_data.len() + self.excess_data.len());
+		w.size_hint(76 + self.features.byte_count() + self.addresses.len()*38 + self.excess_address_data.len() + self.excess_data.len());
 		self.features.write(w)?;
 		self.timestamp.write(w)?;
 		self.node_id.write(w)?;
@@ -1611,7 +1611,7 @@ impl Readable for UnsignedNodeAnnouncement {
 	}
 }
 
-impl_writeable_len_match!(NodeAnnouncement, {
+impl_writeable_len_match!(NodeAnnouncement, <=, {
 		{ NodeAnnouncement { contents: UnsignedNodeAnnouncement { ref features, ref addresses, ref excess_address_data, ref excess_data, ..}, .. },
 			64 + 76 + features.byte_count() + addresses.len()*(NetAddress::MAX_LEN as usize + 1) + excess_address_data.len() + excess_data.len() }
 	}, {

@@ -223,7 +223,7 @@ impl Default for ChannelConfig {
 }
 
 //Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 8+2+1+1, {
+impl_writeable!(ChannelConfig, 4+2+1+1, {
 	fee_proportional_millionths,
 	cltv_expiry_delta,
 	announced_channel,

@@ -120,6 +120,16 @@ macro_rules! impl_writeable {
 				if $len != 0 {
 					w.size_hint($len);
 				}
+				#[cfg(any(test, feature = "fuzztarget"))]
+				{
+					// In tests, assert that the hard-coded length matches the actual one
+					if $len != 0 {
+						use util::ser::LengthCalculatingWriter;
+						let mut len_calc = LengthCalculatingWriter(0);
+						$( self.$field.write(&mut len_calc)?; )*
+						assert_eq!(len_calc.0, $len);
+					}
+				}
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
@@ -135,12 +145,21 @@ macro_rules! impl_writeable {
 	}
 }
 macro_rules! impl_writeable_len_match {
-	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
+	($st:ident, $cmp: tt, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
 		impl Writeable for $st {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-				w.size_hint(match *self {
+				let len = match *self {
 					$($m => $l,)*
-				});
+				};
+				w.size_hint(len);
+				#[cfg(any(test, feature = "fuzztarget"))]
+				{
+					// In tests, assert that the hard-coded length matches the actual one
+					use util::ser::LengthCalculatingWriter;
+					let mut len_calc = LengthCalculatingWriter(0);
+					$( self.$field.write(&mut len_calc)?; )*
+					assert!(len_calc.0 $cmp len);
+				}
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
@@ -153,6 +172,9 @@ macro_rules! impl_writeable_len_match {
 				})
 			}
 		}
+	};
+	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
+		impl_writeable_len_match!($st, ==, { $({ $m, $l }),* }, { $($field),* });
 	}
 }
 
