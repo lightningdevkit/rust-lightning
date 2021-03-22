@@ -15,6 +15,7 @@ pub(crate) mod fuzz_wrappers;
 pub mod events;
 pub mod errors;
 pub mod ser;
+pub mod zbase32;
 
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
