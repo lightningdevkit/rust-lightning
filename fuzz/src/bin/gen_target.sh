@@ -11,6 +11,7 @@ GEN_TEST chanmon_consistency
 GEN_TEST full_stack
 GEN_TEST peer_crypt
 GEN_TEST router
+GEN_TEST zbase32
 
 GEN_TEST msg_accept_channel msg_targets::
 GEN_TEST msg_announcement_signatures msg_targets::

@@ -25,8 +25,9 @@ SOFTWARE.
 
 const ALPHABET: &'static [u8] = b"ybndrfg8ejkmcpqxot1uwisza345h769";
 
+/// Encodes some bytes as a zbase32 string
 pub fn encode(data: &[u8]) -> String {
-    let mut ret = Vec::with_capacity((data.len() + 3) / 4 * 5);
+    let mut ret = Vec::with_capacity((data.len() + 4) / 5 * 8);
 
     for chunk in data.chunks(5) {
         let buf = {
@@ -47,11 +48,11 @@ pub fn encode(data: &[u8]) -> String {
         ret.push(ALPHABET[(buf[4] & 0x1F) as usize]);
     }
 
-    if data.len() % 5 != 0 {
-        let len = ret.len();
-        let num_extra = 8 - (data.len() % 5 * 8 + 4) / 5;
-        ret.truncate(len - num_extra);
-    }
+    ret.truncate((data.len() * 8 + 4) / 5);
+
+    // Check that our capacity calculation doesn't under-shoot in fuzzing
+    #[cfg(fuzzing)]
+    assert_eq!(ret.capacity(), (data.len() + 4) / 5 * 8);
 
     String::from_utf8(ret).unwrap()
 }
@@ -62,21 +63,29 @@ const INV_ALPHABET: [i8; 43] = [
     21, 9, 10, -1, 11, 2, 16, 13, 14, 4, 22, 17, 19, -1, 20, 15, 0, 23,
 ];
 
-pub fn decode(data: &str) -> Result<Vec<u8>, &'static str> {
+/// Decodes a zbase32 string to the original bytes, failing if the string was not encoded by a
+/// proper zbase32 encoder.
+pub fn decode(data: &str) -> Result<Vec<u8>, ()> {
     if !data.is_ascii() {
-        return Err("Data is not zbase32 encoded");
+        return Err(());
     }
 
     let data = data.as_bytes();
     let output_length = data.len() * 5 / 8;
-    let mut ret = Vec::with_capacity((output_length + 4) / 5 * 5);
+    if data.len() > (output_length * 8 + 4) / 5 {
+        // If the string has more charachters than are required to encode the number of bytes
+        // decodable, treat the string as invalid.
+        return Err(());
+    }
+
+    let mut ret = Vec::with_capacity((data.len() + 7) / 8 * 5);
 
     for chunk in data.chunks(8) {
         let buf = {
             let mut buf = [0u8; 8];
             for (i, &c) in chunk.iter().enumerate() {
                 match INV_ALPHABET.get(c.to_ascii_uppercase().wrapping_sub(b'0') as usize) {
-                    Some(&-1) | None => return Err("Data is not zbase32 encoded"),
+                    Some(&-1) | None => return Err(()),
                     Some(&value) => buf[i] = value as u8,
                 };
             }
@@ -88,10 +97,22 @@ pub fn decode(data: &str) -> Result<Vec<u8>, &'static str> {
         ret.push((buf[4] << 7) | (buf[5] << 2) | (buf[6] >> 3));
         ret.push((buf[6] << 5) | buf[7]);
     }
-    ret.truncate(output_length);
+    for c in ret.drain(output_length..) {
+        if c != 0 {
+            // If the original string had any bits set at positions outside of the encoded data,
+            // treat the string as invalid.
+            return Err(());
+        }
+    }
+
+    // Check that our capacity calculation doesn't under-shoot in fuzzing
+    #[cfg(fuzzing)]
+    assert_eq!(ret.capacity(), (data.len() + 7) / 8 * 5);
+
     Ok(ret)
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -125,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_decode_wrong() {
-        let WRONG_DATA = &["00", "l1", "?", "="];
+        const WRONG_DATA: &[&str] = &["00", "l1", "?", "="];
 
         for &data in WRONG_DATA {
             match decode(data) {
