@@ -851,6 +851,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Gets the current configuration applied to all new channels,  as
+	pub fn get_current_default_configuration(&self) -> &UserConfig {
+		&self.default_configuration
+	}
+
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
 	/// user_id will be provided back as user_channel_id in FundingGenerationReady events to allow

@@ -62,7 +62,7 @@ pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transac
 pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
 	let first_connect_height = node.best_block_info().1 + 1;
 	assert!(first_connect_height <= conf_height);
-	if conf_height - first_connect_height >= 1 {
+	if conf_height > first_connect_height {
 		connect_blocks(node, conf_height - first_connect_height);
 	}
 	let mut block = Block {
@@ -281,7 +281,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
 				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
-					default_config: UserConfig::default(),
+					default_config: *self.node.get_current_default_configuration(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
 					chain_monitor: self.chain_monitor,

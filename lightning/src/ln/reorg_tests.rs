@@ -14,7 +14,6 @@ use chain::Watch;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
-use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
@@ -233,14 +232,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_styl
 		assert!(chan_0_monitor_read.is_empty());
 
 		let mut nodes_0_read = &nodes_0_serialized[..];
-		let config = UserConfig::default();
 		nodes_0_deserialized = {
 			let mut channel_monitors = HashMap::new();
 			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
 			<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster,
 			  &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(
 				&mut nodes_0_read, ChannelManagerReadArgs {
-					default_config: config,
+					default_config: *nodes[0].node.get_current_default_configuration(),
 					keys_manager,
 					fee_estimator: node_cfgs[0].fee_estimator,
 					chain_monitor: nodes[0].chain_monitor,
