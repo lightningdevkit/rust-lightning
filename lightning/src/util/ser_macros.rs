@@ -145,11 +145,11 @@ macro_rules! impl_writeable {
 	}
 }
 macro_rules! impl_writeable_len_match {
-	($st:ident, $cmp: tt, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
-		impl Writeable for $st {
+	($struct: ident, $cmp: tt, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+		impl Writeable for $struct {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 				let len = match *self {
-					$($m => $l,)*
+					$($match => $length,)*
 				};
 				w.size_hint(len);
 				#[cfg(any(test, feature = "fuzztarget"))]
@@ -165,7 +165,7 @@ macro_rules! impl_writeable_len_match {
 			}
 		}
 
-		impl ::util::ser::Readable for $st {
+		impl ::util::ser::Readable for $struct {
 			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 				Ok(Self {
 					$($field: Readable::read(r)?),*
@@ -173,8 +173,8 @@ macro_rules! impl_writeable_len_match {
 			}
 		}
 	};
-	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
-		impl_writeable_len_match!($st, ==, { $({ $m, $l }),* }, { $($field),* });
+	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+		impl_writeable_len_match!($struct, ==, { $({ $match, $length }),* }, { $($field),* });
 	}
 }
 
