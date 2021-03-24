@@ -1303,6 +1303,30 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().block_disconnected(
 			header, height, broadcaster, fee_estimator, logger)
 	}
+
+	/// Processes transactions from a block with the given header and height, returning new outputs
+	/// to watch. See [`block_connected`] for details.
+	///
+	/// TODO: Expand docs.
+	///
+	/// [`block_connected`]: Self::block_connected
+	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
+		&self,
+		header: &BlockHeader,
+		txdata: &TransactionData,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		self.inner.lock().unwrap().transactions_confirmed(
+			header, txdata, height, broadcaster, fee_estimator, logger)
+	}
 }
 
 impl<Signer: Sign> ChannelMonitorImpl<Signer> {
@@ -2004,6 +2028,24 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
+		self.best_block = BestBlock::new(header.block_hash(), height);
+		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
+	}
+
+	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
+		&mut self,
+		header: &BlockHeader,
+		txdata: &TransactionData,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
 		let txn_matched = self.filter_block(txdata);
 		for tx in &txn_matched {
 			let mut output_val = 0;
@@ -2135,7 +2177,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, Some(height), &&*broadcaster, &&*fee_estimator, &&*logger);
-		self.best_block = BestBlock::new(block_hash, height);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
