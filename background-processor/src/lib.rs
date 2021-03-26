@@ -189,7 +189,7 @@ mod tests {
 			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), InitFeatures::known(), &get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id()));
 			let events = $node_a.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			let (temporary_channel_id, tx, funding_output) = match events[0] {
+			let (temporary_channel_id, tx) = match events[0] {
 				Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
 					assert_eq!(*channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
@@ -197,13 +197,12 @@ mod tests {
 					let tx = Transaction { version: 1 as i32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
-					let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
-					(*temporary_channel_id, tx, funding_outpoint)
+					(*temporary_channel_id, tx)
 				},
 				_ => panic!("Unexpected event"),
 			};
 
-			$node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
+			$node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
 			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
 			tx

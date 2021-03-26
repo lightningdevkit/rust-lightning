@@ -397,7 +397,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };
-					$source.funding_transaction_generated(&temporary_channel_id, funding_output);
+					$source.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 					channel_txn.push(tx);
 				} else { panic!("Wrong event type"); }
 			}
@@ -420,12 +420,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			};
 			$source.handle_funding_signed(&$dest.get_our_node_id(), &funding_signed);
 
-			{
-				let events = $source.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				if let events::Event::FundingBroadcastSafe { .. } = events[0] {
-				} else { panic!("Wrong event type"); }
-			}
 			funding_output
 		} }
 	}

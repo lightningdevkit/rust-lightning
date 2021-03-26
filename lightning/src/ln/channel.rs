@@ -409,9 +409,9 @@ pub(super) struct Channel<Signer: Sign> {
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
 	pub(crate) channel_transaction_parameters: ChannelTransactionParameters,
+	funding_transaction: Option<Transaction>,
 
 	counterparty_cur_commitment_point: Option<PublicKey>,
-
 	counterparty_prev_commitment_point: Option<PublicKey>,
 	counterparty_node_id: PublicKey,
 
@@ -603,8 +603,9 @@ impl<Signer: Sign> Channel<Signer> {
 				counterparty_parameters: None,
 				funding_outpoint: None
 			},
-			counterparty_cur_commitment_point: None,
+			funding_transaction: None,
 
+			counterparty_cur_commitment_point: None,
 			counterparty_prev_commitment_point: None,
 			counterparty_node_id,
 
@@ -844,8 +845,9 @@ impl<Signer: Sign> Channel<Signer> {
 				}),
 				funding_outpoint: None
 			},
-			counterparty_cur_commitment_point: Some(msg.first_per_commitment_point),
+			funding_transaction: None,
 
+			counterparty_cur_commitment_point: Some(msg.first_per_commitment_point),
 			counterparty_prev_commitment_point: None,
 			counterparty_node_id,
 
@@ -1608,7 +1610,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, last_block_hash: BlockHash, logger: &L) -> Result<ChannelMonitor<Signer>, ChannelError> where L::Target: Logger {
+	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, last_block_hash: BlockHash, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction), ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -1670,7 +1672,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.cur_holder_commitment_transaction_number -= 1;
 		self.cur_counterparty_commitment_transaction_number -= 1;
 
-		Ok(channel_monitor)
+		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap()))
 	}
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
@@ -2771,20 +2773,21 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, bool, Option<msgs::FundingLocked>) where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<Transaction>, Option<msgs::FundingLocked>) where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
-		let needs_broadcast_safe = self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.is_outbound();
+		let funding_broadcastable = if self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.is_outbound() {
+			self.funding_transaction.take()
+		} else { None };
 
-		// Because we will never generate a FundingBroadcastSafe event when we're in
-		// MonitorUpdateFailed, if we assume the user only broadcast the funding transaction when
-		// they received the FundingBroadcastSafe event, we can only ever hit
-		// monitor_pending_funding_locked when we're an inbound channel which failed to persist the
-		// monitor on funding_created, and we even got the funding transaction confirmed before the
-		// monitor was persisted.
+		// We will never broadcast the funding transaction when we're in MonitorUpdateFailed (and
+		// we assume the user never directly broadcasts the funding transaction and waits for us to
+		// do it). Thus, we can only ever hit monitor_pending_funding_locked when we're an inbound
+		// channel which failed to persist the monitor on funding_created, and we got the funding
+		// transaction confirmed before the monitor was persisted.
 		let funding_locked = if self.monitor_pending_funding_locked {
-			assert!(!self.is_outbound(), "Funding transaction broadcast without FundingBroadcastSafe!");
+			assert!(!self.is_outbound(), "Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.monitor_pending_funding_locked = false;
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
@@ -2801,7 +2804,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, needs_broadcast_safe, funding_locked);
+			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, funding_broadcastable, funding_locked);
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
@@ -2815,11 +2818,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.monitor_pending_commitment_signed = false;
 		let order = self.resend_order.clone();
 		log_trace!(logger, "Restored monitor updating resulting in {}{} commitment update and {} RAA, with {} first",
-			if needs_broadcast_safe { "a funding broadcast safe, " } else { "" },
+			if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures, needs_broadcast_safe, funding_locked)
+		(raa, commitment_update, order, forwards, failures, funding_broadcastable, funding_locked)
 	}
 
 	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
@@ -3734,7 +3737,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_outbound_funding_created<L: Deref>(&mut self, funding_txo: OutPoint, logger: &L) -> Result<msgs::FundingCreated, ChannelError> where L::Target: Logger {
+	pub fn get_outbound_funding_created<L: Deref>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, logger: &L) -> Result<msgs::FundingCreated, ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
@@ -3765,6 +3768,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.channel_state = ChannelState::FundingCreated as u32;
 		self.channel_id = funding_txo.to_channel_id();
+		self.funding_transaction = Some(funding_transaction);
 
 		Ok(msgs::FundingCreated {
 			temporary_channel_id,
@@ -4489,8 +4493,9 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		}
 
 		self.channel_transaction_parameters.write(writer)?;
-		self.counterparty_cur_commitment_point.write(writer)?;
+		self.funding_transaction.write(writer)?;
 
+		self.counterparty_cur_commitment_point.write(writer)?;
 		self.counterparty_prev_commitment_point.write(writer)?;
 		self.counterparty_node_id.write(writer)?;
 
@@ -4659,6 +4664,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		};
 
 		let channel_parameters = Readable::read(reader)?;
+		let funding_transaction = Readable::read(reader)?;
+
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
 
 		let counterparty_prev_commitment_point = Readable::read(reader)?;
@@ -4731,8 +4738,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			counterparty_forwarding_info,
 
 			channel_transaction_parameters: channel_parameters,
-			counterparty_cur_commitment_point,
+			funding_transaction,
 
+			counterparty_cur_commitment_point,
 			counterparty_prev_commitment_point,
 			counterparty_node_id,
 
@@ -5000,7 +5008,7 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap();
+		let funding_created_msg = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap();
 		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, last_block_hash, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed

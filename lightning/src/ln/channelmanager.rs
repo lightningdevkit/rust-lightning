@@ -19,6 +19,7 @@
 //!
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
@@ -850,10 +851,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
-	/// user_id will be provided back as user_channel_id in FundingGenerationReady and
-	/// FundingBroadcastSafe events to allow tracking of which events correspond with which
-	/// create_channel call. Note that user_channel_id defaults to 0 for inbound channels, so you
-	/// may wish to avoid using 0 for user_id here.
+	/// user_id will be provided back as user_channel_id in FundingGenerationReady events to allow
+	/// tracking of which events correspond with which create_channel call. Note that the
+	/// user_channel_id defaults to 0 for inbound channels, so you may wish to avoid using 0 for
+	/// user_id here. user_id has no meaning inside of LDK, it is simply copied to events and
+	/// otherwise ignored.
 	///
 	/// If successful, will generate a SendOpenChannel message event, so you should probably poll
 	/// PeerManager::process_events afterwards.
@@ -1525,32 +1527,75 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Call this upon creation of a funding transaction for the given channel.
 	///
-	/// Note that ALL inputs in the transaction pointed to by funding_txo MUST spend SegWit outputs
-	/// or your counterparty can steal your funds!
+	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
+	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
 	///
 	/// Panics if a funding transaction has already been provided for this channel.
 	///
-	/// May panic if the funding_txo is duplicative with some other channel (note that this should
-	/// be trivially prevented by using unique funding transaction keys per-channel).
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_txo: OutPoint) {
+	/// May panic if the output found in the funding transaction is duplicative with some other
+	/// channel (note that this should be trivially prevented by using unique funding transaction
+	/// keys per-channel).
+	///
+	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
+	/// counterparty's signature the funding transaction will automatically be broadcast via the
+	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
+	///
+	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
+	/// not currently support replacing a funding transaction on an existing channel. Instead,
+	/// create a new channel with a conflicting funding transaction.
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		for inp in funding_transaction.input.iter() {
+			if inp.witness.is_empty() {
+				return Err(APIError::APIMisuseError {
+					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+				});
+			}
+		}
 
 		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
-					(chan.get_outbound_funding_created(funding_txo, &self.logger)
+					let mut output_index = None;
+					let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
+					for (idx, outp) in funding_transaction.output.iter().enumerate() {
+						if outp.script_pubkey == expected_spk && outp.value == chan.get_value_satoshis() {
+							if output_index.is_some() {
+								return Err(APIError::APIMisuseError {
+									err: "Multiple outputs matched the expected script and value".to_owned()
+								});
+							}
+							if idx > u16::max_value() as usize {
+								return Err(APIError::APIMisuseError {
+									err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+								});
+							}
+							output_index = Some(idx as u16);
+						}
+					}
+					if output_index.is_none() {
+						return Err(APIError::APIMisuseError {
+							err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
+						});
+					}
+					let funding_txo = OutPoint { txid: funding_transaction.txid(), index: output_index.unwrap() };
+
+					(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
 						.map_err(|e| if let ChannelError::Close(msg) = e {
 							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(true), None)
 						} else { unreachable!(); })
 					, chan)
 				},
-				None => return
+				None => { return Err(APIError::ChannelUnavailable { err: "No such channel".to_owned() }) },
 			};
 			match handle_error!(self, res, chan.get_counterparty_node_id()) {
 				Ok(funding_msg) => {
 					(chan, funding_msg)
 				},
-				Err(_) => { return; }
+				Err(_) => { return Err(APIError::ChannelUnavailable {
+					err: "Error deriving keys or signing initial commitment transactions - either our RNG or our counterparty's RNG is broken or the Signer refused to sign".to_owned()
+				}) },
 			}
 		};
 
@@ -1567,6 +1612,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				e.insert(chan);
 			}
 		}
+		Ok(())
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel<Signer>) -> Option<msgs::AnnouncementSignatures> {
@@ -2359,7 +2405,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return;
 			}
 
-			let (raa, commitment_update, order, pending_forwards, mut pending_failures, needs_broadcast_safe, funding_locked) = channel.monitor_updating_restored(&self.logger);
+			let (raa, commitment_update, order, pending_forwards, mut pending_failures, funding_broadcastable, funding_locked) = channel.monitor_updating_restored(&self.logger);
 			if !pending_forwards.is_empty() {
 				htlc_forwards.push((channel.get_short_channel_id().expect("We can't have pending forwards before funding confirmation"), funding_txo.clone(), pending_forwards));
 			}
@@ -2391,11 +2437,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					handle_cs!();
 				},
 			}
-			if needs_broadcast_safe {
-				pending_events.push(events::Event::FundingBroadcastSafe {
-					funding_txo: channel.get_funding_txo().unwrap(),
-					user_channel_id: channel.get_user_id(),
-				});
+			if let Some(tx) = funding_broadcastable {
+				self.tx_broadcaster.broadcast_transaction(&tx);
 			}
 			if let Some(msg) = funding_locked {
 				pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
@@ -2529,7 +2572,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
-		let (funding_txo, user_id) = {
+		let funding_tx = {
 			let last_block_hash = *self.last_block_hash.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
@@ -2538,23 +2581,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let monitor = match chan.get_mut().funding_signed(&msg, last_block_hash, &self.logger) {
+					let (monitor, funding_tx) = match chan.get_mut().funding_signed(&msg, last_block_hash, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
 					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
 						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
 					}
-					(chan.get().get_funding_txo().unwrap(), chan.get().get_user_id())
+					funding_tx
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::FundingBroadcastSafe {
-			funding_txo,
-			user_channel_id: user_id,
-		});
+		self.tx_broadcaster.broadcast_transaction(&funding_tx);
 		Ok(())
 	}
 
