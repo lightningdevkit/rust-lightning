@@ -869,6 +869,30 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	pub(crate) fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+		&mut self,
+		txid: &Txid,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let mut height = None;
+		for entry in self.onchain_events_waiting_threshold_conf.iter() {
+			if entry.txid == *txid {
+				height = Some(entry.height);
+				break;
+			}
+		}
+
+		if let Some(height) = height {
+			self.block_disconnected(height, broadcaster, fee_estimator, logger);
+		}
+	}
+
 	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,

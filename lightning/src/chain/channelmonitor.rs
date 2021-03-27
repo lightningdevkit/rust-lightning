@@ -1331,6 +1331,29 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			header, txdata, height, broadcaster, fee_estimator, logger)
 	}
 
+	/// Processes a transaction that was reorganized out of the chain.
+	///
+	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
+	/// than blocks. May be called before or after [`update_best_block`] for transactions in the
+	/// corresponding block. See [`update_best_block`] for further calling expectations.
+	///
+	/// [`block_disconnected`]: Self::block_disconnected
+	/// [`update_best_block`]: Self::update_best_block
+	pub fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+		&self,
+		txid: &Txid,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		self.inner.lock().unwrap().transaction_unconfirmed(
+			txid, broadcaster, fee_estimator, logger);
+	}
+
 	/// Updates the monitor with the current best chain tip, returning new outputs to watch. See
 	/// [`block_connected`] for details.
 	///
@@ -1339,10 +1362,13 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// block.
 	///
 	/// Must be called after new blocks become available for the most recent block. Intermediary
-	/// blocks, however, may be safely skipped.
+	/// blocks, however, may be safely skipped. In the event of a chain re-organization, this only
+	/// needs to be called for the most recent block assuming `transaction_unconfirmed` is called
+	/// for any affected transactions.
 	///
 	/// [`block_connected`]: Self::block_connected
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
+	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
 	pub fn update_best_block<B: Deref, F: Deref, L: Deref>(
 		&self,
 		header: &BlockHeader,
@@ -2229,13 +2255,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						debug_assert!(
 							unmatured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
-							 call block_disconnected for a block containing the conflicting \
-							 transaction.");
+							 call either transaction_unconfirmed for the conflicting transaction \
+							 or block_disconnected for a block containing it.");
 						debug_assert!(
 							matured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
 							"A matured HTLC transaction conflicts with a maturing one; failed to \
-							 call block_disconnected for a block containing the conflicting \
-							 transaction.");
+							 call either transaction_unconfirmed for the conflicting transaction \
+							 or block_disconnected for a block containing it.");
 						matured_htlcs.push(htlc_update.0.clone());
 					}
 
@@ -2295,6 +2321,21 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
+	}
+
+	fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
+		&mut self,
+		txid: &Txid,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.txid != *txid);
+		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, fee_estimator, logger);
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
