@@ -3748,6 +3748,91 @@ mod tests {
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
+
+	use std::fs::File;
+	use util::ser::Readable;
+	/// Tries to open a network graph file, or panics with a URL to fetch it.
+	pub(super) fn get_route_file() -> Result<std::fs::File, std::io::Error> {
+		let res = File::open("net_graph-2021-02-12.bin") // By default we're run in RL/lightning
+			.or_else(|_| File::open("lightning/net_graph-2021-02-12.bin")) // We may be run manually in RL/
+			.or_else(|_| { // Fall back to guessing based on the binary location
+				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
+				let mut path = std::env::current_exe().unwrap();
+				path.pop(); // lightning-...
+				path.pop(); // deps
+				path.pop(); // debug
+				path.pop(); // target
+				path.push("lightning");
+				path.push("net_graph-2021-02-12.bin");
+				eprintln!("{}", path.to_str().unwrap());
+				File::open(path)
+			});
+		#[cfg(require_route_graph_test)]
+		return Ok(res.expect("Didn't have route graph and was configured to require it"));
+		res
+	}
+
+	pub(super) fn random_init_seed() -> u64 {
+		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
+		use std::hash::{BuildHasher, Hasher};
+		let seed = std::collections::hash_map::RandomState::new().build_hasher().finish();
+		println!("Using seed of {}", seed);
+		seed
+	}
+
+	#[test]
+	fn generate_routes() {
+		let mut d = match get_route_file() {
+			Ok(f) => f,
+			Err(_) => {
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				return;
+			},
+		};
+		let graph = NetworkGraph::read(&mut d).unwrap();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut seed = random_init_seed() as usize;
+		'load_endpoints: for _ in 0..10 {
+			loop {
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let src = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let dst = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				let amt = seed as u64 % 200_000_000;
+				if get_route(src, &graph, dst, None, None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
+					continue 'load_endpoints;
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn generate_routes_mpp() {
+		let mut d = match get_route_file() {
+			Ok(f) => f,
+			Err(_) => {
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				return;
+			},
+		};
+		let graph = NetworkGraph::read(&mut d).unwrap();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut seed = random_init_seed() as usize;
+		'load_endpoints: for _ in 0..10 {
+			loop {
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let src = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let dst = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				let amt = seed as u64 % 200_000_000;
+				if get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
+					continue 'load_endpoints;
+				}
+			}
+		}
+	}
 }
 
 #[cfg(all(test, feature = "unstable"))]
@@ -3765,7 +3850,8 @@ mod benches {
 
 	#[bench]
 	fn generate_routes(bench: &mut Bencher) {
-		let mut d = File::open("net_graph-2021-02-12.bin").expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+		let mut d = tests::get_route_file()
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
@@ -3796,7 +3882,8 @@ mod benches {
 
 	#[bench]
 	fn generate_mpp_routes(bench: &mut Bencher) {
-		let mut d = File::open("net_graph-2021-02-12.bin").expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+		let mut d = tests::get_route_file()
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
