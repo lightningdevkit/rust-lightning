@@ -979,11 +979,6 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					let mut spent_on_hop_msat = value_contribution_msat;
 					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
 					spent_on_hop_msat += next_hops_fee_msat;
-					if *channel_liquidity_available_msat < spent_on_hop_msat {
-						// This should not happen because we do recompute fees right before,
-						// trying to avoid cases when a hop is not usable due to the fee situation.
-						break 'path_construction;
-					}
 					if spent_on_hop_msat == *channel_liquidity_available_msat {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
