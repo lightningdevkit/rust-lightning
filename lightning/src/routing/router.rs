@@ -151,8 +151,9 @@ struct RouteGraphNode {
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		other.lowest_fee_to_peer_through_node.cmp(&self.lowest_fee_to_peer_through_node)
-			.then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
+		let other_score = cmp::max(other.lowest_fee_to_peer_through_node, other.path_htlc_minimum_msat);
+		let self_score = cmp::max(self.lowest_fee_to_peer_through_node, self.path_htlc_minimum_msat);
+		other_score.cmp(&self_score).then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
 	}
 }
 
@@ -196,6 +197,9 @@ struct PathBuildingHop {
 	/// we don't fall below the minimum. Should not be updated manually and
 	/// generally should not be accessed.
 	htlc_minimum_msat: u64,
+	/// A mirror of the same field in RouteGraphNode. Note that this is only used during the graph
+	/// walk and may be invalid thereafter.
+	path_htlc_minimum_msat: u64,
 }
 
 // Instantiated with a list of hops with correct data in them collected during path finding,
@@ -610,6 +614,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								hop_use_fee_msat: u64::max_value(),
 								total_fee_msat: u64::max_value(),
 								htlc_minimum_msat: $directional_info.htlc_minimum_msat,
+								path_htlc_minimum_msat,
 							}
 						});
 
@@ -665,20 +670,12 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 						// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
 						// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
 						// to this channel.
-						// TODO: this scoring could be smarter (e.g. 0.5*htlc_minimum_msat here).
-						let mut old_cost = old_entry.total_fee_msat;
-						if let Some(increased_old_cost) = old_cost.checked_add(old_entry.htlc_minimum_msat) {
-							old_cost = increased_old_cost;
-						} else {
-							old_cost = u64::max_value();
-						}
-
-						let mut new_cost = total_fee_msat;
-						if let Some(increased_new_cost) = new_cost.checked_add($directional_info.htlc_minimum_msat) {
-							new_cost = increased_new_cost;
-						} else {
-							new_cost = u64::max_value();
-						}
+						// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
+						// but it may require additional tracking - we don't want to double-count
+						// the fees included in $next_hops_path_htlc_minimum_msat, but also
+						// can't use something that may decrease on future hops.
+						let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat);
+						let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat);
 
 						if new_cost < old_cost {
 							targets.push(new_graph_node);
@@ -694,9 +691,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
 							};
 							old_entry.channel_fees = $directional_info.fees;
-							// It's probably fine to replace the old entry, because the new one
-							// passed the htlc_minimum-related checks above.
 							old_entry.htlc_minimum_msat = $directional_info.htlc_minimum_msat;
+							old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
 						}
 					}
 				}
@@ -3479,6 +3475,156 @@ mod tests {
 			assert_eq!(total_amount_paid_msat, 90_000);
 		}
 	}
+
+	#[test]
+	fn min_criteria_consistency() {
+		// Test that we don't use an inconsistent metric between updating and walking nodes during
+		// our Dijkstra's pass. In the initial version of MPP, the "best source" for a given node
+		// was updated with a different criterion from the heap sorting, resulting in loops in
+		// calculated paths. We test for that specific case here.
+
+		// We construct a network that looks like this:
+		//
+		//            node2 -1(3)2- node3
+		//              2          2
+		//               (2)     (4)
+		//                  1   1
+		//    node1 -1(5)2- node4 -1(1)2- node6
+		//    2
+		//   (6)
+		//	  1
+		// our_node
+		//
+		// We create a loop on the side of our real path - our destination is node 6, with a
+		// previous hop of node 4. From 4, the cheapest previous path is channel 2 from node 2,
+		// followed by node 3 over channel 3. Thereafter, the cheapest next-hop is back to node 4
+		// (this time over channel 4). Channel 4 has 0 htlc_minimum_msat whereas channel 1 (the
+		// other channel with a previous-hop of node 4) has a high (but irrelevant to the overall
+		// payment) htlc_minimum_msat. In the original algorithm, this resulted in node4's
+		// "previous hop" being set to node 3, creating a loop in the path.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (6 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 5,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (5 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (4 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (3 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (2 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (1 << 8) | 0,
+			htlc_minimum_msat: 100,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[6], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
+
+		{
+			// Now ensure the route flows simply over nodes 1 and 4 to 6.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &Vec::new(), 10_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			assert_eq!(route.paths[0].len(), 3);
+
+			assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+			assert_eq!(route.paths[0][0].short_channel_id, 6);
+			assert_eq!(route.paths[0][0].fee_msat, 100);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (5 << 8) | 0);
+			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(1));
+			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(6));
+
+			assert_eq!(route.paths[0][1].pubkey, nodes[4]);
+			assert_eq!(route.paths[0][1].short_channel_id, 5);
+			assert_eq!(route.paths[0][1].fee_msat, 0);
+			assert_eq!(route.paths[0][1].cltv_expiry_delta, (1 << 8) | 0);
+			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(4));
+			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(5));
+
+			assert_eq!(route.paths[0][2].pubkey, nodes[6]);
+			assert_eq!(route.paths[0][2].short_channel_id, 1);
+			assert_eq!(route.paths[0][2].fee_msat, 10_000);
+			assert_eq!(route.paths[0][2].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
+			assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(1));
+		}
+	}
+
 
 	#[test]
 	fn exact_fee_liquidity_limit() {
