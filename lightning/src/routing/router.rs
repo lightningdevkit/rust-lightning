@@ -631,21 +631,24 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								Some(fee_msat) => {
 									hop_use_fee_msat = fee_msat;
 									total_fee_msat += hop_use_fee_msat;
-									if let Some(prev_hop_fee_msat) = compute_fees(total_fee_msat + amount_to_transfer_over_msat,
-																				old_entry.src_lowest_inbound_fees) {
-										if let Some(incremented_total_fee_msat) = total_fee_msat.checked_add(prev_hop_fee_msat) {
-											total_fee_msat = incremented_total_fee_msat;
-										}
-										else {
-											// max_value means we'll always fail
-											// the old_entry.total_fee_msat > total_fee_msat check
+									// When calculating the lowest inbound fees to a node, we
+									// calculate fees here not based on the actual value we think
+									// will flow over this channel, but on the minimum value that
+									// we'll accept flowing over it. The minimum accepted value
+									// is a constant through each path collection run, ensuring
+									// consistent basis. Otherwise we may later find a
+									// different path to the source node that is more expensive,
+									// but which we consider to be cheaper because we are capacity
+									// constrained and the relative fee becomes lower.
+									match compute_fees(minimal_value_contribution_msat, old_entry.src_lowest_inbound_fees)
+											.map(|a| a.checked_add(total_fee_msat)) {
+										Some(Some(v)) => {
+											total_fee_msat = v;
+										},
+										_ => {
 											total_fee_msat = u64::max_value();
 										}
-									} else {
-										// max_value means we'll always fail
-										// the old_entry.total_fee_msat > total_fee_msat check
-										total_fee_msat = u64::max_value();
-									}
+									};
 								}
 							}
 						}
