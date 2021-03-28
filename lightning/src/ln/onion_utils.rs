@@ -327,7 +327,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// OutboundRoute).
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
 #[inline]
-pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
+pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<msgs::HTLCFailChannelUpdate>, bool, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
 	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
@@ -335,6 +335,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 		let mut error_packet_ret = None;
 		let mut next_route_hop_ix = 0;
 		let mut is_from_final_node = false;
+		let mut is_from_first_node = false;
 
 		// Handle packed channel/node updates for passing back for the route handler
 		construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _, _, route_hop| {
@@ -352,6 +353,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 			packet_decrypted = decryption_tmp;
 
+			is_from_first_node = path.first().unwrap().pubkey == route_hop.pubkey;
 			is_from_final_node = path.last().unwrap().pubkey == route_hop.pubkey;
 
 			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
@@ -466,11 +468,11 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			}
 		}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
 		if let Some((channel_update, payment_retryable)) = res {
-			(channel_update, payment_retryable, error_code_ret, error_packet_ret)
+			(channel_update, payment_retryable, is_from_first_node, error_code_ret, error_packet_ret)
 		} else {
 			// only not set either packet unparseable or hmac does not match with any
 			// payment not retryable only when garbage is from the final node
-			(None, !is_from_final_node, None, None)
+			(None, !is_from_final_node, is_from_first_node, None, None)
 		}
 	} else { unreachable!(); }
 }

@@ -107,7 +107,17 @@ pub enum Event {
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
+		///
+		/// Note that if the destination node returned garbage which we were unable to
+		/// understanding, this will *not* be set, indicating that retrying the payment over
+		/// another path is unlikely to solve the issue.
 		rejected_by_dest: bool,
+		/// Indicates the payment was rejected by the first hop in the route. This may be useful to
+		/// detect when an otherwise-trusted peer rejected a payment.
+		///
+		/// Note that this is not set if we reject the payment ourselves (eg because our connection
+		/// to the next-hop peer was closed).
+		rejected_by_first_hop: bool,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -155,7 +165,7 @@ impl Writeable for Event {
 				3u8.write(writer)?;
 				payment_preimage.write(writer)?;
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
+			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref rejected_by_first_hop,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -164,6 +174,7 @@ impl Writeable for Event {
 				4u8.write(writer)?;
 				payment_hash.write(writer)?;
 				rejected_by_dest.write(writer)?;
+				rejected_by_first_hop.write(writer)?;
 				#[cfg(test)]
 				error_code.write(writer)?;
 				#[cfg(test)]
@@ -204,6 +215,7 @@ impl MaybeReadable for Event {
 			4u8 => Ok(Some(Event::PaymentFailed {
 					payment_hash: Readable::read(reader)?,
 					rejected_by_dest: Readable::read(reader)?,
+					rejected_by_first_hop: Readable::read(reader)?,
 					#[cfg(test)]
 					error_code: Readable::read(reader)?,
 					#[cfg(test)]

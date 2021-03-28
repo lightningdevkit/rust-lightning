@@ -5952,8 +5952,9 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref rejected_by_first_hop, ref error_code, ref error_data } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
+			assert_eq!(*rejected_by_first_hop, false);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);
@@ -6032,8 +6033,9 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref rejected_by_first_hop, ref error_code, ref error_data } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
+			assert_eq!(*rejected_by_first_hop, false);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);

@@ -2006,6 +2006,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						events::Event::PaymentFailed {
 							payment_hash,
 							rejected_by_dest: false,
+							rejected_by_first_hop: false,
 #[cfg(test)]
 							error_code: None,
 #[cfg(test)]
@@ -2039,9 +2040,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
-						let (channel_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (channel_update, payment_retryable, rejected_by_first_hop, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (channel_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (channel_update, payment_retryable, rejected_by_first_hop, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
@@ -2056,6 +2057,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
+								rejected_by_first_hop,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2080,6 +2082,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
+								rejected_by_first_hop: true,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
