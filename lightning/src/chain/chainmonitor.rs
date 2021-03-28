@@ -26,7 +26,7 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 
 use chain;
-use chain::Filter;
+use chain::{Filter, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist};
@@ -82,17 +82,39 @@ where C::Target: chain::Filter,
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		let mut dependent_txdata = Vec::new();
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
 			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 
+			// Register any new outputs with the chain source for filtering, storing any dependent
+			// transactions from within the block that previously had not been included in txdata.
 			if let Some(ref chain_source) = self.chain_source {
+				let block_hash = header.block_hash();
 				for (txid, outputs) in txn_outputs.drain(..) {
 					for (idx, output) in outputs.iter() {
-						chain_source.register_output(&OutPoint { txid, index: *idx as u16 }, &output.script_pubkey);
+						// Register any new outputs with the chain source for filtering and recurse
+						// if it indicates that there are dependent transactions within the block
+						// that had not been previously included in txdata.
+						let output = WatchedOutput {
+							block_hash: Some(block_hash),
+							outpoint: OutPoint { txid, index: *idx as u16 },
+							script_pubkey: output.script_pubkey.clone(),
+						};
+						if let Some(tx) = chain_source.register_output(output) {
+							dependent_txdata.push(tx);
+						}
 					}
 				}
 			}
+		}
+
+		// Recursively call for any dependent transactions that were identified by the chain source.
+		if !dependent_txdata.is_empty() {
+			dependent_txdata.sort_unstable_by_key(|(index, _tx)| *index);
+			dependent_txdata.dedup_by_key(|(index, _tx)| *index);
+			let txdata: Vec<_> = dependent_txdata.iter().map(|(index, tx)| (*index, tx)).collect();
+			self.block_connected(header, &txdata, height);
 		}
 	}
 
@@ -243,5 +265,58 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 			pending_events.append(&mut monitor.get_and_clear_pending_events());
 		}
 		pending_events
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use ::{check_added_monitors, get_local_commitment_txn};
+	use ln::features::InitFeatures;
+	use ln::functional_test_utils::*;
+	use util::events::EventsProvider;
+	use util::events::MessageSendEventsProvider;
+	use util::test_utils::{OnRegisterOutput, TxOutReference};
+
+	/// Tests that in-block dependent transactions are processed by `block_connected` when not
+	/// included in `txdata` but returned by [`chain::Filter::register_output`]. For instance,
+	/// a (non-anchor) commitment transaction's HTLC output may be spent in the same block as the
+	/// commitment transaction itself. An Electrum client may filter the commitment transaction but
+	/// needs to return the HTLC transaction so it can be processed.
+	#[test]
+	fn connect_block_checks_dependent_transactions() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let channel = create_announced_chan_between_nodes(
+			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		// Send a payment, saving nodes[0]'s revoked commitment and HTLC-Timeout transactions.
+		let (commitment_tx, htlc_tx) = {
+			let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000).0;
+			let mut txn = get_local_commitment_txn!(nodes[0], channel.2);
+			claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 5_000_000);
+
+			assert_eq!(txn.len(), 2);
+			(txn.remove(0), txn.remove(0))
+		};
+
+		// Set expectations on nodes[1]'s chain source to return dependent transactions.
+		let htlc_output = TxOutReference(commitment_tx.clone(), 0);
+		let to_local_output = TxOutReference(commitment_tx.clone(), 1);
+		let htlc_timeout_output = TxOutReference(htlc_tx.clone(), 0);
+		nodes[1].chain_source
+			.expect(OnRegisterOutput { with: htlc_output, returns: Some((1, htlc_tx)) })
+			.expect(OnRegisterOutput { with: to_local_output, returns: None })
+			.expect(OnRegisterOutput { with: htlc_timeout_output, returns: None });
+
+		// Notify nodes[1] that nodes[0]'s revoked commitment transaction was mined. The chain
+		// source should return the dependent HTLC transaction when the HTLC output is registered.
+		mine_transaction(&nodes[1], &commitment_tx);
+
+		// Clean up so uninteresting assertions don't fail.
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.get_and_clear_pending_msg_events();
+		nodes[1].node.get_and_clear_pending_events();
 	}
 }
