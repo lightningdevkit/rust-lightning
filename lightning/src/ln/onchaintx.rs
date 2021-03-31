@@ -32,16 +32,35 @@ use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
-use std::collections::{HashMap, hash_map};
+use std::collections::HashMap;
 use std::cmp;
 use std::ops::Deref;
 use std::mem::replace;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
+/// An entry for an [`OnchainEvent`], stating the block height when the event was observed.
+///
+/// Used to determine when the on-chain event can be considered safe from a chain reorganization.
+#[derive(PartialEq)]
+struct OnchainEventEntry {
+	height: u32,
+	event: OnchainEvent,
+}
+
+impl OnchainEventEntry {
+	fn confirmation_threshold(&self) -> u32 {
+		self.height + ANTI_REORG_DELAY - 1
+	}
+
+	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {
+		self.confirmation_threshold() == height
+	}
+}
+
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
-#[derive(Clone, PartialEq)]
+#[derive(PartialEq)]
 enum OnchainEvent {
 	/// Outpoint under claim process by our own tx, once this one get enough confirmations, we remove it from
 	/// bump-txn candidate buffer.
@@ -280,7 +299,7 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	#[cfg(not(test))]
 	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 
-	onchain_events_waiting_threshold_conf: HashMap<u32, Vec<OnchainEvent>>,
+	onchain_events_waiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	latest_height: u32,
 
@@ -318,20 +337,17 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
-		for (ref target, ref events) in self.onchain_events_waiting_threshold_conf.iter() {
-			writer.write_all(&byte_utils::be32_to_array(**target))?;
-			writer.write_all(&byte_utils::be64_to_array(events.len() as u64))?;
-			for ev in events.iter() {
-				match *ev {
-					OnchainEvent::Claim { ref claim_request } => {
-						writer.write_all(&[0; 1])?;
-						claim_request.write(writer)?;
-					},
-					OnchainEvent::ContentiousOutpoint { ref outpoint, ref input_material } => {
-						writer.write_all(&[1; 1])?;
-						outpoint.write(writer)?;
-						input_material.write(writer)?;
-					}
+		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
+			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
+			match entry.event {
+				OnchainEvent::Claim { ref claim_request } => {
+					writer.write_all(&[0; 1])?;
+					claim_request.write(writer)?;
+				},
+				OnchainEvent::ContentiousOutpoint { ref outpoint, ref input_material } => {
+					writer.write_all(&[1; 1])?;
+					outpoint.write(writer)?;
+					input_material.write(writer)?;
 				}
 			}
 		}
@@ -377,32 +393,27 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			claimable_outpoints.insert(outpoint, (ancestor_claim_txid, height));
 		}
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
-		let mut onchain_events_waiting_threshold_conf = HashMap::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
-			let height_target = Readable::read(reader)?;
-			let events_len: u64 = Readable::read(reader)?;
-			let mut events = Vec::with_capacity(cmp::min(events_len as usize, MAX_ALLOC_SIZE / 128));
-			for _ in 0..events_len {
-				let ev = match <u8 as Readable>::read(reader)? {
-					0 => {
-						let claim_request = Readable::read(reader)?;
-						OnchainEvent::Claim {
-							claim_request
-						}
-					},
-					1 => {
-						let outpoint = Readable::read(reader)?;
-						let input_material = Readable::read(reader)?;
-						OnchainEvent::ContentiousOutpoint {
-							outpoint,
-							input_material
-						}
+			let height = Readable::read(reader)?;
+			let event = match <u8 as Readable>::read(reader)? {
+				0 => {
+					let claim_request = Readable::read(reader)?;
+					OnchainEvent::Claim {
+						claim_request
 					}
-					_ => return Err(DecodeError::InvalidValue),
-				};
-				events.push(ev);
-			}
-			onchain_events_waiting_threshold_conf.insert(height_target, events);
+				},
+				1 => {
+					let outpoint = Readable::read(reader)?;
+					let input_material = Readable::read(reader)?;
+					OnchainEvent::ContentiousOutpoint {
+						outpoint,
+						input_material
+					}
+				}
+				_ => return Err(DecodeError::InvalidValue),
+			};
+			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { height, event });
 		}
 		let latest_height = Readable::read(reader)?;
 
@@ -438,7 +449,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
-			onchain_events_waiting_threshold_conf: HashMap::new(),
+			onchain_events_waiting_threshold_conf: Vec::new(),
 			latest_height: 0,
 
 			secp_ctx,
@@ -756,16 +767,12 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
-								let new_event = OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() };
-								match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
-									hash_map::Entry::Occupied(mut entry) => {
-										if !entry.get().contains(&new_event) {
-											entry.get_mut().push(new_event);
-										}
-									},
-									hash_map::Entry::Vacant(entry) => {
-										entry.insert(vec![new_event]);
-									}
+								let entry = OnchainEventEntry {
+									height,
+									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
+								};
+								if !self.onchain_events_waiting_threshold_conf.contains(&entry) {
+									self.onchain_events_waiting_threshold_conf.push(entry);
 								}
 							}
 						}
@@ -799,24 +806,22 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 			for (outpoint, input_material) in claimed_outputs_material.drain(..) {
-				let new_event = OnchainEvent::ContentiousOutpoint { outpoint, input_material };
-				match self.onchain_events_waiting_threshold_conf.entry(height + ANTI_REORG_DELAY - 1) {
-					hash_map::Entry::Occupied(mut entry) => {
-						if !entry.get().contains(&new_event) {
-							entry.get_mut().push(new_event);
-						}
-					},
-					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec![new_event]);
-					}
+				let entry = OnchainEventEntry {
+					height,
+					event: OnchainEvent::ContentiousOutpoint { outpoint, input_material },
+				};
+				if !self.onchain_events_waiting_threshold_conf.contains(&entry) {
+					self.onchain_events_waiting_threshold_conf.push(entry);
 				}
 			}
 		}
 
 		// After security delay, either our claim tx got enough confs or outpoint is definetely out of reach
-		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&height) {
-			for ev in events {
-				match ev {
+		let onchain_events_waiting_threshold_conf =
+			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		for entry in onchain_events_waiting_threshold_conf {
+			if entry.has_reached_confirmation_threshold(height) {
+				match entry.event {
 					OnchainEvent::Claim { claim_request } => {
 						// We may remove a whole set of claim outpoints here, as these one may have
 						// been aggregated in a single tx and claimed so atomically
@@ -830,6 +835,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						self.claimable_outpoints.remove(&outpoint);
 					}
 				}
+			} else {
+				self.onchain_events_waiting_threshold_conf.push(entry);
 			}
 		}
 
@@ -862,11 +869,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					L::Target: Logger,
 	{
 		let mut bump_candidates = HashMap::new();
-		if let Some(events) = self.onchain_events_waiting_threshold_conf.remove(&(height + ANTI_REORG_DELAY - 1)) {
-			//- our claim tx on a commitment tx output
-			//- resurect outpoint back in its claimable set and regenerate tx
-			for ev in events {
-				match ev {
+		let onchain_events_waiting_threshold_conf =
+			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		for entry in onchain_events_waiting_threshold_conf {
+			if entry.height == height {
+				//- our claim tx on a commitment tx output
+				//- resurect outpoint back in its claimable set and regenerate tx
+				match entry.event {
 					OnchainEvent::ContentiousOutpoint { outpoint, input_material } => {
 						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&outpoint) {
 							if let Some(claim_material) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
@@ -879,6 +888,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					},
 					_ => {},
 				}
+			} else {
+				self.onchain_events_waiting_threshold_conf.push(entry);
 			}
 		}
 		for (_, claim_material) in bump_candidates.iter_mut() {
