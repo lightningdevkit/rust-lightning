@@ -15,11 +15,14 @@ pub(crate) mod fuzz_wrappers;
 pub mod events;
 pub mod errors;
 pub mod ser;
-pub mod zbase32;
 pub mod message_signing;
 
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
+#[cfg(feature = "fuzztarget")]
+pub mod zbase32;
+#[cfg(not(feature = "fuzztarget"))]
+pub(crate) mod zbase32;
 #[cfg(not(feature = "fuzztarget"))]
 pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;
