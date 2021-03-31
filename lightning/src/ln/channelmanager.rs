@@ -4404,3 +4404,150 @@ mod tests {
 		}
 	}
 }
+
+#[cfg(all(test, feature = "unstable"))]
+mod benches {
+	use chain::Listen;
+	use chain::chainmonitor::ChainMonitor;
+	use chain::keysinterface::{KeysManager, InMemorySigner};
+	use chain::transaction::OutPoint;
+	use ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
+	use ln::features::InitFeatures;
+	use ln::functional_test_utils::*;
+	use ln::msgs::ChannelMessageHandler;
+	use routing::network_graph::NetworkGraph;
+	use routing::router::get_route;
+	use util::test_utils;
+	use util::config::UserConfig;
+	use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+
+	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::{Block, BlockHeader, Transaction, TxOut};
+
+	use std::sync::Mutex;
+
+	use test::Bencher;
+
+	struct NodeHolder<'a> {
+		node: &'a ChannelManager<InMemorySigner,
+			&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
+				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
+				&'a test_utils::TestLogger, &'a test_utils::TestPersister>,
+			&'a test_utils::TestBroadcaster, &'a KeysManager,
+			&'a test_utils::TestFeeEstimator, &'a test_utils::TestLogger>
+	}
+
+	#[bench]
+	fn bench_sends(bench: &mut Bencher) {
+		// Do a simple benchmark of sending a payment back and forth between two nodes.
+		// Note that this is unrealistic as each payment send will require at least two fsync
+		// calls per node.
+		let network = bitcoin::Network::Testnet;
+		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
+
+		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+
+		let mut config: UserConfig = Default::default();
+		config.own_channel_config.minimum_depth = 1;
+
+		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
+		let persister_a = test_utils::TestPersister::new();
+		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
+		let seed_a = [1u8; 32];
+		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
+		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
+			network,
+			latest_hash: genesis_hash,
+			latest_height: 0,
+		});
+		let node_a_holder = NodeHolder { node: &node_a };
+
+		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
+		let persister_b = test_utils::TestPersister::new();
+		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
+		let seed_b = [2u8; 32];
+		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
+		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
+			network,
+			latest_hash: genesis_hash,
+			latest_height: 0,
+		});
+		let node_b_holder = NodeHolder { node: &node_b };
+
+		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None).unwrap();
+		node_b.handle_open_channel(&node_a.get_our_node_id(), InitFeatures::known(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
+		node_a.handle_accept_channel(&node_b.get_our_node_id(), InitFeatures::known(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));
+
+		let tx;
+		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
+			tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+				value: 8_000_000, script_pubkey: output_script,
+			}]};
+			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
+			node_a.funding_transaction_generated(&temporary_channel_id, funding_outpoint);
+		} else { panic!(); }
+
+		node_b.handle_funding_created(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingCreated, node_b.get_our_node_id()));
+		node_a.handle_funding_signed(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingSigned, node_a.get_our_node_id()));
+
+		get_event!(node_a_holder, Event::FundingBroadcastSafe);
+
+		let block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![tx],
+		};
+		Listen::block_connected(&node_a, &block, 1);
+		Listen::block_connected(&node_b, &block, 1);
+
+		node_a.handle_funding_locked(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingLocked, node_a.get_our_node_id()));
+		node_b.handle_funding_locked(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingLocked, node_b.get_our_node_id()));
+
+		let dummy_graph = NetworkGraph::new(genesis_hash);
+
+		macro_rules! send_payment {
+			($node_a: expr, $node_b: expr) => {
+				let usable_channels = $node_a.list_usable_channels();
+				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), None, Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
+
+				let payment_preimage = PaymentPreimage([0; 32]);
+				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+
+				$node_a.send_payment(&route, payment_hash, &None).unwrap();
+				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
+				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
+				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);
+				let (raa, cs) = get_revoke_commit_msgs!(NodeHolder { node: &$node_b }, $node_a.get_our_node_id());
+				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &raa);
+				$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &cs);
+				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
+
+				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
+				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
+				assert!($node_b.claim_funds(payment_preimage, &None, 10_000));
+
+				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
+					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+						assert_eq!(node_id, $node_a.get_our_node_id());
+						$node_a.handle_update_fulfill_htlc(&$node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+						$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &updates.commitment_signed);
+					},
+					_ => panic!("Failed to generate claim event"),
+				}
+
+				let (raa, cs) = get_revoke_commit_msgs!(NodeHolder { node: &$node_a }, $node_b.get_our_node_id());
+				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &raa);
+				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &cs);
+				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
+
+				expect_payment_sent!(NodeHolder { node: &$node_a }, payment_preimage);
+			}
+		}
+
+		bench.iter(|| {
+			send_payment!(node_a, node_b);
+			send_payment!(node_b, node_a);
+		});
+	}
+}
