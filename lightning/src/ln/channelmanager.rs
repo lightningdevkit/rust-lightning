@@ -434,6 +434,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_state: Mutex<ChannelHolder<Signer>>,
 	our_network_key: SecretKey,
+	our_network_pubkey: PublicKey,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
@@ -822,7 +823,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			latest_block_height: AtomicUsize::new(params.latest_height),
 			last_block_hash: RwLock::new(params.latest_hash),
-			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
@@ -832,6 +832,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				pending_msg_events: Vec::new(),
 			}),
 			our_network_key: keys_manager.get_node_secret(),
+			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()),
+			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(0),
 
@@ -2315,7 +2317,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
-		PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key)
+		self.our_network_pubkey.clone()
 	}
 
 	/// Restores a single, given channel to normal operation after a
@@ -4318,7 +4320,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 			latest_block_height: AtomicUsize::new(latest_block_height as usize),
 			last_block_hash: RwLock::new(last_block_hash),
-			secp_ctx,
 
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
@@ -4328,6 +4329,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				pending_msg_events: Vec::new(),
 			}),
 			our_network_key: args.keys_manager.get_node_secret(),
+			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret()),
+			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
 
