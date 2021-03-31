@@ -234,7 +234,7 @@ fn check_api_err(api_err: APIError) {
 				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
 				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
 				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
-				_ => panic!(err),
+				_ => panic!("{}", err),
 			}
 		},
 		APIError::MonitorUpdateFailed => {
