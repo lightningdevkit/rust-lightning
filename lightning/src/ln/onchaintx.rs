@@ -39,11 +39,13 @@ use std::mem::replace;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-/// An entry for an [`OnchainEvent`], stating the block height when the event was observed.
+/// An entry for an [`OnchainEvent`], stating the block height when the event was observed and the
+/// transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
 #[derive(PartialEq)]
 struct OnchainEventEntry {
+	txid: Txid,
 	height: u32,
 	event: OnchainEvent,
 }
@@ -338,6 +340,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
 		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
+			entry.txid.write(writer)?;
 			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
 			match entry.event {
 				OnchainEvent::Claim { ref claim_request } => {
@@ -395,6 +398,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
+			let txid = Readable::read(reader)?;
 			let height = Readable::read(reader)?;
 			let event = match <u8 as Readable>::read(reader)? {
 				0 => {
@@ -413,7 +417,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 				}
 				_ => return Err(DecodeError::InvalidValue),
 			};
-			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { height, event });
+			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
 		let latest_height = Readable::read(reader)?;
 
@@ -768,6 +772,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
 								let entry = OnchainEventEntry {
+									txid: tx.txid(),
 									height,
 									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
 								};
@@ -807,6 +812,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 			for (outpoint, input_material) in claimed_outputs_material.drain(..) {
 				let entry = OnchainEventEntry {
+					txid: tx.txid(),
 					height,
 					event: OnchainEvent::ContentiousOutpoint { outpoint, input_material },
 				};

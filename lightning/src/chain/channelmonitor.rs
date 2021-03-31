@@ -465,11 +465,13 @@ pub(crate) struct ClaimRequest {
 	pub(crate) witness_data: InputMaterial
 }
 
-/// An entry for an [`OnchainEvent`], stating the block height when the event was observed.
+/// An entry for an [`OnchainEvent`], stating the block height when the event was observed and the
+/// transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
 #[derive(PartialEq)]
 struct OnchainEventEntry {
+	txid: Txid,
 	height: u32,
 	event: OnchainEvent,
 }
@@ -954,6 +956,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
 		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
+			entry.txid.write(writer)?;
 			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
 			match entry.event {
 				OnchainEvent::HTLCUpdate { ref htlc_update } => {
@@ -1665,6 +1668,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 										}
 									});
 									let entry = OnchainEventEntry {
+										txid: *$txid,
 										height,
 										event: OnchainEvent::HTLCUpdate {
 											htlc_update: ((**source).clone(), htlc.payment_hash.clone())
@@ -1730,6 +1734,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									}
 								});
 								self.onchain_events_waiting_threshold_conf.push(OnchainEventEntry {
+									txid: *$txid,
 									height,
 									event: OnchainEvent::HTLCUpdate {
 										htlc_update: ((**source).clone(), htlc.payment_hash.clone())
@@ -1885,6 +1890,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					}
 				});
 				let entry = OnchainEventEntry {
+					txid: commitment_txid,
 					height,
 					event: OnchainEvent::HTLCUpdate { htlc_update: ($source, $payment_hash) },
 				};
@@ -2403,6 +2409,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						}
 					});
 					let entry = OnchainEventEntry {
+						txid: tx.txid(),
 						height,
 						event: OnchainEvent::HTLCUpdate { htlc_update: (source, payment_hash) },
 					};
@@ -2467,6 +2474,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 		if let Some(spendable_output) = spendable_output {
 			let entry = OnchainEventEntry {
+				txid: tx.txid(),
 				height: height,
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
@@ -2739,6 +2747,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
+			let txid = Readable::read(reader)?;
 			let height = Readable::read(reader)?;
 			let event = match <u8 as Readable>::read(reader)? {
 				0 => {
@@ -2756,7 +2765,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			};
-			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { height, event });
+			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
