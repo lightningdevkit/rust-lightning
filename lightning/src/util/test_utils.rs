@@ -186,12 +186,12 @@ impl TestPersister {
 		*self.update_ret.lock().unwrap() = ret;
 	}
 }
-impl channelmonitor::Persist<EnforcingSigner> for TestPersister {
-	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+impl<Signer: keysinterface::Sign> channelmonitor::Persist<Signer> for TestPersister {
+	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<Signer>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.update_ret.lock().unwrap().clone()
 	}
 }
