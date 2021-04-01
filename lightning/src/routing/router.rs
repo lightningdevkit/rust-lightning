@@ -249,14 +249,12 @@ impl<'a> PaymentPath<'a> {
 	// If the amount transferred by the path is updated, the fees should be adjusted. Any other way
 	// to change fees may result in an inconsistency.
 	//
-	// Sometimes we call this function right after constructing a path which has inconsistent
-	// (in terms of reaching htlc_minimum_msat), so that this function puts the fees in order.
-	// In that case we call it on the "same" amount we initially allocated for this path, and which
-	// could have been reduced on the way. In that case, there is also a risk of exceeding
-	// available_liquidity inside this function, because the function is unaware of this bound.
-	// In our specific recomputation cases where we never increase the value the risk is pretty low.
-	// This function, however, does not support arbitrarily increasing the value being transferred,
-	// and the exception will be triggered.
+	// Sometimes we call this function right after constructing a path which is inconsistent in
+	// that it the value being transferred has decreased while we were doing path finding, leading
+	// to the fees being paid not lining up with the actual limits.
+	//
+	// Note that this function is not aware of the available_liquidity limit, and thus does not
+	// support increasing the value being transferred.
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
 		assert!(value_msat <= self.hops.last().unwrap().0.fee_msat);
 
@@ -478,7 +476,13 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 	let empty_channel_features = ChannelFeatures::empty();
 
-	let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
+	// The main heap containing all candidate next-hops sorted by their score (max(A* fee,
+	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
+	// adding duplicate entries when we find a better path to a given node.
+	let mut targets = BinaryHeap::new();
+
+	// Map from node_id to information about the best current path to that node, including feerate
+	// information.
 	let mut dist = HashMap::with_capacity(network.get_nodes().len());
 
 	// During routing, if we ignore a path due to an htlc_minimum_msat limit, we set this,
