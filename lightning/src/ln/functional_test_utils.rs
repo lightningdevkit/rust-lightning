@@ -313,6 +313,24 @@ macro_rules! get_event_msg {
 	}
 }
 
+/// Get a specific event from the pending events queue.
+#[macro_export]
+macro_rules! get_event {
+	($node: expr, $event_type: path) => {
+		{
+			let mut events = $node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			let ev = events.pop().unwrap();
+			match ev {
+				$event_type { .. } => {
+					ev
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+	}
+}
+
 #[cfg(test)]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
@@ -848,7 +866,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "unstable"))]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
