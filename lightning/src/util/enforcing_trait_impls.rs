@@ -9,7 +9,7 @@
 
 use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction};
 use ln::{chan_utils, msgs};
-use chain::keysinterface::{Sign, InMemorySigner};
+use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
 use std::cmp;
 use std::sync::{Mutex, Arc};
@@ -74,7 +74,7 @@ impl EnforcingSigner {
 	}
 }
 
-impl Sign for EnforcingSigner {
+impl BaseSign for EnforcingSigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
@@ -161,6 +161,7 @@ impl Sign for EnforcingSigner {
 	}
 }
 
+impl Sign for EnforcingSigner {}
 
 impl Writeable for EnforcingSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {

@@ -226,7 +226,7 @@ impl Readable for SpendableOutputDescriptor {
 /// of LN security model, orthogonal of key management issues.
 // TODO: We should remove Clone by instead requesting a new Sign copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
-pub trait Sign : Send+Clone + Writeable {
+pub trait BaseSign : Send + Writeable {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
@@ -342,6 +342,14 @@ pub trait Sign : Send+Clone + Writeable {
 	///
 	/// Will be called before any signatures are applied.
 	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters);
+}
+
+/// A cloneable signer.
+///
+/// Although we require signers to be cloneable, it may be useful for developers to be able to use
+/// signers in an un-sized way, for example as `dyn BaseSign`. Therefore we separate the Clone trait,
+/// which implies Sized, into this derived trait.
+pub trait Sign: BaseSign + Clone {
 }
 
 /// A trait to describe an object which can get user secrets and key material.
@@ -549,7 +557,7 @@ impl InMemorySigner {
 	}
 }
 
-impl Sign for InMemorySigner {
+impl BaseSign for InMemorySigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		let commitment_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&self.commitment_seed, idx)).unwrap();
 		PublicKey::from_secret_key(secp_ctx, &commitment_secret)
@@ -681,6 +689,8 @@ impl Sign for InMemorySigner {
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
 }
+
+impl Sign for InMemorySigner {}
 
 impl Writeable for InMemorySigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
