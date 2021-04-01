@@ -109,14 +109,14 @@ pub enum Event {
 		/// retry the payment via a different route.
 		///
 		/// Note that if the destination node returned garbage which we were unable to
-		/// understanding, this will *not* be set, indicating that retrying the payment over
+		/// understand, this will *not* be set, indicating that retrying the payment over
 		/// another path is unlikely to solve the issue.
 		rejected_by_dest: bool,
 		/// Indicates the payment was rejected by the first hop in the route. This may be useful to
 		/// detect when an otherwise-trusted peer rejected a payment.
 		///
-		/// Note that this is not set if we reject the payment ourselves (eg because our connection
-		/// to the next-hop peer was closed).
+		/// Note that this is not set if we reject the payment ourselves (e.g. because our
+		/// connection to the next-hop peer was closed).
 		rejected_by_first_hop: bool,
 #[cfg(test)]
 		error_code: Option<u16>,
