@@ -28,8 +28,8 @@
 #![allow(bare_trait_objects)]
 #![allow(ellipsis_inclusive_range_patterns)]
 
-#![cfg_attr(all(test, feature = "unstable"), feature(test))]
-#[cfg(all(test, feature = "unstable"))] extern crate test;
+#![cfg_attr(all(any(test, feature = "_test_utils"), feature = "unstable"), feature(test))]
+#[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))] extern crate test;
 
 extern crate bitcoin;
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;

@@ -4408,10 +4408,11 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "unstable"))]
-mod benches {
+#[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))]
+pub mod bench {
 	use chain::Listen;
 	use chain::chainmonitor::ChainMonitor;
+	use chain::channelmonitor::Persist;
 	use chain::keysinterface::{KeysManager, InMemorySigner};
 	use chain::transaction::OutPoint;
 	use ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
@@ -4432,17 +4433,22 @@ mod benches {
 
 	use test::Bencher;
 
-	struct NodeHolder<'a> {
+	struct NodeHolder<'a, P: Persist<InMemorySigner>> {
 		node: &'a ChannelManager<InMemorySigner,
 			&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
 				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
-				&'a test_utils::TestLogger, &'a test_utils::TestPersister>,
+				&'a test_utils::TestLogger, &'a P>,
 			&'a test_utils::TestBroadcaster, &'a KeysManager,
 			&'a test_utils::TestFeeEstimator, &'a test_utils::TestLogger>
 	}
 
+	#[cfg(test)]
 	#[bench]
 	fn bench_sends(bench: &mut Bencher) {
+		bench_two_sends(bench, test_utils::TestPersister::new(), test_utils::TestPersister::new());
+	}
+
+	pub fn bench_two_sends<P: Persist<InMemorySigner>>(bench: &mut Bencher, persister_a: P, persister_b: P) {
 		// Do a simple benchmark of sending a payment back and forth between two nodes.
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
@@ -4456,7 +4462,6 @@ mod benches {
 		config.own_channel_config.minimum_depth = 1;
 
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
-		let persister_a = test_utils::TestPersister::new();
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
@@ -4468,7 +4473,6 @@ mod benches {
 		let node_a_holder = NodeHolder { node: &node_a };
 
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
-		let persister_b = test_utils::TestPersister::new();
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);

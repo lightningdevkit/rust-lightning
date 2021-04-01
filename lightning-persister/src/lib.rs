@@ -3,6 +3,9 @@
 #![deny(broken_intra_doc_links)]
 #![deny(missing_docs)]
 
+#![cfg_attr(all(test, feature = "unstable"), feature(test))]
+#[cfg(all(test, feature = "unstable"))] extern crate test;
+
 mod util;
 
 extern crate lightning;
@@ -328,5 +331,17 @@ mod tests {
 
 		nodes[1].node.get_and_clear_pending_msg_events();
 		added_monitors.clear();
+	}
+}
+
+#[cfg(all(test, feature = "unstable"))]
+pub mod bench {
+	use test::Bencher;
+
+	#[bench]
+	fn bench_sends(bench: &mut Bencher) {
+		let persister_a = super::FilesystemPersister::new("bench_filesystem_persister_a".to_string());
+		let persister_b = super::FilesystemPersister::new("bench_filesystem_persister_b".to_string());
+		lightning::ln::channelmanager::bench::bench_two_sends(bench, persister_a, persister_b);
 	}
 }

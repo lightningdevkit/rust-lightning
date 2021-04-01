@@ -8,6 +8,9 @@ description = """
 Utilities to manage Rust-Lightning channel data persistence and retrieval.
 """
 
+[features]
+unstable = ["lightning/unstable"]
+
 [dependencies]
 bitcoin = "0.26"
 lightning = { version = "0.0.13", path = "../lightning" }

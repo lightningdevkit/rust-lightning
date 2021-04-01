@@ -866,7 +866,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 	}}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "unstable"))]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
