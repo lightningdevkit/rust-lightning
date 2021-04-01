@@ -96,7 +96,7 @@ pub(crate) fn get_onion_error_description(error_code: u16) -> (&'static str, &'s
 		_c if _c == UPDATE|14 => ("Node indicated the CLTV expiry too close to the current block height for safe handling", "expiry_too_soon"),
 		_c if _c == PERM|15 => ("The final node indicated the payment hash is unknown or amount is incorrect", "incorrect_or_unknown_payment_details"),
 		_c if _c == PERM|16 => ("The final node indicated the payment amount is incorrect", "incorrect_payment_amount"),
-		_c if _c == 17 => ("The final node indicated the CLTV expiry is too close to the current block height for safe handling", "final_expiry_too_soon"),
+		_c if _c == 17 => ("A node along the route indicated the CLTV expiry is too close to the current block height for safe handling", "final_expiry_too_soon"),
 		_c if _c == 18 => ("The final node indicated the CLTV expiry in the HTLC does not match the value in the onion", "final_incorrect_cltv_expiry"),
 		_c if _c == 19 => ("The final node indicated the amount in the HTLC does not match the value in the onion", "final_incorrect_htlc_amount"),
 		_c if _c == UPDATE|20 => ("Node indicated the outbound channel has been disabled", "channel_disabled"),
