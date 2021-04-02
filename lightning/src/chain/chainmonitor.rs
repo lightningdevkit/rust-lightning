@@ -24,6 +24,8 @@
 //! servicing [`ChannelMonitor`] updates from the client.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::hash_types::Txid;
+use bitcoin::blockdata::transaction::TxOut;
 
 use chain;
 use chain::{Filter, WatchedOutput};
@@ -82,10 +84,63 @@ where C::Target: chain::Filter,
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
 	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.process_chain_data(header, txdata, |monitor, txdata| {
+			monitor.block_connected(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
+	/// of a channel and reacting accordingly to newly confirmed transactions. For details, see
+	/// [`ChannelMonitor::transactions_confirmed`].
+	///
+	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
+	/// blocks. May be called before or after [`update_best_block`] for transactions in the
+	/// corresponding block. See [`update_best_block`] for further calling expectations.
+	///
+	/// [`block_connected`]: Self::block_connected
+	/// [`update_best_block`]: Self::update_best_block
+	pub fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.process_chain_data(header, txdata, |monitor, txdata| {
+			monitor.transactions_confirmed(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
+	/// of a channel and reacting accordingly based on the new chain tip. For details, see
+	/// [`ChannelMonitor::update_best_block`].
+	///
+	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
+	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
+	/// block.
+	///
+	/// Must be called after new blocks become available for the most recent block. Intermediary
+	/// blocks, however, may be safely skipped. In the event of a chain re-organization, this only
+	/// needs to be called for the most recent block assuming `transaction_unconfirmed` is called
+	/// for any affected transactions.
+	///
+	/// [`block_connected`]: Self::block_connected
+	/// [`transactions_confirmed`]: Self::transactions_confirmed
+	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
+	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
+		self.process_chain_data(header, &[], |monitor, txdata| {
+			// While in practice there shouldn't be any recursive calls when given empty txdata,
+			// it's still possible if a chain::Filter implementation returns a transaction.
+			debug_assert!(txdata.is_empty());
+			monitor.update_best_block(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	fn process_chain_data<FN>(&self, header: &BlockHeader, txdata: &TransactionData, process: FN)
+	where
+		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	{
 		let mut dependent_txdata = Vec::new();
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
-			let mut txn_outputs = monitor.block_connected(header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+			let mut txn_outputs = process(monitor, txdata);
 
 			// Register any new outputs with the chain source for filtering, storing any dependent
 			// transactions from within the block that previously had not been included in txdata.
@@ -114,7 +169,7 @@ where C::Target: chain::Filter,
 			dependent_txdata.sort_unstable_by_key(|(index, _tx)| *index);
 			dependent_txdata.dedup_by_key(|(index, _tx)| *index);
 			let txdata: Vec<_> = dependent_txdata.iter().map(|(index, tx)| (*index, tx)).collect();
-			self.block_connected(header, &txdata, height);
+			self.process_chain_data(header, &txdata, process);
 		}
 	}
 
@@ -126,6 +181,36 @@ where C::Target: chain::Filter,
 		for monitor in monitors.values() {
 			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
 		}
+	}
+
+	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
+	/// of a channel based on transactions unconfirmed as a result of a chain reorganization. See
+	/// [`ChannelMonitor::transaction_unconfirmed`] for details.
+	///
+	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
+	/// than blocks. May be called before or after [`update_best_block`] for transactions in the
+	/// corresponding block. See [`update_best_block`] for further calling expectations. 
+	///
+	/// [`block_disconnected`]: Self::block_disconnected
+	/// [`update_best_block`]: Self::update_best_block
+	pub fn transaction_unconfirmed(&self, txid: &Txid) {
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+		}
+	}
+
+	/// Returns the set of txids that should be monitored for re-organization out of the chain.
+	pub fn get_relevant_txids(&self) -> Vec<Txid> {
+		let mut txids = Vec::new();
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			txids.append(&mut monitor.get_relevant_txids());
+		}
+
+		txids.sort_unstable();
+		txids.dedup();
+		txids
 	}
 
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
