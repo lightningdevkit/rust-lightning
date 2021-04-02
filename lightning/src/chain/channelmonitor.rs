@@ -745,6 +745,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
+/// Transaction outputs to watch for on-chain spends.
+pub(super) type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
+
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
 /// underlying object
@@ -1276,7 +1279,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1321,7 +1324,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1376,7 +1379,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1691,7 +1694,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked counterparty commitment tx
-	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, (Txid, Vec<(u32, TxOut)>)) where L::Target: Logger {
+	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, TransactionOutputs) where L::Target: Logger {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut claimable_outpoints = Vec::new();
@@ -1902,7 +1905,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Attempts to claim a counterparty HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<ClaimRequest>, Option<(Txid, Vec<(u32, TxOut)>)>) where L::Target: Logger {
+	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<ClaimRequest>, Option<TransactionOutputs>) where L::Target: Logger {
 		let htlc_txid = tx.txid();
 		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
 			return (Vec::new(), None)
@@ -1971,7 +1974,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, (Txid, Vec<(u32, TxOut)>)) where L::Target: Logger {
+	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, TransactionOutputs) where L::Target: Logger {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -2094,7 +2097,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		return res
 	}
 
-	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L)-> Vec<(Txid, Vec<(u32, TxOut)>)>
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -2113,7 +2116,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -2141,7 +2144,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -2209,12 +2212,12 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		&mut self,
 		height: u32,
 		txn_matched: Vec<&Transaction>,
-		mut watch_outputs: Vec<(Txid, Vec<(u32, TxOut)>)>,
+		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<ClaimRequest>,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
-	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,

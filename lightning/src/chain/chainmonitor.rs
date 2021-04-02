@@ -25,13 +25,12 @@
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::Txid;
-use bitcoin::blockdata::transaction::TxOut;
 
 use chain;
 use chain::{Filter, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor;
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist};
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist, TransactionOutputs};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::Sign;
 use util::logger::Logger;
@@ -135,7 +134,7 @@ where C::Target: chain::Filter,
 
 	fn process_chain_data<FN>(&self, header: &BlockHeader, txdata: &TransactionData, process: FN)
 	where
-		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
 		let mut dependent_txdata = Vec::new();
 		let monitors = self.monitors.read().unwrap();
