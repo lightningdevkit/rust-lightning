@@ -848,8 +848,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		// Check if any pending claim request must be rescheduled
 		for (first_claim_txid, ref claim_data) in self.pending_claim_requests.iter() {
-			if let Some(h) = claim_data.height_timer {
-				if h == height {
+			if let Some(height_timer) = claim_data.height_timer {
+				if height >= height_timer {
 					bump_candidates.insert(*first_claim_txid, (*claim_data).clone());
 				}
 			}
@@ -878,7 +878,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		let onchain_events_waiting_threshold_conf =
 			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		for entry in onchain_events_waiting_threshold_conf {
-			if entry.height == height {
+			if entry.height >= height {
 				//- our claim tx on a commitment tx output
 				//- resurect outpoint back in its claimable set and regenerate tx
 				match entry.event {
@@ -912,7 +912,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// right now if one of the outpoint get disconnected, just erase whole pending claim request.
 		let mut remove_request = Vec::new();
 		self.claimable_outpoints.retain(|_, ref v|
-			if v.1 == height {
+			if v.1 >= height {
 			remove_request.push(v.0.clone());
 			false
 			} else { true });

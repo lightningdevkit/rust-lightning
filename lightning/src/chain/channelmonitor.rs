@@ -1304,12 +1304,15 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			header, height, broadcaster, fee_estimator, logger)
 	}
 
-	/// Processes transactions from a block with the given header and height, returning new outputs
-	/// to watch. See [`block_connected`] for details.
+	/// Processes transactions confirmed in a block with the given header and height, returning new
+	/// outputs to watch. See [`block_connected`] for details.
 	///
-	/// TODO: Expand docs.
+	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
+	/// blocks. May be called before or after [`update_best_block`] for transactions in the
+	/// corresponding block. See [`update_best_block`] for further calling expectations. 
 	///
 	/// [`block_connected`]: Self::block_connected
+	/// [`update_best_block`]: Self::update_best_block
 	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
 		&self,
 		header: &BlockHeader,
@@ -1326,6 +1329,35 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	{
 		self.inner.lock().unwrap().transactions_confirmed(
 			header, txdata, height, broadcaster, fee_estimator, logger)
+	}
+
+	/// Updates the monitor with the current best chain tip, returning new outputs to watch. See
+	/// [`block_connected`] for details.
+	///
+	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
+	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
+	/// block.
+	///
+	/// Must be called after new blocks become available for the most recent block. Intermediary
+	/// blocks, however, may be safely skipped.
+	///
+	/// [`block_connected`]: Self::block_connected
+	/// [`transactions_confirmed`]: Self::transactions_confirmed
+	pub fn update_best_block<B: Deref, F: Deref, L: Deref>(
+		&self,
+		header: &BlockHeader,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		self.inner.lock().unwrap().update_best_block(
+			header, height, broadcaster, fee_estimator, logger)
 	}
 }
 
@@ -2028,8 +2060,38 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		self.best_block = BestBlock::new(header.block_hash(), height);
+		let block_hash = header.block_hash();
+		log_trace!(logger, "New best block {} at height {}", block_hash, height);
+		self.best_block = BestBlock::new(block_hash, height);
+
 		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
+	}
+
+	fn update_best_block<B: Deref, F: Deref, L: Deref>(
+		&mut self,
+		header: &BlockHeader,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let block_hash = header.block_hash();
+		log_trace!(logger, "New best block {} at height {}", block_hash, height);
+
+		if height > self.best_block.height() {
+			self.best_block = BestBlock::new(block_hash, height);
+			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger)
+		} else {
+			self.best_block = BestBlock::new(block_hash, height);
+			self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.height <= height);
+			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
+			Vec::new()
+		}
 	}
 
 	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
@@ -2100,11 +2162,28 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 			self.is_paying_spendable_output(&tx, height, &logger);
 		}
+
+		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, broadcaster, fee_estimator, logger)
+	}
+
+	fn block_confirmed<B: Deref, F: Deref, L: Deref>(
+		&mut self,
+		height: u32,
+		txn_matched: Vec<&Transaction>,
+		mut watch_outputs: Vec<(Txid, Vec<(u32, TxOut)>)>,
+		mut claimable_outpoints: Vec<ClaimRequest>,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: L,
+	) -> Vec<(Txid, Vec<(u32, TxOut)>)>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
 		let should_broadcast = self.would_broadcast_at_height(height, &logger);
 		if should_broadcast {
 			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { funding_redeemscript: self.funding_redeemscript.clone() }});
-		}
-		if should_broadcast {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
@@ -2211,7 +2290,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		//We may discard:
 		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 		//- maturing spendable output has transaction paying us has been disconnected
-		self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.height != height);
+		self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.height < height);
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
