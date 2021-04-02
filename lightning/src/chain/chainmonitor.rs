@@ -146,15 +146,15 @@ where C::Target: chain::Filter,
 			// transactions from within the block that previously had not been included in txdata.
 			if let Some(ref chain_source) = self.chain_source {
 				let block_hash = header.block_hash();
-				for (txid, outputs) in txn_outputs.drain(..) {
-					for (idx, output) in outputs.iter() {
+				for (txid, mut outputs) in txn_outputs.drain(..) {
+					for (idx, output) in outputs.drain(..) {
 						// Register any new outputs with the chain source for filtering and recurse
 						// if it indicates that there are dependent transactions within the block
 						// that had not been previously included in txdata.
 						let output = WatchedOutput {
 							block_hash: Some(block_hash),
-							outpoint: OutPoint { txid, index: *idx as u16 },
-							script_pubkey: output.script_pubkey.clone(),
+							outpoint: OutPoint { txid, index: idx as u16 },
+							script_pubkey: output.script_pubkey,
 						};
 						if let Some(tx) = chain_source.register_output(output) {
 							dependent_txdata.push(tx);
