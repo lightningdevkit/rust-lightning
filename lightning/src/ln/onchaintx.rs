@@ -945,6 +945,16 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	pub(crate) fn get_relevant_txids(&self) -> Vec<Txid> {
+		let mut txids: Vec<Txid> = self.onchain_events_waiting_threshold_conf
+			.iter()
+			.map(|entry| entry.txid)
+			.collect();
+		txids.sort_unstable();
+		txids.dedup();
+		txids
+	}
+
 	pub(crate) fn provide_latest_holder_tx(&mut self, tx: HolderCommitmentTransaction) {
 		self.prev_holder_commitment = Some(replace(&mut self.holder_commitment, tx));
 		self.holder_htlc_sigs = None;

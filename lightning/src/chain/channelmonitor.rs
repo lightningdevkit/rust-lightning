@@ -1385,6 +1385,19 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().update_best_block(
 			header, height, broadcaster, fee_estimator, logger)
 	}
+
+	/// Returns the set of txids that should be monitored for re-organization out of the chain.
+	pub fn get_relevant_txids(&self) -> Vec<Txid> {
+		let inner = self.inner.lock().unwrap();
+		let mut txids: Vec<Txid> = inner.onchain_events_waiting_threshold_conf
+			.iter()
+			.map(|entry| entry.txid)
+			.chain(inner.onchain_tx_handler.get_relevant_txids().into_iter())
+			.collect();
+		txids.sort_unstable();
+		txids.dedup();
+		txids
+	}
 }
 
 impl<Signer: Sign> ChannelMonitorImpl<Signer> {
