@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain::Watch;
+use chain::{Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
@@ -60,21 +60,15 @@ pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transac
 /// Mine the given transaction at the given height, mining blocks as required to build to that
 /// height
 pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
-	let starting_block = node.best_block_info();
+	let first_connect_height = node.best_block_info().1 + 1;
+	assert!(first_connect_height <= conf_height);
+	if conf_height - first_connect_height >= 1 {
+		connect_blocks(node, conf_height - first_connect_height);
+	}
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: starting_block.0, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: Vec::new(),
 	};
-	let height = starting_block.1 + 1;
-	assert!(height <= conf_height);
-	for _ in height..conf_height {
-		connect_block(node, &block);
-		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
-			txdata: vec![],
-		};
-	}
-
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
 		block.txdata.push(Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() });
 	}
@@ -82,37 +76,94 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	connect_block(node, &block);
 }
 
+/// The possible ways we may notify a ChannelManager of a new block
+pub enum ConnectStyle {
+	/// Calls update_best_block first, detecting transactions in the block only after receiving the
+	/// header and height information.
+	BestBlockFirst,
+	/// The same as BestBlockFirst, however when we have multiple blocks to connect, we only
+	/// make a single update_best_block call.
+	BestBlockFirstSkippingBlocks,
+	/// Calls transactions_confirmed first, detecting transactions in the block before updating the
+	/// header and height information.
+	TransactionsFirst,
+	/// The same as TransactionsFirst, however when we have multiple blocks to connect, we only
+	/// make a single update_best_block call.
+	TransactionsFirstSkippingBlocks,
+	/// Provides the full block via the chain::Listen interface. In the current code this is
+	/// equivalent to TransactionsFirst with some additional assertions.
+	FullBlockViaListen,
+}
+
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
+	let skip_intermediaries = match *node.connect_style.borrow() {
+		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => true,
+		_ => false,
+	};
+
 	let mut block = Block {
 		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
-	connect_block(node, &block);
-	for _ in 2..depth + 1 {
+	assert!(depth >= 1);
+	for _ in 0..depth - 1 {
+		do_connect_block(node, &block, skip_intermediaries);
 		block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
-		connect_block(node, &block);
 	}
+	connect_block(node, &block);
 	block.header.block_hash()
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) {
+	do_connect_block(node, block, false);
+}
+
+fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_manager: bool) {
 	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 	let height = node.best_block_info().1 + 1;
 	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-	node.node.block_connected(&block.header, &txdata, height);
+	if !skip_manager {
+		match *node.connect_style.borrow() {
+			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
+				node.node.update_best_block(&block.header, height);
+				node.node.transactions_confirmed(&block.header, height, &block.txdata.iter().enumerate().collect::<Vec<_>>());
+			},
+			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
+				node.node.transactions_confirmed(&block.header, height, &block.txdata.iter().enumerate().collect::<Vec<_>>());
+				node.node.update_best_block(&block.header, height);
+			},
+			ConnectStyle::FullBlockViaListen => {
+				Listen::block_connected(node.node, &block, height);
+			}
+		}
+	}
 	node.node.test_process_background_events();
 	node.blocks.borrow_mut().push((block.header, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
-	for _ in 0..count {
+	for i in 0..count {
 		let orig_header = node.blocks.borrow_mut().pop().unwrap();
 		assert!(orig_header.1 > 0); // Cannot disconnect genesis
+		let prev_header = node.blocks.borrow().last().unwrap().clone();
+
 		node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
-		node.node.block_disconnected(&orig_header.0);
+		match *node.connect_style.borrow() {
+			ConnectStyle::FullBlockViaListen => {
+				Listen::block_disconnected(node.node, &orig_header.0, orig_header.1);
+			},
+			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
+				if i == count - 1 {
+					node.node.update_best_block(&prev_header.0, prev_header.1);
+				}
+			},
+			_ => {
+				node.node.update_best_block(&prev_header.0, prev_header.1);
+			},
+		}
 	}
 }
 
@@ -152,6 +203,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
 	pub blocks: RefCell<Vec<(BlockHeader, u32)>>,
+	pub connect_style: Rc<RefCell<ConnectStyle>>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_hash(&self) -> BlockHash {
@@ -1243,6 +1295,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
+	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
 
 	for i in 0..node_count {
 		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_source.genesis_hash, None, cfgs[i].logger);
@@ -1251,7 +1304,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
-		                 blocks: RefCell::new(vec![(genesis_block(Network::Testnet).header, 0)])
+		                 blocks: RefCell::new(vec![(genesis_block(Network::Testnet).header, 0)]),
+		                 connect_style: Rc::clone(&connect_style),
 		})
 	}
 
@@ -1364,22 +1418,36 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 
 pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_1.len(), 1);
+	assert_eq!(events_1.len(), 2);
 	let as_update = match events_1[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
+	match events_1[1] {
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			assert_eq!(node_id, nodes[b].node.get_our_node_id());
+			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_2.len(), 1);
+	assert_eq!(events_2.len(), 2);
 	let bs_update = match events_2[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
+	match events_2[1] {
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			assert_eq!(node_id, nodes[a].node.get_our_node_id());
+			assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+		},
+		_ => panic!("Unexpected event"),
+	}
 
 	for node in nodes {
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();

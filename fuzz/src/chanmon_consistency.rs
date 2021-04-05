@@ -435,11 +435,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			$node.block_connected(&header, &txdata, 1);
-			for i in 2..100 {
+			$node.transactions_confirmed(&header, 1, &txdata);
+			for _ in 2..100 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-				$node.block_connected(&header, &[], i);
 			}
+			$node.update_best_block(&header, 99);
 		} }
 	}
 

@@ -1004,16 +1004,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<(), APIError> {
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
 				if let Some(node_id) = peer_node_id {
 					if chan.get().get_counterparty_node_id() != *node_id {
-						// Error or Ok here doesn't matter - the result is only exposed publicly
-						// when peer_node_id is None anyway.
-						return Ok(());
+						return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 					}
 				}
 				if let Some(short_id) = chan.get().get_short_channel_id() {
@@ -1033,14 +1031,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			});
 		}
 
-		Ok(())
+		Ok(chan.get_counterparty_node_id())
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		self.force_close_channel_with_peer(channel_id, None)
+		match self.force_close_channel_with_peer(channel_id, None) {
+			Ok(counterparty_node_id) => {
+				self.channel_state.lock().unwrap().pending_msg_events.push(
+					events::MessageSendEvent::HandleError {
+						node_id: counterparty_node_id,
+						action: msgs::ErrorAction::SendErrorMessage {
+							msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() }
+						},
+					}
+				);
+				Ok(())
+			},
+			Err(e) => Err(e)
+		}
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
@@ -3196,6 +3207,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									msg: update
 								});
 							}
+							pending_msg_events.push(events::MessageSendEvent::HandleError {
+								node_id: chan.get_counterparty_node_id(),
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
+								},
+							});
 						}
 					},
 				}
@@ -3278,12 +3295,26 @@ where
 	L::Target: Logger,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
+		assert_eq!(*self.last_block_hash.read().unwrap(), block.header.prev_blockhash,
+			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+		assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
+			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		ChannelManager::block_connected(self, &block.header, &txdata, height);
+		self.transactions_confirmed(&block.header, height, &txdata);
+		self.update_best_block(&block.header, height);
 	}
 
-	fn block_disconnected(&self, header: &BlockHeader, _height: u32) {
-		ChannelManager::block_disconnected(self, header);
+	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
+		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
+			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let new_height = self.latest_block_height.fetch_sub(1, Ordering::AcqRel) as u32 - 1;
+		assert_eq!(new_height, height - 1,
+			"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
+		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
+
+		self.do_chain_event(new_height, |channel| channel.update_best_block(new_height, header.time));
 	}
 }
 
@@ -3294,22 +3325,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	/// Updates channel state based on transactions seen in a connected block.
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage>>
+			(&self, height: u32, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
 		// See the docs for `ChannelManagerReadArgs` for more.
-		let block_hash = header.block_hash();
-		log_trace!(self.logger, "Block {} at height {} connected", block_hash, height);
-
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		assert_eq!(*self.last_block_hash.read().unwrap(), header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.write().unwrap() = block_hash;
 
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
@@ -3319,7 +3339,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let short_to_id = &mut channel_state.short_to_id;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
-				let res = channel.block_connected(header, txdata, height);
+				let res = f(channel);
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
@@ -3345,31 +3365,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
 					}
 				} else if let Err(e) = res {
+					if let Some(short_id) = channel.get_short_channel_id() {
+						short_to_id.remove(&short_id);
+					}
+					// It looks like our counterparty went on-chain or funding transaction was
+					// reorged out of the main chain. Close the channel.
+					failed_channels.push(channel.force_shutdown(true));
+					if let Ok(update) = self.get_channel_update(&channel) {
+						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							msg: update
+						});
+					}
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
 					});
 					return false;
-				}
-				if let Some(funding_txo) = channel.get_funding_txo() {
-					for &(_, tx) in txdata.iter() {
-						for inp in tx.input.iter() {
-							if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
-								log_trace!(self.logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(channel.channel_id()));
-								if let Some(short_id) = channel.get_short_channel_id() {
-									short_to_id.remove(&short_id);
-								}
-								// It looks like our counterparty went on-chain. Close the channel.
-								failed_channels.push(channel.force_shutdown(true));
-								if let Ok(update) = self.get_channel_update(&channel) {
-									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
-								}
-								return false;
-							}
-						}
-					}
 				}
 				true
 			});
@@ -3399,6 +3410,64 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
+	}
+
+	/// Updates channel state to take note of transactions which were confirmed in the given block
+	/// at the given height.
+	///
+	/// Note that you must still call (or have called) [`update_best_block`] with the block
+	/// information which is included here.
+	///
+	/// This method may be called before or after [`update_best_block`] for a given block's
+	/// transaction data and may be called multiple times with additional transaction data for a
+	/// given block.
+	///
+	/// This method may be called for a previous block after an [`update_best_block`] call has
+	/// been made for a later block, however it must *not* be called with transaction data from a
+	/// block which is no longer in the best chain (ie where [`update_best_block`] has already
+	/// been informed about a blockchain reorganization which no longer includes the block which
+	/// corresponds to `header`).
+	///
+	/// [`update_best_block`]: `Self::update_best_block`
+	pub fn transactions_confirmed(&self, header: &BlockHeader, height: u32, txdata: &TransactionData) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		self.do_chain_event(height, |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|a| (a, Vec::new())));
+	}
+
+	/// Updates channel state with the current best blockchain tip. You should attempt to call this
+	/// quickly after a new block becomes available, however if multiple new blocks become
+	/// available at the same time, only a single `update_best_block()` call needs to be made.
+	///
+	/// This method should also be called immediately after any block disconnections, once at the
+	/// reorganization fork point, and once with the new chain tip. Calling this method at the
+	/// blockchain reorganization fork point ensures we learn when a funding transaction which was
+	/// previously confirmed is reorganized out of the blockchain, ensuring we do not continue to
+	/// accept payments which cannot be enforced on-chain.
+	///
+	/// In both the block-connection and block-disconnection case, this method may be called either
+	/// once per block connected or disconnected, or simply at the fork point and new tip(s),
+	/// skipping any intermediary blocks.
+	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		self.latest_block_height.store(height as usize, Ordering::Release);
+		*self.last_block_hash.write().unwrap() = block_hash;
+
+		self.do_chain_event(height, |channel| channel.update_best_block(height, header.time));
 
 		loop {
 			// Update last_node_announcement_serial to be the max of its current value and the
@@ -3412,48 +3481,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				break;
 			}
 		}
-	}
-
-	/// Updates channel state based on a disconnected block.
-	///
-	/// If necessary, the channel may be force-closed without letting the counterparty participate
-	/// in the shutdown.
-	pub fn block_disconnected(&self, header: &BlockHeader) {
-		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
-		// during initialization prior to the chain_monitor being fully configured in some cases.
-		// See the docs for `ChannelManagerReadArgs` for more.
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
-			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-		self.latest_block_height.fetch_sub(1, Ordering::AcqRel);
-		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
-
-		let mut failed_channels = Vec::new();
-		{
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			let short_to_id = &mut channel_state.short_to_id;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|_,  v| {
-				if v.block_disconnected(header) {
-					if let Some(short_id) = v.get_short_channel_id() {
-						short_to_id.remove(&short_id);
-					}
-					failed_channels.push(v.force_shutdown(true));
-					if let Ok(update) = self.get_channel_update(&v) {
-						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					false
-				} else {
-					true
-				}
-			});
-		}
-
-		self.handle_init_event_channel_failures(failed_channels);
 	}
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool

@@ -241,7 +241,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	// ...and make sure we can force-close a frozen channel
 	nodes[0].node.force_close_channel(&channel_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
-	check_closed_broadcast!(nodes[0], false);
+	check_closed_broadcast!(nodes[0], true);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
 	// PaymentFailed event

@@ -76,7 +76,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Give node 2 node 1's transactions and get its response (claiming the HTLC instead).
 		connect_block(&nodes[2], &Block { header, txdata: node_1_commitment_txn.clone() });
 		check_added_monitors!(nodes[2], 1);
-		check_closed_broadcast!(nodes[2], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
+		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_2_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Claim, ChannelManger: 1 local commitment tx, 1 Received HTLC-Claim
 		assert_eq!(node_2_commitment_txn[1].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
@@ -116,7 +116,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		node_2_commitment_txn
 	};
 	check_added_monitors!(nodes[1], 1);
-	check_closed_broadcast!(nodes[1], false); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
+	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 	// Connect ANTI_REORG_DELAY - 2 blocks, giving us a confirmation count of ANTI_REORG_DELAY - 1.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 	check_added_monitors!(nodes[1], 0);
@@ -184,7 +184,7 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
 }
 
-fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
+fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, connect_style: ConnectStyle) {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
 	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
 	// around freeing background events which store monitor updates during block_[dis]connected.
@@ -195,6 +195,8 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
+
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -204,7 +206,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 	if !reorg_after_reload {
 		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], false);
+		check_closed_broadcast!(nodes[0], true);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -256,7 +258,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 	if reorg_after_reload {
 		disconnect_all_blocks(&nodes[0]);
-		check_closed_broadcast!(nodes[0], false);
+		check_closed_broadcast!(nodes[0], true);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
@@ -272,10 +274,18 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool) {
 
 #[test]
 fn test_unconf_chan() {
-	do_test_unconf_chan(true, true);
-	do_test_unconf_chan(false, true);
-	do_test_unconf_chan(true, false);
-	do_test_unconf_chan(false, false);
+	do_test_unconf_chan(true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_unconf_chan(false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+}
+
+#[test]
+fn test_unconf_chan_via_listen() {
+	do_test_unconf_chan(true, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, true, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(true, false, ConnectStyle::FullBlockViaListen);
+	do_test_unconf_chan(false, false, ConnectStyle::FullBlockViaListen);
 }
 
 #[test]
@@ -311,7 +321,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A commitment transaction
 	mine_transaction(&nodes[0], &remote_txn[0]);
-	check_closed_broadcast!(nodes[0], false);
+	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	// Verify node A broadcast tx claiming both HTLCs
 	{
@@ -328,7 +338,7 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], 135);
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {

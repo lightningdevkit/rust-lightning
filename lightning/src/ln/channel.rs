@@ -7,7 +7,6 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
 use bitcoin::blockdata::opcodes;
@@ -376,13 +375,10 @@ pub(super) struct Channel<Signer: Sign> {
 
 	last_sent_closing_fee: Option<(u32, u64, Signature)>, // (feerate, fee, holder_sig)
 
-	/// The hash of the block in which the funding transaction reached our CONF_TARGET. We use this
-	/// to detect unconfirmation after a serialize-unserialize roundtrip where we may not see a full
-	/// series of block_connected/block_disconnected calls. Obviously this is not a guarantee as we
-	/// could miss the funding_tx_confirmed_in block as well, but it serves as a useful fallback.
+	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
+	funding_tx_confirmation_height: u64,
 	short_channel_id: Option<u64>,
-	funding_tx_confirmations: u64,
 
 	counterparty_dust_limit_satoshis: u64,
 	#[cfg(test)]
@@ -441,10 +437,6 @@ struct CommitmentTxInfoCached {
 }
 
 pub const OUR_MAX_HTLCS: u16 = 50; //TODO
-/// Confirmation count threshold at which we close a channel. Ideally we'd keep the channel around
-/// on ice until the funding transaction gets more confirmations, but the LN protocol doesn't
-/// really allow for this, so instead we're stuck closing it out at that point.
-const UNCONF_THRESHOLD: u32 = 6;
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 
@@ -581,8 +573,8 @@ impl<Signer: Sign> Channel<Signer> {
 			last_sent_closing_fee: None,
 
 			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
-			funding_tx_confirmations: 0,
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
@@ -818,8 +810,8 @@ impl<Signer: Sign> Channel<Signer> {
 			last_sent_closing_fee: None,
 
 			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
-			funding_tx_confirmations: 0,
 
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
@@ -3509,26 +3501,140 @@ impl<Signer: Sign> Channel<Signer> {
 		self.network_sync == UpdateStatus::DisabledMarked
 	}
 
-	/// When we receive a new block, we (a) check whether the block contains the funding
-	/// transaction (which would start us counting blocks until we send the funding_signed), and
-	/// (b) check the height of the block against outbound holding cell HTLCs in case we need to
-	/// give up on them prematurely and time them out. Everything else (e.g. commitment
-	/// transaction broadcasts, channel closure detection, HTLC transaction broadcasting, etc) is
+	fn check_get_funding_locked(&mut self, height: u32) -> Option<msgs::FundingLocked> {
+		if self.funding_tx_confirmation_height == 0 {
+			return None;
+		}
+
+		let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+		if funding_tx_confirmations <= 0 {
+			self.funding_tx_confirmation_height = 0;
+		}
+
+		if funding_tx_confirmations < self.minimum_depth as i64 {
+			return None;
+		}
+
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+		let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
+			self.channel_state |= ChannelState::OurFundingLocked as u32;
+			true
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+			self.update_time_counter += 1;
+			true
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+			// We got a reorg but not enough to trigger a force close, just ignore.
+			false
+		} else if self.channel_state < ChannelState::ChannelFunded as u32 {
+			panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
+		} else {
+			// We got a reorg but not enough to trigger a force close, just ignore.
+			false
+		};
+
+		if need_commitment_update {
+			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+				let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+				return Some(msgs::FundingLocked {
+					channel_id: self.channel_id,
+					next_per_commitment_point,
+				});
+			} else {
+				self.monitor_pending_funding_locked = true;
+			}
+		}
+		None
+	}
+
+	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
+	/// In the first case, we store the confirmation height and calculating the short channel id.
+	/// In the second, we simply return an Err indicating we need to be force-closed now.
+	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
+			-> Result<Option<msgs::FundingLocked>, msgs::ErrorMessage> where L::Target: Logger {
+		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
+		for &(index_in_block, tx) in txdata.iter() {
+			if let Some(funding_txo) = self.get_funding_txo() {
+				// If we haven't yet sent a funding_locked, but are in FundingSent (ignoring
+				// whether they've sent a funding_locked or not), check if we should send one.
+				if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
+					if tx.txid() == funding_txo.txid {
+						let txo_idx = funding_txo.index as usize;
+						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
+								tx.output[txo_idx].value != self.channel_value_satoshis {
+							if self.is_outbound() {
+								// If we generated the funding transaction and it doesn't match what it
+								// should, the client is really broken and we should just panic and
+								// tell them off. That said, because hash collisions happen with high
+								// probability in fuzztarget mode, if we're fuzzing we just close the
+								// channel and move on.
+								#[cfg(not(feature = "fuzztarget"))]
+								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+							}
+							self.channel_state = ChannelState::ShutdownComplete as u32;
+							self.update_time_counter += 1;
+							return Err(msgs::ErrorMessage {
+								channel_id: self.channel_id(),
+								data: "funding tx had wrong script/value or output index".to_owned()
+							});
+						} else {
+							if self.is_outbound() {
+								for input in tx.input.iter() {
+									if input.witness.is_empty() {
+										// We generated a malleable funding transaction, implying we've
+										// just exposed ourselves to funds loss to our counterparty.
+										#[cfg(not(feature = "fuzztarget"))]
+										panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
+									}
+								}
+							}
+							self.funding_tx_confirmation_height = height as u64;
+							self.funding_tx_confirmed_in = Some(*block_hash);
+							self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
+								Ok(scid) => Some(scid),
+								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
+							}
+						}
+					}
+					// If we allow 1-conf funding, we may need to check for funding_locked here and
+					// send it immediately instead of waiting for an update_best_block call (which
+					// may have already happened for this block).
+					if let Some(funding_locked) = self.check_get_funding_locked(height) {
+						return Ok(Some(funding_locked));
+					}
+				}
+				for inp in tx.input.iter() {
+					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
+						log_trace!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(self.channel_id()));
+						return Err(msgs::ErrorMessage {
+							channel_id: self.channel_id(),
+							data: "Commitment or closing transaction was confirmed on chain.".to_owned()
+						});
+					}
+				}
+			}
+		}
+		Ok(None)
+	}
+
+	/// When a new block is connected, we check the height of the block against outbound holding
+	/// cell HTLCs in case we need to give up on them prematurely and time them out. Everything
+	/// else (e.g. commitment transaction broadcasts, HTLC transaction broadcasting, etc) is
 	/// handled by the ChannelMonitor.
 	///
 	/// If we return Err, the channel may have been closed, at which point the standard
 	/// requirements apply - no calls may be made except those explicitly stated to be allowed
 	/// post-shutdown.
-	/// Only returns an ErrorAction of DisconnectPeer, if Err.
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn block_connected(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn update_best_block(&mut self, height: u32, highest_header_time: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
+		let unforwarded_htlc_cltv_limit = height + HTLC_FAIL_BACK_BUFFER;
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
 				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
-					if *cltv_expiry <= height + HTLC_FAIL_BACK_BUFFER {
+					if *cltv_expiry <= unforwarded_htlc_cltv_limit {
 						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
 						false
 					} else { true }
@@ -3537,112 +3643,36 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		});
 
-		if self.funding_tx_confirmations > 0 {
-			self.funding_tx_confirmations += 1;
+		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
+
+		if let Some(funding_locked) = self.check_get_funding_locked(height) {
+			return Ok((Some(funding_locked), timed_out_htlcs));
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
-			for &(index_in_block, tx) in txdata.iter() {
-				let funding_txo = self.get_funding_txo().unwrap();
-				if tx.txid() == funding_txo.txid {
-					let txo_idx = funding_txo.index as usize;
-					if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||
-							tx.output[txo_idx].value != self.channel_value_satoshis {
-						if self.is_outbound() {
-							// If we generated the funding transaction and it doesn't match what it
-							// should, the client is really broken and we should just panic and
-							// tell them off. That said, because hash collisions happen with high
-							// probability in fuzztarget mode, if we're fuzzing we just close the
-							// channel and move on.
-							#[cfg(not(feature = "fuzztarget"))]
-							panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
-						}
-						self.channel_state = ChannelState::ShutdownComplete as u32;
-						self.update_time_counter += 1;
-						return Err(msgs::ErrorMessage {
-							channel_id: self.channel_id(),
-							data: "funding tx had wrong script/value".to_owned()
-						});
-					} else {
-						if self.is_outbound() {
-							for input in tx.input.iter() {
-								if input.witness.is_empty() {
-									// We generated a malleable funding transaction, implying we've
-									// just exposed ourselves to funds loss to our counterparty.
-									#[cfg(not(feature = "fuzztarget"))]
-									panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
-								}
-							}
-						}
-						self.funding_tx_confirmations = 1;
-						self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
-							Ok(scid) => Some(scid),
-							Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
-						}
-					}
-				}
+		if non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
+		   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32 {
+			let mut funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
+			if self.funding_tx_confirmation_height == 0 {
+				// Note that check_get_funding_locked may reset funding_tx_confirmation_height to
+				// zero if it has been reorged out, however in either case, our state flags
+				// indicate we've already sent a funding_locked
+				funding_tx_confirmations = 0;
+			}
+
+			// If we've sent funding_locked (or have both sent and received funding_locked), and
+			// the funding transaction's confirmation count has dipped below minimum_depth / 2,
+			// close the channel and hope we can get the latest state on chain (because presumably
+			// the funding transaction is at least still in the mempool of most nodes).
+			if funding_tx_confirmations < self.minimum_depth as i64 / 2 {
+				return Err(msgs::ErrorMessage {
+					channel_id: self.channel_id(),
+					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth, funding_tx_confirmations),
+				});
 			}
 		}
 
-		self.update_time_counter = cmp::max(self.update_time_counter, header.time);
-		if self.funding_tx_confirmations > 0 {
-			if self.funding_tx_confirmations == self.minimum_depth as u64 {
-				let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
-					self.channel_state |= ChannelState::OurFundingLocked as u32;
-					true
-				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
-					self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
-					self.update_time_counter += 1;
-					true
-				} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
-					// We got a reorg but not enough to trigger a force close, just update
-					// funding_tx_confirmed_in and return.
-					false
-				} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-					panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
-				} else {
-					// We got a reorg but not enough to trigger a force close, just update
-					// funding_tx_confirmed_in and return.
-					false
-				};
-				self.funding_tx_confirmed_in = Some(header.block_hash());
-
-				//TODO: Note that this must be a duplicate of the previous commitment point they sent us,
-				//as otherwise we will have a commitment transaction that they can't revoke (well, kinda,
-				//they can by sending two revoke_and_acks back-to-back, but not really). This appears to be
-				//a protocol oversight, but I assume I'm just missing something.
-				if need_commitment_update {
-					if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-						let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-						return Ok((Some(msgs::FundingLocked {
-							channel_id: self.channel_id,
-							next_per_commitment_point,
-						}), timed_out_htlcs));
-					} else {
-						self.monitor_pending_funding_locked = true;
-						return Ok((None, timed_out_htlcs));
-					}
-				}
-			}
-		}
 		Ok((None, timed_out_htlcs))
-	}
-
-	/// Called by channelmanager based on chain blocks being disconnected.
-	/// Returns true if we need to close the channel now due to funding transaction
-	/// unconfirmation/reorg.
-	pub fn block_disconnected(&mut self, header: &BlockHeader) -> bool {
-		if self.funding_tx_confirmations > 0 {
-			self.funding_tx_confirmations -= 1;
-			if self.funding_tx_confirmations == UNCONF_THRESHOLD as u64 {
-				return true;
-			}
-		}
-		if Some(header.block_hash()) == self.funding_tx_confirmed_in {
-			self.funding_tx_confirmations = self.minimum_depth as u64 - 1;
-		}
-		false
 	}
 
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
@@ -4466,8 +4496,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		}
 
 		self.funding_tx_confirmed_in.write(writer)?;
+		self.funding_tx_confirmation_height.write(writer)?;
 		self.short_channel_id.write(writer)?;
-		self.funding_tx_confirmations.write(writer)?;
 
 		self.counterparty_dust_limit_satoshis.write(writer)?;
 		self.holder_dust_limit_satoshis.write(writer)?;
@@ -4636,8 +4666,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		};
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
+		let funding_tx_confirmation_height = Readable::read(reader)?;
 		let short_channel_id = Readable::read(reader)?;
-		let funding_tx_confirmations = Readable::read(reader)?;
 
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
@@ -4716,8 +4746,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			last_sent_closing_fee,
 
 			funding_tx_confirmed_in,
+			funding_tx_confirmation_height,
 			short_channel_id,
-			funding_tx_confirmations,
 
 			counterparty_dust_limit_satoshis,
 			holder_dust_limit_satoshis,
