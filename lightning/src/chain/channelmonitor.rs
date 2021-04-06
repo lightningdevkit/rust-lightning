@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
-use ln::channelmanager::{HTLCSource, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{BestBlock, HTLCSource, PaymentPreimage, PaymentHash};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
 use chain::WatchedOutput;
@@ -735,12 +735,13 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// remote monitor out-of-order with regards to the block view.
 	holder_tx_signed: bool,
 
-	// We simply modify last_block_hash in Channel's block_connected so that serialization is
+	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
-	// their last_block_hash from its state and not based on updated copies that didn't run through
+	// their best_block from its state and not based on updated copies that didn't run through
 	// the full block_connected).
-	last_block_hash: BlockHash,
+	best_block: BestBlock,
+
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
@@ -952,7 +953,8 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			event.write(writer)?;
 		}
 
-		self.last_block_hash.write(writer)?;
+		self.best_block.block_hash().write(writer)?;
+		writer.write_all(&byte_utils::be32_to_array(self.best_block.height()))?;
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
 		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
@@ -996,7 +998,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
-	                  last_block_hash: BlockHash) -> ChannelMonitor<Signer> {
+	                  best_block: BestBlock) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let our_channel_close_key_hash = WPubkeyHash::hash(&shutdown_pubkey.serialize());
@@ -1083,7 +1085,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
 
-				last_block_hash,
+				best_block,
+
 				secp_ctx,
 			}),
 		}
@@ -2132,7 +2135,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, Some(height), &&*broadcaster, &&*fee_estimator, &&*logger);
-		self.last_block_hash = block_hash;
+		self.best_block = BestBlock::new(block_hash, height);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -2171,7 +2174,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
-		self.last_block_hash = header.prev_blockhash;
+		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
 
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
@@ -2742,7 +2745,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			}
 		}
 
-		let last_block_hash: BlockHash = Readable::read(reader)?;
+		let best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
@@ -2789,7 +2792,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
-		Ok((last_block_hash.clone(), ChannelMonitor {
+		Ok((best_block.block_hash(), ChannelMonitor {
 			inner: Mutex::new(ChannelMonitorImpl {
 				latest_update_id,
 				commitment_transaction_number_obscure_factor,
@@ -2834,7 +2837,8 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				lockdown_from_offchain,
 				holder_tx_signed,
 
-				last_block_hash,
+				best_block,
+
 				secp_ctx,
 			}),
 		}))
@@ -2843,7 +2847,6 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
@@ -2857,7 +2860,7 @@ mod tests {
 	use hex;
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::transaction::OutPoint;
-	use ln::channelmanager::{PaymentPreimage, PaymentHash};
+	use ln::channelmanager::{BestBlock, PaymentPreimage, PaymentHash};
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
@@ -2953,13 +2956,13 @@ mod tests {
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
-		let last_block_hash = genesis_block(Network::Testnet).block_hash();
+		let best_block = BestBlock::from_genesis(Network::Testnet);
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 		                                  &PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0, &Script::new(),
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                  &channel_parameters,
 		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy(), last_block_hash);
+		                                  HolderCommitmentTransaction::dummy(), best_block);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		let dummy_txid = dummy_tx.txid();
