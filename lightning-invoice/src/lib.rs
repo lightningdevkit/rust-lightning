@@ -57,7 +57,7 @@ const MAX_EXPIRY_TIME: u64 = 60 * 60 * 24 * 356;
 fn __system_time_size_check() {
 	// Use 2 * sizeof(u64) as expected size since the expected underlying implementation is storing
 	// a `Duration` since `SystemTime::UNIX_EPOCH`.
-	unsafe { std::mem::transmute::<SystemTime, [u8; 16]>(UNIX_EPOCH); }
+	unsafe { std::mem::transmute_copy::<SystemTime, [u8; 16]>(&UNIX_EPOCH); }
 }
 
 
