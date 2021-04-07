@@ -3,9 +3,8 @@ name = "lightning-invoice"
 description = "Data structures to parse and serialize BOLT11 lightning invoices"
 version = "0.4.0"
 authors = ["Sebastian Geisler <sgeisler@wh2.tu-dresden.de>"]
-license = "Apache-2.0"
 documentation = "https://docs.rs/lightning-invoice/"
-repository = "https://github.com/rust-bitcoin/rust-lightning-invoice"
+license = "MIT OR Apache-2.0"
 keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
 
