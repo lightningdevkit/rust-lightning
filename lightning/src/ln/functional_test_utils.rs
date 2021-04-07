@@ -122,21 +122,25 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 	do_connect_block(node, block, false);
 }
 
-fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_manager: bool) {
-	let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_intermediaries: bool) {
 	let height = node.best_block_info().1 + 1;
-	node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-	if !skip_manager {
+	if !skip_intermediaries {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
 			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
+				node.chain_monitor.chain_monitor.update_best_block(&block.header, height);
+				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				node.node.update_best_block(&block.header, height);
 				node.node.transactions_confirmed(&block.header, height, &txdata);
 			},
 			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
+				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
+				node.chain_monitor.chain_monitor.update_best_block(&block.header, height);
 				node.node.transactions_confirmed(&block.header, height, &txdata);
 				node.node.update_best_block(&block.header, height);
 			},
 			ConnectStyle::FullBlockViaListen => {
+				node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
 				Listen::block_connected(node.node, &block, height);
 			}
 		}
@@ -151,17 +155,19 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 		assert!(orig_header.1 > 0); // Cannot disconnect genesis
 		let prev_header = node.blocks.borrow().last().unwrap().clone();
 
-		node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
+				node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
 				Listen::block_disconnected(node.node, &orig_header.0, orig_header.1);
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				if i == count - 1 {
+					node.chain_monitor.chain_monitor.update_best_block(&prev_header.0, prev_header.1);
 					node.node.update_best_block(&prev_header.0, prev_header.1);
 				}
 			},
 			_ => {
+				node.chain_monitor.chain_monitor.update_best_block(&prev_header.0, prev_header.1);
 				node.node.update_best_block(&prev_header.0, prev_header.1);
 			},
 		}
