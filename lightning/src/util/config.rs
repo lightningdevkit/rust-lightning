@@ -47,6 +47,8 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
 	/// by the protocol.
 	pub our_htlc_minimum_msat: u64,
+	/// Set to percentage of channel value used to control the channel maximum htlc value
+	pub our_htlc_max_in_flight_percentage: u64,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -55,6 +57,7 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
+			our_htlc_max_in_flight_percentage: 10,
 		}
 	}
 }
