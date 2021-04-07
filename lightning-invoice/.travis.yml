@@ -1,0 +1,31 @@
+language: rust
+sudo: required
+rust:
+  - nightly
+  - beta
+  - stable
+cache: cargo
+
+jobs:
+  include:
+  - rust: 1.29.0
+    script:
+      - cargo generate-lockfile --verbose
+      - cargo update -p cc --precise "1.0.41" --verbose
+      - cargo build
+      - cargo test
+  - stage: fuzz
+    before_install:
+      - sudo apt-get -qq update
+      - sudo apt-get install -y binutils-dev libunwind8-dev
+    rust: stable
+    script: cd fuzz && cargo test --verbose && ./travis-fuzz.sh
+  - stage: coverage
+    if: type = cron || type = push
+    before_install:
+      - sudo apt-get -qq update
+      - sudo apt-get install cmake g++ pkg-config jq libcurl4-openssl-dev libelf-dev libdw-dev binutils-dev libiberty-dev
+      - cargo install -f cargo-kcov
+      - for i in {0..10}; do echo "retry $i"; (cargo kcov --print-install-kcov-sh | sh) && break; done
+    rust: stable
+    script: bash .travis-kcov.sh
