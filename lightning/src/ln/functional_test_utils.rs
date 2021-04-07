@@ -130,10 +130,10 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 		match *node.connect_style.borrow() {
 			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
 				node.node.update_best_block(&block.header, height);
-				node.node.transactions_confirmed(&block.header, height, &block.txdata.iter().enumerate().collect::<Vec<_>>());
+				node.node.transactions_confirmed(&block.header, height, &txdata);
 			},
 			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
-				node.node.transactions_confirmed(&block.header, height, &block.txdata.iter().enumerate().collect::<Vec<_>>());
+				node.node.transactions_confirmed(&block.header, height, &txdata);
 				node.node.update_best_block(&block.header, height);
 			},
 			ConnectStyle::FullBlockViaListen => {
