@@ -160,9 +160,7 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          cd lightning
           cargo bench --features unstable
-          cd ..
 
   check_commits:
     runs-on: ubuntu-latest
