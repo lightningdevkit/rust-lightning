@@ -153,6 +153,11 @@ jobs:
             echo "Bad hash"
             exit 1
           fi
+      - name: Test with Network Graph on Rust ${{ matrix.toolchain }}
+        run: |
+          cd lightning
+          RUSTFLAGS="--cfg=require_route_graph_test" cargo test
+          cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
           cd lightning

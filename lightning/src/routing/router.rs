@@ -143,13 +143,17 @@ struct RouteGraphNode {
 	// - how much is needed for a path being constructed
 	// - how much value can channels following this node (up to the destination) can contribute,
 	//   considering their capacity and fees
-	value_contribution_msat: u64
+	value_contribution_msat: u64,
+	/// The effective htlc_minimum_msat at this hop. If a later hop on the path had a higher HTLC
+	/// minimum, we use it, plus the fees required at each earlier hop to meet it.
+	path_htlc_minimum_msat: u64,
 }
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		other.lowest_fee_to_peer_through_node.cmp(&self.lowest_fee_to_peer_through_node)
-			.then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
+		let other_score = cmp::max(other.lowest_fee_to_peer_through_node, other.path_htlc_minimum_msat);
+		let self_score = cmp::max(self.lowest_fee_to_peer_through_node, self.path_htlc_minimum_msat);
+		other_score.cmp(&self_score).then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
 	}
 }
 
@@ -171,10 +175,15 @@ struct DummyDirectionalChannelInfo {
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
-struct PathBuildingHop {
-	/// Hop-specific details unrelated to the path during the routing phase,
-	/// but rather relevant to the LN graph.
-	route_hop: RouteHop,
+struct PathBuildingHop<'a> {
+	// The RouteHint fields which will eventually be used if this hop is used in a final Route.
+	// Note that node_features is calculated separately after our initial graph walk.
+	pubkey: PublicKey,
+	short_channel_id: u64,
+	channel_features: &'a ChannelFeatures,
+	fee_msat: u64,
+	cltv_expiry_delta: u32,
+
 	/// Minimal fees required to route to the source node of the current hop via any of its inbound channels.
 	src_lowest_inbound_fees: RoutingFees,
 	/// Fees of the channel used in this hop.
@@ -193,20 +202,34 @@ struct PathBuildingHop {
 	/// we don't fall below the minimum. Should not be updated manually and
 	/// generally should not be accessed.
 	htlc_minimum_msat: u64,
+	/// A mirror of the same field in RouteGraphNode. Note that this is only used during the graph
+	/// walk and may be invalid thereafter.
+	path_htlc_minimum_msat: u64,
+	/// If we've already processed a node as the best node, we shouldn't process it again. Normally
+	/// we'd just ignore it if we did as all channels would have a higher new fee, but because we
+	/// may decrease the amounts in use as we walk the graph, the actual calculated fee may
+	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
+	/// avoid processing them again.
+	was_processed: bool,
+	#[cfg(any(test, feature = "fuzztarget"))]
+	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
+	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
+	// value_contribution_msat, which requires tracking it here. See comments below where it is
+	// used for more info.
+	value_contribution_msat: u64,
 }
 
 // Instantiated with a list of hops with correct data in them collected during path finding,
 // an instance of this struct should be further modified only via given methods.
 #[derive(Clone)]
-struct PaymentPath {
-	hops: Vec<PathBuildingHop>,
+struct PaymentPath<'a> {
+	hops: Vec<(PathBuildingHop<'a>, NodeFeatures)>,
 }
 
-impl PaymentPath {
-
+impl<'a> PaymentPath<'a> {
 	// TODO: Add a value_msat field to PaymentPath and use it instead of this function.
 	fn get_value_msat(&self) -> u64 {
-		self.hops.last().unwrap().route_hop.fee_msat
+		self.hops.last().unwrap().0.fee_msat
 	}
 
 	fn get_total_fee_paid_msat(&self) -> u64 {
@@ -215,9 +238,9 @@ impl PaymentPath {
 		}
 		let mut result = 0;
 		// Can't use next_hops_fee_msat because it gets outdated.
-		for (i, hop) in self.hops.iter().enumerate() {
+		for (i, (hop, _)) in self.hops.iter().enumerate() {
 			if i != self.hops.len() - 1 {
-				result += hop.route_hop.fee_msat;
+				result += hop.fee_msat;
 			}
 		}
 		return result;
@@ -226,16 +249,14 @@ impl PaymentPath {
 	// If the amount transferred by the path is updated, the fees should be adjusted. Any other way
 	// to change fees may result in an inconsistency.
 	//
-	// Sometimes we call this function right after constructing a path which has inconsistent
-	// (in terms of reaching htlc_minimum_msat), so that this function puts the fees in order.
-	// In that case we call it on the "same" amount we initially allocated for this path, and which
-	// could have been reduced on the way. In that case, there is also a risk of exceeding
-	// available_liquidity inside this function, because the function is unaware of this bound.
-	// In our specific recomputation cases where we never increase the value the risk is pretty low.
-	// This function, however, does not support arbitrarily increasing the value being transferred,
-	// and the exception will be triggered.
+	// Sometimes we call this function right after constructing a path which is inconsistent in
+	// that it the value being transferred has decreased while we were doing path finding, leading
+	// to the fees being paid not lining up with the actual limits.
+	//
+	// Note that this function is not aware of the available_liquidity limit, and thus does not
+	// support increasing the value being transferred.
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
-		assert!(value_msat <= self.hops.last().unwrap().route_hop.fee_msat);
+		assert!(value_msat <= self.hops.last().unwrap().0.fee_msat);
 
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (0..self.hops.len()).rev() {
@@ -246,10 +267,10 @@ impl PaymentPath {
 			// htlc_minimum_msat of the current channel. Last hop is handled separately.
 			let mut cur_hop_fees_msat = 0;
 			if !last_hop {
-				cur_hop_fees_msat = self.hops.get(i + 1).unwrap().hop_use_fee_msat;
+				cur_hop_fees_msat = self.hops.get(i + 1).unwrap().0.hop_use_fee_msat;
 			}
 
-			let mut cur_hop = self.hops.get_mut(i).unwrap();
+			let mut cur_hop = &mut self.hops.get_mut(i).unwrap().0;
 			cur_hop.next_hops_fee_msat = total_fee_paid_msat;
 			// Overpay in fees if we can't save these funds due to htlc_minimum_msat.
 			// We try to account for htlc_minimum_msat in scoring (add_entry!), so that nodes don't
@@ -273,11 +294,11 @@ impl PaymentPath {
 			if last_hop {
 				// Final hop is a special case: it usually has just value_msat (by design), but also
 				// it still could overpay for the htlc_minimum_msat.
-				cur_hop.route_hop.fee_msat = cur_hop_transferred_amount_msat;
+				cur_hop.fee_msat = cur_hop_transferred_amount_msat;
 			} else {
 				// Propagate updated fees for the use of the channels to one hop back, where they
 				// will be actually paid (fee_msat). The last hop is handled above separately.
-				cur_hop.route_hop.fee_msat = cur_hop_fees_msat;
+				cur_hop.fee_msat = cur_hop_fees_msat;
 			}
 
 			// Fee for the use of the current hop which will be deducted on the previous hop.
@@ -372,8 +393,43 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// 8. Choose the best route by the lowest total fee.
 
 	// As for the actual search algorithm,
-	// we do a payee-to-payer Dijkstra's sorting by each node's distance from the payee
-	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty A*").
+	// we do a payee-to-payer pseudo-Dijkstra's sorting by each node's distance from the payee
+	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty pseudo-A*").
+	//
+	// We are not a faithful Dijkstra's implementation because we can change values which impact
+	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
+	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) then
+	// the value we are currently attempting to send over a path, we simply reduce the value being
+	// sent along the path for any hops after that channel. This may imply that later fees (which
+	// we've already tabulated) are lower because a smaller value is passing through the channels
+	// (and the proportional fee is thus lower). There isn't a trivial way to recalculate the
+	// channels which were selected earlier (and which may still be used for other paths without a
+	// lower liquidity limit), so we simply accept that some liquidity-limited paths may be
+	// de-preferenced.
+	//
+	// One potentially problematic case for this algorithm would be if there are many
+	// liquidity-limited paths which are liquidity-limited near the destination (ie early in our
+	// graph walking), we may never find a path which is not liquidity-limited and has lower
+	// proportional fee (and only lower absolute fee when considering the ultimate value sent).
+	// Because we only consider paths with at least 5% of the total value being sent, the damage
+	// from such a case should be limited, however this could be further reduced in the future by
+	// calculating fees on the amount we wish to route over a path, ie ignoring the liquidity
+	// limits for the purposes of fee calculation.
+	//
+	// Alternatively, we could store more detailed path information in the heap (targets, below)
+	// and index the best-path map (dist, below) by node *and* HTLC limits, however that would blow
+	// up the runtime significantly both algorithmically (as we'd traverse nodes multiple times)
+	// and practically (as we would need to store dynamically-allocated path information in heap
+	// objects, increasing malloc traffic and indirect memory access significantly). Further, the
+	// results of such an algorithm would likely be biased towards lower-value paths.
+	//
+	// Further, we could return to a faithful Dijkstra's algorithm by rejecting paths with limits
+	// outside of our current search value, running a path search more times to gather candidate
+	// paths at different values. While this may be acceptable, further path searches may increase
+	// runtime for little gain. Specifically, the current algorithm rather efficiently explores the
+	// graph for candidate paths, calculating the maximum value which can realistically be sent at
+	// the same time, remaining generic across different payment values.
+	//
 	// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
 	// to use as the A* heuristic beyond just the cost to get one node further than the current
 	// one.
@@ -387,17 +443,6 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			proportional_millionths: 0,
 		}
 	};
-
-	let mut targets = BinaryHeap::new(); //TODO: Do we care about switching to eg Fibbonaci heap?
-	let mut dist = HashMap::with_capacity(network.get_nodes().len());
-
-	// When arranging a route, we select multiple paths so that we can make a multi-path payment.
-	// Don't stop searching for paths when we think they're
-	// sufficient to transfer a given value aggregately.
-	// Search for higher value, so that we collect many more paths,
-	// and then select the best combination among them.
-	const ROUTE_CAPACITY_PROVISION_FACTOR: u64 = 3;
-	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
 
 	// Allow MPP only if we have a features set from somewhere that indicates the payee supports
 	// it. If the payee supports it they're supposed to include it in the invoice, so that should
@@ -414,25 +459,50 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// Prepare the data we'll use for payee-to-payer search by
 	// inserting first hops suggested by the caller as targets.
 	// Our search will then attempt to reach them while traversing from the payee node.
-	let mut first_hop_targets = HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
+	let mut first_hop_targets: HashMap<_, (_, ChannelFeatures, _, NodeFeatures)> =
+		HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
 		for chan in hops {
 			let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
 			if chan.remote_network_id == *our_node_id {
 				return Err(LightningError{err: "First hop cannot have our_node_id as a destination.".to_owned(), action: ErrorAction::IgnoreError});
 			}
-			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.clone(), chan.outbound_capacity_msat));
+			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.to_context(), chan.outbound_capacity_msat, chan.counterparty_features.to_context()));
 		}
 		if first_hop_targets.is_empty() {
 			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
 		}
 	}
 
+	let empty_channel_features = ChannelFeatures::empty();
+
+	// The main heap containing all candidate next-hops sorted by their score (max(A* fee,
+	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
+	// adding duplicate entries when we find a better path to a given node.
+	let mut targets = BinaryHeap::new();
+
+	// Map from node_id to information about the best current path to that node, including feerate
+	// information.
+	let mut dist = HashMap::with_capacity(network.get_nodes().len());
+
+	// During routing, if we ignore a path due to an htlc_minimum_msat limit, we set this,
+	// indicating that we may wish to try again with a higher value, potentially paying to meet an
+	// htlc_minimum with extra fees while still finding a cheaper path.
+	let mut hit_minimum_limit;
+
+	// When arranging a route, we select multiple paths so that we can make a multi-path payment.
+	// We start with a path_value of the exact amount we want, and if that generates a route we may
+	// return it immediately. Otherwise, we don't stop searching for paths until we have 3x the
+	// amount we want in total across paths, selecting the best subset at the end.
+	const ROUTE_CAPACITY_PROVISION_FACTOR: u64 = 3;
+	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
+	let mut path_value_msat = final_value_msat;
+
 	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
 	// This map allows paths to be aware of the channel use by other paths in the same call.
 	// This would help to make a better path finding decisions and not "overbook" channels.
 	// It is unaware of the directions (except for `outbound_capacity_msat` in `first_hops`).
-	let mut bookkeeped_channels_liquidity_available_msat = HashMap::new();
+	let mut bookkeeped_channels_liquidity_available_msat = HashMap::with_capacity(network.get_nodes().len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
 	// - how much a new path should be transferring (upper bound);
@@ -448,7 +518,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
 		// since that value has to be transferred over this channel.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr,
-		   $next_hops_value_contribution: expr ) => {
+		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => {
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
 			// practice these cases should be caught earlier:
 			// - for regular channels at channel announcement (TODO)
@@ -515,18 +585,27 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 						// Can't overflow due to how the values were computed right above.
 						None => unreachable!(),
 					};
+					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
+					let over_path_minimum_msat = amount_to_transfer_over_msat >= $directional_info.htlc_minimum_msat &&
+						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
 
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
 					// bother considering this channel.
 					// Since we're choosing amount_to_transfer_over_msat as maximum possible, it can
 					// be only reduced later (not increased), so this channel should just be skipped
 					// as not sufficient.
-					// TODO: Explore simply adding fee to hit htlc_minimum_msat
-					if contributes_sufficient_value && amount_to_transfer_over_msat >= $directional_info.htlc_minimum_msat {
+					if !over_path_minimum_msat {
+						hit_minimum_limit = true;
+					} else if contributes_sufficient_value {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute path
 						// path fees knowing the final path contribution after constructing it.
+						let path_htlc_minimum_msat = match compute_fees($next_hops_path_htlc_minimum_msat, $directional_info.fees)
+								.map(|fee_msat| fee_msat.checked_add($next_hops_path_htlc_minimum_msat)) {
+							Some(Some(value_msat)) => cmp::max(value_msat, $directional_info.htlc_minimum_msat),
+							_ => u64::max_value()
+						};
 						let hm_entry = dist.entry(&$src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							// If there was previously no known way to access
@@ -541,14 +620,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								fee_proportional_millionths = fees.proportional_millionths;
 							}
 							PathBuildingHop {
-								route_hop: RouteHop {
-									pubkey: $dest_node_id.clone(),
-									node_features: NodeFeatures::empty(),
-									short_channel_id: 0,
-									channel_features: $chan_features.clone(),
-									fee_msat: 0,
-									cltv_expiry_delta: 0,
-								},
+								pubkey: $dest_node_id.clone(),
+								short_channel_id: 0,
+								channel_features: $chan_features,
+								fee_msat: 0,
+								cltv_expiry_delta: 0,
 								src_lowest_inbound_fees: RoutingFees {
 									base_msat: fee_base_msat,
 									proportional_millionths: fee_proportional_millionths,
@@ -558,92 +634,128 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								hop_use_fee_msat: u64::max_value(),
 								total_fee_msat: u64::max_value(),
 								htlc_minimum_msat: $directional_info.htlc_minimum_msat,
+								path_htlc_minimum_msat,
+								was_processed: false,
+								#[cfg(any(test, feature = "fuzztarget"))]
+								value_contribution_msat,
 							}
 						});
 
-						let mut hop_use_fee_msat = 0;
-						let mut total_fee_msat = $next_hops_fee_msat;
+						#[allow(unused_mut)] // We only use the mut in cfg(test)
+						let mut should_process = !old_entry.was_processed;
+						#[cfg(any(test, feature = "fuzztarget"))]
+						{
+							// In test/fuzzing builds, we do extra checks to make sure the skipping
+							// of already-seen nodes only happens in cases we expect (see below).
+							if !should_process { should_process = true; }
+						}
 
-						// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
-						// will have the same effective-fee
-						if $src_node_id != *our_node_id {
-							match compute_fees(amount_to_transfer_over_msat, $directional_info.fees) {
-								// max_value means we'll always fail
-								// the old_entry.total_fee_msat > total_fee_msat check
-								None => total_fee_msat = u64::max_value(),
-								Some(fee_msat) => {
-									hop_use_fee_msat = fee_msat;
-									total_fee_msat += hop_use_fee_msat;
-									if let Some(prev_hop_fee_msat) = compute_fees(total_fee_msat + amount_to_transfer_over_msat,
-																				old_entry.src_lowest_inbound_fees) {
-										if let Some(incremented_total_fee_msat) = total_fee_msat.checked_add(prev_hop_fee_msat) {
-											total_fee_msat = incremented_total_fee_msat;
-										}
-										else {
-											// max_value means we'll always fail
-											// the old_entry.total_fee_msat > total_fee_msat check
-											total_fee_msat = u64::max_value();
-										}
-									} else {
-										// max_value means we'll always fail
-										// the old_entry.total_fee_msat > total_fee_msat check
-										total_fee_msat = u64::max_value();
+						if should_process {
+							let mut hop_use_fee_msat = 0;
+							let mut total_fee_msat = $next_hops_fee_msat;
+
+							// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
+							// will have the same effective-fee
+							if $src_node_id != *our_node_id {
+								match compute_fees(amount_to_transfer_over_msat, $directional_info.fees) {
+									// max_value means we'll always fail
+									// the old_entry.total_fee_msat > total_fee_msat check
+									None => total_fee_msat = u64::max_value(),
+									Some(fee_msat) => {
+										hop_use_fee_msat = fee_msat;
+										total_fee_msat += hop_use_fee_msat;
+										// When calculating the lowest inbound fees to a node, we
+										// calculate fees here not based on the actual value we think
+										// will flow over this channel, but on the minimum value that
+										// we'll accept flowing over it. The minimum accepted value
+										// is a constant through each path collection run, ensuring
+										// consistent basis. Otherwise we may later find a
+										// different path to the source node that is more expensive,
+										// but which we consider to be cheaper because we are capacity
+										// constrained and the relative fee becomes lower.
+										match compute_fees(minimal_value_contribution_msat, old_entry.src_lowest_inbound_fees)
+												.map(|a| a.checked_add(total_fee_msat)) {
+											Some(Some(v)) => {
+												total_fee_msat = v;
+											},
+											_ => {
+												total_fee_msat = u64::max_value();
+											}
+										};
 									}
 								}
 							}
-						}
 
-						let new_graph_node = RouteGraphNode {
-							pubkey: $src_node_id,
-							lowest_fee_to_peer_through_node: total_fee_msat,
-							lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
-							value_contribution_msat: value_contribution_msat,
-						};
-
-						// Update the way of reaching $src_node_id with the given $chan_id (from $dest_node_id),
-						// if this way is cheaper than the already known
-						// (considering the cost to "reach" this channel from the route destination,
-						// the cost of using this channel,
-						// and the cost of routing to the source node of this channel).
-						// Also, consider that htlc_minimum_msat_difference, because we might end up
-						// paying it. Consider the following exploit:
-						// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
-						// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
-						// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
-						// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
-						// to this channel.
-						// TODO: this scoring could be smarter (e.g. 0.5*htlc_minimum_msat here).
-						let mut old_cost = old_entry.total_fee_msat;
-						if let Some(increased_old_cost) = old_cost.checked_add(old_entry.htlc_minimum_msat) {
-							old_cost = increased_old_cost;
-						} else {
-							old_cost = u64::max_value();
-						}
-
-						let mut new_cost = total_fee_msat;
-						if let Some(increased_new_cost) = new_cost.checked_add($directional_info.htlc_minimum_msat) {
-							new_cost = increased_new_cost;
-						} else {
-							new_cost = u64::max_value();
-						}
-
-						if new_cost < old_cost {
-							targets.push(new_graph_node);
-							old_entry.next_hops_fee_msat = $next_hops_fee_msat;
-							old_entry.hop_use_fee_msat = hop_use_fee_msat;
-							old_entry.total_fee_msat = total_fee_msat;
-							old_entry.route_hop = RouteHop {
-								pubkey: $dest_node_id.clone(),
-								node_features: NodeFeatures::empty(),
-								short_channel_id: $chan_id.clone(),
-								channel_features: $chan_features.clone(),
-								fee_msat: 0, // This value will be later filled with hop_use_fee_msat of the following channel
-								cltv_expiry_delta: $directional_info.cltv_expiry_delta as u32,
+							let new_graph_node = RouteGraphNode {
+								pubkey: $src_node_id,
+								lowest_fee_to_peer_through_node: total_fee_msat,
+								lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
+								value_contribution_msat: value_contribution_msat,
+								path_htlc_minimum_msat,
 							};
-							old_entry.channel_fees = $directional_info.fees;
-							// It's probably fine to replace the old entry, because the new one
-							// passed the htlc_minimum-related checks above.
-							old_entry.htlc_minimum_msat = $directional_info.htlc_minimum_msat;
+
+							// Update the way of reaching $src_node_id with the given $chan_id (from $dest_node_id),
+							// if this way is cheaper than the already known
+							// (considering the cost to "reach" this channel from the route destination,
+							// the cost of using this channel,
+							// and the cost of routing to the source node of this channel).
+							// Also, consider that htlc_minimum_msat_difference, because we might end up
+							// paying it. Consider the following exploit:
+							// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
+							// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
+							// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
+							// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
+							// to this channel.
+							// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
+							// but it may require additional tracking - we don't want to double-count
+							// the fees included in $next_hops_path_htlc_minimum_msat, but also
+							// can't use something that may decrease on future hops.
+							let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat);
+							let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat);
+
+							if !old_entry.was_processed && new_cost < old_cost {
+								targets.push(new_graph_node);
+								old_entry.next_hops_fee_msat = $next_hops_fee_msat;
+								old_entry.hop_use_fee_msat = hop_use_fee_msat;
+								old_entry.total_fee_msat = total_fee_msat;
+								old_entry.pubkey = $dest_node_id.clone();
+								old_entry.short_channel_id = $chan_id.clone();
+								old_entry.channel_features = $chan_features;
+								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
+								old_entry.cltv_expiry_delta = $directional_info.cltv_expiry_delta as u32;
+								old_entry.channel_fees = $directional_info.fees;
+								old_entry.htlc_minimum_msat = $directional_info.htlc_minimum_msat;
+								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
+								#[cfg(any(test, feature = "fuzztarget"))]
+								{
+									old_entry.value_contribution_msat = value_contribution_msat;
+								}
+							} else if old_entry.was_processed && new_cost < old_cost {
+								#[cfg(any(test, feature = "fuzztarget"))]
+								{
+									// If we're skipping processing a node which was previously
+									// processed even though we found another path to it with a
+									// cheaper fee, check that it was because the second path we
+									// found (which we are processing now) has a lower value
+									// contribution due to an HTLC minimum limit.
+									//
+									// e.g. take a graph with two paths from node 1 to node 2, one
+									// through channel A, and one through channel B. Channel A and
+									// B are both in the to-process heap, with their scores set by
+									// a higher htlc_minimum than fee.
+									// Channel A is processed first, and the channels onwards from
+									// node 1 are added to the to-process heap. Thereafter, we pop
+									// Channel B off of the heap, note that it has a much more
+									// restrictive htlc_maximum_msat, and recalculate the fees for
+									// all of node 1's channels using the new, reduced, amount.
+									//
+									// This would be bogus - we'd be selecting a higher-fee path
+									// with a lower htlc_maximum_msat instead of the one we'd
+									// already decided to use.
+									debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
+									debug_assert!(value_contribution_msat < old_entry.value_contribution_msat);
+								}
+							}
 						}
 					}
 				}
@@ -651,47 +763,60 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		};
 	}
 
+	let empty_node_features = NodeFeatures::empty();
 	// Find ways (channels with destination) to reach a given node and store them
 	// in the corresponding data structures (routing graph etc).
 	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr ) => {
-			if first_hops.is_some() {
-				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat)) = first_hop_targets.get(&$node_id) {
-					add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features.to_context(), $fee_to_target_msat, $next_hops_value_contribution);
-				}
-			}
-
-			let features;
-			if let Some(node_info) = $node.announcement_info.as_ref() {
-				features = node_info.features.clone();
+		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => {
+			let skip_node = if let Some(elem) = dist.get_mut($node_id) {
+				let was_processed = elem.was_processed;
+				elem.was_processed = true;
+				was_processed
 			} else {
-				features = NodeFeatures::empty();
-			}
+				// Entries are added to dist in add_entry!() when there is a channel from a node.
+				// Because there are no channels from payee, it will not have a dist entry at this point.
+				// If we're processing any other node, it is always be the result of a channel from it.
+				assert_eq!($node_id, payee);
+				false
+			};
 
-			if !features.requires_unknown_bits() {
-				for chan_id in $node.channels.iter() {
-					let chan = network.get_channels().get(chan_id).unwrap();
-					if !chan.features.requires_unknown_bits() {
-						if chan.node_one == *$node_id {
-							// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-							if first_hops.is_none() || chan.node_two != *our_node_id {
-								if let Some(two_to_one) = chan.two_to_one.as_ref() {
-									if two_to_one.enabled {
-										add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, chan.features, $fee_to_target_msat, $next_hops_value_contribution);
+			if !skip_node {
+				if first_hops.is_some() {
+					if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&$node_id) {
+						add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
+					}
+				}
+
+				let features = if let Some(node_info) = $node.announcement_info.as_ref() {
+					&node_info.features
+				} else {
+					&empty_node_features
+				};
+
+				if !features.requires_unknown_bits() {
+					for chan_id in $node.channels.iter() {
+						let chan = network.get_channels().get(chan_id).unwrap();
+						if !chan.features.requires_unknown_bits() {
+							if chan.node_one == *$node_id {
+								// ie $node is one, ie next hop in A* is two, via the two_to_one channel
+								if first_hops.is_none() || chan.node_two != *our_node_id {
+									if let Some(two_to_one) = chan.two_to_one.as_ref() {
+										if two_to_one.enabled {
+											add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
+										}
 									}
 								}
-							}
-						} else {
-							if first_hops.is_none() || chan.node_one != *our_node_id {
-								if let Some(one_to_two) = chan.one_to_two.as_ref() {
-									if one_to_two.enabled {
-										add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, chan.features, $fee_to_target_msat, $next_hops_value_contribution);
+							} else {
+								if first_hops.is_none() || chan.node_one != *our_node_id {
+									if let Some(one_to_two) = chan.one_to_two.as_ref() {
+										if one_to_two.enabled {
+											add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
+										}
 									}
 								}
-
 							}
 						}
 					}
@@ -709,12 +834,13 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// the further iterations of path finding. Also don't erase first_hop_targets.
 		targets.clear();
 		dist.clear();
+		hit_minimum_limit = false;
 
 		// If first hop is a private channel and the only way to reach the payee, this is the only
 		// place where it could be added.
 		if first_hops.is_some() {
-			if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat)) = first_hop_targets.get(&payee) {
-				add_entry!(first_hop, *our_node_id, payee, dummy_directional_info, Some(outbound_capacity_msat / 1000), features.to_context(), 0, recommended_value_msat);
+			if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&payee) {
+				add_entry!(first_hop, *our_node_id, payee, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
 			}
 		}
 
@@ -727,7 +853,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, 0, recommended_value_msat);
+				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0);
 			},
 		}
 
@@ -737,7 +863,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// it matters only if the fees are exactly the same.
 		for hop in last_hops.iter() {
 			let have_hop_src_in_graph =
-				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat)) = first_hop_targets.get(&hop.src_node_id) {
+				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
 					// If this hop connects to a node with which we have a direct channel, ignore
 					// the network graph and add both the hop and our direct channel to
 					// the candidate set.
@@ -746,7 +872,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// bit lazy here. In the future, we should pull them out via our
 					// ChannelManager, but there's no reason to waste the space until we
 					// need them.
-					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features.to_context(), 0, recommended_value_msat);
+					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
 					true
 				} else {
 					// In any other case, only add the hop if the source is in the regular network
@@ -766,7 +892,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					htlc_maximum_msat: hop.htlc_maximum_msat,
 					fees: hop.fees,
 				};
-				add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, None::<u64>, ChannelFeatures::empty(), 0, recommended_value_msat);
+				add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, None::<u64>, &empty_channel_features, 0, path_value_msat, 0);
 			}
 		}
 
@@ -783,40 +909,40 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, value_contribution_msat, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
 			if pubkey == *our_node_id {
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
-				let mut ordered_hops = vec!(new_entry.clone());
+				let mut ordered_hops = vec!((new_entry.clone(), NodeFeatures::empty()));
 
 				'path_walk: loop {
-					if let Some(&(_, ref features, _)) = first_hop_targets.get(&ordered_hops.last().unwrap().route_hop.pubkey) {
-						ordered_hops.last_mut().unwrap().route_hop.node_features = features.to_context();
-					} else if let Some(node) = network.get_nodes().get(&ordered_hops.last().unwrap().route_hop.pubkey) {
+					if let Some(&(_, _, _, ref features)) = first_hop_targets.get(&ordered_hops.last().unwrap().0.pubkey) {
+						ordered_hops.last_mut().unwrap().1 = features.clone();
+					} else if let Some(node) = network.get_nodes().get(&ordered_hops.last().unwrap().0.pubkey) {
 						if let Some(node_info) = node.announcement_info.as_ref() {
-							ordered_hops.last_mut().unwrap().route_hop.node_features = node_info.features.clone();
+							ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
 						} else {
-							ordered_hops.last_mut().unwrap().route_hop.node_features = NodeFeatures::empty();
+							ordered_hops.last_mut().unwrap().1 = NodeFeatures::empty();
 						}
 					} else {
 						// We should be able to fill in features for everything except the last
 						// hop, if the last hop was provided via a BOLT 11 invoice (though we
 						// should be able to extend it further as BOLT 11 does have feature
 						// flags for the last hop node itself).
-						assert!(ordered_hops.last().unwrap().route_hop.pubkey == *payee);
+						assert!(ordered_hops.last().unwrap().0.pubkey == *payee);
 					}
 
 					// Means we succesfully traversed from the payer to the payee, now
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
-					if ordered_hops.last().unwrap().route_hop.pubkey == *payee {
+					if ordered_hops.last().unwrap().0.pubkey == *payee {
 						break 'path_walk;
 					}
 
-					new_entry = match dist.remove(&ordered_hops.last().unwrap().route_hop.pubkey) {
+					new_entry = match dist.remove(&ordered_hops.last().unwrap().0.pubkey) {
 						Some(payment_hop) => payment_hop,
 						// We can't arrive at None because, if we ever add an entry to targets,
 						// we also fill in the entry in dist (see add_entry!).
@@ -825,13 +951,13 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// We "propagate" the fees one hop backward (topologically) here,
 					// so that fees paid for a HTLC forwarding on the current channel are
 					// associated with the previous channel (where they will be subtracted).
-					ordered_hops.last_mut().unwrap().route_hop.fee_msat = new_entry.hop_use_fee_msat;
-					ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = new_entry.route_hop.cltv_expiry_delta;
-					ordered_hops.push(new_entry.clone());
+					ordered_hops.last_mut().unwrap().0.fee_msat = new_entry.hop_use_fee_msat;
+					ordered_hops.last_mut().unwrap().0.cltv_expiry_delta = new_entry.cltv_expiry_delta;
+					ordered_hops.push((new_entry.clone(), NodeFeatures::empty()));
 				}
-				ordered_hops.last_mut().unwrap().route_hop.fee_msat = value_contribution_msat;
-				ordered_hops.last_mut().unwrap().hop_use_fee_msat = 0;
-				ordered_hops.last_mut().unwrap().route_hop.cltv_expiry_delta = final_cltv;
+				ordered_hops.last_mut().unwrap().0.fee_msat = value_contribution_msat;
+				ordered_hops.last_mut().unwrap().0.hop_use_fee_msat = 0;
+				ordered_hops.last_mut().unwrap().0.cltv_expiry_delta = final_cltv;
 
 				let mut payment_path = PaymentPath {hops: ordered_hops};
 
@@ -840,7 +966,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// on some channels we already passed (assuming dest->source direction). Here, we
 				// recompute the fees again, so that if that's the case, we match the currently
 				// underpaid htlc_minimum_msat with fees.
-				payment_path.update_value_and_recompute_fees(value_contribution_msat);
+				payment_path.update_value_and_recompute_fees(cmp::min(value_contribution_msat, final_value_msat));
 
 				// Since a path allows to transfer as much value as
 				// the smallest channel it has ("bottleneck"), we should recompute
@@ -851,18 +977,28 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// might have been computed considering a larger value.
 				// Remember that we used these channels so that we don't rely
 				// on the same liquidity in future paths.
-				for payment_hop in payment_path.hops.iter() {
-					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.route_hop.short_channel_id).unwrap();
+				let mut prevented_redundant_path_selection = false;
+				for (payment_hop, _) in payment_path.hops.iter() {
+					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.short_channel_id).unwrap();
 					let mut spent_on_hop_msat = value_contribution_msat;
 					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
 					spent_on_hop_msat += next_hops_fee_msat;
-					if *channel_liquidity_available_msat < spent_on_hop_msat {
-						// This should not happen because we do recompute fees right before,
-						// trying to avoid cases when a hop is not usable due to the fee situation.
-						break 'path_construction;
+					if spent_on_hop_msat == *channel_liquidity_available_msat {
+						// If this path used all of this channel's available liquidity, we know
+						// this path will not be selected again in the next loop iteration.
+						prevented_redundant_path_selection = true;
 					}
 					*channel_liquidity_available_msat -= spent_on_hop_msat;
 				}
+				if !prevented_redundant_path_selection {
+					// If we weren't capped by hitting a liquidity limit on a channel in the path,
+					// we'll probably end up picking the same path again on the next iteration.
+					// Decrease the available liquidity of a hop in the middle of the path.
+					let victim_liquidity = bookkeeped_channels_liquidity_available_msat.get_mut(
+						&payment_path.hops[(payment_path.hops.len() - 1) / 2].0.short_channel_id).unwrap();
+					*victim_liquidity = 0;
+				}
+
 				// Track the total amount all our collected paths allow to send so that we:
 				// - know when to stop looking for more paths
 				// - know which of the hops are useless considering how much more sats we need
@@ -874,13 +1010,18 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				break 'path_construction;
 			}
 
+			// If we found a path back to the payee, we shouldn't try to process it again. This is
+			// the equivalent of the `elem.was_processed` check in
+			// add_entries_to_cheapest_to_target_node!() (see comment there for more info).
+			if pubkey == *payee { continue 'path_construction; }
+
 			// Otherwise, since the current target node is not us,
 			// keep "unrolling" the payment graph from payee to payer by
 			// finding a way to reach the current target from the payer side.
 			match network.get_nodes().get(&pubkey) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat);
+					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat);
 				},
 			}
 		}
@@ -891,12 +1032,22 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		}
 
 		// Step (3).
-		// Stop either when recommended value is reached,
-		// or if during last iteration no new path was found.
-		// In the latter case, making another path finding attempt could not help,
-		// because we deterministically terminate the search due to low liquidity.
+		// Stop either when the recommended value is reached or if no new path was found in this
+		// iteration.
+		// In the latter case, making another path finding attempt won't help,
+		// because we deterministically terminated the search due to low liquidity.
 		if already_collected_value_msat >= recommended_value_msat || !found_new_path {
 			break 'paths_collection;
+		} else if found_new_path && already_collected_value_msat == final_value_msat && payment_paths.len() == 1 {
+			// Further, if this was our first walk of the graph, and we weren't limited by an
+			// htlc_minimum_msat, return immediately because this path should suffice. If we were
+			// limited by an htlc_minimum_msat value, find another path with a higher value,
+			// potentially allowing us to pay fees to meet the htlc_minimum on the new path while
+			// still keeping a lower total fee than this path.
+			if !hit_minimum_limit {
+				break 'paths_collection;
+			}
+			path_value_msat = recommended_value_msat;
 		}
 	}
 
@@ -969,7 +1120,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// Now, substract the overpaid value from the most-expensive path.
 				// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
 				// so that the sender pays less fees overall. And also htlc_minimum_msat.
-				cur_route.sort_by_key(|path| { path.hops.iter().map(|hop| hop.channel_fees.proportional_millionths as u64).sum::<u64>() });
+				cur_route.sort_by_key(|path| { path.hops.iter().map(|hop| hop.0.channel_fees.proportional_millionths as u64).sum::<u64>() });
 				let expensive_payment_path = cur_route.first_mut().unwrap();
 				// We already dropped all the small channels above, meaning all the
 				// remaining channels are larger than remaining overpaid_value_msat.
@@ -987,7 +1138,16 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
 	let mut selected_paths = Vec::<Vec<RouteHop>>::new();
 	for payment_path in drawn_routes.first().unwrap() {
-		selected_paths.push(payment_path.hops.iter().map(|payment_hop| payment_hop.route_hop.clone()).collect());
+		selected_paths.push(payment_path.hops.iter().map(|(payment_hop, node_features)| {
+			RouteHop {
+				pubkey: payment_hop.pubkey,
+				node_features: node_features.clone(),
+				short_channel_id: payment_hop.short_channel_id,
+				channel_features: payment_hop.channel_features.clone(),
+				fee_msat: payment_hop.fee_msat,
+				cltv_expiry_delta: payment_hop.cltv_expiry_delta,
+			}
+		}).collect());
 	}
 
 	if let Some(features) = &payee_features {
@@ -3400,6 +3560,361 @@ mod tests {
 			assert_eq!(total_amount_paid_msat, 90_000);
 		}
 	}
+
+	#[test]
+	fn min_criteria_consistency() {
+		// Test that we don't use an inconsistent metric between updating and walking nodes during
+		// our Dijkstra's pass. In the initial version of MPP, the "best source" for a given node
+		// was updated with a different criterion from the heap sorting, resulting in loops in
+		// calculated paths. We test for that specific case here.
+
+		// We construct a network that looks like this:
+		//
+		//            node2 -1(3)2- node3
+		//              2          2
+		//               (2)     (4)
+		//                  1   1
+		//    node1 -1(5)2- node4 -1(1)2- node6
+		//    2
+		//   (6)
+		//	  1
+		// our_node
+		//
+		// We create a loop on the side of our real path - our destination is node 6, with a
+		// previous hop of node 4. From 4, the cheapest previous path is channel 2 from node 2,
+		// followed by node 3 over channel 3. Thereafter, the cheapest next-hop is back to node 4
+		// (this time over channel 4). Channel 4 has 0 htlc_minimum_msat whereas channel 1 (the
+		// other channel with a previous-hop of node 4) has a high (but irrelevant to the overall
+		// payment) htlc_minimum_msat. In the original algorithm, this resulted in node4's
+		// "previous hop" being set to node 3, creating a loop in the path.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (6 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 5,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (5 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 100,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (4 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[3], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (3 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (2 << 8) | 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		add_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[4], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 1,
+			flags: 0,
+			cltv_expiry_delta: (1 << 8) | 0,
+			htlc_minimum_msat: 100,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[6], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
+
+		{
+			// Now ensure the route flows simply over nodes 1 and 4 to 6.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &Vec::new(), 10_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			assert_eq!(route.paths[0].len(), 3);
+
+			assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+			assert_eq!(route.paths[0][0].short_channel_id, 6);
+			assert_eq!(route.paths[0][0].fee_msat, 100);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (5 << 8) | 0);
+			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(1));
+			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(6));
+
+			assert_eq!(route.paths[0][1].pubkey, nodes[4]);
+			assert_eq!(route.paths[0][1].short_channel_id, 5);
+			assert_eq!(route.paths[0][1].fee_msat, 0);
+			assert_eq!(route.paths[0][1].cltv_expiry_delta, (1 << 8) | 0);
+			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(4));
+			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(5));
+
+			assert_eq!(route.paths[0][2].pubkey, nodes[6]);
+			assert_eq!(route.paths[0][2].short_channel_id, 1);
+			assert_eq!(route.paths[0][2].fee_msat, 10_000);
+			assert_eq!(route.paths[0][2].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
+			assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(1));
+		}
+	}
+
+
+	#[test]
+	fn exact_fee_liquidity_limit() {
+		// Test that if, while walking the graph, we find a hop that has exactly enough liquidity
+		// for us, including later hop fees, we take it. In the first version of our MPP algorithm
+		// we calculated fees on a higher value, resulting in us ignoring such paths.
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, _, nodes) = get_nodes(&secp_ctx);
+
+		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
+		// send.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(85_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 12,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: (4 << 8) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(270_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 1000000,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Now, attempt to route 90 sats, which is exactly 90 sats at the last hop, plus the
+			// 200% fee charged channel 13 in the 1-to-2 direction.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, None, &Vec::new(), 90_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			assert_eq!(route.paths[0].len(), 2);
+
+			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
+			assert_eq!(route.paths[0][0].short_channel_id, 12);
+			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
+			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
+
+			assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+			assert_eq!(route.paths[0][1].short_channel_id, 13);
+			assert_eq!(route.paths[0][1].fee_msat, 90_000);
+			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+		}
+	}
+
+	#[test]
+	fn htlc_max_reduction_below_min() {
+		// Test that if, while walking the graph, we reduce the value being sent to meet an
+		// htlc_maximum_msat, we don't end up undershooting a later htlc_minimum_msat. In the
+		// initial version of MPP we'd accept such routes but reject them while recalculating fees,
+		// resulting in us thinking there is no possible path, even if other paths exist.
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		// We modify the graph to set the htlc_minimum of channel 2 and 4 as needed - channel 2
+		// gets an htlc_maximum_msat of 80_000 and channel 4 an htlc_minimum_msat of 90_000. We
+		// then try to send 90_000.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(80_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: (4 << 8) | 1,
+			htlc_minimum_msat: 90_000,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		{
+			// Now, attempt to route 90 sats, hitting the htlc_minimum on channel 4, but
+			// overshooting the htlc_maximum on channel 2. Thus, we should pick the (absurdly
+			// expensive) channels 12-13 path.
+			let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], Some(InvoiceFeatures::known()), None, &Vec::new(), 90_000, 42, Arc::clone(&logger)).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			assert_eq!(route.paths[0].len(), 2);
+
+			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
+			assert_eq!(route.paths[0][0].short_channel_id, 12);
+			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
+			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
+
+			assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+			assert_eq!(route.paths[0][1].short_channel_id, 13);
+			assert_eq!(route.paths[0][1].fee_msat, 90_000);
+			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
+			assert_eq!(route.paths[0][1].node_features.le_flags(), InvoiceFeatures::known().le_flags());
+			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
+		}
+	}
+
+	use std::fs::File;
+	use util::ser::Readable;
+	/// Tries to open a network graph file, or panics with a URL to fetch it.
+	pub(super) fn get_route_file() -> Result<std::fs::File, std::io::Error> {
+		let res = File::open("net_graph-2021-02-12.bin") // By default we're run in RL/lightning
+			.or_else(|_| File::open("lightning/net_graph-2021-02-12.bin")) // We may be run manually in RL/
+			.or_else(|_| { // Fall back to guessing based on the binary location
+				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
+				let mut path = std::env::current_exe().unwrap();
+				path.pop(); // lightning-...
+				path.pop(); // deps
+				path.pop(); // debug
+				path.pop(); // target
+				path.push("lightning");
+				path.push("net_graph-2021-02-12.bin");
+				eprintln!("{}", path.to_str().unwrap());
+				File::open(path)
+			});
+		#[cfg(require_route_graph_test)]
+		return Ok(res.expect("Didn't have route graph and was configured to require it"));
+		res
+	}
+
+	pub(super) fn random_init_seed() -> u64 {
+		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
+		use std::hash::{BuildHasher, Hasher};
+		let seed = std::collections::hash_map::RandomState::new().build_hasher().finish();
+		println!("Using seed of {}", seed);
+		seed
+	}
+
+	#[test]
+	fn generate_routes() {
+		let mut d = match get_route_file() {
+			Ok(f) => f,
+			Err(_) => {
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				return;
+			},
+		};
+		let graph = NetworkGraph::read(&mut d).unwrap();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut seed = random_init_seed() as usize;
+		'load_endpoints: for _ in 0..10 {
+			loop {
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let src = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let dst = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				let amt = seed as u64 % 200_000_000;
+				if get_route(src, &graph, dst, None, None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
+					continue 'load_endpoints;
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn generate_routes_mpp() {
+		let mut d = match get_route_file() {
+			Ok(f) => f,
+			Err(_) => {
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				return;
+			},
+		};
+		let graph = NetworkGraph::read(&mut d).unwrap();
+
+		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut seed = random_init_seed() as usize;
+		'load_endpoints: for _ in 0..10 {
+			loop {
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let src = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				seed = seed.overflowing_mul(0xdeadbeef).0;
+				let dst = graph.get_nodes().keys().skip(seed % graph.get_nodes().len()).next().unwrap();
+				let amt = seed as u64 % 200_000_000;
+				if get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
+					continue 'load_endpoints;
+				}
+			}
+		}
+	}
 }
 
 #[cfg(all(test, feature = "unstable"))]
@@ -3417,7 +3932,8 @@ mod benches {
 
 	#[bench]
 	fn generate_routes(bench: &mut Bencher) {
-		let mut d = File::open("net_graph-2021-02-12.bin").expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+		let mut d = tests::get_route_file()
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
@@ -3448,7 +3964,8 @@ mod benches {
 
 	#[bench]
 	fn generate_mpp_routes(bench: &mut Bencher) {
-		let mut d = File::open("net_graph-2021-02-12.bin").expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+		let mut d = tests::get_route_file()
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
