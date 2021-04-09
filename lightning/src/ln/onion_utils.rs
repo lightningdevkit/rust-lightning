@@ -449,10 +449,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 						let (description, title) = errors::get_onion_error_description(error_code);
 						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-							log_warn!(logger, "Onion Error[{}({:#x}) {}({})] {}", title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
+							log_warn!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
 						}
 						else {
-							log_warn!(logger, "Onion Error[{}({:#x})] {}", title, error_code, description);
+							log_warn!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 						}
 					} else {
 						// Useless packet that we can't use but it passed HMAC, so it
