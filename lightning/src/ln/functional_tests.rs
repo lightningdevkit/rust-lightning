@@ -16,7 +16,7 @@ use chain::Watch;
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
-use chain::keysinterface::{Sign, KeysInterface};
+use chain::keysinterface::{KeysInterface, BaseSign};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channel::{Channel, ChannelError};

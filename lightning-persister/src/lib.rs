@@ -159,7 +159,7 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChannelSigner: Sign + Send + Sync> channelmonitor::Persist<ChannelSigner> for FilesystemPersister {
+impl<ChannelSigner: Sign> channelmonitor::Persist<ChannelSigner> for FilesystemPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
