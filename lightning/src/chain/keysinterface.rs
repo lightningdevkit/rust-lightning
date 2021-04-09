@@ -1048,3 +1048,9 @@ impl KeysInterface for KeysManager {
 		InMemorySigner::read(&mut std::io::Cursor::new(reader))
 	}
 }
+
+// Ensure that BaseSign can have a vtable
+#[test]
+pub fn dyn_sign() {
+	let _signer: Box<dyn BaseSign>;
+}
