@@ -338,7 +338,7 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 }
 
 /// Events which we process internally but cannot be procsesed immediately at the generation site
-/// for some reason. They are handled in timer_chan_freshness_every_min, so may be processed with
+/// for some reason. They are handled in timer_tick_occurred, so may be processed with
 /// quite some time lag.
 enum BackgroundEvent {
 	/// Handle a ChannelMonitorUpdate that closes a channel, broadcasting its current latest holder
@@ -403,7 +403,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// ChannelUpdate messages informing peers that the channel is temporarily disabled. To avoid
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
 /// offline for a full minute. In order to track this, you must call
-/// timer_chan_freshness_every_min roughly once per minute, though it doesn't have to be perfect.
+/// timer_tick_occurred roughly once per minute, though it doesn't have to be perfect.
 ///
 /// Rather than using a plain ChannelManager, it is preferable to use either a SimpleArcChannelManager
 /// a SimpleRefChannelManager, for conciseness. See their documentation for more details, but
@@ -1959,10 +1959,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		events.append(&mut new_events);
 	}
 
-	/// Free the background events, generally called from timer_chan_freshness_every_min.
+	/// Free the background events, generally called from timer_tick_occurred.
 	///
 	/// Exposed for testing to allow us to process events quickly without generating accidental
-	/// BroadcastChannelUpdate events in timer_chan_freshness_every_min.
+	/// BroadcastChannelUpdate events in timer_tick_occurred.
 	///
 	/// Expects the caller to have a total_consistency_lock read lock.
 	fn process_background_events(&self) {
@@ -1991,7 +1991,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// This method handles all the details, and must be called roughly once per minute.
 	///
 	/// Note that in some rare cases this may generate a `chain::Watch::update_channel` call.
-	pub fn timer_chan_freshness_every_min(&self) {
+	pub fn timer_tick_occurred(&self) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 		self.process_background_events();
 
@@ -3274,7 +3274,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// We cannot broadcast our latest local state via monitor update (as
 			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
 			// so we track the update internally and handle it when the user next calls
-			// timer_chan_freshness_every_min, guaranteeing we're running normally.
+			// timer_tick_occurred, guaranteeing we're running normally.
 			if let Some((funding_txo, update)) = failure.0.take() {
 				assert_eq!(update.updates.len(), 1);
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {

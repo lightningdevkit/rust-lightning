@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 /// * Monitoring whether the ChannelManager needs to be re-persisted to disk, and if so,
 ///   writing it to disk/backups by invoking the callback given to it at startup.
 ///   ChannelManager persistence should be done in the background.
-/// * Calling `ChannelManager::timer_chan_freshness_every_min()` every minute (can be done in the
+/// * Calling `ChannelManager::timer_tick_occurred()` every minute (can be done in the
 ///   background).
 ///
 /// Note that if ChannelManager persistence fails and the persisted manager becomes out-of-date,
@@ -102,8 +102,8 @@ impl BackgroundProcessor {
 					return Ok(());
 				}
 				if current_time.elapsed().as_secs() > CHAN_FRESHNESS_TIMER {
-					log_trace!(logger, "Calling manager's timer_chan_freshness_every_min");
-					channel_manager.timer_chan_freshness_every_min();
+					log_trace!(logger, "Calling manager's timer_tick_occurred");
+					channel_manager.timer_tick_occurred();
 					current_time = Instant::now();
 				}
 			}
@@ -294,8 +294,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_chan_freshness_called() {
-		// Test that ChannelManager's `timer_chan_freshness_every_min` is called every
+	fn test_timer_tick_called() {
+		// Test that ChannelManager's `timer_tick_occurred` is called every
 		// `CHAN_FRESHNESS_TIMER`.
 		let nodes = create_nodes(1, "test_chan_freshness_called".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
@@ -303,7 +303,7 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(callback, nodes[0].node.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
-			let desired_log = "Calling manager's timer_chan_freshness_every_min".to_string();
+			let desired_log = "Calling manager's timer_tick_occurred".to_string();
 			if log_entries.get(&("lightning_background_processor".to_string(), desired_log)).is_some() {
 				break
 			}
