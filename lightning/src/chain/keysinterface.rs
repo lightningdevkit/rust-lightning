@@ -226,7 +226,7 @@ impl Readable for SpendableOutputDescriptor {
 /// of LN security model, orthogonal of key management issues.
 // TODO: We should remove Clone by instead requesting a new Sign copy when we create
 // ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
-pub trait BaseSign : Send + Writeable {
+pub trait BaseSign : Send {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
@@ -349,7 +349,7 @@ pub trait BaseSign : Send + Writeable {
 /// Although we require signers to be cloneable, it may be useful for developers to be able to use
 /// signers in an un-sized way, for example as `dyn BaseSign`. Therefore we separate the Clone trait,
 /// which implies Sized, into this derived trait.
-pub trait Sign: BaseSign + Clone {
+pub trait Sign: BaseSign + Writeable + Clone {
 }
 
 /// A trait to describe an object which can get user secrets and key material.
