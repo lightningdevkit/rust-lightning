@@ -36,7 +36,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
-use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
@@ -322,8 +322,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
-				latest_hash: genesis_block(network).block_hash(),
-				latest_height: 0,
+				best_block: BestBlock::from_genesis(network),
 			};
 			(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
 			monitor, keys_manager)

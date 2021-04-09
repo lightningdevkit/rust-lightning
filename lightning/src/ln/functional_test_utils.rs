@@ -13,7 +13,7 @@
 use chain::{Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
-use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
+use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::InitFeatures;
@@ -1279,8 +1279,7 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 		let network = Network::Testnet;
 		let params = ChainParameters {
 			network,
-			latest_hash: genesis_block(network).header.block_hash(),
-			latest_height: 0,
+			best_block: BestBlock::from_genesis(network),
 		};
 		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, params);
 		chanmgrs.push(node);
