@@ -480,7 +480,7 @@ impl OnchainEventEntry {
 	}
 
 	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {
-		self.confirmation_threshold() == height
+		height >= self.confirmation_threshold()
 	}
 }
 
@@ -1874,9 +1874,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let mut watch_outputs = Vec::new();
 
 		macro_rules! wait_threshold_conf {
-			($height: expr, $source: expr, $commitment_tx: expr, $payment_hash: expr) => {
+			($source: expr, $commitment_tx: expr, $payment_hash: expr) => {
 				self.onchain_events_waiting_threshold_conf.retain(|ref entry| {
-					if entry.height != $height { return true; }
+					if entry.height != height { return true; }
 					match entry.event {
 						 OnchainEvent::HTLCUpdate { ref htlc_update } => {
 							 htlc_update.0 != $source
@@ -1925,7 +1925,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				for &(ref htlc, _, ref source) in &$holder_tx.htlc_outputs {
 					if htlc.transaction_output_index.is_none() {
 						if let &Some(ref source) = source {
-							wait_threshold_conf!(height, source.clone(), "lastest", htlc.payment_hash.clone());
+							wait_threshold_conf!(source.clone(), "lastest", htlc.payment_hash.clone());
 						}
 					}
 				}
@@ -2065,28 +2065,63 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			claimable_outpoints.append(&mut new_outpoints);
 		}
 
+		// Find which on-chain events have reached their confirmation threshold.
 		let onchain_events_waiting_threshold_conf =
 			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		let mut onchain_events_reaching_threshold_conf = Vec::new();
 		for entry in onchain_events_waiting_threshold_conf {
 			if entry.has_reached_confirmation_threshold(height) {
-				match entry.event {
-					OnchainEvent::HTLCUpdate { htlc_update } => {
-						log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
-						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-							payment_hash: htlc_update.1,
-							payment_preimage: None,
-							source: htlc_update.0,
-						}));
-					},
-					OnchainEvent::MaturingOutput { descriptor } => {
-						log_trace!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
-						self.pending_events.push(Event::SpendableOutputs {
-							outputs: vec![descriptor]
-						});
-					}
-				}
+				onchain_events_reaching_threshold_conf.push(entry);
 			} else {
 				self.onchain_events_waiting_threshold_conf.push(entry);
+			}
+		}
+
+		// Used to check for duplicate HTLC resolutions.
+		#[cfg(debug_assertions)]
+		let unmatured_htlcs: Vec<_> = self.onchain_events_waiting_threshold_conf
+			.iter()
+			.filter_map(|entry| match &entry.event {
+				OnchainEvent::HTLCUpdate { htlc_update } => Some(htlc_update.0.clone()),
+				OnchainEvent::MaturingOutput { .. } => None,
+			})
+			.collect();
+		#[cfg(debug_assertions)]
+		let mut matured_htlcs = Vec::new();
+
+		// Produce actionable events from on-chain events having reached their threshold.
+		for entry in onchain_events_reaching_threshold_conf.drain(..) {
+			match entry.event {
+				OnchainEvent::HTLCUpdate { htlc_update } => {
+					// Check for duplicate HTLC resolutions.
+					#[cfg(debug_assertions)]
+					{
+						debug_assert!(
+							unmatured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
+							"An unmature HTLC transaction conflicts with a maturing one; failed to \
+							 call block_disconnected for a block containing the conflicting \
+							 transaction.");
+						debug_assert!(
+							matured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
+							"A matured HTLC transaction conflicts with a maturing one; failed to \
+							 call block_disconnected for a block containing the conflicting \
+							 transaction.");
+						matured_htlcs.push(htlc_update.0.clone());
+					}
+
+					log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
+					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+						payment_hash: htlc_update.1,
+						payment_preimage: None,
+						source: htlc_update.0,
+					}));
+				},
+				OnchainEvent::MaturingOutput { descriptor } => {
+					log_trace!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
+					self.pending_events.push(Event::SpendableOutputs {
+						outputs: vec![descriptor]
+					});
+				}
 			}
 		}
 

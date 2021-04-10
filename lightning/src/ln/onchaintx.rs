@@ -54,7 +54,7 @@ impl OnchainEventEntry {
 	}
 
 	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {
-		self.confirmation_threshold() == height
+		height >= self.confirmation_threshold()
 	}
 }
 
