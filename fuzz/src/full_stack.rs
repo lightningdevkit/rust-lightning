@@ -52,7 +52,7 @@ use bitcoin::secp256k1::Secp256k1;
 use std::cell::RefCell;
 use std::collections::{HashMap, hash_map};
 use std::cmp;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 
 #[inline]
@@ -117,9 +117,13 @@ impl FeeEstimator for FuzzEstimator {
 	}
 }
 
-struct TestBroadcaster {}
+struct TestBroadcaster {
+	txn_broadcasted: Mutex<Vec<Transaction>>,
+}
 impl BroadcasterInterface for TestBroadcaster {
-	fn broadcast_transaction(&self, _tx: &Transaction) {}
+	fn broadcast_transaction(&self, tx: &Transaction) {
+		self.txn_broadcasted.lock().unwrap().push(tx.clone());
+	}
 }
 
 #[derive(Clone)]
@@ -342,7 +346,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		Err(_) => return,
 	};
 
-	let broadcast = Arc::new(TestBroadcaster{});
+	let broadcast = Arc::new(TestBroadcaster{ txn_broadcasted: Mutex::new(Vec::new()) });
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(), Arc::new(TestPersister{})));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
@@ -372,7 +376,6 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
-	let mut pending_funding_relay = Vec::new();
 
 	loop {
 		match get_slice!(1)[0] {
@@ -515,18 +518,19 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 							continue 'outer_loop;
 						}
 					};
-					channelmanager.funding_transaction_generated(&funding_generation.0, funding_output.clone());
+					channelmanager.funding_transaction_generated(&funding_generation.0, tx.clone()).unwrap();
 					pending_funding_signatures.insert(funding_output, tx);
 				}
 			},
 			11 => {
-				if !pending_funding_relay.is_empty() {
-					loss_detector.connect_block(&pending_funding_relay[..]);
+				let mut txn = broadcast.txn_broadcasted.lock().unwrap();
+				if !txn.is_empty() {
+					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
 						loss_detector.connect_block(&[]);
 					}
 				}
-				for tx in pending_funding_relay.drain(..) {
+				for tx in txn.drain(..) {
 					loss_detector.funding_txn.push(tx);
 				}
 			},
@@ -567,9 +571,6 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			match event {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
-				},
-				Event::FundingBroadcastSafe { funding_txo, .. } => {
-					pending_funding_relay.push(pending_funding_signatures.remove(&funding_txo).unwrap());
 				},
 				Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 					//TODO: enhance by fetching random amounts from fuzz input?

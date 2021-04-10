@@ -492,7 +492,7 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
 
-	node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
@@ -512,14 +512,11 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 	}
 
 	let events_4 = node_a.node.get_and_clear_pending_events();
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
-			assert_eq!(user_channel_id, 42);
-			assert_eq!(*funding_txo, funding_output);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	assert_eq!(events_4.len(), 0);
+
+	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+	node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	tx
 }

@@ -1825,7 +1825,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	let (temporary_channel_id, funding_tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 43);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
@@ -1846,14 +1846,9 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	check_added_monitors!(nodes[0], 0);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
-			assert_eq!(user_channel_id, 43);
-			assert_eq!(*funding_txo, funding_output);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	assert_eq!(events.len(), 0);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0].txid(), funding_output.txid);
 
 	if confirm_a_first {
 		confirm_transaction(&nodes[0], &funding_tx);

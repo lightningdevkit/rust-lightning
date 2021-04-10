@@ -466,7 +466,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
 
 	if steps & 0x0f == 3 { return; }
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -490,14 +490,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	}
 
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
-			assert_eq!(user_channel_id, 42);
-			assert_eq!(*funding_txo, funding_output);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	assert_eq!(events_4.len(), 0);
 
 	if steps & 0x0f == 6 { return; }
 	create_chan_between_nodes_with_value_confirm_first(&nodes[0], &nodes[1], &tx, 2);
@@ -4357,7 +4350,7 @@ fn test_manager_serialize_deserialize_events() {
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	// Start creating a channel, but stop right before broadcasting the event message FundingBroadcastSafe
+	// Start creating a channel, but stop right before broadcasting the funding transaction
 	let channel_value = 100000;
 	let push_msat = 10001;
 	let a_flags = InitFeatures::known();
@@ -4370,7 +4363,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, channel_value, 42);
 
-	node_a.node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
@@ -4388,7 +4381,7 @@ fn test_manager_serialize_deserialize_events() {
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
 	}
-	// Normally, this is where node_a would check for a FundingBroadcastSafe event, but the test de/serializes first instead
+	// Normally, this is where node_a would broadcast the funding transaction, but the test de/serializes first instead
 
 	nodes.push(node_a);
 	nodes.push(node_b);
@@ -4432,16 +4425,11 @@ fn test_manager_serialize_deserialize_events() {
 	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
 	nodes[0].node = &nodes_0_deserialized;
 
-	// After deserializing, make sure the FundingBroadcastSafe event is still held by the channel manager
+	// After deserializing, make sure the funding_transaction is still held by the channel manager
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
-			assert_eq!(user_channel_id, 42);
-			assert_eq!(*funding_txo, funding_output);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	assert_eq!(events_4.len(), 0);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].txid(), funding_output.txid);
 
 	// Make sure the channel is functioning as though the de/serialization never happened
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
@@ -8389,9 +8377,9 @@ fn test_pre_lockin_no_chan_closed_update() {
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
 
 	// Move the first channel through the funding flow...
-	let (temporary_channel_id, _tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -8673,7 +8661,7 @@ fn test_duplicate_chan_id() {
 	// Move the first channel through the funding flow...
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_output);
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -8722,7 +8710,7 @@ fn test_duplicate_chan_id() {
 		let mut a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
 		let mut as_chan = a_channel_lock.by_id.get_mut(&open_chan_2_msg.temporary_channel_id).unwrap();
 		let logger = test_utils::TestLogger::new();
-		as_chan.get_outbound_funding_created(funding_outpoint, &&logger).unwrap()
+		as_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap()
 	};
 	check_added_monitors!(nodes[0], 0);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
@@ -8756,14 +8744,9 @@ fn test_duplicate_chan_id() {
 	}
 
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events_4.len(), 1);
-	match events_4[0] {
-		Event::FundingBroadcastSafe { ref funding_txo, user_channel_id } => {
-			assert_eq!(user_channel_id, 42);
-			assert_eq!(*funding_txo, funding_output);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	assert_eq!(events_4.len(), 0);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].txid(), funding_output.txid);
 
 	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
@@ -8800,6 +8783,7 @@ fn test_error_chans_closed() {
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: chan_2.2, data: "ERR".to_owned() });
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], false);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 2);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_1.2 || nodes[0].node.list_usable_channels()[1].channel_id == chan_1.2);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2 || nodes[0].node.list_usable_channels()[1].channel_id == chan_3.2);

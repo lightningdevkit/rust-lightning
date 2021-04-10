@@ -16,7 +16,6 @@
 
 use ln::msgs;
 use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
-use chain::transaction::OutPoint;
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::ser::{Writeable, Writer, MaybeReadable, Readable};
 
@@ -46,16 +45,6 @@ pub enum Event {
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
 		output_script: Script,
-		/// The value passed in to ChannelManager::create_channel
-		user_channel_id: u64,
-	},
-	/// Used to indicate that the client may now broadcast the funding transaction it created for a
-	/// channel. Broadcasting such a transaction prior to this event may lead to our counterparty
-	/// trivially stealing all funds in the funding transaction!
-	FundingBroadcastSafe {
-		/// The output, which was passed to ChannelManager::funding_transaction_generated, which is
-		/// now safe to broadcast.
-		funding_txo: OutPoint,
 		/// The value passed in to ChannelManager::create_channel
 		user_channel_id: u64,
 	},
@@ -140,19 +129,14 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::FundingBroadcastSafe { ref funding_txo, ref user_channel_id } => {
-				1u8.write(writer)?;
-				funding_txo.write(writer)?;
-				user_channel_id.write(writer)?;
-			},
 			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt } => {
-				2u8.write(writer)?;
+				1u8.write(writer)?;
 				payment_hash.write(writer)?;
 				payment_secret.write(writer)?;
 				amt.write(writer)?;
 			},
 			&Event::PaymentSent { ref payment_preimage } => {
-				3u8.write(writer)?;
+				2u8.write(writer)?;
 				payment_preimage.write(writer)?;
 			},
 			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
@@ -161,7 +145,7 @@ impl Writeable for Event {
 				#[cfg(test)]
 				ref error_data,
 			} => {
-				4u8.write(writer)?;
+				3u8.write(writer)?;
 				payment_hash.write(writer)?;
 				rejected_by_dest.write(writer)?;
 				#[cfg(test)]
@@ -170,12 +154,12 @@ impl Writeable for Event {
 				error_data.write(writer)?;
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
-				5u8.write(writer)?;
+				4u8.write(writer)?;
 				// We don't write the time_fordwardable out at all, as we presume when the user
 				// deserializes us at least that much time has elapsed.
 			},
 			&Event::SpendableOutputs { ref outputs } => {
-				6u8.write(writer)?;
+				5u8.write(writer)?;
 				(outputs.len() as u64).write(writer)?;
 				for output in outputs.iter() {
 					output.write(writer)?;
@@ -189,19 +173,15 @@ impl MaybeReadable for Event {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
-			1u8 => Ok(Some(Event::FundingBroadcastSafe {
-					funding_txo: Readable::read(reader)?,
-					user_channel_id: Readable::read(reader)?,
-				})),
-			2u8 => Ok(Some(Event::PaymentReceived {
+			1u8 => Ok(Some(Event::PaymentReceived {
 					payment_hash: Readable::read(reader)?,
 					payment_secret: Readable::read(reader)?,
 					amt: Readable::read(reader)?,
 				})),
-			3u8 => Ok(Some(Event::PaymentSent {
+			2u8 => Ok(Some(Event::PaymentSent {
 					payment_preimage: Readable::read(reader)?,
 				})),
-			4u8 => Ok(Some(Event::PaymentFailed {
+			3u8 => Ok(Some(Event::PaymentFailed {
 					payment_hash: Readable::read(reader)?,
 					rejected_by_dest: Readable::read(reader)?,
 					#[cfg(test)]
@@ -209,10 +189,10 @@ impl MaybeReadable for Event {
 					#[cfg(test)]
 					error_data: Readable::read(reader)?,
 				})),
-			5u8 => Ok(Some(Event::PendingHTLCsForwardable {
+			4u8 => Ok(Some(Event::PendingHTLCsForwardable {
 					time_forwardable: Duration::from_secs(0)
 				})),
-			6u8 => {
+			5u8 => {
 				let outputs_len: u64 = Readable::read(reader)?;
 				let mut outputs = Vec::new();
 				for _ in 0..outputs_len {
