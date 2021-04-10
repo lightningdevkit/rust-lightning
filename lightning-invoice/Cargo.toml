@@ -1,0 +1,19 @@
+[package]
+name = "lightning-invoice"
+description = "Data structures to parse and serialize BOLT11 lightning invoices"
+version = "0.4.0"
+authors = ["Sebastian Geisler <sgeisler@wh2.tu-dresden.de>"]
+documentation = "https://docs.rs/lightning-invoice/"
+license = "MIT OR Apache-2.0"
+keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
+readme = "README.md"
+
+[dependencies]
+bech32 = "0.7"
+secp256k1 = { version = "0.20", features = ["recovery"] }
+num-traits = "0.2.8"
+bitcoin_hashes = "0.9.4"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
