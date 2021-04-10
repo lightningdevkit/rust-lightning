@@ -2940,8 +2940,7 @@ fn test_htlc_on_chain_success() {
 	check_tx_local_broadcast!(nodes[0], true, commitment_tx[0], chan_1.3);
 }
 
-#[test]
-fn test_htlc_on_chain_timeout() {
+fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// Test that in case of a unilateral close onchain, we detect the state of output and
 	// timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
@@ -2953,7 +2952,10 @@ fn test_htlc_on_chain_timeout() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
+	*nodes[1].connect_style.borrow_mut() = connect_style;
+	*nodes[2].connect_style.borrow_mut() = connect_style;
 
 	// Create some intial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
@@ -3065,6 +3067,13 @@ fn test_htlc_on_chain_timeout() {
 	check_spends!(node_txn[2], node_txn[1]);
 	assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), 71);
 	assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+}
+
+#[test]
+fn test_htlc_on_chain_timeout() {
+	do_test_htlc_on_chain_timeout(ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_htlc_on_chain_timeout(ConnectStyle::TransactionsFirstSkippingBlocks);
+	do_test_htlc_on_chain_timeout(ConnectStyle::FullBlockViaListen);
 }
 
 #[test]
