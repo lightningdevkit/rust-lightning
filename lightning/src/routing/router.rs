@@ -3922,7 +3922,6 @@ mod benches {
 	use super::*;
 	use util::logger::{Logger, Record};
 
-	use std::fs::File;
 	use test::Bencher;
 
 	struct DummyLogger {}
