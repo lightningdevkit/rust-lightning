@@ -52,11 +52,12 @@ impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> DiskWriteable for ChannelManager<Signer, M, T, K, F, L>
-where M::Target: chain::Watch<Signer>,
-      T::Target: BroadcasterInterface,
-      K::Target: KeysInterface<Signer=Signer>,
-      F::Target: FeeEstimator,
-      L::Target: Logger
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer=Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
 		self.write(writer)
@@ -89,11 +90,12 @@ impl FilesystemPersister {
 		data_dir: String,
 		manager: &ChannelManager<Signer, M, T, K, F, L>
 	) -> Result<(), std::io::Error>
-	where M::Target: chain::Watch<Signer>,
-	      T::Target: BroadcasterInterface,
-	      K::Target: KeysInterface<Signer=Signer>,
-	      F::Target: FeeEstimator,
-	      L::Target: Logger
+	where
+		M::Target: chain::Watch<Signer>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface<Signer=Signer>,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		let path = PathBuf::from(data_dir);
 		util::write_to_file(path, "manager".to_string(), manager)
@@ -103,7 +105,7 @@ impl FilesystemPersister {
 	pub fn read_channelmonitors<Signer: Sign, K: Deref> (
 		&self, keys_manager: K
 	) -> Result<Vec<(BlockHash, ChannelMonitor<Signer>)>, std::io::Error>
-	     where K::Target: KeysInterface<Signer=Signer> + Sized
+		where K::Target: KeysInterface<Signer=Signer> + Sized,
 	{
 		let path = self.path_to_monitor_data();
 		if !Path::new(&path).exists() {
@@ -160,13 +162,13 @@ impl<ChannelSigner: Sign> channelmonitor::Persist<ChannelSigner> for FilesystemP
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 }
 
