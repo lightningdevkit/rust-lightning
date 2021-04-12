@@ -29,7 +29,6 @@ use std::fs;
 use std::io::{Cursor, Error};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// FilesystemPersister persists channel data on disk, where each channel's
 /// data is stored in a file named after its funding outpoint.
@@ -53,12 +52,12 @@ impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
 	}
 }
 
-impl<Signer: Sign, M, T, K, F, L> DiskWriteable for ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
-where M: chain::Watch<Signer>,
-      T: BroadcasterInterface,
-      K: KeysInterface<Signer=Signer>,
-      F: FeeEstimator,
-      L: Logger,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> DiskWriteable for ChannelManager<Signer, M, T, K, F, L>
+where M::Target: chain::Watch<Signer>,
+      T::Target: BroadcasterInterface,
+      K::Target: KeysInterface<Signer=Signer>,
+      F::Target: FeeEstimator,
+      L::Target: Logger
 {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
 		self.write(writer)
@@ -87,16 +86,15 @@ impl FilesystemPersister {
 
 	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
 	/// initialization, within a file called "manager".
-	pub fn persist_manager<Signer, M, T, K, F, L>(
+	pub fn persist_manager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 		data_dir: String,
-		manager: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+		manager: &ChannelManager<Signer, M, T, K, F, L>
 	) -> Result<(), std::io::Error>
-	where Signer: Sign,
-	      M: chain::Watch<Signer>,
-	      T: BroadcasterInterface,
-	      K: KeysInterface<Signer=Signer>,
-	      F: FeeEstimator,
-	      L: Logger
+	where M::Target: chain::Watch<Signer>,
+	      T::Target: BroadcasterInterface,
+	      K::Target: KeysInterface<Signer=Signer>,
+	      F::Target: FeeEstimator,
+	      L::Target: Logger
 	{
 		let path = PathBuf::from(data_dir);
 		util::write_to_file(path, "manager".to_string(), manager)
