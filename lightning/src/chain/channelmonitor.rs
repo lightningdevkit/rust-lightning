@@ -708,7 +708,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// Used to track on-chain events (i.e., transactions part of channels confirmed on chain) on
 	// which to take actions once they reach enough confirmations. Each entry includes the
 	// transaction's id and the height when the transaction was confirmed on chain.
-	onchain_events_waiting_threshold_conf: Vec<OnchainEventEntry>,
+	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	// If we get serialized out and re-read, we need to make sure that the chain monitoring
 	// interface knows about the TXOs that we want to be notified of spends of. We could probably
@@ -790,7 +790,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.payment_preimages != other.payment_preimages ||
 			self.pending_monitor_events != other.pending_monitor_events ||
 			self.pending_events.len() != other.pending_events.len() || // We trust events to round-trip properly
-			self.onchain_events_waiting_threshold_conf != other.onchain_events_waiting_threshold_conf ||
+			self.onchain_events_awaiting_threshold_conf != other.onchain_events_awaiting_threshold_conf ||
 			self.outputs_to_watch != other.outputs_to_watch ||
 			self.lockdown_from_offchain != other.lockdown_from_offchain ||
 			self.holder_tx_signed != other.holder_tx_signed
@@ -959,8 +959,8 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.best_block.block_hash().write(writer)?;
 		writer.write_all(&byte_utils::be32_to_array(self.best_block.height()))?;
 
-		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
-		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
+		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
+		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.txid.write(writer)?;
 			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
 			match entry.event {
@@ -1080,7 +1080,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				pending_monitor_events: Vec::new(),
 				pending_events: Vec::new(),
 
-				onchain_events_waiting_threshold_conf: Vec::new(),
+				onchain_events_awaiting_threshold_conf: Vec::new(),
 				outputs_to_watch,
 
 				onchain_tx_handler,
@@ -1392,7 +1392,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
 	pub fn get_relevant_txids(&self) -> Vec<Txid> {
 		let inner = self.inner.lock().unwrap();
-		let mut txids: Vec<Txid> = inner.onchain_events_waiting_threshold_conf
+		let mut txids: Vec<Txid> = inner.onchain_events_awaiting_threshold_conf
 			.iter()
 			.map(|entry| entry.txid)
 			.chain(inner.onchain_tx_handler.get_relevant_txids().into_iter())
@@ -1759,7 +1759,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						if let Some(ref outpoints) = self.counterparty_claimable_outpoints.get($txid) {
 							for &(ref htlc, ref source_option) in outpoints.iter() {
 								if let &Some(ref source) = source_option {
-									self.onchain_events_waiting_threshold_conf.retain(|ref entry| {
+									self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 										if entry.height != height { return true; }
 										match entry.event {
 											 OnchainEvent::HTLCUpdate { ref htlc_update } => {
@@ -1776,7 +1776,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 										},
 									};
 									log_info!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of revoked counterparty commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, entry.confirmation_threshold());
-									self.onchain_events_waiting_threshold_conf.push(entry);
+									self.onchain_events_awaiting_threshold_conf.push(entry);
 								}
 							}
 						}
@@ -1825,7 +1825,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									}
 								}
 								log_trace!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of counterparty commitment transaction", log_bytes!(htlc.payment_hash.0), $commitment_tx);
-								self.onchain_events_waiting_threshold_conf.retain(|ref entry| {
+								self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 									if entry.height != height { return true; }
 									match entry.event {
 										 OnchainEvent::HTLCUpdate { ref htlc_update } => {
@@ -1834,7 +1834,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 										 _ => true,
 									}
 								});
-								self.onchain_events_waiting_threshold_conf.push(OnchainEventEntry {
+								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 									txid: *$txid,
 									height,
 									event: OnchainEvent::HTLCUpdate {
@@ -1981,7 +1981,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		macro_rules! wait_threshold_conf {
 			($source: expr, $commitment_tx: expr, $payment_hash: expr) => {
-				self.onchain_events_waiting_threshold_conf.retain(|ref entry| {
+				self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 					if entry.height != height { return true; }
 					match entry.event {
 						 OnchainEvent::HTLCUpdate { ref htlc_update } => {
@@ -1996,7 +1996,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					event: OnchainEvent::HTLCUpdate { htlc_update: ($source, $payment_hash) },
 				};
 				log_trace!(logger, "Failing HTLC with payment_hash {} from {} holder commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, entry.confirmation_threshold());
-				self.onchain_events_waiting_threshold_conf.push(entry);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
 			}
 		}
 
@@ -2130,7 +2130,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger)
 		} else {
 			self.best_block = BestBlock::new(block_hash, height);
-			self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.height <= height);
+			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
 			Vec::new()
 		}
@@ -2238,20 +2238,20 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
-		let onchain_events_waiting_threshold_conf =
-			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		let onchain_events_awaiting_threshold_conf =
+			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		let mut onchain_events_reaching_threshold_conf = Vec::new();
-		for entry in onchain_events_waiting_threshold_conf {
+		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.has_reached_confirmation_threshold(height) {
 				onchain_events_reaching_threshold_conf.push(entry);
 			} else {
-				self.onchain_events_waiting_threshold_conf.push(entry);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
 			}
 		}
 
 		// Used to check for duplicate HTLC resolutions.
 		#[cfg(debug_assertions)]
-		let unmatured_htlcs: Vec<_> = self.onchain_events_waiting_threshold_conf
+		let unmatured_htlcs: Vec<_> = self.onchain_events_awaiting_threshold_conf
 			.iter()
 			.filter_map(|entry| match &entry.event {
 				OnchainEvent::HTLCUpdate { htlc_update } => Some(htlc_update.0.clone()),
@@ -2332,7 +2332,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		//We may discard:
 		//- htlc update there as failure-trigger tx (revoked commitment tx, non-revoked commitment tx, HTLC-timeout tx) has been disconnected
 		//- maturing spendable output has transaction paying us has been disconnected
-		self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.height < height);
+		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
 		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
 
@@ -2350,7 +2350,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		self.onchain_events_waiting_threshold_conf.retain(|ref entry| entry.txid != *txid);
+		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.txid != *txid);
 		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, fee_estimator, logger);
 	}
 
@@ -2579,7 +2579,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						}));
 					}
 				} else {
-					self.onchain_events_waiting_threshold_conf.retain(|ref entry| {
+					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 						if entry.height != height { return true; }
 						match entry.event {
 							 OnchainEvent::HTLCUpdate { ref htlc_update } => {
@@ -2594,7 +2594,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						event: OnchainEvent::HTLCUpdate { htlc_update: (source, payment_hash) },
 					};
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
-					self.onchain_events_waiting_threshold_conf.push(entry);
+					self.onchain_events_awaiting_threshold_conf.push(entry);
 				}
 			}
 		}
@@ -2659,7 +2659,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
 			log_trace!(logger, "Maturing {} until {}", log_spendable!(spendable_output), entry.confirmation_threshold());
-			self.onchain_events_waiting_threshold_conf.push(entry);
+			self.onchain_events_awaiting_threshold_conf.push(entry);
 		}
 	}
 }
@@ -2925,7 +2925,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
 
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
-		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
 			let txid = Readable::read(reader)?;
 			let height = Readable::read(reader)?;
@@ -2945,7 +2945,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				},
 				_ => return Err(DecodeError::InvalidValue),
 			};
-			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
+			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
@@ -3006,7 +3006,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				pending_monitor_events,
 				pending_events,
 
-				onchain_events_waiting_threshold_conf,
+				onchain_events_awaiting_threshold_conf,
 				outputs_to_watch,
 
 				onchain_tx_handler,

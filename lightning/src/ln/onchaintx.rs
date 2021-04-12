@@ -301,7 +301,7 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	#[cfg(not(test))]
 	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 
-	onchain_events_waiting_threshold_conf: Vec<OnchainEventEntry>,
+	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	latest_height: u32,
 
@@ -338,8 +338,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			claim_and_height.1.write(writer)?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_waiting_threshold_conf.len() as u64))?;
-		for ref entry in self.onchain_events_waiting_threshold_conf.iter() {
+		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
+		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.txid.write(writer)?;
 			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
 			match entry.event {
@@ -396,7 +396,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			claimable_outpoints.insert(outpoint, (ancestor_claim_txid, height));
 		}
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
-		let mut onchain_events_waiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
 			let txid = Readable::read(reader)?;
 			let height = Readable::read(reader)?;
@@ -417,7 +417,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 				}
 				_ => return Err(DecodeError::InvalidValue),
 			};
-			onchain_events_waiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
+			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
 		let latest_height = Readable::read(reader)?;
 
@@ -434,7 +434,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
 			pending_claim_requests,
-			onchain_events_waiting_threshold_conf,
+			onchain_events_awaiting_threshold_conf,
 			latest_height,
 			secp_ctx,
 		})
@@ -453,7 +453,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
-			onchain_events_waiting_threshold_conf: Vec::new(),
+			onchain_events_awaiting_threshold_conf: Vec::new(),
 			latest_height: 0,
 
 			secp_ctx,
@@ -776,8 +776,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 									height,
 									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
 								};
-								if !self.onchain_events_waiting_threshold_conf.contains(&entry) {
-									self.onchain_events_waiting_threshold_conf.push(entry);
+								if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
+									self.onchain_events_awaiting_threshold_conf.push(entry);
 								}
 							}
 						}
@@ -816,16 +816,16 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					height,
 					event: OnchainEvent::ContentiousOutpoint { outpoint, input_material },
 				};
-				if !self.onchain_events_waiting_threshold_conf.contains(&entry) {
-					self.onchain_events_waiting_threshold_conf.push(entry);
+				if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
+					self.onchain_events_awaiting_threshold_conf.push(entry);
 				}
 			}
 		}
 
 		// After security delay, either our claim tx got enough confs or outpoint is definetely out of reach
-		let onchain_events_waiting_threshold_conf =
-			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
-		for entry in onchain_events_waiting_threshold_conf {
+		let onchain_events_awaiting_threshold_conf =
+			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.has_reached_confirmation_threshold(height) {
 				match entry.event {
 					OnchainEvent::Claim { claim_request } => {
@@ -842,7 +842,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					}
 				}
 			} else {
-				self.onchain_events_waiting_threshold_conf.push(entry);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
 			}
 		}
 
@@ -881,7 +881,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		L::Target: Logger,
 	{
 		let mut height = None;
-		for entry in self.onchain_events_waiting_threshold_conf.iter() {
+		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			if entry.txid == *txid {
 				height = Some(entry.height);
 				break;
@@ -899,9 +899,9 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					L::Target: Logger,
 	{
 		let mut bump_candidates = HashMap::new();
-		let onchain_events_waiting_threshold_conf =
-			self.onchain_events_waiting_threshold_conf.drain(..).collect::<Vec<_>>();
-		for entry in onchain_events_waiting_threshold_conf {
+		let onchain_events_awaiting_threshold_conf =
+			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
+		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.height >= height {
 				//- our claim tx on a commitment tx output
 				//- resurect outpoint back in its claimable set and regenerate tx
@@ -919,7 +919,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					_ => {},
 				}
 			} else {
-				self.onchain_events_waiting_threshold_conf.push(entry);
+				self.onchain_events_awaiting_threshold_conf.push(entry);
 			}
 		}
 		for (_, claim_material) in bump_candidates.iter_mut() {
@@ -946,7 +946,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	}
 
 	pub(crate) fn get_relevant_txids(&self) -> Vec<Txid> {
-		let mut txids: Vec<Txid> = self.onchain_events_waiting_threshold_conf
+		let mut txids: Vec<Txid> = self.onchain_events_awaiting_threshold_conf
 			.iter()
 			.map(|entry| entry.txid)
 			.collect();
