@@ -12,7 +12,7 @@ extern crate lightning;
 extern crate bitcoin;
 extern crate libc;
 
-use bitcoin::{BlockHash, Txid};
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::{FromHex, ToHex};
 use crate::util::DiskWriteable;
 use lightning::chain;
@@ -24,12 +24,10 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{ReadableArgs, Writeable};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Error};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// FilesystemPersister persists channel data on disk, where each channel's
 /// data is stored in a file named after its funding outpoint.
@@ -53,12 +51,13 @@ impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
 	}
 }
 
-impl<Signer: Sign, M, T, K, F, L> DiskWriteable for ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
-where M: chain::Watch<Signer>,
-      T: BroadcasterInterface,
-      K: KeysInterface<Signer=Signer>,
-      F: FeeEstimator,
-      L: Logger,
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> DiskWriteable for ChannelManager<Signer, M, T, K, F, L>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer=Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
 		self.write(writer)
@@ -87,16 +86,16 @@ impl FilesystemPersister {
 
 	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
 	/// initialization, within a file called "manager".
-	pub fn persist_manager<Signer, M, T, K, F, L>(
+	pub fn persist_manager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 		data_dir: String,
-		manager: &ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>
+		manager: &ChannelManager<Signer, M, T, K, F, L>
 	) -> Result<(), std::io::Error>
-	where Signer: Sign,
-	      M: chain::Watch<Signer>,
-	      T: BroadcasterInterface,
-	      K: KeysInterface<Signer=Signer>,
-	      F: FeeEstimator,
-	      L: Logger
+	where
+		M::Target: chain::Watch<Signer>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface<Signer=Signer>,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		let path = PathBuf::from(data_dir);
 		util::write_to_file(path, "manager".to_string(), manager)
@@ -105,14 +104,14 @@ impl FilesystemPersister {
 	/// Read `ChannelMonitor`s from disk.
 	pub fn read_channelmonitors<Signer: Sign, K: Deref> (
 		&self, keys_manager: K
-	) -> Result<HashMap<OutPoint, (BlockHash, ChannelMonitor<Signer>)>, std::io::Error>
-	     where K::Target: KeysInterface<Signer=Signer> + Sized
+	) -> Result<Vec<(BlockHash, ChannelMonitor<Signer>)>, std::io::Error>
+		where K::Target: KeysInterface<Signer=Signer> + Sized,
 	{
 		let path = self.path_to_monitor_data();
 		if !Path::new(&path).exists() {
-			return Ok(HashMap::new());
+			return Ok(Vec::new());
 		}
-		let mut outpoint_to_channelmonitor = HashMap::new();
+		let mut res = Vec::new();
 		for file_option in fs::read_dir(path).unwrap() {
 			let file = file_option.unwrap();
 			let owned_file_name = file.file_name();
@@ -144,10 +143,10 @@ impl FilesystemPersister {
 			let mut buffer = Cursor::new(&contents);
 			match <(BlockHash, ChannelMonitor<Signer>)>::read(&mut buffer, &*keys_manager) {
 				Ok((blockhash, channel_monitor)) => {
-					outpoint_to_channelmonitor.insert(
-						OutPoint { txid: txid.unwrap(), index: index.unwrap() },
-						(blockhash, channel_monitor),
-					);
+					if channel_monitor.get_funding_txo().0.txid != txid.unwrap() || channel_monitor.get_funding_txo().0.index != index.unwrap() {
+						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "ChannelMonitor was stored in the wrong file"));
+					}
+					res.push((blockhash, channel_monitor));
 				}
 				Err(e) => return Err(std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
@@ -155,7 +154,7 @@ impl FilesystemPersister {
 				))
 			}
 		}
-		Ok(outpoint_to_channelmonitor)
+		Ok(res)
 	}
 }
 
@@ -163,13 +162,13 @@ impl<ChannelSigner: Sign> channelmonitor::Persist<ChannelSigner> for FilesystemP
 	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-		  .map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
 	}
 }
 
@@ -227,21 +226,21 @@ mod tests {
 		// Check that the persisted channel data is empty before any channels are
 		// open.
 		let mut persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager).unwrap();
-		assert_eq!(persisted_chan_data_0.keys().len(), 0);
+		assert_eq!(persisted_chan_data_0.len(), 0);
 		let mut persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager).unwrap();
-		assert_eq!(persisted_chan_data_1.keys().len(), 0);
+		assert_eq!(persisted_chan_data_1.len(), 0);
 
 		// Helper to make sure the channel is on the expected update ID.
 		macro_rules! check_persisted_data {
 			($expected_update_id: expr) => {
 				persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager).unwrap();
-				assert_eq!(persisted_chan_data_0.keys().len(), 1);
-				for (_, mon) in persisted_chan_data_0.values() {
+				assert_eq!(persisted_chan_data_0.len(), 1);
+				for (_, mon) in persisted_chan_data_0.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
 				persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager).unwrap();
-				assert_eq!(persisted_chan_data_1.keys().len(), 1);
-				for (_, mon) in persisted_chan_data_1.values() {
+				assert_eq!(persisted_chan_data_1.len(), 1);
+				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
 			}
