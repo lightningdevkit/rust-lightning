@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use std::ops::Deref;
 
 /// BackgroundProcessor takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -66,25 +67,29 @@ impl BackgroundProcessor {
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
 	/// [`FilesystemPersister::persist_manager`]: lightning_persister::FilesystemPersister::persist_manager
-	pub fn start<PM, Signer, M, T, K, F, L, Descriptor: 'static + SocketDescriptor + Send, CM, RM>(
-		persist_channel_manager: PM,
-		channel_manager: Arc<ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>>,
-		peer_manager: Arc<PeerManager<Descriptor, Arc<CM>, Arc<RM>, Arc<L>>>, logger: Arc<L>,
-	) -> Self
-	where
+	pub fn start<
+		PM, Signer,
+		M: 'static + Deref + Send + Sync,
+		T: 'static + Deref + Send + Sync,
+		K: 'static + Deref + Send + Sync,
+		F: 'static + Deref + Send + Sync,
+		L: 'static + Deref + Send + Sync,
+		Descriptor: 'static + SocketDescriptor + Send + Sync,
+		CM: 'static + Deref + Send + Sync,
+		RM: 'static + Deref + Send + Sync
+	>(
+		persist_channel_manager: PM, channel_manager: Arc<ChannelManager<Signer, M, T, K, F, L>>,
+		peer_manager: Arc<PeerManager<Descriptor, CM, RM, L>>, logger: L,
+	) -> Self where
 		Signer: 'static + Sign,
-		M: 'static + chain::Watch<Signer>,
-		T: 'static + BroadcasterInterface,
-		K: 'static + KeysInterface<Signer = Signer>,
-		F: 'static + FeeEstimator,
-		L: 'static + Logger,
-		CM: 'static + ChannelMessageHandler,
-		RM: 'static + RoutingMessageHandler,
-		PM: 'static
-			+ Send
-			+ Fn(
-				&ChannelManager<Signer, Arc<M>, Arc<T>, Arc<K>, Arc<F>, Arc<L>>,
-			) -> Result<(), std::io::Error>,
+		M::Target: 'static + chain::Watch<Signer>,
+		T::Target: 'static + BroadcasterInterface,
+		K::Target: 'static + KeysInterface<Signer = Signer>,
+		F::Target: 'static + FeeEstimator,
+		L::Target: 'static + Logger,
+		CM::Target: 'static + ChannelMessageHandler,
+		RM::Target: 'static + RoutingMessageHandler,
+		PM: 'static + Send + Fn(&ChannelManager<Signer, M, T, K, F, L>) -> Result<(), std::io::Error>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
