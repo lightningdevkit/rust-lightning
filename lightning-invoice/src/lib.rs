@@ -992,10 +992,10 @@ impl Invoice {
 		self.signed_invoice.payee_pub_key().map(|x| &x.0)
 	}
 
-    /// Get the payment secret if one was included in the invoice
-    pub fn payment_secret(&self) -> Option<&PaymentSecret> {
-        self.signed_invoice.payment_secret()
-    }
+	/// Get the payment secret if one was included in the invoice
+	pub fn payment_secret(&self) -> Option<&PaymentSecret> {
+		self.signed_invoice.payment_secret()
+	}
 
 	/// Recover the payee's public key (only to be used if none was included in the invoice)
 	pub fn recover_payee_pub_key(&self) -> PublicKey {
