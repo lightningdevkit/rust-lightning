@@ -250,7 +250,7 @@ pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 /// Liveness is called to fluctuate given peer disconnecton/monitor failures/closing.
 /// If channel is public, network should have a liveness view announced by us on a
 /// best-effort, which means we may filter out some status transitions to avoid spam.
-/// See further timer_chan_freshness_every_min.
+/// See further timer_tick_occurred.
 #[derive(PartialEq)]
 enum UpdateStatus {
 	/// Status has been gossiped.

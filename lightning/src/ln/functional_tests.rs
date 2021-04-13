@@ -7557,7 +7557,7 @@ fn test_check_htlc_underpaying() {
 
 #[test]
 fn test_announce_disable_channels() {
-	// Create 2 channels between A and B. Disconnect B. Call timer_chan_freshness_every_min and check for generated
+	// Create 2 channels between A and B. Disconnect B. Call timer_tick_occurred and check for generated
 	// ChannelUpdate. Reconnect B, reestablish and check there is non-generated ChannelUpdate.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -7573,8 +7573,8 @@ fn test_announce_disable_channels() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.timer_chan_freshness_every_min(); // dirty -> stagged
-	nodes[0].node.timer_chan_freshness_every_min(); // staged -> fresh
+	nodes[0].node.timer_tick_occurred(); // dirty -> stagged
+	nodes[0].node.timer_tick_occurred(); // staged -> fresh
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
 	for e in msg_events {
@@ -7613,7 +7613,7 @@ fn test_announce_disable_channels() {
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[2]);
 	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[0].node.timer_chan_freshness_every_min();
+	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
