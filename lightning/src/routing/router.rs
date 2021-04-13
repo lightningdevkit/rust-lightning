@@ -3851,7 +3851,8 @@ mod tests {
 			});
 		#[cfg(require_route_graph_test)]
 		return Ok(res.expect("Didn't have route graph and was configured to require it"));
-		res
+		#[cfg(not(require_route_graph_test))]
+		return res;
 	}
 
 	pub(super) fn random_init_seed() -> u64 {
