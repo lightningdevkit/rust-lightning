@@ -4480,7 +4480,6 @@ pub mod bench {
 	use chain::chainmonitor::ChainMonitor;
 	use chain::channelmonitor::Persist;
 	use chain::keysinterface::{KeysManager, InMemorySigner};
-	use chain::transaction::OutPoint;
 	use ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
@@ -4558,14 +4557,13 @@ pub mod bench {
 			tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
-			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
-			node_a.funding_transaction_generated(&temporary_channel_id, funding_outpoint);
+			node_a.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 		} else { panic!(); }
 
 		node_b.handle_funding_created(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingCreated, node_b.get_our_node_id()));
 		node_a.handle_funding_signed(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingSigned, node_a.get_our_node_id()));
 
-		get_event!(node_a_holder, Event::FundingBroadcastSafe);
+		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
 		let block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
