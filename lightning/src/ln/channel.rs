@@ -377,7 +377,7 @@ pub(super) struct Channel<Signer: Sign> {
 
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
-	funding_tx_confirmation_height: u64,
+	funding_tx_confirmation_height: u32,
 	short_channel_id: Option<u64>,
 
 	counterparty_dust_limit_satoshis: u64,
@@ -3591,7 +3591,7 @@ impl<Signer: Sign> Channel<Signer> {
 									}
 								}
 							}
-							self.funding_tx_confirmation_height = height as u64;
+							self.funding_tx_confirmation_height = height;
 							self.funding_tx_confirmed_in = Some(*block_hash);
 							self.short_channel_id = match scid_from_parts(height as u64, index_in_block as u64, txo_idx as u64) {
 								Ok(scid) => Some(scid),
@@ -3676,6 +3676,32 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		Ok((None, timed_out_htlcs))
+	}
+
+	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
+	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
+	/// before the channel has reached funding_locked and we can just wait for more blocks.
+	pub fn funding_transaction_unconfirmed(&mut self) -> Result<(), msgs::ErrorMessage> {
+		if self.funding_tx_confirmation_height != 0 {
+			// We handle the funding disconnection by calling update_best_block with a height one
+			// below where our funding was connected, implying a reorg back to conf_height - 1.
+			let reorg_height = self.funding_tx_confirmation_height - 1;
+			// We use the time field to bump the current time we set on channel updates if its
+			// larger. If we don't know that time has moved forward, we can just set it to the last
+			// time we saw and it will be ignored.
+			let best_time = self.update_time_counter;
+			match self.update_best_block(reorg_height, best_time) {
+				Ok((funding_locked, timed_out_htlcs)) => {
+					assert!(funding_locked.is_none(), "We can't generate a funding with 0 confirmations?");
+					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
+					Ok(())
+				},
+				Err(e) => Err(e)
+			}
+		} else {
+			// We never learned about the funding confirmation anyway, just ignore
+			Ok(())
+		}
 	}
 
 	// Methods to get unprompted messages to send to the remote end (or where we already returned
