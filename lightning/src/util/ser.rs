@@ -18,6 +18,7 @@ use std::cmp;
 
 use bitcoin::secp256k1::Signature;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
@@ -423,8 +424,8 @@ impl_array!(4); // for IPv4
 impl_array!(10); // for OnionV2
 impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
-impl_array!(33); // for PublicKey
-impl_array!(64); // for Signature
+impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
+impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data
 
 // HashMap
@@ -493,7 +494,7 @@ impl Readable for Vec<Signature> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let byte_size = (len as usize)
-		                .checked_mul(33)
+		                .checked_mul(COMPACT_SIGNATURE_SIZE)
 		                .ok_or(DecodeError::BadLengthDescriptor)?;
 		if byte_size > MAX_BUF_SIZE {
 			return Err(DecodeError::BadLengthDescriptor);
@@ -528,7 +529,7 @@ impl Writeable for PublicKey {
 
 impl Readable for PublicKey {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let buf: [u8; 33] = Readable::read(r)?;
+		let buf: [u8; PUBLIC_KEY_SIZE] = Readable::read(r)?;
 		match PublicKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
@@ -577,7 +578,7 @@ impl Writeable for Signature {
 
 impl Readable for Signature {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let buf: [u8; 64] = Readable::read(r)?;
+		let buf: [u8; COMPACT_SIGNATURE_SIZE] = Readable::read(r)?;
 		match Signature::from_compact(&buf) {
 			Ok(sig) => Ok(sig),
 			Err(_) => return Err(DecodeError::InvalidValue),
