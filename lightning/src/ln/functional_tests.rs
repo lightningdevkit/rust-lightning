@@ -51,7 +51,6 @@ use regex;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::default::Default;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
 
 use ln::functional_test_utils::*;
 use ln::chan_utils::CommitmentTransaction;
@@ -1585,7 +1584,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
 
-	let cur_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &None, cur_height).unwrap();
@@ -1756,7 +1755,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-	let cur_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
@@ -1879,7 +1878,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
@@ -2941,8 +2940,7 @@ fn test_htlc_on_chain_success() {
 	check_tx_local_broadcast!(nodes[0], true, commitment_tx[0], chan_1.3);
 }
 
-#[test]
-fn test_htlc_on_chain_timeout() {
+fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// Test that in case of a unilateral close onchain, we detect the state of output and
 	// timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
@@ -2954,7 +2952,10 @@ fn test_htlc_on_chain_timeout() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
+	*nodes[1].connect_style.borrow_mut() = connect_style;
+	*nodes[2].connect_style.borrow_mut() = connect_style;
 
 	// Create some intial channels
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
@@ -3066,6 +3067,13 @@ fn test_htlc_on_chain_timeout() {
 	check_spends!(node_txn[2], node_txn[1]);
 	assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), 71);
 	assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+}
+
+#[test]
+fn test_htlc_on_chain_timeout() {
+	do_test_htlc_on_chain_timeout(ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_htlc_on_chain_timeout(ConnectStyle::TransactionsFirstSkippingBlocks);
+	do_test_htlc_on_chain_timeout(ConnectStyle::FullBlockViaListen);
 }
 
 #[test]
@@ -3400,7 +3408,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-		let current_height = nodes[1].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let current_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &None, current_height).unwrap();
@@ -6504,7 +6512,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &[], 3999999, TEST_FINAL_CLTV, &logger).unwrap();
 
-	let cur_height = nodes[0].node.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &None, cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);

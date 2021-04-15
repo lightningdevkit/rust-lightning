@@ -352,9 +352,6 @@ struct PeerState {
 	latest_features: InitFeatures,
 }
 
-#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
-const ERR: () = "You need at least 32 bit pointers (well, usize, but we'll assume they're the same) for ChannelManager::latest_block_height";
-
 /// SimpleArcChannelManager is useful when you need a ChannelManager with a static lifetime, e.g.
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
@@ -424,10 +421,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	tx_broadcaster: T,
 
 	#[cfg(test)]
-	pub(super) latest_block_height: AtomicUsize,
+	pub(super) best_block: RwLock<BestBlock>,
 	#[cfg(not(test))]
-	latest_block_height: AtomicUsize,
-	last_block_hash: RwLock<BlockHash>,
+	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -475,13 +471,38 @@ pub struct ChainParameters {
 	/// The network for determining the `chain_hash` in Lightning messages.
 	pub network: Network,
 
-	/// The hash of the latest block successfully connected.
-	pub latest_hash: BlockHash,
-
-	/// The height of the latest block successfully connected.
+	/// The hash and height of the latest block successfully connected.
 	///
 	/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
-	pub latest_height: usize,
+	pub best_block: BestBlock,
+}
+
+/// The best known block as identified by its hash and height.
+#[derive(Clone, Copy)]
+pub struct BestBlock {
+	block_hash: BlockHash,
+	height: u32,
+}
+
+impl BestBlock {
+	/// Returns the best block from the genesis of the given network.
+	pub fn from_genesis(network: Network) -> Self {
+		BestBlock {
+			block_hash: genesis_block(network).header.block_hash(),
+			height: 0,
+		}
+	}
+
+	/// Returns the best block as identified by the given block hash and height.
+	pub fn new(block_hash: BlockHash, height: u32) -> Self {
+		BestBlock { block_hash, height }
+	}
+
+	/// Returns the best block hash.
+	pub fn block_hash(&self) -> BlockHash { self.block_hash }
+
+	/// Returns the best block height.
+	pub fn height(&self) -> u32 { self.height }
 }
 
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
@@ -822,8 +843,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			chain_monitor,
 			tx_broadcaster,
 
-			latest_block_height: AtomicUsize::new(params.latest_height),
-			last_block_hash: RwLock::new(params.latest_hash),
+			best_block: RwLock::new(params.best_block),
 
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
@@ -1176,7 +1196,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				// HTLC_FAIL_BACK_BUFFER blocks to go.
 				// Also, ensure that, in the case of an unknown payment hash, our payment logic has enough time to fail the HTLC backward
 				// before our onchain logic triggers a channel closure (see HTLC_FAIL_BACK_BUFFER rational).
-				if (msg.cltv_expiry as u64) <= self.latest_block_height.load(Ordering::Acquire) as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+				if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 				}
 				// final_incorrect_htlc_amount
@@ -1299,7 +1319,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + chan.get_cltv_expiry_delta() as u64 { // incorrect_cltv_expiry
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
 					}
-					let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+					let cur_height = self.best_block.read().unwrap().height() + 1;
 					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now, but we want to be robust wrt to counterparty
 					// packet sanitization (see HTLC_FAIL_BACK_BUFFER rational)
 					if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
@@ -1516,7 +1536,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(PaymentSendFailure::PathParameterError(path_errs));
 		}
 
-		let cur_height = self.latest_block_height.load(Ordering::Acquire) as u32 + 1;
+		let cur_height = self.best_block.read().unwrap().height() + 1;
 		let mut results = Vec::new();
 		for path in route.paths.iter() {
 			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height));
@@ -1910,10 +1930,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										for htlc in htlcs.iter() {
 											let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 											htlc_msat_height_data.extend_from_slice(
-												&byte_utils::be32_to_array(
-													self.latest_block_height.load(Ordering::Acquire)
-														as u32,
-												),
+												&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
 											);
 											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 													short_channel_id: htlc.prev_hop.short_channel_id,
@@ -2033,8 +2050,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 				htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-					self.latest_block_height.load(Ordering::Acquire) as u32,
-				));
+						self.best_block.read().unwrap().height()));
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
 						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
@@ -2248,8 +2264,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if (is_mpp && !valid_mpp) || (!is_mpp && (htlc.value < expected_amount || htlc.value > expected_amount * 2)) {
 					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-						self.latest_block_height.load(Ordering::Acquire) as u32,
-					));
+							self.best_block.read().unwrap().height()));
 					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
 									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
@@ -2534,7 +2549,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let ((funding_msg, monitor), mut chan) = {
-			let last_block_hash = *self.last_block_hash.read().unwrap();
+			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
@@ -2542,7 +2557,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					(try_chan_entry!(self, chan.get_mut().funding_created(msg, last_block_hash, &self.logger), channel_state, chan), chan.remove())
+					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.logger), channel_state, chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
@@ -2591,7 +2606,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let funding_tx = {
-			let last_block_hash = *self.last_block_hash.read().unwrap();
+			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			match channel_state.by_id.entry(msg.channel_id) {
@@ -2599,7 +2614,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let (monitor, funding_tx) = match chan.get_mut().funding_signed(&msg, last_block_hash, &self.logger) {
+					let (monitor, funding_tx) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
@@ -3339,24 +3354,30 @@ where
 	L::Target: Logger,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
-		assert_eq!(*self.last_block_hash.read().unwrap(), block.header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		assert_eq!(self.latest_block_height.load(Ordering::Acquire) as u64, height as u64 - 1,
-			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		{
+			let best_block = self.best_block.read().unwrap();
+			assert_eq!(best_block.block_hash(), block.header.prev_blockhash,
+				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+			assert_eq!(best_block.height(), height - 1,
+				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		}
+
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		self.transactions_confirmed(&block.header, height, &txdata);
 		self.update_best_block(&block.header, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		assert_eq!(*self.last_block_hash.read().unwrap(), header.block_hash(),
-			"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
-
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		let new_height = self.latest_block_height.fetch_sub(1, Ordering::AcqRel) as u32 - 1;
-		assert_eq!(new_height, height - 1,
-			"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
-		*self.last_block_hash.write().unwrap() = header.prev_blockhash;
+		let new_height = height - 1;
+		{
+			let mut best_block = self.best_block.write().unwrap();
+			assert_eq!(best_block.block_hash(), header.block_hash(),
+				"Blocks must be disconnected in chain-order - the disconnected header must be the last connected header");
+			assert_eq!(best_block.height(), height,
+				"Blocks must be disconnected in chain-order - the disconnected block must have the correct height");
+			*best_block = BestBlock::new(header.prev_blockhash, new_height)
+		}
 
 		self.do_chain_event(Some(new_height), |channel| channel.update_best_block(new_height, header.time));
 	}
@@ -3513,8 +3534,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
-		self.latest_block_height.store(height as usize, Ordering::Release);
-		*self.last_block_hash.write().unwrap() = block_hash;
+		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
 		self.do_chain_event(Some(height), |channel| channel.update_best_block(height, header.time));
 
@@ -4147,8 +4167,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
 
 		self.genesis_hash.write(writer)?;
-		(self.latest_block_height.load(Ordering::Acquire) as u32).write(writer)?;
-		self.last_block_hash.read().unwrap().write(writer)?;
+		{
+			let best_block = self.best_block.read().unwrap();
+			best_block.height().write(writer)?;
+			best_block.block_hash().write(writer)?;
+		}
 
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut unfunded_channels = 0;
@@ -4340,8 +4363,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		}
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
-		let latest_block_height: u32 = Readable::read(reader)?;
-		let last_block_hash: BlockHash = Readable::read(reader)?;
+		let best_block_height: u32 = Readable::read(reader)?;
+		let best_block_hash: BlockHash = Readable::read(reader)?;
 
 		let mut failed_htlcs = Vec::new();
 
@@ -4449,8 +4472,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
 
-			latest_block_height: AtomicUsize::new(latest_block_height as usize),
-			last_block_hash: RwLock::new(last_block_hash),
+			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
@@ -4484,7 +4506,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
 		//connection or two.
 
-		Ok((last_block_hash.clone(), channel_manager))
+		Ok((best_block_hash.clone(), channel_manager))
 	}
 }
 
@@ -4545,7 +4567,7 @@ pub mod bench {
 	use chain::chainmonitor::ChainMonitor;
 	use chain::channelmonitor::Persist;
 	use chain::keysinterface::{KeysManager, InMemorySigner};
-	use ln::channelmanager::{ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
+	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
@@ -4597,8 +4619,7 @@ pub mod bench {
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
-			latest_hash: genesis_hash,
-			latest_height: 0,
+			best_block: BestBlock::from_genesis(network),
 		});
 		let node_a_holder = NodeHolder { node: &node_a };
 
@@ -4608,8 +4629,7 @@ pub mod bench {
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
-			latest_hash: genesis_hash,
-			latest_height: 0,
+			best_block: BestBlock::from_genesis(network),
 		});
 		let node_b_holder = NodeHolder { node: &node_b };
 

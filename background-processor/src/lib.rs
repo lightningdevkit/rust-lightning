@@ -131,7 +131,7 @@ mod tests {
 	use lightning::chain::keysinterface::{Sign, InMemorySigner, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
-	use lightning::ln::channelmanager::{ChainParameters, ChannelManager, SimpleArcChannelManager};
+	use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, SimpleArcChannelManager};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
@@ -192,14 +192,12 @@ mod tests {
 			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));
 			let seed = [i as u8; 32];
 			let network = Network::Testnet;
-			let genesis_block = genesis_block(network);
-			let now = Duration::from_secs(genesis_block.header.time as u64);
+			let now = Duration::from_secs(genesis_block(network).header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
 			let params = ChainParameters {
 				network,
-				latest_hash: genesis_block.block_hash(),
-				latest_height: 0,
+				best_block: BestBlock::from_genesis(network),
 			};
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster, logger.clone(), keys_manager.clone(), UserConfig::default(), params));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new() )};
