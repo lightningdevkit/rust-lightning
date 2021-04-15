@@ -746,7 +746,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 }
 
 /// Transaction outputs to watch for on-chain spends.
-pub(super) type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
+pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 /// Used only in testing and fuzztarget to check serialization roundtrips don't change the
