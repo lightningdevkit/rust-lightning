@@ -502,6 +502,7 @@ impl<T: sealed::Context> Features<T> {
 
 	/// Create a Features given a set of flags, in little-endian. This is in reverse byte order from
 	/// most on-the-wire encodings.
+	/// (C-not exported) as we don't support export across multiple T
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
 		Features {
 			flags,
