@@ -370,17 +370,21 @@ impl ToBase32 for Route {
 		let mut converter = BytesToBase32::new(writer);
 
 		for hop in self.iter() {
-			converter.append(&hop.pubkey.serialize()[..])?;
-			converter.append(&hop.short_channel_id[..])?;
+			converter.append(&hop.src_node_id.serialize()[..])?;
+			let short_channel_id = try_stretch(
+				encode_int_be_base256(hop.short_channel_id),
+				8
+			).expect("sizeof(u64) == 8");
+			converter.append(&short_channel_id)?;
 
 			let fee_base_msat = try_stretch(
-				encode_int_be_base256(hop.fee_base_msat),
+				encode_int_be_base256(hop.fees.base_msat),
 				4
 			).expect("sizeof(u32) == 4");
 			converter.append(&fee_base_msat)?;
 
 			let fee_proportional_millionths = try_stretch(
-				encode_int_be_base256(hop.fee_proportional_millionths),
+				encode_int_be_base256(hop.fees.proportional_millionths),
 				4
 			).expect("sizeof(u32) == 4");
 			converter.append(&fee_proportional_millionths)?;

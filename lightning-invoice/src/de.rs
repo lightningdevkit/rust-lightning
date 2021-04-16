@@ -10,6 +10,8 @@ use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+use lightning::routing::network_graph::RoutingFees;
+use lightning::routing::router::RouteHint;
 
 use num_traits::{CheckedAdd, CheckedMul};
 
@@ -353,7 +355,7 @@ impl FromBase32 for Signature {
 	}
 }
 
-fn parse_int_be<T, U>(digits: &[U], base: T) -> Option<T>
+pub(crate) fn parse_int_be<T, U>(digits: &[U], base: T) -> Option<T>
 	where T: CheckedAdd + CheckedMul + From<u8> + Default,
 	      U: Into<u8> + Copy
 {
@@ -575,7 +577,7 @@ impl FromBase32 for Route {
 			return Err(ParseError::UnexpectedEndOfTaggedFields);
 		}
 
-		let mut route_hops = Vec::<RouteHop>::new();
+		let mut route_hops = Vec::<RouteHint>::new();
 
 		let mut bytes = bytes.as_slice();
 		while !bytes.is_empty() {
@@ -585,12 +587,16 @@ impl FromBase32 for Route {
 			let mut channel_id: [u8; 8] = Default::default();
 			channel_id.copy_from_slice(&hop_bytes[33..41]);
 
-			let hop = RouteHop {
-				pubkey: PublicKey::from_slice(&hop_bytes[0..33])?,
-				short_channel_id: channel_id,
-				fee_base_msat: parse_int_be(&hop_bytes[41..45], 256).expect("slice too big?"),
-				fee_proportional_millionths: parse_int_be(&hop_bytes[45..49], 256).expect("slice too big?"),
-				cltv_expiry_delta: parse_int_be(&hop_bytes[49..51], 256).expect("slice too big?")
+			let hop = RouteHint {
+				src_node_id: PublicKey::from_slice(&hop_bytes[0..33])?,
+				short_channel_id: parse_int_be(&channel_id, 256).expect("short chan ID slice too big?"),
+				fees: RoutingFees {
+					base_msat: parse_int_be(&hop_bytes[41..45], 256).expect("slice too big?"),
+					proportional_millionths: parse_int_be(&hop_bytes[45..49], 256).expect("slice too big?"),
+				},
+				cltv_expiry_delta: parse_int_be(&hop_bytes[49..51], 256).expect("slice too big?"),
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
 			};
 
 			route_hops.push(hop);
@@ -931,41 +937,51 @@ mod test {
 
 	#[test]
 	fn test_parse_route() {
-		use RouteHop;
+		use lightning::routing::network_graph::RoutingFees;
+		use lightning::routing::router::RouteHint;
 		use ::Route;
 		use bech32::FromBase32;
+		use de::parse_int_be;
 
 		let input = from_bech32(
 			"q20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqa\
 			fqxu92d8lr6fvg0r5gv0heeeqgcrqlnm6jhphu9y00rrhy4grqszsvpcgpy9qqqqqqgqqqqq7qqzq".as_bytes()
 		);
 
-		let mut expected = Vec::<RouteHop>::new();
-		expected.push(RouteHop {
-			pubkey: PublicKey::from_slice(
+		let mut expected = Vec::<RouteHint>::new();
+		expected.push(RouteHint {
+			src_node_id: PublicKey::from_slice(
 				&[
 					0x02u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,
 					0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a, 0x95, 0xc3,
 					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55
 				][..]
 			).unwrap(),
-			short_channel_id: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-			fee_base_msat: 1,
-			fee_proportional_millionths: 20,
-			cltv_expiry_delta: 3
+			short_channel_id: parse_int_be(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], 256).expect("short chan ID slice too big?"),
+			fees: RoutingFees {
+				base_msat: 1,
+				proportional_millionths: 20,
+			},
+			cltv_expiry_delta: 3,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None
 		});
-		expected.push(RouteHop {
-			pubkey: PublicKey::from_slice(
+		expected.push(RouteHint {
+			src_node_id: PublicKey::from_slice(
 				&[
 					0x03u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,
 					0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a, 0x95, 0xc3,
 					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55
 				][..]
 			).unwrap(),
-			short_channel_id: [0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a],
-			fee_base_msat: 2,
-			fee_proportional_millionths: 30,
-			cltv_expiry_delta: 4
+			short_channel_id: parse_int_be(&[0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a], 256).expect("short chan ID slice too big?"),
+			fees: RoutingFees {
+				base_msat: 2,
+				proportional_millionths: 30,
+			},
+			cltv_expiry_delta: 4,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None
 		});
 
 		assert_eq!(Route::from_base32(&input), Ok(Route(expected)));
