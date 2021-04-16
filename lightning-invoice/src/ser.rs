@@ -454,7 +454,9 @@ impl ToBase32 for TaggedField {
 			TaggedField::PaymentSecret(ref payment_secret) => {
 				  write_tagged_field(writer, constants::TAG_PAYMENT_SECRET, payment_secret)
 			},
-
+			TaggedField::Features(ref features) => {
+				write_tagged_field(writer, constants::TAG_FEATURES, features)
+			},
 		}
 	}
 }

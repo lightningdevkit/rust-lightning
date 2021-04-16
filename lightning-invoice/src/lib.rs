@@ -24,6 +24,7 @@ extern crate secp256k1;
 use bech32::u5;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+use lightning::ln::features::InvoiceFeatures;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
@@ -329,6 +330,7 @@ pub enum TaggedField {
 	Fallback(Fallback),
 	Route(RouteHint),
 	PaymentSecret(PaymentSecret),
+	Features(InvoiceFeatures),
 }
 
 /// SHA-256 hash
@@ -401,6 +403,7 @@ pub mod constants {
 	pub const TAG_FALLBACK: u8 = 9;
 	pub const TAG_ROUTE: u8 = 3;
 	pub const TAG_PAYMENT_SECRET: u8 = 16;
+	pub const TAG_FEATURES: u8 = 5;
 }
 
 impl InvoiceBuilder<tb::False, tb::False, tb::False> {
@@ -489,6 +492,13 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 			Ok(r) => self.tagged_fields.push(TaggedField::Route(r)),
 			Err(e) => self.error = Some(e),
 		}
+		self
+	}
+
+	/// Adds a features field which indicates the set of supported protocol extensions which the
+	/// origin node supports.
+	pub fn features(mut self, features: InvoiceFeatures) -> Self {
+		self.tagged_fields.push(TaggedField::Features(features));
 		self
 	}
 }
@@ -810,6 +820,10 @@ impl RawInvoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::PaymentSecret(ref x), x)
 	}
 
+	pub fn features(&self) -> Option<&InvoiceFeatures> {
+		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
+	}
+
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
 		self.known_tagged_fields().filter_map(|tf| match tf {
 			&TaggedField::Fallback(ref f) => Some(f),
@@ -997,6 +1011,11 @@ impl Invoice {
 		self.signed_invoice.payment_secret()
 	}
 
+	/// Get the invoice features if they were included in the invoice
+	pub fn features(&self) -> Option<&InvoiceFeatures> {
+		self.signed_invoice.features()
+	}
+
 	/// Recover the payee's public key (only to be used if none was included in the invoice)
 	pub fn recover_payee_pub_key(&self) -> PublicKey {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
@@ -1054,6 +1073,7 @@ impl TaggedField {
 			TaggedField::Fallback(_) => constants::TAG_FALLBACK,
 			TaggedField::Route(_) => constants::TAG_ROUTE,
 			TaggedField::PaymentSecret(_) => constants::TAG_PAYMENT_SECRET,
+			TaggedField::Features(_) => constants::TAG_FEATURES,
 		};
 
 		u5::try_from_u8(tag).expect("all tags defined are <32")

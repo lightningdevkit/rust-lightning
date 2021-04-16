@@ -25,6 +25,8 @@
 use std::{cmp, fmt};
 use std::marker::PhantomData;
 
+use bitcoin::bech32;
+use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
@@ -51,6 +53,7 @@ mod sealed {
 			required_features: [$( $( $required_feature: ident )|*, )*],
 			optional_features: [$( $( $optional_feature: ident )|*, )*],
 		}) => {
+			#[derive(Eq, PartialEq)]
 			pub struct $context {}
 
 			impl Context for $context {
@@ -318,6 +321,7 @@ mod sealed {
 /// appears.
 ///
 /// (C-not exported) as we map the concrete feature types below directly instead
+#[derive(Eq)]
 pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,
@@ -395,6 +399,68 @@ impl InvoiceFeatures {
 	}
 }
 
+impl ToBase32 for InvoiceFeatures {
+	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
+		// Explanation for the "4": the normal way to round up when dividing is to add the divisor
+		// minus one before dividing
+		let length_u5s = (self.flags.len() * 8 + 4) / 5 as usize;
+		let mut res_u5s: Vec<u5> = vec![u5::try_from_u8(0).unwrap(); length_u5s];
+		for (byte_idx, byte) in self.flags.iter().enumerate() {
+			let bit_pos_from_left_0_indexed = byte_idx * 8;
+			let new_u5_idx = length_u5s - (bit_pos_from_left_0_indexed / 5) as usize - 1;
+			let new_bit_pos = bit_pos_from_left_0_indexed % 5;
+			let shifted_chunk_u16 = (*byte as u16) << new_bit_pos;
+			let curr_u5_as_u8 = res_u5s[new_u5_idx].to_u8();
+			res_u5s[new_u5_idx] = u5::try_from_u8(curr_u5_as_u8 | ((shifted_chunk_u16 & 0x001f) as u8)).unwrap();
+			if new_u5_idx > 0 {
+				let curr_u5_as_u8 = res_u5s[new_u5_idx - 1].to_u8();
+				res_u5s[new_u5_idx - 1] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 5) & 0x001f) as u8)).unwrap();
+			}
+			if new_u5_idx > 1 {
+				let curr_u5_as_u8 = res_u5s[new_u5_idx - 2].to_u8();
+				res_u5s[new_u5_idx - 2] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 10) & 0x001f) as u8)).unwrap();
+			}
+		}
+		// Trim the highest feature bits.
+		while !res_u5s.is_empty() && res_u5s[0] == u5::try_from_u8(0).unwrap() {
+			res_u5s.remove(0);
+		}
+		writer.write(&res_u5s)
+	}
+}
+
+impl Base32Len for InvoiceFeatures {
+	fn base32_len(&self) -> usize {
+		self.to_base32().len()
+	}
+}
+
+impl FromBase32 for InvoiceFeatures {
+	type Err = bech32::Error;
+
+	fn from_base32(field_data: &[u5]) -> Result<InvoiceFeatures, bech32::Error> {
+		// Explanation for the "7": the normal way to round up when dividing is to add the divisor
+		// minus one before dividing
+		let length_bytes = (field_data.len() * 5 + 7) / 8 as usize;
+		let mut res_bytes: Vec<u8> = vec![0; length_bytes];
+		for (u5_idx, chunk) in field_data.iter().enumerate() {
+			let bit_pos_from_right_0_indexed = (field_data.len() - u5_idx - 1) * 5;
+			let new_byte_idx = (bit_pos_from_right_0_indexed / 8) as usize;
+			let new_bit_pos = bit_pos_from_right_0_indexed % 8;
+			let chunk_u16 = chunk.to_u8() as u16;
+			res_bytes[new_byte_idx] |= ((chunk_u16 << new_bit_pos) & 0xff) as u8;
+			if new_byte_idx != length_bytes - 1 {
+				res_bytes[new_byte_idx + 1] |= ((chunk_u16 >> (8-new_bit_pos)) & 0xff) as u8;
+			}
+		}
+		// Trim the highest feature bits.
+		while !res_bytes.is_empty() && res_bytes[res_bytes.len() - 1] == 0 {
+			res_bytes.pop();
+		}
+		Ok(InvoiceFeatures::from_le_bytes(res_bytes))
+	}
+}
+
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Self {
@@ -427,7 +493,8 @@ impl<T: sealed::Context> Features<T> {
 		Features::<C> { flags, mark: PhantomData, }
 	}
 
-	/// Create a Features given a set of flags, in LE.
+	/// Create a Features given a set of flags, in little-endian. This is in reverse byte order from
+	/// most on-the-wire encodings.
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
 		Features {
 			flags,
@@ -627,6 +694,7 @@ impl<T: sealed::Context> Readable for Features<T> {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
+	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
 
 	#[test]
 	fn sanity_test_known_features() {
@@ -740,5 +808,36 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+	}
+
+	#[test]
+	fn invoice_features_encoding() {
+		let features_as_u5s = vec![
+			u5::try_from_u8(6).unwrap(),
+			u5::try_from_u8(10).unwrap(),
+			u5::try_from_u8(25).unwrap(),
+			u5::try_from_u8(1).unwrap(),
+			u5::try_from_u8(10).unwrap(),
+			u5::try_from_u8(0).unwrap(),
+			u5::try_from_u8(20).unwrap(),
+			u5::try_from_u8(2).unwrap(),
+			u5::try_from_u8(0).unwrap(),
+			u5::try_from_u8(6).unwrap(),
+			u5::try_from_u8(0).unwrap(),
+			u5::try_from_u8(16).unwrap(),
+			u5::try_from_u8(1).unwrap(),
+		];
+		let features = InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
+
+		// Test length calculation.
+		assert_eq!(features.base32_len(), 13);
+
+		// Test serialization.
+		let features_serialized = features.to_base32();
+		assert_eq!(features_as_u5s, features_serialized);
+
+		// Test deserialization.
+		let features_deserialized = InvoiceFeatures::from_base32(&features_as_u5s).unwrap();
+		assert_eq!(features, features_deserialized);
 	}
 }
