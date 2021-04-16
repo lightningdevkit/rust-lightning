@@ -427,7 +427,6 @@ impl<T: sealed::Context> Features<T> {
 		Features::<C> { flags, mark: PhantomData, }
 	}
 
-	#[cfg(test)]
 	/// Create a Features given a set of flags, in LE.
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
 		Features {
