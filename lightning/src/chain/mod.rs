@@ -23,6 +23,8 @@ pub mod chainmonitor;
 pub mod channelmonitor;
 pub mod transaction;
 pub mod keysinterface;
+pub(crate) mod onchaintx;
+pub(crate) mod package;
 
 /// An error when accessing the chain via [`Access`].
 #[derive(Clone)]
