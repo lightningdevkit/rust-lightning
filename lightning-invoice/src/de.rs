@@ -11,7 +11,7 @@ use bech32::{u5, FromBase32};
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::RouteHint;
+use lightning::routing::router::RouteHintHop;
 
 use num_traits::{CheckedAdd, CheckedMul};
 
@@ -577,7 +577,7 @@ impl FromBase32 for Route {
 			return Err(ParseError::UnexpectedEndOfTaggedFields);
 		}
 
-		let mut route_hops = Vec::<RouteHint>::new();
+		let mut route_hops = Vec::<RouteHintHop>::new();
 
 		let mut bytes = bytes.as_slice();
 		while !bytes.is_empty() {
@@ -587,7 +587,7 @@ impl FromBase32 for Route {
 			let mut channel_id: [u8; 8] = Default::default();
 			channel_id.copy_from_slice(&hop_bytes[33..41]);
 
-			let hop = RouteHint {
+			let hop = RouteHintHop {
 				src_node_id: PublicKey::from_slice(&hop_bytes[0..33])?,
 				short_channel_id: parse_int_be(&channel_id, 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
@@ -938,7 +938,7 @@ mod test {
 	#[test]
 	fn test_parse_route() {
 		use lightning::routing::network_graph::RoutingFees;
-		use lightning::routing::router::RouteHint;
+		use lightning::routing::router::RouteHintHop;
 		use ::Route;
 		use bech32::FromBase32;
 		use de::parse_int_be;
@@ -948,8 +948,8 @@ mod test {
 			fqxu92d8lr6fvg0r5gv0heeeqgcrqlnm6jhphu9y00rrhy4grqszsvpcgpy9qqqqqqgqqqqq7qqzq".as_bytes()
 		);
 
-		let mut expected = Vec::<RouteHint>::new();
-		expected.push(RouteHint {
+		let mut expected = Vec::<RouteHintHop>::new();
+		expected.push(RouteHintHop {
 			src_node_id: PublicKey::from_slice(
 				&[
 					0x02u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,
@@ -966,7 +966,7 @@ mod test {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None
 		});
-		expected.push(RouteHint {
+		expected.push(RouteHintHop {
 			src_node_id: PublicKey::from_slice(
 				&[
 					0x03u8, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4, 0x3c,

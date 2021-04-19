@@ -15,7 +15,7 @@ use lightning::chain;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::routing::router::{get_route, RouteHint};
+use lightning::routing::router::{get_route, RouteHintHop};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
@@ -224,7 +224,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					for _ in 0..count {
 						scid += 1;
 						let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
-						last_hops_vec.push(RouteHint {
+						last_hops_vec.push(RouteHintHop {
 							src_node_id: *rnid,
 							short_channel_id: scid,
 							fees: RoutingFees {

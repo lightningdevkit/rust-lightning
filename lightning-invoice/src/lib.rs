@@ -26,7 +26,7 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::RouteHint;
+use lightning::routing::router::RouteHintHop;
 
 use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
@@ -387,7 +387,7 @@ pub struct Signature(pub RecoverableSignature);
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Route(Vec<RouteHint>);
+pub struct Route(Vec<RouteHintHop>);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -484,7 +484,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 	}
 
 	/// Adds a private route.
-	pub fn route(mut self, route: Vec<RouteHint>) -> Self {
+	pub fn route(mut self, route: Vec<RouteHintHop>) -> Self {
 		match Route::new(route) {
 			Ok(r) => self.tagged_fields.push(TaggedField::Route(r)),
 			Err(e) => self.error = Some(e),
@@ -1144,7 +1144,7 @@ impl ExpiryTime {
 
 impl Route {
 	/// Create a new (partial) route from a list of hops
-	pub fn new(hops: Vec<RouteHint>) -> Result<Route, CreationError> {
+	pub fn new(hops: Vec<RouteHintHop>) -> Result<Route, CreationError> {
 		if hops.len() <= 12 {
 			Ok(Route(hops))
 		} else {
@@ -1153,21 +1153,21 @@ impl Route {
 	}
 
 	/// Returrn the underlying vector of hops
-	pub fn into_inner(self) -> Vec<RouteHint> {
+	pub fn into_inner(self) -> Vec<RouteHintHop> {
 		self.0
 	}
 }
 
-impl Into<Vec<RouteHint>> for Route {
-	fn into(self) -> Vec<RouteHint> {
+impl Into<Vec<RouteHintHop>> for Route {
+	fn into(self) -> Vec<RouteHintHop> {
 		self.into_inner()
 	}
 }
 
 impl Deref for Route {
-	type Target = Vec<RouteHint>;
+	type Target = Vec<RouteHintHop>;
 
-	fn deref(&self) -> &Vec<RouteHint> {
+	fn deref(&self) -> &Vec<RouteHintHop> {
 		&self.0
 	}
 }
@@ -1443,7 +1443,7 @@ mod test {
 			.build_raw();
 		assert_eq!(long_desc_res, Err(CreationError::DescriptionTooLong));
 
-		let route_hop = RouteHint {
+		let route_hop = RouteHintHop {
 			src_node_id: PublicKey::from_slice(
 					&[
 						0x03, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4,
@@ -1494,7 +1494,7 @@ mod test {
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
 		let route_1 = vec![
-			RouteHint {
+			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
@@ -1505,7 +1505,7 @@ mod test {
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			},
-			RouteHint {
+			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
@@ -1519,7 +1519,7 @@ mod test {
 		];
 
 		let route_2 = vec![
-			RouteHint {
+			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: 0,
 				fees: RoutingFees {
@@ -1530,7 +1530,7 @@ mod test {
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			},
-			RouteHint {
+			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
