@@ -430,7 +430,7 @@ impl FromBase32 for TaggedField {
 			constants::TAG_FALLBACK =>
 				Ok(TaggedField::Fallback(Fallback::from_base32(field_data)?)),
 			constants::TAG_ROUTE =>
-				Ok(TaggedField::Route(Route::from_base32(field_data)?)),
+				Ok(TaggedField::Route(RouteHint::from_base32(field_data)?)),
 			constants::TAG_PAYMENT_SECRET =>
 				Ok(TaggedField::PaymentSecret(PaymentSecret::from_base32(field_data)?)),
 			_ => {
@@ -567,10 +567,10 @@ impl FromBase32 for Fallback {
 	}
 }
 
-impl FromBase32 for Route {
+impl FromBase32 for RouteHint {
 	type Err = ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Route, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<RouteHint, ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 
 		if bytes.len() % 51 != 0 {
@@ -602,7 +602,7 @@ impl FromBase32 for Route {
 			route_hops.push(hop);
 		}
 
-		Ok(Route(route_hops))
+		Ok(RouteHint(route_hops))
 	}
 }
 
@@ -939,7 +939,7 @@ mod test {
 	fn test_parse_route() {
 		use lightning::routing::network_graph::RoutingFees;
 		use lightning::routing::router::RouteHintHop;
-		use ::Route;
+		use ::RouteHint;
 		use bech32::FromBase32;
 		use de::parse_int_be;
 
@@ -984,10 +984,10 @@ mod test {
 			htlc_maximum_msat: None
 		});
 
-		assert_eq!(Route::from_base32(&input), Ok(Route(expected)));
+		assert_eq!(RouteHint::from_base32(&input), Ok(RouteHint(expected)));
 
 		assert_eq!(
-			Route::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
+			RouteHint::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
 			Err(ParseError::UnexpectedEndOfTaggedFields)
 		);
 	}

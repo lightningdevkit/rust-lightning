@@ -327,7 +327,7 @@ pub enum TaggedField {
 	ExpiryTime(ExpiryTime),
 	MinFinalCltvExpiry(MinFinalCltvExpiry),
 	Fallback(Fallback),
-	Route(Route),
+	Route(RouteHint),
 	PaymentSecret(PaymentSecret),
 }
 
@@ -387,7 +387,7 @@ pub struct Signature(pub RecoverableSignature);
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Route(Vec<RouteHintHop>);
+pub struct RouteHint(Vec<RouteHintHop>);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -485,7 +485,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 
 	/// Adds a private route.
 	pub fn route(mut self, route: Vec<RouteHintHop>) -> Self {
-		match Route::new(route) {
+		match RouteHint::new(route) {
 			Ok(r) => self.tagged_fields.push(TaggedField::Route(r)),
 			Err(e) => self.error = Some(e),
 		}
@@ -817,11 +817,11 @@ impl RawInvoice {
 		}).collect::<Vec<&Fallback>>()
 	}
 
-	pub fn routes(&self) -> Vec<&Route> {
+	pub fn routes(&self) -> Vec<&RouteHint> {
 		self.known_tagged_fields().filter_map(|tf| match tf {
 			&TaggedField::Route(ref r) => Some(r),
 			_ => None,
-		}).collect::<Vec<&Route>>()
+		}).collect::<Vec<&RouteHint>>()
 	}
 
 	pub fn amount_pico_btc(&self) -> Option<u64> {
@@ -1020,7 +1020,7 @@ impl Invoice {
 	}
 
 	/// Returns a list of all routes included in the invoice
-	pub fn routes(&self) -> Vec<&Route> {
+	pub fn routes(&self) -> Vec<&RouteHint> {
 		self.signed_invoice.routes()
 	}
 
@@ -1142,11 +1142,11 @@ impl ExpiryTime {
 	}
 }
 
-impl Route {
+impl RouteHint {
 	/// Create a new (partial) route from a list of hops
-	pub fn new(hops: Vec<RouteHintHop>) -> Result<Route, CreationError> {
+	pub fn new(hops: Vec<RouteHintHop>) -> Result<RouteHint, CreationError> {
 		if hops.len() <= 12 {
-			Ok(Route(hops))
+			Ok(RouteHint(hops))
 		} else {
 			Err(CreationError::RouteTooLong)
 		}
@@ -1158,13 +1158,13 @@ impl Route {
 	}
 }
 
-impl Into<Vec<RouteHintHop>> for Route {
+impl Into<Vec<RouteHintHop>> for RouteHint {
 	fn into(self) -> Vec<RouteHintHop> {
 		self.into_inner()
 	}
 }
 
-impl Deref for Route {
+impl Deref for RouteHint {
 	type Target = Vec<RouteHintHop>;
 
 	fn deref(&self) -> &Vec<RouteHintHop> {
@@ -1573,7 +1573,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry(), Some(&144));
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
-		assert_eq!(invoice.routes(), vec![&Route(route_1), &Route(route_2)]);
+		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
 		assert_eq!(
 			invoice.description(),
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))

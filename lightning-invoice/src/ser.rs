@@ -365,7 +365,7 @@ impl Base32Len for Fallback {
 	}
 }
 
-impl ToBase32 for Route {
+impl ToBase32 for RouteHint {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 
@@ -401,7 +401,7 @@ impl ToBase32 for Route {
 	}
 }
 
-impl Base32Len for Route {
+impl Base32Len for RouteHint {
 	fn base32_len(&self) -> usize {
 		bytes_size_to_base32_size(self.0.len() * 51)
 	}
