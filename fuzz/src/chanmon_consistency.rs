@@ -30,6 +30,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
+use lightning::chain::Confirm;
 use lightning::chain::chainmonitor;
 use lightning::chain::channelmonitor;
 use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, MonitorEvent};
@@ -428,11 +429,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
 			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			$node.transactions_confirmed(&header, 1, &txdata);
+			$node.transactions_confirmed(&header, &txdata, 1);
 			for _ in 2..100 {
 				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 			}
-			$node.update_best_block(&header, 99);
+			$node.best_block_updated(&header, 99);
 		} }
 	}
 

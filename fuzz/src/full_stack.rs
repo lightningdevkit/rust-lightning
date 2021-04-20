@@ -27,7 +27,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use lightning::chain;
-use lightning::chain::Listen;
+use lightning::chain::{Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
@@ -207,8 +207,8 @@ impl<'a> MoneyLossDetector<'a> {
 		self.blocks_connected += 1;
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: self.header_hashes[self.height].0, merkle_root: Default::default(), time: self.blocks_connected, bits: 42, nonce: 42 };
 		self.height += 1;
-		self.manager.transactions_confirmed(&header, self.height as u32, &txdata);
-		self.manager.update_best_block(&header, self.height as u32);
+		self.manager.transactions_confirmed(&header, &txdata, self.height as u32);
+		self.manager.best_block_updated(&header, self.height as u32);
 		(*self.monitor).block_connected(&header, &txdata, self.height as u32);
 		if self.header_hashes.len() > self.height {
 			self.header_hashes[self.height] = (header.block_hash(), self.blocks_connected);

@@ -94,11 +94,11 @@ where C::Target: chain::Filter,
 	/// [`ChannelMonitor::transactions_confirmed`].
 	///
 	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations.
+	/// blocks. May be called before or after [`best_block_updated`] for transactions in the
+	/// corresponding block. See [`best_block_updated`] for further calling expectations.
 	///
 	/// [`block_connected`]: Self::block_connected
-	/// [`update_best_block`]: Self::update_best_block
+	/// [`best_block_updated`]: Self::best_block_updated
 	pub fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		self.process_chain_data(header, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
@@ -108,7 +108,7 @@ where C::Target: chain::Filter,
 
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
 	/// of a channel and reacting accordingly based on the new chain tip. For details, see
-	/// [`ChannelMonitor::update_best_block`].
+	/// [`ChannelMonitor::best_block_updated`].
 	///
 	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
 	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
@@ -122,12 +122,12 @@ where C::Target: chain::Filter,
 	/// [`block_connected`]: Self::block_connected
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
 	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
+	pub fn best_block_updated(&self, header: &BlockHeader, height: u32) {
 		self.process_chain_data(header, &[], |monitor, txdata| {
 			// While in practice there shouldn't be any recursive calls when given empty txdata,
 			// it's still possible if a chain::Filter implementation returns a transaction.
 			debug_assert!(txdata.is_empty());
-			monitor.update_best_block(
+			monitor.best_block_updated(
 				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
 		});
 	}
@@ -187,11 +187,11 @@ where C::Target: chain::Filter,
 	/// [`ChannelMonitor::transaction_unconfirmed`] for details.
 	///
 	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
-	/// than blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations. 
+	/// than blocks. May be called before or after [`best_block_updated`] for transactions in the
+	/// corresponding block. See [`best_block_updated`] for further calling expectations.
 	///
 	/// [`block_disconnected`]: Self::block_disconnected
-	/// [`update_best_block`]: Self::update_best_block
+	/// [`best_block_updated`]: Self::best_block_updated
 	pub fn transaction_unconfirmed(&self, txid: &Txid) {
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {

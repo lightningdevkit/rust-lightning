@@ -1311,11 +1311,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// outputs to watch. See [`block_connected`] for details.
 	///
 	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations. 
+	/// blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_connected`]: Self::block_connected
-	/// [`update_best_block`]: Self::update_best_block
 	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
 		&self,
 		header: &BlockHeader,
@@ -1337,11 +1335,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// Processes a transaction that was reorganized out of the chain.
 	///
 	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
-	/// than blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations.
+	/// than blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_disconnected`]: Self::block_disconnected
-	/// [`update_best_block`]: Self::update_best_block
 	pub fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
 		&self,
 		txid: &Txid,
@@ -1361,18 +1357,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// [`block_connected`] for details.
 	///
 	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
-	/// block.
-	///
-	/// Must be called after new blocks become available for the most recent block. Intermediary
-	/// blocks, however, may be safely skipped. In the event of a chain re-organization, this only
-	/// needs to be called for the most recent block assuming `transaction_unconfirmed` is called
-	/// for any affected transactions.
+	/// blocks. See [`chain::Confirm`] for calling expectations.
 	///
 	/// [`block_connected`]: Self::block_connected
-	/// [`transactions_confirmed`]: Self::transactions_confirmed
-	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	pub fn update_best_block<B: Deref, F: Deref, L: Deref>(
+	pub fn best_block_updated<B: Deref, F: Deref, L: Deref>(
 		&self,
 		header: &BlockHeader,
 		height: u32,
@@ -1385,7 +1373,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		self.inner.lock().unwrap().update_best_block(
+		self.inner.lock().unwrap().best_block_updated(
 			header, height, broadcaster, fee_estimator, logger)
 	}
 
@@ -2109,7 +2097,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
 	}
 
-	fn update_best_block<B: Deref, F: Deref, L: Deref>(
+	fn best_block_updated<B: Deref, F: Deref, L: Deref>(
 		&mut self,
 		header: &BlockHeader,
 		height: u32,
@@ -2724,6 +2712,29 @@ where
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
 		self.0.block_disconnected(header, height, &*self.1, &*self.2, &*self.3);
+	}
+}
+
+impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L)
+where
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.0.transactions_confirmed(header, txdata, height, &*self.1, &*self.2, &*self.3);
+	}
+
+	fn transaction_unconfirmed(&self, txid: &Txid) {
+		self.0.transaction_unconfirmed(txid, &*self.1, &*self.2, &*self.3);
+	}
+
+	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
+	}
+
+	fn get_relevant_txids(&self) -> Vec<Txid> {
+		self.0.get_relevant_txids()
 	}
 }
 
