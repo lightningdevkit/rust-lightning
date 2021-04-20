@@ -16,7 +16,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent};
 use chain::keysinterface::Sign;
-use chain::transaction::OutPoint;
+use chain::transaction::{OutPoint, TransactionData};
 
 pub mod chaininterface;
 pub mod chainmonitor;
@@ -45,16 +45,99 @@ pub trait Access: Send + Sync {
 	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
 }
 
-/// The `Listen` trait is used to be notified of when blocks have been connected or disconnected
-/// from the chain.
+/// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
+/// chain.
 ///
-/// Useful when needing to replay chain data upon startup or as new chain events occur.
+/// Useful when needing to replay chain data upon startup or as new chain events occur. Clients
+/// sourcing chain data using a block-oriented API should prefer this interface over [`Confirm`].
+/// Such clients fetch the entire header chain whereas clients using [`Confirm`] only fetch headers
+/// when needed.
 pub trait Listen {
 	/// Notifies the listener that a block was added at the given height.
 	fn block_connected(&self, block: &Block, height: u32);
 
 	/// Notifies the listener that a block was removed at the given height.
 	fn block_disconnected(&self, header: &BlockHeader, height: u32);
+}
+
+/// The `Confirm` trait is used to notify when transactions have been confirmed on chain or
+/// unconfirmed during a chain reorganization.
+///
+/// Clients sourcing chain data using a transaction-oriented API should prefer this interface over
+/// [`Listen`]. For instance, an Electrum client may implement [`Filter`] by subscribing to activity
+/// related to registered transactions and outputs. Upon notification, it would pass along the
+/// matching transactions using this interface.
+///
+/// # Use
+///
+/// The intended use is as follows:
+/// - Call [`transactions_confirmed`] to process any on-chain activity of interest.
+/// - Call [`transaction_unconfirmed`] to process any transaction returned by [`get_relevant_txids`]
+///   that has been reorganized out of the chain.
+/// - Call [`best_block_updated`] whenever a new chain tip becomes available.
+///
+/// # Order
+///
+/// Clients must call these methods in chain order. Specifically:
+/// - Transactions confirmed in a block must be given before transactions confirmed in a later
+///   block.
+/// - Dependent transactions within the same block must be given in topological order, possibly in
+///   separate calls.
+/// - Unconfirmed transactions must be given after the original confirmations and before any
+///   reconfirmation.
+///
+/// See individual method documentation for further details.
+///
+/// [`transactions_confirmed`]: Self::transactions_confirmed
+/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
+/// [`best_block_updated`]: Self::best_block_updated
+/// [`get_relevant_txids`]: Self::get_relevant_txids
+pub trait Confirm {
+	/// Processes transactions confirmed in a block with a given header and height.
+	///
+	/// Should be called for any transactions registered by [`Filter::register_tx`] or any
+	/// transactions spending an output registered by [`Filter::register_output`]. Such transactions
+	/// appearing in the same block do not need to be included in the same call; instead, multiple
+	/// calls with additional transactions may be made so long as they are made in [chain order].
+	///
+	/// May be called before or after [`best_block_updated`] for the corresponding block. However,
+	/// in the event of a chain reorganization, it must not be called with a `header` that is no
+	/// longer in the chain as of the last call to [`best_block_updated`].
+	///
+	/// [chain order]: Self#order
+	/// [`best_block_updated`]: Self::best_block_updated
+	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32);
+
+	/// Processes a transaction that is no longer confirmed as result of a chain reorganization.
+	///
+	/// Should be called for any transaction returned by [`get_relevant_txids`] if it has been
+	/// reorganized out of the best chain. Once called, the given transaction should not be returned
+	/// by [`get_relevant_txids`] unless it has been reconfirmed via [`transactions_confirmed`].
+	///
+	/// [`get_relevant_txids`]: Self::get_relevant_txids
+	/// [`transactions_confirmed`]: Self::transactions_confirmed
+	fn transaction_unconfirmed(&self, txid: &Txid);
+
+	/// Processes an update to the best header connected at the given height.
+	///
+	/// Should be called when a new header is available but may be skipped for intermediary blocks
+	/// if they become available at the same time.
+	fn best_block_updated(&self, header: &BlockHeader, height: u32);
+
+	/// Returns transactions that should be monitored for reorganization out of the chain.
+	///
+	/// Should include any transactions passed to [`transactions_confirmed`] that have insufficient
+	/// confirmations to be safe from a chain reorganization. Should not include any transactions
+	/// passed to [`transaction_unconfirmed`] unless later reconfirmed.
+	///
+	/// May be called to determine the subset of transactions that must still be monitored for
+	/// reorganization. Will be idempotent between calls but may change as a result of calls to the
+	/// other interface methods. Thus, this is useful to determine which transactions may need to be
+	/// given to [`transaction_unconfirmed`].
+	///
+	/// [`transactions_confirmed`]: Self::transactions_confirmed
+	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
+	fn get_relevant_txids(&self) -> Vec<Txid>;
 }
 
 /// The `Watch` trait defines behavior for watching on-chain activity pertaining to channels as
