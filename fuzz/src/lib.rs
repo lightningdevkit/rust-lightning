@@ -18,5 +18,6 @@ pub mod chanmon_consistency;
 pub mod full_stack;
 pub mod peer_crypt;
 pub mod router;
+pub mod zbase32;
 
 pub mod msg_targets;
