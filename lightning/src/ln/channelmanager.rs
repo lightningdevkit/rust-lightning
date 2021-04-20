@@ -2069,7 +2069,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								},
 								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
 									log_trace!(self.logger, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
-									match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet) {
+									match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet, &self.logger) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {
 												log_trace!(self.logger, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);

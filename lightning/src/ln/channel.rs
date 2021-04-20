@@ -1332,7 +1332,7 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
 	/// but then have a reorg which settles on an HTLC-failure on chain.
-	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
+	pub fn get_update_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -1382,6 +1382,7 @@ impl<Signer: Sign> Channel<Signer> {
 					_ => {}
 				}
 			}
+			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell", htlc_id_arg);
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
 				htlc_id: htlc_id_arg,
 				err_packet,
@@ -1389,6 +1390,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Ok(None);
 		}
 
+		log_trace!(logger, "Failing HTLC ID {} back with a update_fail_htlc message", htlc_id_arg);
 		{
 			let htlc = &mut self.pending_inbound_htlcs[pending_idx];
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
@@ -2382,7 +2384,7 @@ impl<Signer: Sign> Channel<Signer> {
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-						match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
+						match self.get_update_fail_htlc(htlc_id, err_packet.clone(), logger) {
 							Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
 							Err(e) => {
 								if let ChannelError::Ignore(_) = e {}
