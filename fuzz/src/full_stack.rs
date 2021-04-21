@@ -543,7 +543,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			11 => {
-				let mut txn = broadcast.txn_broadcasted.lock().unwrap();
+				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
