@@ -800,6 +800,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
+				if monitor_a.should_update_manager.load(atomic::Ordering::Relaxed) {
+					node_a_ser.0.clear();
+					nodes[0].write(&mut node_a_ser).unwrap();
+				}
 				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a, keys_manager_a);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
@@ -826,6 +830,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
+				}
+				if monitor_c.should_update_manager.load(atomic::Ordering::Relaxed) {
+					node_c_ser.0.clear();
+					nodes[2].write(&mut node_c_ser).unwrap();
 				}
 				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c, keys_manager_c);
 				nodes[2] = new_node_c;
