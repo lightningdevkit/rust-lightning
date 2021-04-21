@@ -10,6 +10,7 @@ use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+use lightning::ln::channelmanager::PaymentSecret;
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
 
@@ -480,21 +481,6 @@ impl FromBase32 for PayeePubKey {
 			let data_bytes = Vec::<u8>::from_base32(field_data)?;
 			let pub_key = PublicKey::from_slice(&data_bytes)?;
 			Ok(pub_key.into())
-		}
-	}
-}
-
-impl FromBase32 for PaymentSecret {
-	type Err = ParseError;
-
-	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, ParseError> {
-		if field_data.len() != 52 {
-			Err(ParseError::Skip)
-		} else {
-			let data_bytes = Vec::<u8>::from_base32(field_data)?;
-			let mut payment_secret = [0; 32];
-			payment_secret.copy_from_slice(&data_bytes);
-			Ok(PaymentSecret(payment_secret))
 		}
 	}
 }

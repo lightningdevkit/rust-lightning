@@ -25,6 +25,7 @@ use bech32::u5;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 use lightning::ln::features::InvoiceFeatures;
+use lightning::ln::channelmanager::PaymentSecret;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
@@ -357,10 +358,6 @@ pub struct Description(String);
 /// Payee public key
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PayeePubKey(pub PublicKey);
-
-/// 256-bit payment secret
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct PaymentSecret(pub [u8; 32]);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
 /// expires

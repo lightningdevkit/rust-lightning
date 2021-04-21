@@ -18,6 +18,8 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 //!
 
+use bitcoin::bech32;
+use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
@@ -208,6 +210,33 @@ pub struct PaymentPreimage(pub [u8;32]);
 /// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8;32]);
+
+impl FromBase32 for PaymentSecret {
+	type Err = bech32::Error;
+
+	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
+		if field_data.len() != 52 {
+			return Err(bech32::Error::InvalidLength)
+		} else {
+			let data_bytes = Vec::<u8>::from_base32(field_data)?;
+			let mut payment_secret = [0; 32];
+			payment_secret.copy_from_slice(&data_bytes);
+			Ok(PaymentSecret(payment_secret))
+		}
+	}
+}
+
+impl ToBase32 for PaymentSecret {
+	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
+		(&self.0[..]).write_base32(writer)
+	}
+}
+
+impl Base32Len for PaymentSecret {
+	fn base32_len(&self) -> usize {
+		52
+	}
+}
 
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
 
