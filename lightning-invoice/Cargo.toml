@@ -10,6 +10,7 @@ readme = "README.md"
 
 [dependencies]
 bech32 = "0.7"
+lightning = { version = "0.0.13", path = "../lightning" }
 secp256k1 = { version = "0.20", features = ["recovery"] }
 num-traits = "0.2.8"
 bitcoin_hashes = "0.9.4"

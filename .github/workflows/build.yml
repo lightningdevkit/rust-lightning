@@ -47,7 +47,7 @@ jobs:
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo build --verbose  --color always -p lightning
+        run: cargo build --verbose  --color always -p lightning && cargo build --verbose  --color always -p lightning-invoice
       - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
@@ -74,7 +74,7 @@ jobs:
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo test --verbose --color always  -p lightning
+        run: cargo test --verbose --color always  -p lightning && cargo test --verbose --color always  -p lightning-invoice
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |

@@ -17,12 +17,16 @@
 
 extern crate bech32;
 extern crate bitcoin_hashes;
+extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
 
 use bech32::u5;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+#[cfg(any(doc, test))]
+use lightning::routing::network_graph::RoutingFees;
+use lightning::routing::router::RouteHintHop;
 
 use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
@@ -323,7 +327,7 @@ pub enum TaggedField {
 	ExpiryTime(ExpiryTime),
 	MinFinalCltvExpiry(MinFinalCltvExpiry),
 	Fallback(Fallback),
-	Route(Route),
+	Route(RouteHint),
 	PaymentSecret(PaymentSecret),
 }
 
@@ -383,26 +387,7 @@ pub struct Signature(pub RecoverableSignature);
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Route(Vec<RouteHop>);
-
-/// Node on a private route
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct RouteHop {
-	/// Node's public key
-	pub pubkey: PublicKey,
-
-	/// Which channel of this node we would be using
-	pub short_channel_id: [u8; 8],
-
-	/// Fee charged by this node per transaction
-	pub fee_base_msat: u32,
-
-	/// Fee charged by this node proportional to the amount routed
-	pub fee_proportional_millionths: u32,
-
-	/// Delta substracted by this node from incoming cltv_expiry value
-	pub cltv_expiry_delta: u16,
-}
+pub struct RouteHint(Vec<RouteHintHop>);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -499,8 +484,8 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 	}
 
 	/// Adds a private route.
-	pub fn route(mut self, route: Vec<RouteHop>) -> Self {
-		match Route::new(route) {
+	pub fn route(mut self, route: Vec<RouteHintHop>) -> Self {
+		match RouteHint::new(route) {
 			Ok(r) => self.tagged_fields.push(TaggedField::Route(r)),
 			Err(e) => self.error = Some(e),
 		}
@@ -832,11 +817,11 @@ impl RawInvoice {
 		}).collect::<Vec<&Fallback>>()
 	}
 
-	pub fn routes(&self) -> Vec<&Route> {
+	pub fn routes(&self) -> Vec<&RouteHint> {
 		self.known_tagged_fields().filter_map(|tf| match tf {
 			&TaggedField::Route(ref r) => Some(r),
 			_ => None,
-		}).collect::<Vec<&Route>>()
+		}).collect::<Vec<&RouteHint>>()
 	}
 
 	pub fn amount_pico_btc(&self) -> Option<u64> {
@@ -1035,7 +1020,7 @@ impl Invoice {
 	}
 
 	/// Returns a list of all routes included in the invoice
-	pub fn routes(&self) -> Vec<&Route> {
+	pub fn routes(&self) -> Vec<&RouteHint> {
 		self.signed_invoice.routes()
 	}
 
@@ -1157,32 +1142,32 @@ impl ExpiryTime {
 	}
 }
 
-impl Route {
+impl RouteHint {
 	/// Create a new (partial) route from a list of hops
-	pub fn new(hops: Vec<RouteHop>) -> Result<Route, CreationError> {
+	pub fn new(hops: Vec<RouteHintHop>) -> Result<RouteHint, CreationError> {
 		if hops.len() <= 12 {
-			Ok(Route(hops))
+			Ok(RouteHint(hops))
 		} else {
 			Err(CreationError::RouteTooLong)
 		}
 	}
 
 	/// Returrn the underlying vector of hops
-	pub fn into_inner(self) -> Vec<RouteHop> {
+	pub fn into_inner(self) -> Vec<RouteHintHop> {
 		self.0
 	}
 }
 
-impl Into<Vec<RouteHop>> for Route {
-	fn into(self) -> Vec<RouteHop> {
+impl Into<Vec<RouteHintHop>> for RouteHint {
+	fn into(self) -> Vec<RouteHintHop> {
 		self.into_inner()
 	}
 }
 
-impl Deref for Route {
-	type Target = Vec<RouteHop>;
+impl Deref for RouteHint {
+	type Target = Vec<RouteHintHop>;
 
-	fn deref(&self) -> &Vec<RouteHop> {
+	fn deref(&self) -> &Vec<RouteHintHop> {
 		&self.0
 	}
 }
@@ -1458,18 +1443,22 @@ mod test {
 			.build_raw();
 		assert_eq!(long_desc_res, Err(CreationError::DescriptionTooLong));
 
-		let route_hop = RouteHop {
-			pubkey: PublicKey::from_slice(
+		let route_hop = RouteHintHop {
+			src_node_id: PublicKey::from_slice(
 					&[
 						0x03, 0x9e, 0x03, 0xa9, 0x01, 0xb8, 0x55, 0x34, 0xff, 0x1e, 0x92, 0xc4,
 						0x3c, 0x74, 0x43, 0x1f, 0x7c, 0xe7, 0x20, 0x46, 0x06, 0x0f, 0xcf, 0x7a,
 						0x95, 0xc3, 0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55
 					][..]
 				).unwrap(),
-			short_channel_id: [0; 8],
-			fee_base_msat: 0,
-			fee_proportional_millionths: 0,
+			short_channel_id: 0,
+			fees: RoutingFees {
+				base_msat: 0,
+				proportional_millionths: 0,
+			},
 			cltv_expiry_delta: 0,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		};
 		let too_long_route = vec![route_hop; 13];
 		let long_route_res = builder.clone()
@@ -1505,36 +1494,52 @@ mod test {
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
 		let route_1 = vec![
-			RouteHop {
-				pubkey: public_key.clone(),
-				short_channel_id: [123; 8],
-				fee_base_msat: 2,
-				fee_proportional_millionths: 1,
+			RouteHintHop {
+				src_node_id: public_key.clone(),
+				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
+				fees: RoutingFees {
+					base_msat: 2,
+					proportional_millionths: 1,
+				},
 				cltv_expiry_delta: 145,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
 			},
-			RouteHop {
-				pubkey: public_key.clone(),
-				short_channel_id: [42; 8],
-				fee_base_msat: 3,
-				fee_proportional_millionths: 2,
+			RouteHintHop {
+				src_node_id: public_key.clone(),
+				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
+				fees: RoutingFees {
+					base_msat: 3,
+					proportional_millionths: 2,
+				},
 				cltv_expiry_delta: 146,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
 			}
 		];
 
 		let route_2 = vec![
-			RouteHop {
-				pubkey: public_key.clone(),
-				short_channel_id: [0; 8],
-				fee_base_msat: 4,
-				fee_proportional_millionths: 3,
+			RouteHintHop {
+				src_node_id: public_key.clone(),
+				short_channel_id: 0,
+				fees: RoutingFees {
+					base_msat: 4,
+					proportional_millionths: 3,
+				},
 				cltv_expiry_delta: 147,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
 			},
-			RouteHop {
-				pubkey: public_key.clone(),
-				short_channel_id: [1; 8],
-				fee_base_msat: 5,
-				fee_proportional_millionths: 4,
+			RouteHintHop {
+				src_node_id: public_key.clone(),
+				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
+				fees: RoutingFees {
+					base_msat: 5,
+					proportional_millionths: 4,
+				},
 				cltv_expiry_delta: 148,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
 			}
 		];
 
@@ -1568,7 +1573,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry(), Some(&144));
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
-		assert_eq!(invoice.routes(), vec![&Route(route_1), &Route(route_2)]);
+		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
 		assert_eq!(
 			invoice.description(),
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))

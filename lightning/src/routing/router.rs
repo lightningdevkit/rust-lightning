@@ -117,8 +117,8 @@ impl Readable for Route {
 }
 
 /// A channel descriptor which provides a last-hop route to get_route
-#[derive(Clone)]
-pub struct RouteHint {
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct RouteHintHop {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
 	/// The short_channel_id of this channel
@@ -176,7 +176,7 @@ struct DummyDirectionalChannelInfo {
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
 struct PathBuildingHop<'a> {
-	// The RouteHint fields which will eventually be used if this hop is used in a final Route.
+	// The RouteHintHop fields which will eventually be used if this hop is used in a final Route.
 	// Note that node_features is calculated separately after our initial graph walk.
 	pubkey: PublicKey,
 	short_channel_id: u64,
@@ -353,7 +353,7 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// equal), however the enabled/disabled bit on such channels as well as the
 /// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
 pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee: &PublicKey, payee_features: Option<InvoiceFeatures>, first_hops: Option<&[&ChannelDetails]>,
-	last_hops: &[&RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
+	last_hops: &[&RouteHintHop], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *payee == *our_node_id {
@@ -1163,7 +1163,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 #[cfg(test)]
 mod tests {
-	use routing::router::{get_route, RouteHint, RoutingFees};
+	use routing::router::{get_route, RouteHintHop, RoutingFees};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
@@ -2084,19 +2084,19 @@ mod tests {
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 	}
 
-	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHintHop> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
 			proportional_millionths: 0,
 		};
-		vec!(RouteHint {
+		vec!(RouteHintHop {
 			src_node_id: nodes[3].clone(),
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}, RouteHint {
+		}, RouteHintHop {
 			src_node_id: nodes[4].clone(),
 			short_channel_id: 9,
 			fees: RoutingFees {
@@ -2106,7 +2106,7 @@ mod tests {
 			cltv_expiry_delta: (9 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}, RouteHint {
+		}, RouteHintHop {
 			src_node_id: nodes[5].clone(),
 			short_channel_id: 10,
 			fees: zero_fees,
@@ -2124,7 +2124,7 @@ mod tests {
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
 
 		// First check that lst hop can't have its source as the payee.
-		let invalid_last_hop = RouteHint {
+		let invalid_last_hop = RouteHintHop {
 			src_node_id: nodes[6],
 			short_channel_id: 8,
 			fees: RoutingFees {
@@ -2309,7 +2309,7 @@ mod tests {
 		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
 
 		// If we specify a channel to a middle hop, that overrides our local channel view and that gets used
-		let last_hops = vec![RouteHint {
+		let last_hops = vec![RouteHintHop {
 			src_node_id: middle_node_id,
 			short_channel_id: 8,
 			fees: RoutingFees {

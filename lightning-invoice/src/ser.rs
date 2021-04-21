@@ -365,22 +365,26 @@ impl Base32Len for Fallback {
 	}
 }
 
-impl ToBase32 for Route {
+impl ToBase32 for RouteHint {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 
 		for hop in self.iter() {
-			converter.append(&hop.pubkey.serialize()[..])?;
-			converter.append(&hop.short_channel_id[..])?;
+			converter.append(&hop.src_node_id.serialize()[..])?;
+			let short_channel_id = try_stretch(
+				encode_int_be_base256(hop.short_channel_id),
+				8
+			).expect("sizeof(u64) == 8");
+			converter.append(&short_channel_id)?;
 
 			let fee_base_msat = try_stretch(
-				encode_int_be_base256(hop.fee_base_msat),
+				encode_int_be_base256(hop.fees.base_msat),
 				4
 			).expect("sizeof(u32) == 4");
 			converter.append(&fee_base_msat)?;
 
 			let fee_proportional_millionths = try_stretch(
-				encode_int_be_base256(hop.fee_proportional_millionths),
+				encode_int_be_base256(hop.fees.proportional_millionths),
 				4
 			).expect("sizeof(u32) == 4");
 			converter.append(&fee_proportional_millionths)?;
@@ -397,7 +401,7 @@ impl ToBase32 for Route {
 	}
 }
 
-impl Base32Len for Route {
+impl Base32Len for RouteHint {
 	fn base32_len(&self) -> usize {
 		bytes_size_to_base32_size(self.0.len() * 51)
 	}
