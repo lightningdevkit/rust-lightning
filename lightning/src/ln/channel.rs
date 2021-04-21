@@ -4451,9 +4451,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 				&OutboundHTLCState::Committed => {
 					1u8.write(writer)?;
 				},
-				&OutboundHTLCState::RemoteRemoved(ref fail_reason) => {
-					2u8.write(writer)?;
-					fail_reason.write(writer)?;
+				&OutboundHTLCState::RemoteRemoved(_) => {
+					// Treat this as a Committed because we haven't received the CS - they'll
+					// resend the claim/fail on reconnect as we all (hopefully) the missing CS.
+					1u8.write(writer)?;
 				},
 				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref fail_reason) => {
 					3u8.write(writer)?;
