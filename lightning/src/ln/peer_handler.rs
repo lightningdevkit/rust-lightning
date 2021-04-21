@@ -1020,9 +1020,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			// buffer by doing things like announcing channels on another node. We should be willing to
 			// drop optional-ish messages when send buffers get full!
 
+			let mut peers_lock = self.peers.lock().unwrap();
 			let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
 			events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
-			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = &mut *peers_lock;
 			for event in events_generated.drain(..) {
 				macro_rules! get_peer_for_forwarding {
