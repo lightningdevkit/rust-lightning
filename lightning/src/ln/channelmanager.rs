@@ -1563,61 +1563,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Call this upon creation of a funding transaction for the given channel.
-	///
-	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
-	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
-	///
-	/// Panics if a funding transaction has already been provided for this channel.
-	///
-	/// May panic if the output found in the funding transaction is duplicative with some other
-	/// channel (note that this should be trivially prevented by using unique funding transaction
-	/// keys per-channel).
-	///
-	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
-	/// counterparty's signature the funding transaction will automatically be broadcast via the
-	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
-	///
-	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
-	/// not currently support replacing a funding transaction on an existing channel. Instead,
-	/// create a new channel with a conflicting funding transaction.
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		for inp in funding_transaction.input.iter() {
-			if inp.witness.is_empty() {
-				return Err(APIError::APIMisuseError {
-					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
-				});
-			}
-		}
-
+	/// Handles the generation of a funding transaction, optionally (for tests) with a function
+	/// which checks the correctness of the funding transaction given the associated channel.
+	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>
+			(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction, find_funding_output: FundingOutput) -> Result<(), APIError> {
 		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
-					let mut output_index = None;
-					let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
-					for (idx, outp) in funding_transaction.output.iter().enumerate() {
-						if outp.script_pubkey == expected_spk && outp.value == chan.get_value_satoshis() {
-							if output_index.is_some() {
-								return Err(APIError::APIMisuseError {
-									err: "Multiple outputs matched the expected script and value".to_owned()
-								});
-							}
-							if idx > u16::max_value() as usize {
-								return Err(APIError::APIMisuseError {
-									err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
-								});
-							}
-							output_index = Some(idx as u16);
-						}
-					}
-					if output_index.is_none() {
-						return Err(APIError::APIMisuseError {
-							err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
-						});
-					}
-					let funding_txo = OutPoint { txid: funding_transaction.txid(), index: output_index.unwrap() };
+					let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
 					(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
 						.map_err(|e| if let ChannelError::Close(msg) = e {
@@ -1651,6 +1604,68 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 		Ok(())
+	}
+
+	#[cfg(test)]
+	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
+		self.funding_transaction_generated_intern(temporary_channel_id, funding_transaction, |_, tx| {
+			Ok(OutPoint { txid: tx.txid(), index: output_index })
+		})
+	}
+
+	/// Call this upon creation of a funding transaction for the given channel.
+	///
+	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
+	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
+	///
+	/// Panics if a funding transaction has already been provided for this channel.
+	///
+	/// May panic if the output found in the funding transaction is duplicative with some other
+	/// channel (note that this should be trivially prevented by using unique funding transaction
+	/// keys per-channel).
+	///
+	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
+	/// counterparty's signature the funding transaction will automatically be broadcast via the
+	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
+	///
+	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
+	/// not currently support replacing a funding transaction on an existing channel. Instead,
+	/// create a new channel with a conflicting funding transaction.
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		for inp in funding_transaction.input.iter() {
+			if inp.witness.is_empty() {
+				return Err(APIError::APIMisuseError {
+					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+				});
+			}
+		}
+		self.funding_transaction_generated_intern(temporary_channel_id, funding_transaction, |chan, tx| {
+			let mut output_index = None;
+			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
+			for (idx, outp) in tx.output.iter().enumerate() {
+				if outp.script_pubkey == expected_spk && outp.value == chan.get_value_satoshis() {
+					if output_index.is_some() {
+						return Err(APIError::APIMisuseError {
+							err: "Multiple outputs matched the expected script and value".to_owned()
+						});
+					}
+					if idx > u16::max_value() as usize {
+						return Err(APIError::APIMisuseError {
+							err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+						});
+					}
+					output_index = Some(idx as u16);
+				}
+			}
+			if output_index.is_none() {
+				return Err(APIError::APIMisuseError {
+					err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
+				});
+			}
+			Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
+		})
 	}
 
 	fn get_announcement_sigs(&self, chan: &Channel<Signer>) -> Option<msgs::AnnouncementSignatures> {

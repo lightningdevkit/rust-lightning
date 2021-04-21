@@ -3574,7 +3574,6 @@ impl<Signer: Sign> Channel<Signer> {
 								#[cfg(not(feature = "fuzztarget"))]
 								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 							}
-							self.channel_state = ChannelState::ShutdownComplete as u32;
 							self.update_time_counter += 1;
 							return Err(msgs::ErrorMessage {
 								channel_id: self.channel_id(),
