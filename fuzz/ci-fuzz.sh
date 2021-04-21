@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -x
 
 pushd src/msg_targets
 rm msg_*.rs
