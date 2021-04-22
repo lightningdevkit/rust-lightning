@@ -209,7 +209,8 @@ impl<'a> MoneyLossDetector<'a> {
 		self.height += 1;
 		self.manager.transactions_confirmed(&header, &txdata, self.height as u32);
 		self.manager.best_block_updated(&header, self.height as u32);
-		(*self.monitor).block_connected(&header, &txdata, self.height as u32);
+		(*self.monitor).transactions_confirmed(&header, &txdata, self.height as u32);
+		(*self.monitor).best_block_updated(&header, self.height as u32);
 		if self.header_hashes.len() > self.height {
 			self.header_hashes[self.height] = (header.block_hash(), self.blocks_connected);
 		} else {

@@ -140,8 +140,8 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 				node.node.best_block_updated(&block.header, height);
 			},
 			ConnectStyle::FullBlockViaListen => {
-				node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-				Listen::block_connected(node.node, &block, height);
+				node.chain_monitor.chain_monitor.block_connected(&block, height);
+				node.node.block_connected(&block, height);
 			}
 		}
 	}

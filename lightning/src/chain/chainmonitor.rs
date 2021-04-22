@@ -74,7 +74,7 @@ where C::Target: chain::Filter,
 	    P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly based on transactions in the connected block. See
+	/// of a channel and reacting accordingly based on transactions in the given chain data. See
 	/// [`ChannelMonitor::block_connected`] for details. Any HTLCs that were resolved on chain will
 	/// be returned by [`chain::Watch::release_pending_monitor_events`].
 	///
@@ -82,13 +82,6 @@ where C::Target: chain::Filter,
 	/// calls must not exclude any transactions matching the new outputs nor any in-block
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		self.process_chain_data(header, txdata, |monitor, txdata| {
-			monitor.block_connected(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
 	fn process_chain_data<FN>(&self, header: &BlockHeader, txdata: &TransactionData, process: FN)
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
@@ -129,16 +122,6 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel based on the disconnected block. See [`ChannelMonitor::block_disconnected`] for
-	/// details.
-	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-		}
-	}
-
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
 	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
@@ -158,7 +141,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref + Send + Sync, T: Deref + Send + Sync, F: Deref + Send + Sync, L: Deref + Send + Sync, P: Deref + Send + Sync>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	ChannelSigner: Sign,
@@ -169,12 +152,20 @@ where
 	P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
+		let header = &block.header;
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		ChainMonitor::block_connected(self, &block.header, &txdata, height);
+		self.process_chain_data(header, &txdata, |monitor, txdata| {
+			monitor.block_connected(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		ChainMonitor::block_disconnected(self, header, height);
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			monitor.block_disconnected(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+		}
 	}
 }
 
