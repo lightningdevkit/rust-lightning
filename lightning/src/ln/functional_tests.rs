@@ -1569,18 +1569,8 @@ fn test_fee_spike_violation_fails_htlc() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
 
-	macro_rules! get_route_and_payment_hash {
-		($recv_value: expr) => {{
-			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
-			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
-			let route = get_route(&nodes[0].node.get_our_node_id(), net_graph_msg_handler, &nodes.last().unwrap().node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
-			(route, payment_hash, payment_preimage)
-		}}
-	}
-
-	let (route, payment_hash, _) = get_route_and_payment_hash!(3460001);
+	let (route, payment_hash, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 3460001);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
@@ -1709,18 +1699,8 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
 
-	macro_rules! get_route_and_payment_hash {
-		($recv_value: expr) => {{
-			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
-			let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
-			let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.first().unwrap().node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
-			(route, payment_hash, payment_preimage)
-		}}
-	}
-
-	let (route, our_payment_hash, _) = get_route_and_payment_hash!(4843000);
+	let (route, our_payment_hash, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 4843000);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1741,18 +1721,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
 
-	macro_rules! get_route_and_payment_hash {
-		($recv_value: expr) => {{
-			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[1]);
-			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-			let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.first().unwrap().node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
-			(route, payment_hash, payment_preimage)
-		}}
-	}
-
-	let (route, payment_hash, _) = get_route_and_payment_hash!(1000);
+	let (route, payment_hash, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 1000);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1837,16 +1807,6 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
-
-	macro_rules! get_route_and_payment_hash {
-		($recv_value: expr) => {{
-			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
-			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-			let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
-			(route, payment_hash, payment_preimage)
-		}}
-	}
 
 	let feemsat = 239;
 	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
@@ -1859,7 +1819,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let amt_msat_1 = recv_value_1 + total_routing_fee_msat;
 
 	// Add a pending HTLC.
-	let (route_1, our_payment_hash_1, _) = get_route_and_payment_hash!(amt_msat_1);
+	let (route_1, our_payment_hash_1, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_1);
 	let payment_event_1 = {
 		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -1874,7 +1834,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let commit_tx_fee_2_htlcs = commit_tx_fee_msat(feerate, 2);
 	let recv_value_2 = chan_stat.value_to_self_msat - amt_msat_1 - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlcs + 1;
 	let amt_msat_2 = recv_value_2 + total_routing_fee_msat;
-	let (route_2, _, _) = get_route_and_payment_hash!(amt_msat_2);
+	let (route_2, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_2);
 
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
@@ -1932,22 +1892,12 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 190000, 1001, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
 
 	let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
 	let mut stat11 = get_channel_value_stat!(nodes[1], chan_1.2);
 
 	let mut stat12 = get_channel_value_stat!(nodes[1], chan_2.2);
 	let mut stat22 = get_channel_value_stat!(nodes[2], chan_2.2);
-
-	macro_rules! get_route_and_payment_hash {
-		($recv_value: expr) => {{
-			let (payment_preimage, payment_hash) = get_payment_preimage_hash!(nodes[0]);
-			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-			let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, &logger).unwrap();
-			(route, payment_hash, payment_preimage)
-		}}
-	}
 
 	macro_rules! expect_forward {
 		($node: expr) => {{
@@ -1967,7 +1917,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
-		let (mut route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_0);
+		let (mut route, our_payment_hash, _) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_0);
 		route.paths[0].last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
@@ -2019,7 +1969,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let recv_value_1 = (stat01.value_to_self_msat - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs)/2;
 	let amt_msat_1 = recv_value_1 + total_fee_msat;
 
-	let (route_1, our_payment_hash_1, our_payment_preimage_1) = get_route_and_payment_hash!(recv_value_1);
+	let (route_1, our_payment_hash_1, our_payment_preimage_1) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_1);
 	let payment_event_1 = {
 		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -2033,7 +1983,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// channel reserve test with htlc pending output > 0
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_2 + 1);
+		let (route, our_payment_hash, _) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_2 + 1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2050,7 +2000,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	}
 
 	// now see if they go through on both sides
-	let (route_21, our_payment_hash_21, our_payment_preimage_21) = get_route_and_payment_hash!(recv_value_21);
+	let (route_21, our_payment_hash_21, our_payment_preimage_21) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_21);
 	// but this will stuck in the holding cell
 	nodes[0].node.send_payment(&route_21, our_payment_hash_21, &None).unwrap();
 	check_added_monitors!(nodes[0], 0);
@@ -2059,14 +2009,14 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// test with outbound holding cell amount > 0
 	{
-		let (route, our_payment_hash, _) = get_route_and_payment_hash!(recv_value_22+1);
+		let (route, our_payment_hash, _) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22+1);
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 2);
 	}
 
-	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(recv_value_22);
+	let (route_22, our_payment_hash_22, our_payment_preimage_22) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
 	// this will also stuck in the holding cell
 	nodes[0].node.send_payment(&route_22, our_payment_hash_22, &None).unwrap();
 	check_added_monitors!(nodes[0], 0);

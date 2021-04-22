@@ -904,6 +904,18 @@ macro_rules! get_payment_preimage_hash {
 	}
 }
 
+#[cfg(test)]
+macro_rules! get_route_and_payment_hash {
+	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
+		let (payment_preimage, payment_hash) = get_payment_preimage_hash!($recv_node);
+		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
+		let route = get_route(&$send_node.node.get_our_node_id(),
+			&net_graph_msg_handler.network_graph.read().unwrap(),
+			&$recv_node.node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
+		(route, payment_hash, payment_preimage)
+	}}
+}
+
 macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
