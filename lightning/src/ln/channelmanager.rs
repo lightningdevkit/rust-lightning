@@ -353,6 +353,22 @@ struct PeerState {
 	latest_features: InitFeatures,
 }
 
+/// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
+/// actually ours and not some duplicate HTLC sent to us by a node along the route.
+///
+/// For users who don't want to bother doing their own payment preimage storage, we also store that
+/// here.
+struct PendingInboundPayment {
+	/// The payment secret that the sender must use for us to accept this payment
+	payment_secret: PaymentSecret,
+	/// Time at which this HTLC expires - blocks with a header time above this value will result in
+	/// this payment being removed.
+	expiry_time: u64,
+	// Other required attributes of the payment, optionally enforced:
+	payment_preimage: Option<PaymentPreimage>,
+	min_value_msat: Option<u64>,
+}
+
 /// SimpleArcChannelManager is useful when you need a ChannelManager with a static lifetime, e.g.
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
@@ -431,12 +447,25 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	pub(super) channel_state: Mutex<ChannelHolder<Signer>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_state: Mutex<ChannelHolder<Signer>>,
+
+	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
+	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
+	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
+	/// after we generate a PaymentReceived upon receipt of all MPP parts.
+	/// Locked *after* channel_state.
+	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
+
 	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicUsize,
+
+	/// The highest block timestamp we've seen, which is usually a good guess at the current time.
+	/// Assuming most miners are generating blocks with reasonable timestamps, this shouldn't be
+	/// very far in the past, and can only ever be up to two hours in the future.
+	highest_seen_timestamp: AtomicUsize,
 
 	/// The bulk of our storage will eventually be here (channels and message queues and the like).
 	/// If we are connected to a peer we always at least have an entry here, even if no channels
@@ -853,11 +882,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
+			pending_inbound_payments: Mutex::new(HashMap::new()),
+
 			our_network_key: keys_manager.get_node_secret(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()),
 			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(0),
+			highest_seen_timestamp: AtomicUsize::new(0),
 
 			per_peer_state: RwLock::new(HashMap::new()),
 
@@ -3321,6 +3353,85 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.finish_force_close_channel(failure);
 		}
 	}
+
+	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
+		assert!(invoice_expiry_delta_secs <= 60*60*24*365); // Sadly bitcoin timestamps are u32s, so panic before 2106
+
+		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		match payment_secrets.entry(payment_hash) {
+			hash_map::Entry::Vacant(e) => {
+				e.insert(PendingInboundPayment {
+					payment_secret, min_value_msat, payment_preimage,
+					// We assume that highest_seen_timestamp is pretty close to the current time -
+					// its updated when we receive a new block with the maximum time we've seen in
+					// a header. It should never be more than two hours in the future.
+					// Thus, we add two hours here as a buffer to ensure we absolutely
+					// never fail a payment too early.
+					// Note that we assume that received blocks have reasonably up-to-date
+					// timestamps.
+					expiry_time: self.highest_seen_timestamp.load(Ordering::Acquire) as u64 + invoice_expiry_delta_secs as u64 + 7200,
+				});
+			},
+			hash_map::Entry::Occupied(_) => return Err(APIError::APIMisuseError { err: "Duplicate payment hash".to_owned() }),
+		}
+		Ok(payment_secret)
+	}
+
+	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
+	/// to pay us.
+	///
+	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
+	/// [`PaymentHash`] and [`PaymentPreimage`] for you, returning the first and storing the second.
+	///
+	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
+	///
+	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> (PaymentHash, PaymentSecret) {
+		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+
+		(payment_hash,
+			self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)
+				.expect("RNG Generated Duplicate PaymentHash"))
+	}
+
+	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
+	/// stored external to LDK.
+	///
+	/// A [`PaymentReceived`] event will only be generated if the [`PaymentSecret`] matches a
+	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
+	/// the `min_value_msat` provided here, if one is provided.
+	///
+	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
+	/// method may return an Err if another payment with the same payment_hash is still pending.
+	///
+	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
+	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
+	/// before a [`PaymentReceived`] event will be generated, ensuring that we do not provide the
+	/// sender "proof-of-payment" unless they have paid the required amount.
+	///
+	/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+	/// in excess of the current time. This should roughly match the expiry time set in the invoice.
+	/// After this many seconds, we will remove the inbound payment, resulting in any attempts to
+	/// pay the invoice failing. The BOLT spec suggests 7,200 secs as a default validity time for
+	/// invoices when no timeout is set.
+	///
+	/// Note that we use block header time to time-out pending inbound payments (with some margin
+	/// to compensate for the inaccuracy of block header timestamps). Thus, in practice we will
+	/// accept a payment and generate a [`PaymentReceived`] event for some time after the expiry.
+	/// If you need exact expiry semantics, you should enforce them upon receipt of
+	/// [`PaymentReceived`].
+	///
+	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	/// [`PaymentReceived`]: events::Event::PaymentReceived
+	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
+		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
@@ -3433,18 +3544,24 @@ where
 
 		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time));
 
-		loop {
-			// Update last_node_announcement_serial to be the max of its current value and the
-			// block timestamp. This should keep us close to the current time without relying on
-			// having an explicit local time source.
-			// Just in case we end up in a race, we loop until we either successfully update
-			// last_node_announcement_serial or decide we don't need to.
-			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
-			if old_serial >= header.time as usize { break; }
-			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-				break;
+		macro_rules! max_time {
+			($timestamp: expr) => {
+				loop {
+					// Update $timestamp to be the max of its current value and the block
+					// timestamp. This should keep us close to the current time without relying on
+					// having an explicit local time source.
+					// Just in case we end up in a race, we loop until we either successfully
+					// update $timestamp or decide we don't need to.
+					let old_serial = $timestamp.load(Ordering::Acquire);
+					if old_serial >= header.time as usize { break; }
+					if $timestamp.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+						break;
+					}
+				}
 			}
 		}
+		max_time!(self.last_node_announcement_serial);
+		max_time!(self.highest_seen_timestamp);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
@@ -4116,6 +4233,13 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
+impl_writeable!(PendingInboundPayment, 0, {
+	payment_secret,
+	expiry_time,
+	payment_preimage,
+	min_value_msat
+});
+
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
@@ -4195,6 +4319,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		}
 
 		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
+		(pending_inbound_payments.len() as u64).write(writer)?;
+		for (hash, pending_payment) in pending_inbound_payments.iter() {
+			hash.write(writer)?;
+			pending_payment.write(writer)?;
+		}
 
 		Ok(())
 	}
@@ -4425,6 +4557,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		}
 
 		let last_node_announcement_serial: u32 = Readable::read(reader)?;
+		let highest_seen_timestamp: u32 = Readable::read(reader)?;
+
+		let pending_inbound_payment_count: u64 = Readable::read(reader)?;
+		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = HashMap::with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
+		for _ in 0..pending_inbound_payment_count {
+			if pending_inbound_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
@@ -4444,11 +4585,14 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
+			pending_inbound_payments: Mutex::new(pending_inbound_payments),
+
 			our_network_key: args.keys_manager.get_node_secret(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret()),
 			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
+			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
 			per_peer_state: RwLock::new(per_peer_state),
 
