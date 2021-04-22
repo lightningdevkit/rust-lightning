@@ -19,7 +19,7 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr};
 use chain::transaction::OutPoint;
 use chain::Listen;
 use chain::Watch;
-use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
+use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSendFailure};
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
@@ -47,7 +47,7 @@ fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
-	let (_, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
+	let (_, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(&nodes[1]);
 
 	match persister_fail {
 		true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure)),
@@ -162,7 +162,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(&nodes[0]);
+	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(&nodes[1]);
 
 	match persister_fail {
 		true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure)),
@@ -217,7 +217,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 
 	// Now set it to failed again...
-	let (_, payment_hash_2) = get_payment_preimage_hash!(&nodes[0]);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(&nodes[1]);
 	{
 		match persister_fail {
 			true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure)),
@@ -287,10 +287,10 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now try to send a second payment which will fail to send
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
 	{
 		*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
@@ -622,7 +622,7 @@ fn test_monitor_update_fail_cs() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -711,7 +711,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage_1, our_payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, our_payment_hash, payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -762,7 +762,7 @@ fn test_monitor_update_raa_while_paused() {
 	let logger = test_utils::TestLogger::new();
 
 	send_payment(&nodes[0], &[&nodes[1]], 5000000, 5_000_000);
-	let (payment_preimage_1, our_payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, our_payment_hash_1, our_payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -771,7 +771,7 @@ fn test_monitor_update_raa_while_paused() {
 	}
 	let send_event_1 = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 
-	let (payment_preimage_2, our_payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, our_payment_hash_2, our_payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -843,7 +843,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
 
 	// Route a first payment that we'll fail backwards
-	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
 	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
@@ -863,7 +863,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// While the second channel is AwaitingRAA, forward a second payment to get it into the
 	// holding cell.
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[2]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -890,7 +890,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Attempt to forward a third payment but fail due to the second channel being unavailable
 	// for forwarding.
-	let (_, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[2]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -940,7 +940,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	let (payment_preimage_4, payment_hash_4) = if test_ignore_second_cs {
 		// Try to route another payment backwards from 2 to make sure 1 holds off on responding
-		let (payment_preimage_4, payment_hash_4) = get_payment_preimage_hash!(nodes[0]);
+		let (payment_preimage_4, payment_hash_4, payment_secret_4) = get_payment_preimage_hash!(nodes[0]);
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[2].node.send_payment(&route, payment_hash_4, &None).unwrap();
@@ -1103,7 +1103,7 @@ fn test_monitor_update_fail_reestablish() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
-	let (our_payment_preimage, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
@@ -1185,9 +1185,9 @@ fn raa_no_response_awaiting_raa_state() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
-	let (payment_preimage_3, payment_hash_3) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+	let (payment_preimage_3, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[1]);
 
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA. Ultimately this allows us to deliver an RAA
@@ -1310,7 +1310,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -1339,7 +1339,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	// Send a second payment from A to B, resulting in a commitment update that gets swallowed with
 	// the monitor still failed
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1435,7 +1435,7 @@ fn monitor_failed_no_reestablish_response() {
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
 	// on receipt).
-	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1509,7 +1509,7 @@ fn first_message_on_recv_ordering() {
 
 	// Route the first payment outbound, holding the last RAA for B until we are set up so that we
 	// can deliver it and fail the monitor update.
-	let (payment_preimage_1, payment_hash_1) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1534,7 +1534,7 @@ fn first_message_on_recv_ordering() {
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 
 	// Route the second payment, generating an update_add_htlc/commitment_signed
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1608,13 +1608,13 @@ fn test_monitor_update_fail_claim() {
 	// Rebalance a bit so that we can send backwards from 3 to 2.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
 
-	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
-	let (_, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1689,7 +1689,7 @@ fn test_monitor_update_on_pending_forwards() {
 	// Rebalance a bit so that we can send backwards from 3 to 1.
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
 
-	let (_, payment_hash_1) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
@@ -1699,7 +1699,7 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[1], nodes[2], cs_fail_update.commitment_signed, true, true);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1759,10 +1759,10 @@ fn monitor_update_claim_fail_no_response() {
 	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
-	let (payment_preimage_2, payment_hash_2) = get_payment_preimage_hash!(nodes[0]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1923,8 +1923,7 @@ fn test_path_paused_mpp() {
 	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage, payment_hash) = get_payment_preimage_hash!(&nodes[0]);
-	let payment_secret = PaymentSecret([0xdb; 32]);
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
 	let mut route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3].node.get_our_node_id(), None, None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// Set us up to take multiple routes, one 0 -> 1 -> 3 and one 0 -> 2 -> 3:

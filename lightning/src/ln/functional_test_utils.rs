@@ -894,12 +894,13 @@ macro_rules! commitment_signed_dance {
 /// Get a payment preimage and hash.
 #[macro_export]
 macro_rules! get_payment_preimage_hash {
-	($node: expr) => {
+	($dest_node: expr) => {
 		{
-			let payment_preimage = PaymentPreimage([*$node.network_payment_count.borrow(); 32]);
-			*$node.network_payment_count.borrow_mut() += 1;
+			let payment_preimage = PaymentPreimage([*$dest_node.network_payment_count.borrow(); 32]);
+			*$dest_node.network_payment_count.borrow_mut() += 1;
 			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-			(payment_preimage, payment_hash)
+			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
+			(payment_preimage, payment_hash, payment_secret)
 		}
 	}
 }
@@ -907,12 +908,12 @@ macro_rules! get_payment_preimage_hash {
 #[cfg(test)]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		let (payment_preimage, payment_hash) = get_payment_preimage_hash!($recv_node);
+		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node);
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
 		let route = get_route(&$send_node.node.get_our_node_id(),
 			&net_graph_msg_handler.network_graph.read().unwrap(),
 			&$recv_node.node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
-		(route, payment_hash, payment_preimage)
+		(route, payment_hash, payment_preimage, payment_secret)
 	}}
 }
 
@@ -1045,10 +1046,10 @@ pub fn send_along_route_with_hash<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, ro
 	send_along_route_with_secret(origin_node, route, &[expected_route], recv_value, our_payment_hash, None);
 }
 
-pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
-	let (our_payment_preimage, our_payment_hash) = get_payment_preimage_hash!(origin_node);
+pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(expected_route.last().unwrap());
 	send_along_route_with_hash(origin_node, route, expected_route, recv_value, our_payment_hash);
-	(our_payment_preimage, our_payment_hash)
+	(our_payment_preimage, our_payment_hash, our_payment_secret)
 }
 
 pub fn claim_payment_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage, our_payment_secret: Option<PaymentSecret>, expected_amount: u64) {
@@ -1149,7 +1150,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub const TEST_FINAL_CLTV: u32 = 50;
 
-pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash) {
+pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), None, None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1172,7 +1173,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
-	let (_, our_payment_hash) = get_payment_preimage_hash!(origin_node);
+	let (_, our_payment_hash, _) = get_payment_preimage_hash!(expected_route.last().unwrap());
 	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }

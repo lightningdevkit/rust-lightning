@@ -267,7 +267,7 @@ fn test_onion_failure() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
-	let (_, payment_hash) = get_payment_preimage_hash!(nodes[0]);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[0]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -415,7 +415,7 @@ fn test_onion_failure() {
 
 	// Test a positive test-case with one extra msat, meeting the minimum.
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward + 1;
-	let (preimage, _) = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1);
+	let (preimage, _, _) = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage, amt_to_forward+1);
 
 	//TODO: with new config API, we will be able to generate both valid and
