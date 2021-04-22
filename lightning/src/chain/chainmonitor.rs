@@ -89,49 +89,6 @@ where C::Target: chain::Filter,
 		});
 	}
 
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly to newly confirmed transactions. For details, see
-	/// [`ChannelMonitor::transactions_confirmed`].
-	///
-	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`best_block_updated`] for transactions in the
-	/// corresponding block. See [`best_block_updated`] for further calling expectations.
-	///
-	/// [`block_connected`]: Self::block_connected
-	/// [`best_block_updated`]: Self::best_block_updated
-	pub fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		self.process_chain_data(header, txdata, |monitor, txdata| {
-			monitor.transactions_confirmed(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly based on the new chain tip. For details, see
-	/// [`ChannelMonitor::best_block_updated`].
-	///
-	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
-	/// block.
-	///
-	/// Must be called after new blocks become available for the most recent block. Intermediary
-	/// blocks, however, may be safely skipped. In the event of a chain re-organization, this only
-	/// needs to be called for the most recent block assuming `transaction_unconfirmed` is called
-	/// for any affected transactions.
-	///
-	/// [`block_connected`]: Self::block_connected
-	/// [`transactions_confirmed`]: Self::transactions_confirmed
-	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	pub fn best_block_updated(&self, header: &BlockHeader, height: u32) {
-		self.process_chain_data(header, &[], |monitor, txdata| {
-			// While in practice there shouldn't be any recursive calls when given empty txdata,
-			// it's still possible if a chain::Filter implementation returns a transaction.
-			debug_assert!(txdata.is_empty());
-			monitor.best_block_updated(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
 	fn process_chain_data<FN>(&self, header: &BlockHeader, txdata: &TransactionData, process: FN)
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
@@ -182,36 +139,6 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel based on transactions unconfirmed as a result of a chain reorganization. See
-	/// [`ChannelMonitor::transaction_unconfirmed`] for details.
-	///
-	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
-	/// than blocks. May be called before or after [`best_block_updated`] for transactions in the
-	/// corresponding block. See [`best_block_updated`] for further calling expectations.
-	///
-	/// [`block_disconnected`]: Self::block_disconnected
-	/// [`best_block_updated`]: Self::best_block_updated
-	pub fn transaction_unconfirmed(&self, txid: &Txid) {
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-		}
-	}
-
-	/// Returns the set of txids that should be monitored for re-organization out of the chain.
-	pub fn get_relevant_txids(&self) -> Vec<Txid> {
-		let mut txids = Vec::new();
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			txids.append(&mut monitor.get_relevant_txids());
-		}
-
-		txids.sort_unstable();
-		txids.dedup();
-		txids
-	}
-
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
 	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
@@ -248,6 +175,53 @@ where
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
 		ChainMonitor::block_disconnected(self, header, height);
+	}
+}
+
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where
+	ChannelSigner: Sign,
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: channelmonitor::Persist<ChannelSigner>,
+{
+	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.process_chain_data(header, txdata, |monitor, txdata| {
+			monitor.transactions_confirmed(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	fn transaction_unconfirmed(&self, txid: &Txid) {
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+		}
+	}
+
+	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+		self.process_chain_data(header, &[], |monitor, txdata| {
+			// While in practice there shouldn't be any recursive calls when given empty txdata,
+			// it's still possible if a chain::Filter implementation returns a transaction.
+			debug_assert!(txdata.is_empty());
+			monitor.best_block_updated(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	fn get_relevant_txids(&self) -> Vec<Txid> {
+		let mut txids = Vec::new();
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			txids.append(&mut monitor.get_relevant_txids());
+		}
+
+		txids.sort_unstable();
+		txids.dedup();
+		txids
 	}
 }
 
