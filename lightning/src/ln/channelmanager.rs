@@ -451,7 +451,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
 	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
 	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
-	/// after we generate a PaymentReceived upon receipt of all MPP parts.
+	/// after we generate a PaymentReceived upon receipt of all MPP parts or when they time out.
 	/// Locked *after* channel_state.
 	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
 
@@ -3601,6 +3601,10 @@ where
 		}
 		max_time!(self.last_node_announcement_serial);
 		max_time!(self.highest_seen_timestamp);
+		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		payment_secrets.retain(|_, inbound_payment| {
+			inbound_payment.expiry_time > header.time as u64
+		});
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
