@@ -96,7 +96,7 @@ enum PendingHTLCRouting {
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
 	Receive {
-		payment_data: Option<msgs::FinalOnionHopData>,
+		payment_data: msgs::FinalOnionHopData,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
 }
@@ -156,11 +156,10 @@ pub(crate) struct HTLCPreviousHopData {
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	value: u64,
-	/// Filled in when the HTLC was received with a payment_secret packet, which contains a
-	/// total_msat (which may differ from value if this is a Multi-Path Payment) and a
+	/// Contains a total_msat (which may differ from value if this is a Multi-Path Payment) and a
 	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
 	/// are part of the same payment.
-	payment_data: Option<msgs::FinalOnionHopData>,
+	payment_data: msgs::FinalOnionHopData,
 	cltv_expiry: u32,
 }
 
@@ -327,12 +326,11 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
-	/// (payment_hash, payment_secret) -> Vec<HTLCs> for tracking HTLCs that
-	/// were to us and can be failed/claimed by the user
+	/// Map from payment hash to any HTLCs which are to us and can be failed/claimed by the user.
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<(PaymentHash, Option<PaymentSecret>), Vec<ClaimableHTLC>>,
+	claimable_htlcs: HashMap<PaymentHash, Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -1247,6 +1245,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msgs::OnionHopDataFormat::FinalNode { payment_data } => payment_data,
 				};
 
+				if payment_data.is_none() {
+					return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
+				}
+
 				// Note that we could obviously respond immediately with an update_fulfill_htlc
 				// message, however that would leak that we are the recipient of this payment, so
 				// instead we stay symmetric with the forwarding case, only responding (after a
@@ -1254,7 +1256,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					routing: PendingHTLCRouting::Receive {
-						payment_data,
+						payment_data: payment_data.unwrap(),
 						incoming_cltv_expiry: msg.cltv_expiry,
 					},
 					payment_hash: msg.payment_hash.clone(),
@@ -1948,61 +1950,93 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
 									incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
-								let prev_hop = HTLCPreviousHopData {
-									short_channel_id: prev_short_channel_id,
-									outpoint: prev_funding_outpoint,
-									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: incoming_shared_secret,
-								};
-
-								let mut total_value = 0;
-								let payment_secret_opt =
-									if let &Some(ref data) = &payment_data { Some(data.payment_secret.clone()) } else { None };
-								let htlcs = channel_state.claimable_htlcs.entry((payment_hash, payment_secret_opt))
-									.or_insert(Vec::new());
-								htlcs.push(ClaimableHTLC {
-									prev_hop,
+								let claimable_htlc = ClaimableHTLC {
+									prev_hop: HTLCPreviousHopData {
+										short_channel_id: prev_short_channel_id,
+										outpoint: prev_funding_outpoint,
+										htlc_id: prev_htlc_id,
+										incoming_packet_shared_secret: incoming_shared_secret,
+									},
 									value: amt_to_forward,
 									payment_data: payment_data.clone(),
 									cltv_expiry: incoming_cltv_expiry,
-								});
-								if let &Some(ref data) = &payment_data {
-									for htlc in htlcs.iter() {
-										total_value += htlc.value;
-										if htlc.payment_data.as_ref().unwrap().total_msat != data.total_msat {
-											total_value = msgs::MAX_VALUE_MSAT;
-										}
-										if total_value >= msgs::MAX_VALUE_MSAT { break; }
+								};
+
+								macro_rules! fail_htlc {
+									($htlc: expr) => {
+										let mut htlc_msat_height_data = byte_utils::be64_to_array($htlc.value).to_vec();
+										htlc_msat_height_data.extend_from_slice(
+											&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
+										);
+										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
+												short_channel_id: $htlc.prev_hop.short_channel_id,
+												outpoint: prev_funding_outpoint,
+												htlc_id: $htlc.prev_hop.htlc_id,
+												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
+											}), payment_hash,
+											HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
+										));
 									}
-									if total_value >= msgs::MAX_VALUE_MSAT || total_value > data.total_msat  {
-										for htlc in htlcs.iter() {
-											let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-											htlc_msat_height_data.extend_from_slice(
-												&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
-											);
-											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
-													short_channel_id: htlc.prev_hop.short_channel_id,
-													outpoint: prev_funding_outpoint,
-													htlc_id: htlc.prev_hop.htlc_id,
-													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
-												}), payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
-											));
-										}
-									} else if total_value == data.total_msat {
-										new_events.push(events::Event::PaymentReceived {
-											payment_hash,
-											payment_secret: Some(data.payment_secret),
-											amt: total_value,
-										});
-									}
-								} else {
-									new_events.push(events::Event::PaymentReceived {
-										payment_hash,
-										payment_secret: None,
-										amt: amt_to_forward,
-									});
 								}
+
+								// Check that the payment hash and secret are known. Note that we
+								// MUST take care to handle the "unknown payment hash" and
+								// "incorrect payment secret" cases here identically or we'd expose
+								// that we are the ultimate recipient of the given payment hash.
+								// Further, we must not expose whether we have any other HTLCs
+								// associated with the same payment_hash pending or not.
+								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+								match payment_secrets.entry(payment_hash) {
+									hash_map::Entry::Vacant(_) => {
+										log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
+										fail_htlc!(claimable_htlc);
+									},
+									hash_map::Entry::Occupied(inbound_payment) => {
+										if inbound_payment.get().payment_secret != payment_data.payment_secret {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
+											fail_htlc!(claimable_htlc);
+										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
+												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
+											fail_htlc!(claimable_htlc);
+										} else {
+											let mut total_value = 0;
+											let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
+												.or_insert(Vec::new());
+											htlcs.push(claimable_htlc);
+											for htlc in htlcs.iter() {
+												total_value += htlc.value;
+												if htlc.payment_data.total_msat != payment_data.total_msat {
+													log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
+														log_bytes!(payment_hash.0), payment_data.total_msat, htlc.payment_data.total_msat);
+													total_value = msgs::MAX_VALUE_MSAT;
+												}
+												if total_value >= msgs::MAX_VALUE_MSAT { break; }
+											}
+											if total_value >= msgs::MAX_VALUE_MSAT || total_value > payment_data.total_msat {
+												log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
+													log_bytes!(payment_hash.0), total_value, payment_data.total_msat);
+												for htlc in htlcs.iter() {
+													fail_htlc!(htlc);
+												}
+											} else if total_value == payment_data.total_msat {
+												new_events.push(events::Event::PaymentReceived {
+													payment_hash,
+													payment_secret: Some(payment_data.payment_secret),
+													amt: total_value,
+												});
+												// Only ever generate at most one PaymentReceived
+												// per registered payment_hash, even if it isn't
+												// claimed.
+												inbound_payment.remove_entry();
+											} else {
+												// Nothing to do - we haven't reached the total
+												// payment value yet, wait until we receive more
+												// MPP parts.
+											}
+										}
+									},
+								};
 							},
 							HTLCForwardInfo::AddHTLC { .. } => {
 								panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -2092,11 +2126,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let payment_secrets = self.pending_inbound_payments.lock().unwrap();
-		let payment_secret = if let Some(secret) = payment_secrets.get(&payment_hash) {
-			Some(secret.payment_secret)
-		} else { return false; };
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(*payment_hash, payment_secret));
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
@@ -2278,11 +2308,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let payment_secrets = self.pending_inbound_payments.lock().unwrap();
-		let payment_secret = if let Some(secret) = payment_secrets.get(&payment_hash) {
-			Some(secret.payment_secret)
-		} else { return false; };
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, payment_secret));
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -2298,13 +2324,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
 
-			let (is_mpp, mut valid_mpp) = if let &Some(ref data) = &sources[0].payment_data {
-				assert!(payment_secret.is_some());
-				(true, data.total_msat >= expected_amount)
-			} else {
-				assert!(payment_secret.is_none());
-				(false, false)
-			};
+			let is_mpp = true;
+			let mut valid_mpp = sources[0].payment_data.total_msat >= expected_amount;
 
 			for htlc in sources.iter() {
 				if !is_mpp || !valid_mpp { break; }
@@ -3667,7 +3688,7 @@ where
 			});
 
 			if let Some(height) = height_opt {
-				channel_state.claimable_htlcs.retain(|&(ref payment_hash, _), htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
 					htlcs.retain(|htlc| {
 						// If height is approaching the number of blocks we think it takes us to get
 						// our commitment transaction confirmed before the HTLC expires, plus the
@@ -4041,7 +4062,8 @@ impl Writeable for PendingHTLCInfo {
 			},
 			&PendingHTLCRouting::Receive { ref payment_data, ref incoming_cltv_expiry } => {
 				1u8.write(writer)?;
-				payment_data.write(writer)?;
+				payment_data.payment_secret.write(writer)?;
+				payment_data.total_msat.write(writer)?;
 				incoming_cltv_expiry.write(writer)?;
 			},
 		}
@@ -4062,7 +4084,10 @@ impl Readable for PendingHTLCInfo {
 					short_channel_id: Readable::read(reader)?,
 				},
 				1u8 => PendingHTLCRouting::Receive {
-					payment_data: Readable::read(reader)?,
+					payment_data: msgs::FinalOnionHopData {
+						payment_secret: Readable::read(reader)?,
+						total_msat: Readable::read(reader)?,
+					},
 					incoming_cltv_expiry: Readable::read(reader)?,
 				},
 				_ => return Err(DecodeError::InvalidValue),
@@ -4134,12 +4159,29 @@ impl_writeable!(HTLCPreviousHopData, 0, {
 	incoming_packet_shared_secret
 });
 
-impl_writeable!(ClaimableHTLC, 0, {
-	prev_hop,
-	value,
-	payment_data,
-	cltv_expiry
-});
+impl Writeable for ClaimableHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.prev_hop.write(writer)?;
+		self.value.write(writer)?;
+		self.payment_data.payment_secret.write(writer)?;
+		self.payment_data.total_msat.write(writer)?;
+		self.cltv_expiry.write(writer)
+	}
+}
+
+impl Readable for ClaimableHTLC {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(ClaimableHTLC {
+			prev_hop: Readable::read(reader)?,
+			value: Readable::read(reader)?,
+			payment_data: msgs::FinalOnionHopData {
+				payment_secret: Readable::read(reader)?,
+				total_msat: Readable::read(reader)?,
+			},
+			cltv_expiry: Readable::read(reader)?,
+		})
+	}
+}
 
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {

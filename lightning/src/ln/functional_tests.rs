@@ -5098,22 +5098,25 @@ fn test_onchain_to_onchain_claim() {
 
 #[test]
 fn test_duplicate_payment_hash_one_failure_one_success() {
-	// Topology : A --> B --> C
+	// Topology : A --> B --> C --> D
 	// We route 2 payments with same hash between B and C, one will be timeout, the other successfully claim
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	// Note that because C will refuse to generate two payment secrets for the same payment hash,
+	// we forward one of the payments onwards to D.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 
-	let (_, _, payment_secret) = get_payment_preimage_hash!(nodes[1]);
+	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200).unwrap();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
-		&nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
-	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2]]], 900000, duplicate_payment_hash, payment_secret);
+		&nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 900000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_txn[0].input.len(), 1);

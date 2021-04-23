@@ -268,9 +268,8 @@ fn test_onion_failure() {
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap();
 	// positve case
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 40000, 40_000);
 
@@ -328,6 +327,7 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
 	}, true, Some(NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: false}));
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
 	// intermediate node failure
 	run_onion_failure_test_with_fail_intercept("permanent_node_failure", 100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
@@ -346,6 +346,7 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
 	}, false, Some(PERM|NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: true}));
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
 	// intermediate node failure
 	run_onion_failure_test_with_fail_intercept("required_node_feature_missing", 100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
@@ -366,6 +367,7 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
 	}, false, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: true}));
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
 	run_onion_failure_test("invalid_onion_version", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| { msg.onion_routing_packet.version = 1; }, ||{}, true,
 		Some(BADONION|PERM|4), None);
@@ -439,6 +441,7 @@ fn test_onion_failure() {
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
 	}, false, Some(PERM|15), None);
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
 	run_onion_failure_test("final_expiry_too_soon", 1, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		let height = msg.cltv_expiry - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS + 1;
