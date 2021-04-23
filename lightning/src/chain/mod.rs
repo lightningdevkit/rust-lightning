@@ -104,7 +104,7 @@ pub trait Confirm {
 	/// in the event of a chain reorganization, it must not be called with a `header` that is no
 	/// longer in the chain as of the last call to [`best_block_updated`].
 	///
-	/// [chain order]: Self#order
+	/// [chain order]: Confirm#Order
 	/// [`best_block_updated`]: Self::best_block_updated
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32);
 
