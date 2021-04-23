@@ -14,6 +14,7 @@
 //!   * For parsing use `str::parse::<Invoice>(&self)` (see the docs of `impl FromStr for Invoice`)
 //!   * For constructing invoices use the `InvoiceBuilder`
 //!   * For serializing invoices use the `Display`/`ToString` traits
+pub mod utils;
 
 extern crate bech32;
 extern crate bitcoin_hashes;
@@ -33,12 +34,12 @@ use lightning::routing::router::RouteHintHop;
 use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
 use secp256k1::recovery::RecoverableSignature;
-use std::ops::Deref;
 
+use std::fmt::{Display, Formatter, self};
 use std::iter::FilterMap;
+use std::ops::Deref;
 use std::slice::Iter;
 use std::time::{SystemTime, Duration, UNIX_EPOCH};
-use std::fmt::{Display, Formatter, self};
 
 mod de;
 mod ser;
@@ -728,8 +729,8 @@ macro_rules! find_extract {
 
 #[allow(missing_docs)]
 impl RawInvoice {
-	/// Hash the HRP as bytes and signatureless data part.
-	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
+	/// Construct the invoice's HRP and signatureless data into a preimage to be hashed.
+	pub(crate) fn construct_invoice_preimage(hrp_bytes: &[u8], data_without_signature: &[u5]) -> Vec<u8> {
 		use bech32::FromBase32;
 
 		let mut preimage = Vec::<u8>::from(hrp_bytes);
@@ -748,7 +749,12 @@ impl RawInvoice {
 
 		preimage.extend_from_slice(&Vec::<u8>::from_base32(&data_part)
 			.expect("No padding error may occur due to appended zero above."));
+		preimage
+	}
 
+	/// Hash the HRP as bytes and signatureless data part.
+	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
+		let preimage = RawInvoice::construct_invoice_preimage(hrp_bytes, data_without_signature);
 		let mut hash: [u8; 32] = Default::default();
 		hash.copy_from_slice(&sha256::Hash::hash(&preimage)[..]);
 		hash
