@@ -1029,8 +1029,8 @@ impl Invoice {
 	}
 
 	/// Returns the invoice's `min_cltv_expiry` time if present
-	pub fn min_final_cltv_expiry(&self) -> Option<&u64> {
-		self.signed_invoice.min_final_cltv_expiry().map(|x| &x.0)
+	pub fn min_final_cltv_expiry(&self) -> Option<u64> {
+		self.signed_invoice.min_final_cltv_expiry().map(|x| x.0)
 	}
 
 	/// Returns a list of all fallback addresses
@@ -1591,7 +1591,7 @@ mod test {
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
-		assert_eq!(invoice.min_final_cltv_expiry(), Some(&144));
+		assert_eq!(invoice.min_final_cltv_expiry(), Some(144));
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
 		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
 		assert_eq!(
