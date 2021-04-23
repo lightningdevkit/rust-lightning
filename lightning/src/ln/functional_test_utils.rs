@@ -943,7 +943,7 @@ macro_rules! expect_payment_received {
 		match events[0] {
 			Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
-				assert_eq!(Some($expected_payment_secret), *payment_secret);
+				assert_eq!($expected_payment_secret, *payment_secret);
 				assert_eq!($expected_recv_value, amt);
 			},
 			_ => panic!("Unexpected event"),
@@ -1011,7 +1011,7 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 				match events_2[0] {
 					Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 						assert_eq!(our_payment_hash, *payment_hash);
-						assert_eq!(Some(our_payment_secret), *payment_secret);
+						assert_eq!(our_payment_secret, *payment_secret);
 						assert_eq!(amt, recv_value);
 					},
 					_ => panic!("Unexpected event"),

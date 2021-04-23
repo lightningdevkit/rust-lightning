@@ -2072,7 +2072,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	match events[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
-			assert_eq!(Some(our_payment_secret_21), *payment_secret);
+			assert_eq!(our_payment_secret_21, *payment_secret);
 			assert_eq!(recv_value_21, amt);
 		},
 		_ => panic!("Unexpected event"),
@@ -2080,7 +2080,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	match events[1] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
-			assert_eq!(Some(our_payment_secret_22), *payment_secret);
+			assert_eq!(our_payment_secret_22, *payment_secret);
 			assert_eq!(recv_value_22, amt);
 		},
 		_ => panic!("Unexpected event"),
@@ -3648,7 +3648,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	match events_2[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert_eq!(Some(payment_secret_1), *payment_secret);
+			assert_eq!(payment_secret_1, *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -3985,7 +3985,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	match events_5[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt: _, user_payment_id: _ } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert_eq!(Some(payment_secret_2), *payment_secret);
+			assert_eq!(payment_secret_2, *payment_secret);
 		},
 		_ => panic!("Unexpected event"),
 	}

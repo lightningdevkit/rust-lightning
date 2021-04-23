@@ -63,14 +63,15 @@ pub enum Event {
 		payment_hash: PaymentHash,
 		/// The "payment secret". This authenticates the sender to the recipient, preventing a
 		/// number of deanonymization attacks during the routing process.
-		/// As nodes upgrade, the invoices you provide should likely migrate to setting the
-		/// payment_secret feature to required, at which point you should fail_backwards any HTLCs
-		/// which have a None here.
-		/// Until then, however, values of None should be ignored, and only incorrect Some values
-		/// should result in an HTLC fail_backwards.
-		/// Note that, in any case, this value must be passed as-is to any fail or claim calls as
-		/// the HTLC index includes this value.
-		payment_secret: Option<PaymentSecret>,
+		/// It is provided here for your reference, however its accuracy is enforced directly by
+		/// [`ChannelManager`] using the values you previously provided to
+		/// [`ChannelManager::create_inbound_payment`] or
+		/// [`ChannelManager::create_inbound_payment_for_hash`].
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		payment_secret: PaymentSecret,
 		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).

@@ -208,7 +208,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	match events_3[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert_eq!(Some(payment_secret_1), *payment_secret);
+			assert_eq!(payment_secret_1, *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -576,7 +576,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	match events_5[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert_eq!(Some(payment_secret_2), *payment_secret);
+			assert_eq!(payment_secret_2, *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -690,7 +690,7 @@ fn test_monitor_update_fail_cs() {
 	match events[0] {
 		Event::PaymentReceived { payment_hash, payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash, our_payment_hash);
-			assert_eq!(Some(our_payment_secret), payment_secret);
+			assert_eq!(our_payment_secret, payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),

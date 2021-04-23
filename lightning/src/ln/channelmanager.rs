@@ -2024,7 +2024,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else if total_value == payment_data.total_msat {
 												new_events.push(events::Event::PaymentReceived {
 													payment_hash,
-													payment_secret: Some(payment_data.payment_secret),
+													payment_secret: payment_data.payment_secret,
 													amt: total_value,
 													user_payment_id: inbound_payment.get().user_payment_id,
 												});
