@@ -2323,22 +2323,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// we got all the HTLCs and then a channel closed while we were waiting for the user to
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
-
-			let is_mpp = true;
 			let mut valid_mpp = sources[0].payment_data.total_msat >= expected_amount;
-
 			for htlc in sources.iter() {
-				if !is_mpp || !valid_mpp { break; }
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
+					break;
 				}
 			}
 
 			let mut errs = Vec::new();
 			let mut claimed_any_htlcs = false;
 			for htlc in sources.drain(..) {
-				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				if (is_mpp && !valid_mpp) || (!is_mpp && (htlc.value < expected_amount || htlc.value > expected_amount * 2)) {
+				if !valid_mpp {
+					if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
 							self.best_block.read().unwrap().height()));
@@ -2355,10 +2352,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								claimed_any_htlcs = true;
 							} else { errs.push(e); }
 						},
-						Err(None) if is_mpp => unreachable!("We already checked for channel existence, we can't fail here!"),
-						Err(None) => {
-							log_warn!(self.logger, "Channel we expected to claim an HTLC from was closed.");
-						},
+						Err(None) => unreachable!("We already checked for channel existence, we can't fail here!"),
 						Ok(()) => claimed_any_htlcs = true,
 					}
 				}
