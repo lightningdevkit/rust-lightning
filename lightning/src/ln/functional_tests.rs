@@ -874,7 +874,7 @@ fn updates_shutdown_wait() {
 	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, &Some(payment_secret), 100_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, 100_000));
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1008,7 +1008,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
-	let (our_payment_preimage, _, our_payment_secret) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 
 	nodes[1].node.close_channel(&chan_1.2).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -1047,7 +1047,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, &Some(our_payment_secret), 100_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, 100_000));
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1454,7 +1454,7 @@ fn duplicate_htlc_test() {
 fn test_duplicate_htlc_different_direction_onchain() {
 	// Test that ChannelMonitor doesn't generate 2 preimage txn
 	// when we have 2 HTLCs with same preimage that go across a node
-	// in opposite directions.
+	// in opposite directions, even with the same payment secret.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -1466,7 +1466,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
 
-	let (payment_preimage, payment_hash, payment_secret) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 	let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 800_000, TEST_FINAL_CLTV, &logger).unwrap();
@@ -1474,7 +1474,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
-	nodes[0].node.claim_funds(payment_preimage, &Some(payment_secret), 800_000);
+	nodes[0].node.claim_funds(payment_preimage, 800_000);
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
@@ -2154,13 +2154,13 @@ fn channel_reserve_in_flight_removes() {
 
 	// Now claim both of the first two HTLCs on B's end, putting B in AwaitingRAA and generating an
 	// initial fulfill/CS.
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, b_chan_values.channel_reserve_msat - b_chan_values.value_to_self_msat - 10000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, b_chan_values.channel_reserve_msat - b_chan_values.value_to_self_msat - 10000));
 	check_added_monitors!(nodes[1], 1);
 	let bs_removes = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	// This claim goes in B's holding cell, allowing us to have a pending B->A RAA which does not
 	// remove the second HTLC when we send the HTLC back from B to A.
-	assert!(nodes[1].node.claim_funds(payment_preimage_2, &None, 20000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_2, 20000));
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -2320,7 +2320,7 @@ fn channel_monitor_network_test() {
 	macro_rules! claim_funds {
 		($node: expr, $prev_node: expr, $preimage: expr, $amount: expr) => {
 			{
-				assert!($node.node.claim_funds($preimage, &None, $amount));
+				assert!($node.node.claim_funds($preimage, $amount));
 				check_added_monitors!($node, 1);
 
 				let events = $node.node.get_and_clear_pending_msg_events();
@@ -2744,8 +2744,8 @@ fn test_htlc_on_chain_success() {
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_tx.len(), 1);
 	check_spends!(commitment_tx[0], chan_2.3);
-	nodes[2].node.claim_funds(our_payment_preimage, &None, 3_000_000);
-	nodes[2].node.claim_funds(our_payment_preimage_2, &None, 3_000_000);
+	nodes[2].node.claim_funds(our_payment_preimage, 3_000_000);
+	nodes[2].node.claim_funds(our_payment_preimage_2, 3_000_000);
 	check_added_monitors!(nodes[2], 2);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -2922,7 +2922,7 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// Broadcast legit commitment tx from C on B's chain
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
-	nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
 	check_added_monitors!(nodes[2], 0);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
@@ -3124,7 +3124,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let (_, second_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
 	let (_, third_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
 
-	assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash, &None));
+	assert!(nodes[2].node.fail_htlc_backwards(&first_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -3137,7 +3137,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let bs_raa = commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true, false, true);
 	// Drop the last RAA from 3 -> 2
 
-	assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash, &None));
+	assert!(nodes[2].node.fail_htlc_backwards(&second_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -3154,7 +3154,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	nodes[2].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[2], 1);
 
-	assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash, &None));
+	assert!(nodes[2].node.fail_htlc_backwards(&third_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -3654,7 +3654,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000);
+	nodes[1].node.claim_funds(payment_preimage_1, 1_000_000);
 	check_added_monitors!(nodes[1], 1);
 
 	let events_3 = nodes[1].node.get_and_clear_pending_msg_events();
@@ -3880,7 +3880,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 		_ => panic!("Unexpected event"),
 	}
 
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
@@ -4735,7 +4735,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
 
 	// Settle A's commitment tx on B's chain
-	assert!(nodes[1].node.claim_funds(payment_preimage, &None, 3_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage, 3_000_000));
 	check_added_monitors!(nodes[1], 1);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	check_added_monitors!(nodes[1], 1);
@@ -5016,7 +5016,7 @@ fn test_onchain_to_onchain_claim() {
 	let (payment_preimage, _payment_hash, _payment_secret) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), 3000000);
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
-	nodes[2].node.claim_funds(payment_preimage, &None, 3_000_000);
+	nodes[2].node.claim_funds(payment_preimage, 3_000_000);
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -5144,7 +5144,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 		htlc_timeout_tx = node_txn[1].clone();
 	}
 
-	nodes[2].node.claim_funds(our_payment_preimage, &None, 900_000);
+	nodes[2].node.claim_funds(our_payment_preimage, 900_000);
 	mine_transaction(&nodes[2], &commitment_txn[0]);
 	check_added_monitors!(nodes[2], 2);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
@@ -5235,7 +5235,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	check_spends!(local_txn[0], chan_1.3);
 
 	// Give B knowledge of preimage to be able to generate a local HTLC-Success Tx
-	nodes[1].node.claim_funds(payment_preimage, &None, 9_000_000);
+	nodes[1].node.claim_funds(payment_preimage, 9_000_000);
 	check_added_monitors!(nodes[1], 1);
 	mine_transaction(&nodes[1], &local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
@@ -5340,10 +5340,10 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 
 	// Now fail back three of the over-dust-limit and three of the under-dust-limit payments in one go.
 	// Fail 0th below-dust, 4th above-dust, 8th above-dust, 10th below-dust HTLCs
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1, &None));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3, &None));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5, &None));
-	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_6, &None));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_1));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_3));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_5));
+	assert!(nodes[4].node.fail_htlc_backwards(&payment_hash_6));
 	check_added_monitors!(nodes[4], 0);
 	expect_pending_htlcs_forwardable!(nodes[4]);
 	check_added_monitors!(nodes[4], 1);
@@ -5356,8 +5356,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	commitment_signed_dance!(nodes[3], nodes[4], four_removes.commitment_signed, false);
 
 	// Fail 3rd below-dust and 7th above-dust HTLCs
-	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2, &None));
-	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4, &None));
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_2));
+	assert!(nodes[5].node.fail_htlc_backwards(&payment_hash_4));
 	check_added_monitors!(nodes[5], 0);
 	expect_pending_htlcs_forwardable!(nodes[5]);
 	check_added_monitors!(nodes[5], 1);
@@ -5670,7 +5670,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 
 	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
 	// present in B's local commitment transaction, but none of A's commitment transactions.
-	assert!(nodes[1].node.claim_funds(our_payment_preimage, &None, if use_dust { 50_000 } else { 3_000_000 }));
+	assert!(nodes[1].node.claim_funds(our_payment_preimage, if use_dust { 50_000 } else { 3_000_000 }));
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -5749,7 +5749,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 	// actually revoked.
 	let htlc_value = if use_dust { 50000 } else { 3000000 };
 	let (_, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], htlc_value);
-	assert!(nodes[1].node.fail_htlc_backwards(&our_payment_hash, &None));
+	assert!(nodes[1].node.fail_htlc_backwards(&our_payment_hash));
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
 
@@ -6063,7 +6063,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 		Event::PaymentReceived { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	nodes[1].node.claim_funds(payment_preimage_1, &None, amt_1);
+	nodes[1].node.claim_funds(payment_preimage_1, amt_1);
 	check_added_monitors!(nodes[1], 1);
 	let update_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_msgs.update_fulfill_htlcs[0]);
@@ -6706,7 +6706,7 @@ fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
 
-	nodes[1].node.claim_funds(our_payment_preimage, &None, 100_000);
+	nodes[1].node.claim_funds(our_payment_preimage, 100_000);
 	check_added_monitors!(nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -6747,7 +6747,7 @@ fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 
 	let our_payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 100000).0;
 
-	nodes[1].node.claim_funds(our_payment_preimage, &None, 100_000);
+	nodes[1].node.claim_funds(our_payment_preimage, 100_000);
 	check_added_monitors!(nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -6927,7 +6927,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let as_prev_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
 
 	// Fail one HTLC to prune it in the will-be-latest-local commitment tx
-	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash_2, &None));
+	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash_2));
 	check_added_monitors!(nodes[1], 0);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
@@ -7492,7 +7492,7 @@ fn test_check_htlc_underpaying() {
 
 	// Node 3 is expecting payment of 100_000 but receive 10_000,
 	// fail htlc like we didn't know the preimage.
-	nodes[1].node.claim_funds(payment_preimage, &None, 100_000);
+	nodes[1].node.claim_funds(payment_preimage, 100_000);
 	nodes[1].node.process_pending_htlc_forwards();
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -7875,7 +7875,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
 
 	// Claim a HTLC without revocation (provide B monitor with preimage)
-	nodes[1].node.claim_funds(payment_preimage, &None, 3_000_000);
+	nodes[1].node.claim_funds(payment_preimage, 3_000_000);
 	mine_transaction(&nodes[1], &remote_txn[0]);
 	check_added_monitors!(nodes[1], 2);
 
@@ -8155,7 +8155,7 @@ fn test_update_err_monitor_lockdown() {
 	watchtower.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
 
 	// Try to update ChannelMonitor
-	assert!(nodes[1].node.claim_funds(preimage, &None, 9_000_000));
+	assert!(nodes[1].node.claim_funds(preimage, 9_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
@@ -8434,7 +8434,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	// Step (5):
 	// Carol then claims the funds and sends an update_fulfill message to Bob, and they go through the
 	// process of removing the HTLC from their commitment transactions.
-	assert!(nodes[2].node.claim_funds(payment_preimage, &None, 3_000_000));
+	assert!(nodes[2].node.claim_funds(payment_preimage, 3_000_000));
 	check_added_monitors!(nodes[2], 1);
 	let carol_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(carol_updates.update_add_htlcs.is_empty());

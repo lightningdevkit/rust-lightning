@@ -325,7 +325,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], NODE|2, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: false}));
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
@@ -344,7 +344,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|2, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|2), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: true}));
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
@@ -356,7 +356,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[0].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][0].pubkey, is_permanent: true}));
 
 	// final node failure
@@ -365,7 +365,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], PERM|NODE|3, &[0;0]);
 	}, ||{
-		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|NODE|3), Some(msgs::HTLCFailChannelUpdate::NodeFailure{node_id: route.paths[0][1].pubkey, is_permanent: true}));
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 
@@ -439,7 +439,7 @@ fn test_onion_failure() {
 	}, ||{}, true, Some(UPDATE|14), Some(msgs::HTLCFailChannelUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy()}));
 
 	run_onion_failure_test("unknown_payment_hash", 2, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
-		nodes[2].node.fail_htlc_backwards(&payment_hash, &None);
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, false, Some(PERM|15), None);
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 

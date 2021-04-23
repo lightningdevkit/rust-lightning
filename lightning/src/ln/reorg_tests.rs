@@ -59,7 +59,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Provide preimage to node 2 by claiming payment
-	nodes[2].node.claim_funds(our_payment_preimage, &None, 1000000);
+	nodes[2].node.claim_funds(our_payment_preimage, 1000000);
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
@@ -358,8 +358,8 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
 	// Provide node A with both preimage
-	nodes[0].node.claim_funds(payment_preimage_1, &None, 3_000_000);
-	nodes[0].node.claim_funds(payment_preimage_2, &None, 3_000_000);
+	nodes[0].node.claim_funds(payment_preimage_1, 3_000_000);
+	nodes[0].node.claim_funds(payment_preimage_2, 3_000_000);
 	check_added_monitors!(nodes[0], 2);
 	nodes[0].node.get_and_clear_pending_events();
 	nodes[0].node.get_and_clear_pending_msg_events();

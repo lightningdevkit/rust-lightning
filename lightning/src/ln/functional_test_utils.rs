@@ -1052,7 +1052,7 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
-	assert!(expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage, &None, expected_amount));
+	assert!(expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage, expected_amount));
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
 	macro_rules! msgs_from_ev {
@@ -1176,7 +1176,7 @@ pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&No
 }
 
 pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], skip_last: bool, our_payment_hash: PaymentHash)  {
-	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash, &None));
+	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
 	expect_pending_htlcs_forwardable!(expected_route.last().unwrap());
 	check_added_monitors!(expected_route.last().unwrap(), 1);
 

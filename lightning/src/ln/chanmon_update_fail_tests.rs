@@ -121,7 +121,7 @@ fn test_monitor_and_persister_update_fail() {
 	persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	// Try to update ChannelMonitor
-	assert!(nodes[1].node.claim_funds(preimage, &None, 9_000_000));
+	assert!(nodes[1].node.claim_funds(preimage, 9_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
@@ -305,7 +305,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 	// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
 	// but nodes[0] won't respond since it is frozen.
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
@@ -846,7 +846,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
+	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -1108,7 +1108,7 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, &None, 1_000_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, 1_000_000));
 	check_added_monitors!(nodes[2], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1315,7 +1315,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
@@ -1611,7 +1611,7 @@ fn test_monitor_update_fail_claim() {
 	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 
 	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
@@ -1690,7 +1690,7 @@ fn test_monitor_update_on_pending_forwards() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
 
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1, &None));
+	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -1777,7 +1777,7 @@ fn monitor_update_claim_fail_no_response() {
 	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true, false, true);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, &None, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);

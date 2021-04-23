@@ -2125,7 +2125,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// along the path (including in our own channel on which we received it).
 	/// Returns false if no payment was found to fail backwards, true if the process of failing the
 	/// HTLC backwards has been started.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, _payment_secret: &Option<PaymentSecret>) -> bool {
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
@@ -2294,18 +2294,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// generating message events for the net layer to claim the payment, if possible. Thus, you
 	/// should probably kick the net layer to go send messages if this returns true!
 	///
-	/// You must specify the expected amounts for this HTLC, and we will only claim HTLCs
-	/// available within a few percent of the expected amount. This is critical for several
-	/// reasons : a) it avoids providing senders with `proof-of-payment` (in the form of the
-	/// payment_preimage without having provided the full value and b) it avoids certain
-	/// privacy-breaking recipient-probing attacks which may reveal payment activity to
-	/// motivated attackers.
-	///
-	/// Note that the privacy concerns in (b) are not relevant in payments with a payment_secret
-	/// set. Thus, for such payments we will claim any payments which do not under-pay.
+	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
+	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentReceived`
+	/// event matches your expectation. If you fail to do so and call this method, you may provide
+	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
 	/// May panic if called except in response to a PaymentReceived event.
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, _payment_secret: &Option<PaymentSecret>, expected_amount: u64) -> bool {
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, expected_amount: u64) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
@@ -4848,7 +4846,7 @@ pub mod bench {
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
 				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				assert!($node_b.claim_funds(payment_preimage, &Some(payment_secret), 10_000));
+				assert!($node_b.claim_funds(payment_preimage, 10_000));
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
