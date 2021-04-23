@@ -4675,7 +4675,7 @@ pub mod bench {
 	use chain::channelmonitor::Persist;
 	use chain::keysinterface::{KeysManager, InMemorySigner};
 	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
-	use ln::features::InitFeatures;
+	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::network_graph::NetworkGraph;
@@ -4772,7 +4772,8 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
-				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), None, Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
+				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), Some(InvoiceFeatures::known()),
+					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
 
 				let payment_preimage = PaymentPreimage([0; 32]);
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
