@@ -36,6 +36,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use chain;
+use chain::Confirm;
 use chain::Watch;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
@@ -3363,8 +3364,8 @@ where
 		}
 
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		self.transactions_confirmed(&block.header, height, &txdata);
-		self.update_best_block(&block.header, height);
+		self.transactions_confirmed(&block.header, &txdata, height);
+		self.best_block_updated(&block.header, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
@@ -3379,16 +3380,88 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.update_best_block(new_height, header.time));
+		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time));
+	}
+}
+
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Confirm for ChannelManager<Signer, M, T, K, F, L>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|a| (a, Vec::new())));
+	}
+
+	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+		// during initialization prior to the chain_monitor being fully configured in some cases.
+		// See the docs for `ChannelManagerReadArgs` for more.
+
+		let block_hash = header.block_hash();
+		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+
+		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
+
+		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time));
+
+		loop {
+			// Update last_node_announcement_serial to be the max of its current value and the
+			// block timestamp. This should keep us close to the current time without relying on
+			// having an explicit local time source.
+			// Just in case we end up in a race, we loop until we either successfully update
+			// last_node_announcement_serial or decide we don't need to.
+			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
+			if old_serial >= header.time as usize { break; }
+			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+				break;
+			}
+		}
+	}
+
+	fn get_relevant_txids(&self) -> Vec<Txid> {
+		let channel_state = self.channel_state.lock().unwrap();
+		let mut res = Vec::with_capacity(channel_state.short_to_id.len());
+		for chan in channel_state.by_id.values() {
+			if let Some(funding_txo) = chan.get_funding_txo() {
+				res.push(funding_txo.txid);
+			}
+		}
+		res
+	}
+
+	fn transaction_unconfirmed(&self, txid: &Txid) {
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		self.do_chain_event(None, |channel| {
+			if let Some(funding_txo) = channel.get_funding_txo() {
+				if funding_txo.txid == *txid {
+					channel.funding_transaction_unconfirmed().map(|_| (None, Vec::new()))
+				} else { Ok((None, Vec::new())) }
+			} else { Ok((None, Vec::new())) }
+		});
 	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -3480,131 +3553,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
 		}
-	}
-
-	/// Updates channel state to take note of transactions which were confirmed in the given block
-	/// at the given height.
-	///
-	/// Note that you must still call (or have called) [`update_best_block`] with the block
-	/// information which is included here.
-	///
-	/// This method may be called before or after [`update_best_block`] for a given block's
-	/// transaction data and may be called multiple times with additional transaction data for a
-	/// given block.
-	///
-	/// This method may be called for a previous block after an [`update_best_block`] call has
-	/// been made for a later block, however it must *not* be called with transaction data from a
-	/// block which is no longer in the best chain (ie where [`update_best_block`] has already
-	/// been informed about a blockchain reorganization which no longer includes the block which
-	/// corresponds to `header`).
-	///
-	/// [`update_best_block`]: `Self::update_best_block`
-	pub fn transactions_confirmed(&self, header: &BlockHeader, height: u32, txdata: &TransactionData) {
-		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
-		// during initialization prior to the chain_monitor being fully configured in some cases.
-		// See the docs for `ChannelManagerReadArgs` for more.
-
-		let block_hash = header.block_hash();
-		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
-
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|a| (a, Vec::new())));
-	}
-
-	/// Updates channel state with the current best blockchain tip. You should attempt to call this
-	/// quickly after a new block becomes available, however if multiple new blocks become
-	/// available at the same time, only a single `update_best_block()` call needs to be made.
-	///
-	/// This method should also be called immediately after any block disconnections, once at the
-	/// reorganization fork point, and once with the new chain tip. Calling this method at the
-	/// blockchain reorganization fork point ensures we learn when a funding transaction which was
-	/// previously confirmed is reorganized out of the blockchain, ensuring we do not continue to
-	/// accept payments which cannot be enforced on-chain.
-	///
-	/// In both the block-connection and block-disconnection case, this method may be called either
-	/// once per block connected or disconnected, or simply at the fork point and new tip(s),
-	/// skipping any intermediary blocks.
-	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
-		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
-		// during initialization prior to the chain_monitor being fully configured in some cases.
-		// See the docs for `ChannelManagerReadArgs` for more.
-
-		let block_hash = header.block_hash();
-		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
-
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-
-		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
-
-		self.do_chain_event(Some(height), |channel| channel.update_best_block(height, header.time));
-
-		loop {
-			// Update last_node_announcement_serial to be the max of its current value and the
-			// block timestamp. This should keep us close to the current time without relying on
-			// having an explicit local time source.
-			// Just in case we end up in a race, we loop until we either successfully update
-			// last_node_announcement_serial or decide we don't need to.
-			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
-			if old_serial >= header.time as usize { break; }
-			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-				break;
-			}
-		}
-	}
-
-	/// Gets the set of txids which should be monitored for their confirmation state.
-	///
-	/// If you're providing information about reorganizations via [`transaction_unconfirmed`], this
-	/// is the set of transactions which you may need to call [`transaction_unconfirmed`] for.
-	///
-	/// This may be useful to poll to determine the set of transactions which must be registered
-	/// with an Electrum server or for which an Electrum server needs to be polled to determine
-	/// transaction confirmation state.
-	///
-	/// This may update after any [`transactions_confirmed`] or [`block_connected`] call.
-	///
-	/// Note that this is NOT the set of transactions which must be included in calls to
-	/// [`transactions_confirmed`] if they are confirmed, but a small subset of it.
-	///
-	/// [`transactions_confirmed`]: Self::transactions_confirmed
-	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	/// [`block_connected`]: chain::Listen::block_connected
-	pub fn get_relevant_txids(&self) -> Vec<Txid> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.short_to_id.len());
-		for chan in channel_state.by_id.values() {
-			if let Some(funding_txo) = chan.get_funding_txo() {
-				res.push(funding_txo.txid);
-			}
-		}
-		res
-	}
-
-	/// Marks a transaction as having been reorganized out of the blockchain.
-	///
-	/// If a transaction is included in [`get_relevant_txids`], and is no longer in the main branch
-	/// of the blockchain, this function should be called to indicate that the transaction should
-	/// be considered reorganized out.
-	///
-	/// Once this is called, the given transaction will no longer appear on [`get_relevant_txids`],
-	/// though this may be called repeatedly for a given transaction without issue.
-	///
-	/// Note that if the transaction is confirmed on the main chain in a different block (indicated
-	/// via a call to [`transactions_confirmed`]), it may re-appear in [`get_relevant_txids`], thus
-	/// be very wary of race-conditions wherein the final state of a transaction indicated via
-	/// these APIs is not the same as its state on the blockchain.
-	///
-	/// [`transactions_confirmed`]: Self::transactions_confirmed
-	/// [`get_relevant_txids`]: Self::get_relevant_txids
-	pub fn transaction_unconfirmed(&self, txid: &Txid) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		self.do_chain_event(None, |channel| {
-			if let Some(funding_txo) = channel.get_funding_txo() {
-				if funding_txo.txid == *txid {
-					channel.funding_transaction_unconfirmed().map(|_| (None, Vec::new()))
-				} else { Ok((None, Vec::new())) }
-			} else { Ok((None, Vec::new())) }
-		});
 	}
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool

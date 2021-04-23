@@ -74,7 +74,7 @@ where C::Target: chain::Filter,
 	    P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly based on transactions in the connected block. See
+	/// of a channel and reacting accordingly based on transactions in the given chain data. See
 	/// [`ChannelMonitor::block_connected`] for details. Any HTLCs that were resolved on chain will
 	/// be returned by [`chain::Watch::release_pending_monitor_events`].
 	///
@@ -82,56 +82,6 @@ where C::Target: chain::Filter,
 	/// calls must not exclude any transactions matching the new outputs nor any in-block
 	/// descendants of such transactions. It is not necessary to re-fetch the block to obtain
 	/// updated `txdata`.
-	pub fn block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		self.process_chain_data(header, txdata, |monitor, txdata| {
-			monitor.block_connected(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly to newly confirmed transactions. For details, see
-	/// [`ChannelMonitor::transactions_confirmed`].
-	///
-	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations.
-	///
-	/// [`block_connected`]: Self::block_connected
-	/// [`update_best_block`]: Self::update_best_block
-	pub fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
-		self.process_chain_data(header, txdata, |monitor, txdata| {
-			monitor.transactions_confirmed(
-				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel and reacting accordingly based on the new chain tip. For details, see
-	/// [`ChannelMonitor::update_best_block`].
-	///
-	/// Used instead of [`block_connected`] by clients that are notified of transactions rather than
-	/// blocks. May be called before or after [`transactions_confirmed`] for the corresponding
-	/// block.
-	///
-	/// Must be called after new blocks become available for the most recent block. Intermediary
-	/// blocks, however, may be safely skipped. In the event of a chain re-organization, this only
-	/// needs to be called for the most recent block assuming `transaction_unconfirmed` is called
-	/// for any affected transactions.
-	///
-	/// [`block_connected`]: Self::block_connected
-	/// [`transactions_confirmed`]: Self::transactions_confirmed
-	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	pub fn update_best_block(&self, header: &BlockHeader, height: u32) {
-		self.process_chain_data(header, &[], |monitor, txdata| {
-			// While in practice there shouldn't be any recursive calls when given empty txdata,
-			// it's still possible if a chain::Filter implementation returns a transaction.
-			debug_assert!(txdata.is_empty());
-			monitor.update_best_block(
-				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
-		});
-	}
-
 	fn process_chain_data<FN>(&self, header: &BlockHeader, txdata: &TransactionData, process: FN)
 	where
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
@@ -172,46 +122,6 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel based on the disconnected block. See [`ChannelMonitor::block_disconnected`] for
-	/// details.
-	pub fn block_disconnected(&self, header: &BlockHeader, disconnected_height: u32) {
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			monitor.block_disconnected(header, disconnected_height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-		}
-	}
-
-	/// Dispatches to per-channel monitors, which are responsible for updating their on-chain view
-	/// of a channel based on transactions unconfirmed as a result of a chain reorganization. See
-	/// [`ChannelMonitor::transaction_unconfirmed`] for details.
-	///
-	/// Used instead of [`block_disconnected`] by clients that are notified of transactions rather
-	/// than blocks. May be called before or after [`update_best_block`] for transactions in the
-	/// corresponding block. See [`update_best_block`] for further calling expectations. 
-	///
-	/// [`block_disconnected`]: Self::block_disconnected
-	/// [`update_best_block`]: Self::update_best_block
-	pub fn transaction_unconfirmed(&self, txid: &Txid) {
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
-		}
-	}
-
-	/// Returns the set of txids that should be monitored for re-organization out of the chain.
-	pub fn get_relevant_txids(&self) -> Vec<Txid> {
-		let mut txids = Vec::new();
-		let monitors = self.monitors.read().unwrap();
-		for monitor in monitors.values() {
-			txids.append(&mut monitor.get_relevant_txids());
-		}
-
-		txids.sort_unstable();
-		txids.dedup();
-		txids
-	}
-
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
 	///
 	/// When an optional chain source implementing [`chain::Filter`] is provided, the chain monitor
@@ -231,7 +141,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref + Send + Sync, T: Deref + Send + Sync, F: Deref + Send + Sync, L: Deref + Send + Sync, P: Deref + Send + Sync>
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	ChannelSigner: Sign,
@@ -242,12 +152,67 @@ where
 	P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	fn block_connected(&self, block: &Block, height: u32) {
+		let header = &block.header;
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		ChainMonitor::block_connected(self, &block.header, &txdata, height);
+		self.process_chain_data(header, &txdata, |monitor, txdata| {
+			monitor.block_connected(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		ChainMonitor::block_disconnected(self, header, height);
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			monitor.block_disconnected(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+		}
+	}
+}
+
+impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
+where
+	ChannelSigner: Sign,
+	C::Target: chain::Filter,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: channelmonitor::Persist<ChannelSigner>,
+{
+	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.process_chain_data(header, txdata, |monitor, txdata| {
+			monitor.transactions_confirmed(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	fn transaction_unconfirmed(&self, txid: &Txid) {
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
+		}
+	}
+
+	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+		self.process_chain_data(header, &[], |monitor, txdata| {
+			// While in practice there shouldn't be any recursive calls when given empty txdata,
+			// it's still possible if a chain::Filter implementation returns a transaction.
+			debug_assert!(txdata.is_empty());
+			monitor.best_block_updated(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
+		});
+	}
+
+	fn get_relevant_txids(&self) -> Vec<Txid> {
+		let mut txids = Vec::new();
+		let monitors = self.monitors.read().unwrap();
+		for monitor in monitors.values() {
+			txids.append(&mut monitor.get_relevant_txids());
+		}
+
+		txids.sort_unstable();
+		txids.dedup();
+		txids
 	}
 }
 

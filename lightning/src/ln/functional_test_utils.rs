@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain::{Listen, Watch};
+use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
@@ -79,17 +79,17 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 /// The possible ways we may notify a ChannelManager of a new block
 #[derive(Clone, Copy, PartialEq)]
 pub enum ConnectStyle {
-	/// Calls update_best_block first, detecting transactions in the block only after receiving the
+	/// Calls best_block_updated first, detecting transactions in the block only after receiving the
 	/// header and height information.
 	BestBlockFirst,
 	/// The same as BestBlockFirst, however when we have multiple blocks to connect, we only
-	/// make a single update_best_block call.
+	/// make a single best_block_updated call.
 	BestBlockFirstSkippingBlocks,
 	/// Calls transactions_confirmed first, detecting transactions in the block before updating the
 	/// header and height information.
 	TransactionsFirst,
 	/// The same as TransactionsFirst, however when we have multiple blocks to connect, we only
-	/// make a single update_best_block call.
+	/// make a single best_block_updated call.
 	TransactionsFirstSkippingBlocks,
 	/// Provides the full block via the chain::Listen interface. In the current code this is
 	/// equivalent to TransactionsFirst with some additional assertions.
@@ -128,20 +128,20 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
 			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
-				node.chain_monitor.chain_monitor.update_best_block(&block.header, height);
+				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
-				node.node.update_best_block(&block.header, height);
-				node.node.transactions_confirmed(&block.header, height, &txdata);
+				node.node.best_block_updated(&block.header, height);
+				node.node.transactions_confirmed(&block.header, &txdata, height);
 			},
 			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
-				node.chain_monitor.chain_monitor.update_best_block(&block.header, height);
-				node.node.transactions_confirmed(&block.header, height, &txdata);
-				node.node.update_best_block(&block.header, height);
+				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
+				node.node.transactions_confirmed(&block.header, &txdata, height);
+				node.node.best_block_updated(&block.header, height);
 			},
 			ConnectStyle::FullBlockViaListen => {
-				node.chain_monitor.chain_monitor.block_connected(&block.header, &txdata, height);
-				Listen::block_connected(node.node, &block, height);
+				node.chain_monitor.chain_monitor.block_connected(&block, height);
+				node.node.block_connected(&block, height);
 			}
 		}
 	}
@@ -162,13 +162,13 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				if i == count - 1 {
-					node.chain_monitor.chain_monitor.update_best_block(&prev_header.0, prev_header.1);
-					node.node.update_best_block(&prev_header.0, prev_header.1);
+					node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
+					node.node.best_block_updated(&prev_header.0, prev_header.1);
 				}
 			},
 			_ => {
-				node.chain_monitor.chain_monitor.update_best_block(&prev_header.0, prev_header.1);
-				node.node.update_best_block(&prev_header.0, prev_header.1);
+				node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
+				node.node.best_block_updated(&prev_header.0, prev_header.1);
 			},
 		}
 	}

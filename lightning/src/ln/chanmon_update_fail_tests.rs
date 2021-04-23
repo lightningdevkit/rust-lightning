@@ -12,11 +12,12 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr};
 use chain::transaction::OutPoint;
+use chain::Listen;
 use chain::Watch;
 use ln::channelmanager::{RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
 use ln::features::InitFeatures;
@@ -114,7 +115,7 @@ fn test_monitor_and_persister_update_fail() {
 		chain_mon
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	chain_mon.chain_monitor.block_connected(&header, &[], 200);
+	chain_mon.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
 
 	// Set the persister's return value to be a TemporaryFailure.
 	persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));

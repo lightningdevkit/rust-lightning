@@ -3600,7 +3600,7 @@ impl<Signer: Sign> Channel<Signer> {
 						}
 					}
 					// If we allow 1-conf funding, we may need to check for funding_locked here and
-					// send it immediately instead of waiting for an update_best_block call (which
+					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
 					if let Some(funding_locked) = self.check_get_funding_locked(height) {
 						return Ok(Some(funding_locked));
@@ -3631,7 +3631,7 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn update_best_block(&mut self, height: u32, highest_header_time: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
+	pub fn best_block_updated(&mut self, height: u32, highest_header_time: u32) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> {
 		let mut timed_out_htlcs = Vec::new();
 		let unforwarded_htlc_cltv_limit = height + HTLC_FAIL_BACK_BUFFER;
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
@@ -3683,14 +3683,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// before the channel has reached funding_locked and we can just wait for more blocks.
 	pub fn funding_transaction_unconfirmed(&mut self) -> Result<(), msgs::ErrorMessage> {
 		if self.funding_tx_confirmation_height != 0 {
-			// We handle the funding disconnection by calling update_best_block with a height one
+			// We handle the funding disconnection by calling best_block_updated with a height one
 			// below where our funding was connected, implying a reorg back to conf_height - 1.
 			let reorg_height = self.funding_tx_confirmation_height - 1;
 			// We use the time field to bump the current time we set on channel updates if its
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.update_time_counter;
-			match self.update_best_block(reorg_height, best_time) {
+			match self.best_block_updated(reorg_height, best_time) {
 				Ok((funding_locked, timed_out_htlcs)) => {
 					assert!(funding_locked.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
