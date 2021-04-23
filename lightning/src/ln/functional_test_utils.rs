@@ -941,8 +941,9 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
+			Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
+				assert!(payment_preimage.is_none());
 				assert_eq!($expected_payment_secret, *payment_secret);
 				assert_eq!($expected_recv_value, amt);
 			},
@@ -1009,8 +1010,9 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
+					Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
 						assert_eq!(our_payment_hash, *payment_hash);
+						assert!(payment_preimage.is_none());
 						assert_eq!(our_payment_secret, *payment_secret);
 						assert_eq!(amt, recv_value);
 					},

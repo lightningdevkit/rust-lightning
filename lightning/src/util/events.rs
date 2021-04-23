@@ -61,6 +61,13 @@ pub enum Event {
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
+		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
+		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
+		/// [`ChannelManager::claim_funds`].
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
 		/// The "payment secret". This authenticates the sender to the recipient, preventing a
 		/// number of deanonymization attacks during the routing process.
 		/// It is provided here for your reference, however its accuracy is enforced directly by
@@ -139,9 +146,10 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt, ref user_payment_id } => {
+			&Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, ref amt, ref user_payment_id } => {
 				1u8.write(writer)?;
 				payment_hash.write(writer)?;
+				payment_preimage.write(writer)?;
 				payment_secret.write(writer)?;
 				amt.write(writer)?;
 				user_payment_id.write(writer)?;
@@ -186,6 +194,7 @@ impl MaybeReadable for Event {
 			0u8 => Ok(None),
 			1u8 => Ok(Some(Event::PaymentReceived {
 					payment_hash: Readable::read(reader)?,
+					payment_preimage: Readable::read(reader)?,
 					payment_secret: Readable::read(reader)?,
 					amt: Readable::read(reader)?,
 					user_payment_id: Readable::read(reader)?,

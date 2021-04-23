@@ -2024,6 +2024,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else if total_value == payment_data.total_msat {
 												new_events.push(events::Event::PaymentReceived {
 													payment_hash,
+													payment_preimage: inbound_payment.get().payment_preimage,
 													payment_secret: payment_data.payment_secret,
 													amt: total_value,
 													user_payment_id: inbound_payment.get().user_payment_id,
@@ -3410,8 +3411,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you, returning the first and storing the second.
 	///
+	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentReceived`], which
+	/// will have the [`PaymentReceived::payment_preimage`] field filled in. That should then be
+	/// passed directly to [`claim_funds`].
+	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
 	///
+	/// [`claim_funds`]: Self::claim_funds
+	/// [`PaymentReceived`]: events::Event::PaymentReceived
+	/// [`PaymentReceived::payment_preimage`]: events::Event::PaymentReceived::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> (PaymentHash, PaymentSecret) {
 		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
