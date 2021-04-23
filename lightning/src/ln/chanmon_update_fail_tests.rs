@@ -55,7 +55,7 @@ fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
 	}
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), true, APIError::ChannelUnavailable {..}, {});
 	check_added_monitors!(nodes[0], 2);
 
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -172,7 +172,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &None), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -208,7 +208,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	match events_3[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert_eq!(*payment_secret, None);
+			assert_eq!(Some(payment_secret_1), *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -225,7 +225,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 		}
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -295,7 +295,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &None), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -576,7 +576,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	match events_5[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert_eq!(*payment_secret, None);
+			assert_eq!(Some(payment_secret_2), *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -626,7 +626,7 @@ fn test_monitor_update_fail_cs() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -690,7 +690,7 @@ fn test_monitor_update_fail_cs() {
 	match events[0] {
 		Event::PaymentReceived { payment_hash, payment_secret, amt } => {
 			assert_eq!(payment_hash, our_payment_hash);
-			assert_eq!(payment_secret, None);
+			assert_eq!(Some(our_payment_secret), payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -715,7 +715,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -766,7 +766,7 @@ fn test_monitor_update_raa_while_paused() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash_1, &Some(our_payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 	let send_event_1 = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
@@ -775,7 +775,7 @@ fn test_monitor_update_raa_while_paused() {
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, our_payment_hash_2, &None).unwrap();
+		nodes[1].node.send_payment(&route, our_payment_hash_2, &Some(our_payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[1], 1);
 	}
 	let send_event_2 = SendEvent::from_event(nodes[1].node.get_and_clear_pending_msg_events().remove(0));
@@ -818,12 +818,12 @@ fn test_monitor_update_raa_while_paused() {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	expect_payment_received!(nodes[0], our_payment_hash_2, 1000000);
+	expect_payment_received!(nodes[0], our_payment_hash_2, our_payment_secret_2, 1000000);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], our_payment_hash_1, 1000000);
+	expect_payment_received!(nodes[1], our_payment_hash_1, our_payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2, 1_000_000);
@@ -867,7 +867,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -894,7 +894,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_3, &Some(payment_secret_3)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -943,7 +943,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		let (payment_preimage_4, payment_hash_4, payment_secret_4) = get_payment_preimage_hash!(nodes[0]);
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[2].node.send_payment(&route, payment_hash_4, &None).unwrap();
+		nodes[2].node.send_payment(&route, payment_hash_4, &Some(payment_secret_4)).unwrap();
 		check_added_monitors!(nodes[2], 1);
 
 		send_event = SendEvent::from_event(nodes[2].node.get_and_clear_pending_msg_events().remove(0));
@@ -1197,9 +1197,9 @@ fn raa_no_response_awaiting_raa_state() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 0);
 	}
 
@@ -1243,7 +1243,7 @@ fn raa_no_response_awaiting_raa_state() {
 	check_added_monitors!(nodes[1], 0);
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	// We send a third payment here, which is somewhat of a redundant test, but the
 	// chanmon_fail_consistency test required it to actually find the bug (by seeing out-of-sync
@@ -1251,7 +1251,7 @@ fn raa_no_response_awaiting_raa_state() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_3, &Some(payment_secret_3)).unwrap();
 		check_added_monitors!(nodes[0], 0);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
@@ -1274,7 +1274,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 	let bs_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
@@ -1287,7 +1287,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_3, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_3, payment_secret_3, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
@@ -1343,7 +1343,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1403,7 +1403,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
@@ -1439,7 +1439,7 @@ fn monitor_failed_no_reestablish_response() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1483,7 +1483,7 @@ fn monitor_failed_no_reestablish_response() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 }
@@ -1513,7 +1513,7 @@ fn first_message_on_recv_ordering() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1538,7 +1538,7 @@ fn first_message_on_recv_ordering() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1571,7 +1571,7 @@ fn first_message_on_recv_ordering() {
 	check_added_monitors!(nodes[1], 0);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0);
@@ -1584,7 +1584,7 @@ fn first_message_on_recv_ordering() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
@@ -1618,7 +1618,7 @@ fn test_monitor_update_fail_claim() {
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[2].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
 
@@ -1703,7 +1703,7 @@ fn test_monitor_update_on_pending_forwards() {
 	{
 		let net_graph_msg_handler = &nodes[2].net_graph_msg_handler;
 		let route = get_route(&nodes[2].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[2].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[2].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[2], 1);
 	}
 
@@ -1740,7 +1740,7 @@ fn test_monitor_update_on_pending_forwards() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[0].node.process_pending_htlc_forwards();
-	expect_payment_received!(nodes[0], payment_hash_2, 1000000);
+	expect_payment_received!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
 
 	claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_2, 1_000_000);
 }
@@ -1766,7 +1766,7 @@ fn monitor_update_claim_fail_no_response() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1792,7 +1792,7 @@ fn monitor_update_claim_fail_no_response() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, 1000000);
+	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
@@ -1955,7 +1955,7 @@ fn test_path_paused_mpp() {
 	// Pass the first HTLC of the payment along to nodes[3].
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 0, payment_hash.clone(), Some(payment_secret), events.pop().unwrap(), false);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 0, payment_hash.clone(), payment_secret, events.pop().unwrap(), false);
 
 	// And check that, after we successfully update the monitor for chan_2 we can pass the second
 	// HTLC along to nodes[3] and claim the whole payment back to nodes[0].
@@ -1963,7 +1963,7 @@ fn test_path_paused_mpp() {
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), Some(payment_secret), events.pop().unwrap(), true);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), payment_secret, events.pop().unwrap(), true);
 
-	claim_payment_along_route_with_secret(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, Some(payment_secret), 200_000);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, 200_000);
 }

@@ -19,7 +19,7 @@ use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PER
 use chain::transaction::OutPoint;
 use chain::keysinterface::{KeysInterface, BaseSign};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure, BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSendFailure, BREAKDOWN_TIMEOUT};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use routing::router::{Route, RouteHop, get_route};
@@ -165,7 +165,7 @@ fn test_async_inbound_update_fee() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[0]);
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
-	nodes[1].node.send_payment(&get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), None, None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap(), our_payment_hash, &None).unwrap();
+	nodes[1].node.send_payment(&get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap(), our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	let payment_event = {
@@ -263,7 +263,7 @@ fn test_update_fee_unordered_raa() {
 	// ...but before it's delivered, nodes[1] starts to send a payment back to nodes[0]...
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[0]);
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
-	nodes[1].node.send_payment(&get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap(), our_payment_hash, &None).unwrap();
+	nodes[1].node.send_payment(&get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap(), our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[1], 1);
 
 	let payment_event = {
@@ -649,7 +649,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 800000, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// nothing happens since node[1] is in AwaitingRemoteRevoke
-	nodes[1].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[1].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	{
 		let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 0);
@@ -871,10 +871,10 @@ fn updates_shutdown_wait() {
 	let net_graph_msg_handler1 = &nodes[1].net_graph_msg_handler;
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler0.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler1.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &None), true, APIError::ChannelUnavailable {..}, {});
-	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &None), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, &None, 100_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, &Some(payment_secret), 100_000));
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -934,7 +934,7 @@ fn htlc_fail_async_shutdown() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);
@@ -1047,7 +1047,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, &None, 100_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage, &Some(our_payment_secret), 100_000));
 	check_added_monitors!(nodes[2], 1);
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1309,7 +1309,7 @@ fn holding_cell_htlc_counting() {
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, payment_hash, &None).unwrap();
+		nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 		payments.push((payment_preimage, payment_hash));
 	}
 	check_added_monitors!(nodes[1], 1);
@@ -1326,7 +1326,7 @@ fn holding_cell_htlc_counting() {
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &None), true, APIError::ChannelUnavailable { ref err },
+		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
@@ -1337,7 +1337,7 @@ fn holding_cell_htlc_counting() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1470,10 +1470,11 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 	let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 800_000, TEST_FINAL_CLTV, &logger).unwrap();
-	send_along_route_with_hash(&nodes[1], route, &vec!(&nodes[0])[..], 800_000, payment_hash);
+	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
-	nodes[0].node.claim_funds(payment_preimage, &None, 800_000);
+	nodes[0].node.claim_funds(payment_preimage, &Some(payment_secret), 800_000);
 	check_added_monitors!(nodes[0], 1);
 
 	// Broadcast node 1 commitment txn
@@ -1545,7 +1546,7 @@ fn test_basic_channel_reserve() {
 	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), max_can_send + 1, TEST_FINAL_CLTV, &logger).unwrap();
-	let err = nodes[0].node.send_payment(&route, our_payment_hash, &None).err().unwrap();
+	let err = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).err().unwrap();
 	match err {
 		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
 			match &fails[0] {
@@ -1578,7 +1579,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &None, cur_height).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &Some(payment_secret), cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1701,7 +1702,7 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 4843000);
-	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_string(), 1);
@@ -1728,7 +1729,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &None, cur_height).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &Some(payment_secret), cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1821,7 +1822,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	// Add a pending HTLC.
 	let (route_1, our_payment_hash_1, _, our_payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_1);
 	let payment_event_1 = {
-		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &Some(our_payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1920,7 +1921,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_0);
 		route.paths[0].last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
@@ -1971,7 +1972,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	let (route_1, our_payment_hash_1, our_payment_preimage_1, our_payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_1);
 	let payment_event_1 = {
-		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route_1, our_payment_hash_1, &Some(our_payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1984,7 +1985,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_2 + 1);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
@@ -2002,7 +2003,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// now see if they go through on both sides
 	let (route_21, our_payment_hash_21, our_payment_preimage_21, our_payment_secret_21) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_21);
 	// but this will stuck in the holding cell
-	nodes[0].node.send_payment(&route_21, our_payment_hash_21, &None).unwrap();
+	nodes[0].node.send_payment(&route_21, our_payment_hash_21, &Some(our_payment_secret_21)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 0);
@@ -2010,7 +2011,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// test with outbound holding cell amount > 0
 	{
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22+1);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 2);
@@ -2018,7 +2019,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22, our_payment_secret_22) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
 	// this will also stuck in the holding cell
-	nodes[0].node.send_payment(&route_22, our_payment_hash_22, &None).unwrap();
+	nodes[0].node.send_payment(&route_22, our_payment_hash_22, &Some(our_payment_secret_22)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2049,7 +2050,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event_11.commitment_msg, false);
 
 	expect_pending_htlcs_forwardable!(nodes[2]);
-	expect_payment_received!(nodes[2], our_payment_hash_1, recv_value_1);
+	expect_payment_received!(nodes[2], our_payment_hash_1, our_payment_secret_1, recv_value_1);
 
 	// flush the htlcs in the holding cell
 	assert_eq!(commitment_update_2.update_add_htlcs.len(), 2);
@@ -2071,7 +2072,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	match events[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
-			assert_eq!(*payment_secret, None);
+			assert_eq!(Some(our_payment_secret_21), *payment_secret);
 			assert_eq!(recv_value_21, amt);
 		},
 		_ => panic!("Unexpected event"),
@@ -2079,7 +2080,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	match events[1] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
-			assert_eq!(None, *payment_secret);
+			assert_eq!(Some(our_payment_secret_22), *payment_secret);
 			assert_eq!(recv_value_22, amt);
 		},
 		_ => panic!("Unexpected event"),
@@ -2144,7 +2145,7 @@ fn channel_reserve_in_flight_removes() {
 	let send_1 = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_3, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_3, &Some(payment_secret_3)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2203,7 +2204,7 @@ fn channel_reserve_in_flight_removes() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_3, 100000);
+	expect_payment_received!(nodes[1], payment_hash_3, payment_secret_3, 100000);
 
 	// Note that as this RAA was generated before the delivery of the update_fulfill it shouldn't
 	// resolve the second HTLC from A's point of view.
@@ -2217,7 +2218,7 @@ fn channel_reserve_in_flight_removes() {
 	let send_2 = {
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 10000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, payment_hash_4, &None).unwrap();
+		nodes[1].node.send_payment(&route, payment_hash_4, &Some(payment_secret_4)).unwrap();
 		check_added_monitors!(nodes[1], 1);
 		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -2250,7 +2251,7 @@ fn channel_reserve_in_flight_removes() {
 	check_added_monitors!(nodes[0], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	expect_payment_received!(nodes[0], payment_hash_4, 10000);
+	expect_payment_received!(nodes[0], payment_hash_4, payment_secret_4, 10000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_4, 10_000);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3, 100_000);
@@ -3178,7 +3179,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[1].node.send_payment(&route, fourth_payment_hash, &None).unwrap();
+	nodes[1].node.send_payment(&route, fourth_payment_hash, &Some(fourth_payment_secret)).unwrap();
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	check_added_monitors!(nodes[1], 0);
@@ -3330,7 +3331,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1]);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let payment_event = {
@@ -3347,7 +3348,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, failed_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, failed_payment_hash, &Some(failed_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 0);
 
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -3362,7 +3363,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let current_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
-		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &None, current_height).unwrap();
+		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &Some(payment_secret), current_height).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 
@@ -3429,7 +3430,7 @@ fn test_force_close_fail_back() {
 	let mut payment_event = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, 42, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -3523,7 +3524,7 @@ fn test_simple_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	claim_payment_along_route(&nodes[0], &vec!(&nodes[1], &nodes[2]), true, payment_preimage_3, 1_000_000);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3, 1_000_000);
 	fail_payment_along_route(&nodes[0], &[&nodes[1], &nodes[2]], true, payment_hash_5);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
@@ -3570,7 +3571,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
 			&nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
 			&Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, payment_hash_1, &None).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -3647,7 +3648,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	match events_2[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert_eq!(*payment_secret, None);
+			assert_eq!(Some(payment_secret_1), *payment_secret);
 			assert_eq!(amt, 1000000);
 		},
 		_ => panic!("Unexpected event"),
@@ -3869,7 +3870,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash_2, &None).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -3984,7 +3985,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	match events_5[0] {
 		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt: _ } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert_eq!(*payment_secret, None);
+			assert_eq!(Some(payment_secret_2), *payment_secret);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -4020,7 +4021,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		assert_eq!(events.len(), 1);
 		// Now do the relevant commitment_signed/RAA dances along the path, noting that the final
 		// hop should *not* yet generate any PaymentReceived event(s).
-		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false);
+		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), false);
 		our_payment_hash
 	} else {
 		route_payment(&nodes[0], &[&nodes[1]], 100000).1
@@ -4082,7 +4083,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, first_payment_hash, &None).unwrap();
+		nodes[1].node.send_payment(&route, first_payment_hash, &Some(first_payment_secret)).unwrap();
 	}
 	assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 	check_added_monitors!(nodes[1], 1);
@@ -4092,7 +4093,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	if forwarded_htlc {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, second_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, second_payment_hash, &Some(first_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
@@ -4102,7 +4103,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	} else {
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, second_payment_hash, &None).unwrap();
+		nodes[1].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret)).unwrap();
 		check_added_monitors!(nodes[1], 0);
 	}
 
@@ -5109,9 +5110,10 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 
+	let (_, _, payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
 		&nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
-	send_along_route_with_hash(&nodes[0], route, &[&nodes[1], &nodes[2]], 900000, duplicate_payment_hash);
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2]]], 900000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_txn[0].input.len(), 1);
@@ -5141,7 +5143,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[2].node.claim_funds(our_payment_preimage, &None, 900_000);
 	mine_transaction(&nodes[2], &commitment_txn[0]);
-	check_added_monitors!(nodes[2], 3);
+	check_added_monitors!(nodes[2], 2);
 	let events = nodes[2].node.get_and_clear_pending_msg_events();
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { .. } => {},
@@ -5297,35 +5299,35 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// 0th HTLC:
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
-	let (_, payment_hash_2, payment_secret_2) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
+	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 	let our_node_id = &nodes[1].node.get_our_node_id();
 	let route = get_route(our_node_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[5].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), ds_dust_limit*1000, TEST_FINAL_CLTV, &logger).unwrap();
 	// 2nd HTLC:
-	send_along_route_with_hash(&nodes[1], route.clone(), &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_1); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 	// 3rd HTLC:
-	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_2); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 	// 4th HTLC:
 	let (_, payment_hash_3, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 5th HTLC:
-	let (_, payment_hash_4, payment_secret_4) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
+	let (_, payment_hash_4, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	let route = get_route(our_node_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[5].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 	// 6th HTLC:
-	send_along_route_with_hash(&nodes[1], route.clone(), &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_3);
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200).unwrap());
 	// 7th HTLC:
-	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_4);
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200).unwrap());
 
 	// 8th HTLC:
 	let (_, payment_hash_5, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 9th HTLC:
 	let route = get_route(our_node_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[5].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), ds_dust_limit*1000, TEST_FINAL_CLTV, &logger).unwrap();
-	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], ds_dust_limit*1000, payment_hash_5); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 
 	// 10th HTLC:
 	let (_, payment_hash_6, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 11th HTLC:
 	let route = get_route(our_node_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[5].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	send_along_route_with_hash(&nodes[1], route, &[&nodes[2], &nodes[3], &nodes[5]], 1000000, payment_hash_6);
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200).unwrap());
 
 	// Double-check that six of the new HTLC were added
 	// We now have six HTLCs pending over the dust limit and six HTLCs under the dust limit (ie,
@@ -5710,7 +5712,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), if use_dust { 50000 } else { 3000000 }, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let _as_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -5918,7 +5920,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
@@ -5994,10 +5996,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let route_2 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], amt_2, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// Send 2 payments which pass reserve checks but get stuck in the holding cell.
-	nodes[0].node.send_payment(&route_1, payment_hash_1, &None).unwrap();
+	nodes[0].node.send_payment(&route_1, payment_hash_1, &Some(payment_secret_1)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
-	nodes[0].node.send_payment(&route_2, payment_hash_2, &None).unwrap();
+	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
 
@@ -6115,7 +6117,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let payment_event = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6233,7 +6235,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	route.paths[0][0].fee_msat = 100;
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert!(regex::Regex::new(r"Cannot send less than their minimum HTLC value \(\d+\)").unwrap().is_match(err)));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
@@ -6253,7 +6255,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 	let logger = test_utils::TestLogger::new();
 	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 	route.paths[0][0].fee_msat = 0;
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6273,7 +6275,7 @@ fn test_update_add_htlc_bolt2_receiver_zero_value_msat() {
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = 0;
@@ -6299,7 +6301,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000000, 500000001, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::RouteError { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::RouteError { ref err },
 		assert_eq!(err, &"Channel CLTV overflowed?"));
 }
 
@@ -6321,7 +6323,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		let payment_event = {
 			let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 			let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-			nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+			nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 			check_added_monitors!(nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6338,12 +6340,12 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_payment_received!(nodes[1], our_payment_hash, 100000);
+		expect_payment_received!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6371,7 +6373,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	   short_channel_id: nodes[1].node.list_usable_channels()[0].short_channel_id.unwrap(),
 	   fee_msat: max_in_flight + 1, cltv_expiry_delta: TEST_FINAL_CLTV
 	}]] };
-	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &None), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -6400,7 +6402,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], htlc_minimum_msat, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = htlc_minimum_msat-1;
@@ -6431,7 +6433,7 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], max_can_send, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
@@ -6466,7 +6468,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &None, cur_height).unwrap();
+	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &Some(our_payment_secret), cur_height).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 
 	let mut msg = msgs::UpdateAddHTLC {
@@ -6504,7 +6506,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).counterparty_max_htlc_value_in_flight_msat + 1;
@@ -6529,7 +6531,7 @@ fn test_update_add_htlc_bolt2_receiver_check_cltv_expiry() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	updates.update_add_htlcs[0].cltv_expiry = 500000000;
@@ -6556,7 +6558,7 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -6603,7 +6605,7 @@ fn test_update_fulfill_htlc_bolt2_update_fulfill_htlc_before_commitment() {
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -6637,7 +6639,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_htlc_before_commitment() {
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -6670,7 +6672,7 @@ fn test_update_fulfill_htlc_bolt2_update_fail_malformed_htlc_before_commitment()
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
@@ -6785,7 +6787,7 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[1]);
 	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1000000, TEST_FINAL_CLTV, &logger).unwrap();
-	nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -6838,7 +6840,7 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	let mut payment_event = {
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
 		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100000, TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[0].node.send_payment(&route, our_payment_hash, &None).unwrap();
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -8077,30 +8079,6 @@ fn test_override_0msat_htlc_minimum() {
 }
 
 #[test]
-fn test_simple_payment_secret() {
-	// Simple test of sending a payment with a payment_secret present. This does not use any AMP
-	// features, however.
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
-	let logger = test_utils::TestLogger::new();
-
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[0]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), None, None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
-	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2]]], 100000, payment_hash, Some(payment_secret.clone()));
-	// Claiming with all the correct values but the wrong secret should result in nothing...
-	assert_eq!(nodes[2].node.claim_funds(payment_preimage, &None, 100_000), false);
-	assert_eq!(nodes[2].node.claim_funds(payment_preimage, &Some(PaymentSecret([42; 32])), 100_000), false);
-	// ...but with the right secret we should be able to claim all the way back
-	claim_payment_along_route_with_secret(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage, Some(payment_secret.clone()), 100_000);
-}
-
-#[test]
 fn test_simple_mpp() {
 	// Simple test of sending a multi-path payment.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
@@ -8125,12 +8103,8 @@ fn test_simple_mpp() {
 	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
 	route.paths[1][0].short_channel_id = chan_2_id;
 	route.paths[1][1].short_channel_id = chan_4_id;
-	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, Some(payment_secret.clone()));
-	// Claiming with all the correct values but the wrong secret should result in nothing...
-	assert_eq!(nodes[3].node.claim_funds(payment_preimage, &None, 200_000), false);
-	assert_eq!(nodes[3].node.claim_funds(payment_preimage, &Some(PaymentSecret([42; 32])), 200_000), false);
-	// ...but with the right secret we should be able to claim all the way back
-	claim_payment_along_route_with_secret(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, Some(payment_secret), 200_000);
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, 200_000);
 }
 
 #[test]
@@ -8267,7 +8241,7 @@ fn test_concurrent_monitor_claim() {
 	{
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 3000000 , TEST_FINAL_CLTV, &logger).unwrap();
-		nodes[1].node.send_payment(&route, payment_hash, &None).unwrap();
+		nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	}
 	check_added_monitors!(nodes[1], 1);
 

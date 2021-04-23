@@ -2088,11 +2088,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// along the path (including in our own channel on which we received it).
 	/// Returns false if no payment was found to fail backwards, true if the process of failing the
 	/// HTLC backwards has been started.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>) -> bool {
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, _payment_secret: &Option<PaymentSecret>) -> bool {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(*payment_hash, *payment_secret));
+		let payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		let payment_secret = if let Some(secret) = payment_secrets.get(&payment_hash) {
+			Some(secret.payment_secret)
+		} else { return false; };
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(*payment_hash, payment_secret));
 		if let Some(mut sources) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
@@ -2268,13 +2272,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// set. Thus, for such payments we will claim any payments which do not under-pay.
 	///
 	/// May panic if called except in response to a PaymentReceived event.
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, payment_secret: &Option<PaymentSecret>, expected_amount: u64) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, _payment_secret: &Option<PaymentSecret>, expected_amount: u64) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, *payment_secret));
+		let payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		let payment_secret = if let Some(secret) = payment_secrets.get(&payment_hash) {
+			Some(secret.payment_secret)
+		} else { return false; };
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, payment_secret));
 		if let Some(mut sources) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -4769,16 +4777,20 @@ pub mod bench {
 
 		let dummy_graph = NetworkGraph::new(genesis_hash);
 
+		let mut payment_count: u64 = 0;
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
 				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), Some(InvoiceFeatures::known()),
 					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
 
-				let payment_preimage = PaymentPreimage([0; 32]);
+				let mut payment_preimage = PaymentPreimage([0; 32]);
+				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
+				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
 
-				$node_a.send_payment(&route, payment_hash, &None).unwrap();
+				$node_a.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);
@@ -4788,8 +4800,8 @@ pub mod bench {
 				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
-				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
-				assert!($node_b.claim_funds(payment_preimage, &None, 10_000));
+				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
+				assert!($node_b.claim_funds(payment_preimage, &Some(payment_secret), 10_000));
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
