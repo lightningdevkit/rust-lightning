@@ -262,44 +262,57 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 type ChanMan = ChannelManager<EnforcingSigner, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
 
 #[inline]
+fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(PaymentSecret, PaymentHash)> {
+	let mut payment_hash;
+	for _ in 0..256 {
+		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).into_inner());
+		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 7200) {
+			return Some((payment_secret, payment_hash));
+		}
+		*payment_id = payment_id.wrapping_add(1);
+	}
+	None
+}
+
+#[inline]
 fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
-	let payment_hash = Sha256::hash(&[*payment_id; 1]);
-	*payment_id = payment_id.wrapping_add(1);
+	let (payment_secret, payment_hash) =
+		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
-			node_features: NodeFeatures::empty(),
+			node_features: NodeFeatures::known(),
 			short_channel_id: dest_chan_id,
-			channel_features: ChannelFeatures::empty(),
+			channel_features: ChannelFeatures::known(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
-	}, PaymentHash(payment_hash.into_inner()), &None) {
+	}, payment_hash, &Some(payment_secret)) {
 		check_payment_err(err);
 		false
 	} else { true }
 }
 #[inline]
 fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
-	let payment_hash = Sha256::hash(&[*payment_id; 1]);
-	*payment_id = payment_id.wrapping_add(1);
+	let (payment_secret, payment_hash) =
+		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
-			node_features: NodeFeatures::empty(),
+			node_features: NodeFeatures::known(),
 			short_channel_id: middle_chan_id,
-			channel_features: ChannelFeatures::empty(),
+			channel_features: ChannelFeatures::known(),
 			fee_msat: 50000,
 			cltv_expiry_delta: 100,
 		},RouteHop {
 			pubkey: dest.get_our_node_id(),
-			node_features: NodeFeatures::empty(),
+			node_features: NodeFeatures::known(),
 			short_channel_id: dest_chan_id,
-			channel_features: ChannelFeatures::empty(),
+			channel_features: ChannelFeatures::known(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
-	}, PaymentHash(payment_hash.into_inner()), &None) {
+	}, payment_hash, &Some(payment_secret)) {
 		check_payment_err(err);
 		false
 	} else { true }
@@ -523,48 +536,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	loop {
-		macro_rules! send_payment_with_secret {
-			($source: expr, $middle: expr, $dest: expr) => { {
-				let payment_hash = Sha256::hash(&[payment_id; 1]);
-				payment_id = payment_id.wrapping_add(1);
-				let payment_secret = Sha256::hash(&[payment_id; 1]);
-				payment_id = payment_id.wrapping_add(1);
-				if let Err(err) = $source.send_payment(&Route {
-					paths: vec![vec![RouteHop {
-						pubkey: $middle.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $middle.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50_000,
-						cltv_expiry_delta: 100,
-					},RouteHop {
-						pubkey: $dest.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $dest.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: 10_000_000,
-						cltv_expiry_delta: 200,
-					}],vec![RouteHop {
-						pubkey: $middle.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $middle.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: 50_000,
-						cltv_expiry_delta: 100,
-					},RouteHop {
-						pubkey: $dest.0.get_our_node_id(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: $dest.1,
-						channel_features: ChannelFeatures::empty(),
-						fee_msat: 10_000_000,
-						cltv_expiry_delta: 200,
-					}]],
-				}, PaymentHash(payment_hash.into_inner()), &Some(PaymentSecret(payment_secret.into_inner()))) {
-					check_payment_err(err);
-				}
-			} }
-		}
-
 		macro_rules! process_msg_events {
 			($node: expr, $corrupt_forward: expr) => { {
 				let events = if $node == 1 {
@@ -788,15 +759,15 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
 					chan_b_disconnected = false;
 				}
 			},
@@ -859,9 +830,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			0x23 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id); },
 			0x24 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id); },
 			0x25 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id); },
-
-			0x26 => { send_payment_with_secret!(nodes[0], (&nodes[1], chan_a), (&nodes[2], chan_b)); },
-			0x27 => { send_payment_with_secret!(nodes[2], (&nodes[1], chan_b), (&nodes[0], chan_a)); },
 
 			0x28 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id); },
 			0x29 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id); },
@@ -936,13 +904,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::empty() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::empty() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
 					chan_b_disconnected = false;
 				}
 

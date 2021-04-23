@@ -490,6 +490,15 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					}
 				}
 			},
+			16 => {
+				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
+				let mut sha = Sha256::engine();
+				sha.input(&payment_preimage.0[..]);
+				let payment_hash = PaymentHash(Sha256::from_engine(sha).into_inner());
+				// Note that this may fail - our hashes may collide and we'll end up trying to
+				// double-register the same payment_hash.
+				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1);
+			},
 			9 => {
 				for (payment, payment_secret, _) in payments_received.drain(..) {
 					channelmanager.fail_htlc_backwards(&payment, &payment_secret);
