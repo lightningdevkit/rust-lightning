@@ -54,6 +54,11 @@ const SYSTEM_TIME_MAX_UNIX_TIMESTAMP: u64 = std::i32::MAX as u64;
 /// it should be rather low as long as we still have to support 32bit time representations
 const MAX_EXPIRY_TIME: u64 = 60 * 60 * 24 * 356;
 
+/// Default expiry time as defined by [BOLT 11].
+///
+/// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
+const DEFAULT_EXPIRY_TIME: u64 = 3600;
+
 /// This function is used as a static assert for the size of `SystemTime`. If the crate fails to
 /// compile due to it this indicates that your system uses unexpected bounds for `SystemTime`. You
 /// can remove this functions and run the test `test_system_time_bounds_assumptions`. In any case,
@@ -1041,11 +1046,11 @@ impl Invoice {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
 	}
 
-	/// Returns the invoice's expiry time if present
+	/// Returns the invoice's expiry time, if present, otherwise [`DEFAULT_EXPIRY_TIME`].
 	pub fn expiry_time(&self) -> Duration {
 		self.signed_invoice.expiry_time()
 			.map(|x| x.0)
-			.unwrap_or(Duration::from_secs(3600))
+			.unwrap_or(Duration::from_secs(DEFAULT_EXPIRY_TIME))
 	}
 
 	/// Returns the invoice's `min_cltv_expiry` time if present
