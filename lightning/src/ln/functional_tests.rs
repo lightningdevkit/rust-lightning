@@ -8828,3 +8828,53 @@ fn test_error_chans_closed() {
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 }
+
+#[test]
+fn test_invalid_funding_tx() {
+	// Test that we properly handle invalid funding transactions sent to us from a peer.
+	//
+	// Previously, all other major lightning implementations had failed to properly sanitize
+	// funding transactions from their counterparties, leading to a multi-implementation critical
+	// security vulnerability (though we always sanitized properly, we've previously had
+	// un-released crashes in the sanitization process).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 10_000, 42, None).unwrap();
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	let (temporary_channel_id, mut tx, _) = create_funding_transaction(&nodes[0], 100_000, 42);
+	for output in tx.output.iter_mut() {
+		// Make the confirmed funding transaction have a bogus script_pubkey
+		output.script_pubkey = bitcoin::Script::new();
+	}
+
+	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, tx.clone(), 0).unwrap();
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
+	check_added_monitors!(nodes[0], 1);
+
+	let events_1 = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_1.len(), 0);
+
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+
+	confirm_transaction_at(&nodes[1], &tx, 1);
+	check_added_monitors!(nodes[1], 1);
+	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_2.len(), 1);
+	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
+		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
+			assert_eq!(msg.data, "funding tx had wrong script/value or output index");
+		} else { panic!(); }
+	} else { panic!(); }
+	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
