@@ -2303,7 +2303,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, expected_amount: u64) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
@@ -2324,7 +2324,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// we got all the HTLCs and then a channel closed while we were waiting for the user to
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
-			let mut valid_mpp = sources[0].payment_data.total_msat >= expected_amount;
+			let mut valid_mpp = true;
 			for htlc in sources.iter() {
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
@@ -4846,7 +4846,7 @@ pub mod bench {
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
 				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				assert!($node_b.claim_funds(payment_preimage, 10_000));
+				assert!($node_b.claim_funds(payment_preimage));
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {

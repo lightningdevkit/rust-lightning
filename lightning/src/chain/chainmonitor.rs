@@ -344,7 +344,7 @@ mod tests {
 		let (commitment_tx, htlc_tx) = {
 			let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000).0;
 			let mut txn = get_local_commitment_txn!(nodes[0], channel.2);
-			claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage, 5_000_000);
+			claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 
 			assert_eq!(txn.len(), 2);
 			(txn.remove(0), txn.remove(0))

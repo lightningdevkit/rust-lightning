@@ -90,7 +90,7 @@ fn test_monitor_and_persister_update_fail() {
 	let outpoint = OutPoint { txid: chan.3.txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
-	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000, 10_000_000);
+	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
 
 	// Route an HTLC from node 0 to node 1 (but don't settle)
 	let preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9_000_000).0;
@@ -121,7 +121,7 @@ fn test_monitor_and_persister_update_fail() {
 	persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	// Try to update ChannelMonitor
-	assert!(nodes[1].node.claim_funds(preimage, 9_000_000));
+	assert!(nodes[1].node.claim_funds(preimage));
 	check_added_monitors!(nodes[1], 1);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
@@ -214,7 +214,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 
 	// Now set it to failed again...
 	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(&nodes[1]);
@@ -305,7 +305,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 	// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
 	// but nodes[0] won't respond since it is frozen.
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
@@ -582,7 +582,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
 #[test]
@@ -696,7 +696,7 @@ fn test_monitor_update_fail_cs() {
 		_ => panic!("Unexpected event"),
 	};
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 }
 
 #[test]
@@ -747,7 +747,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 }
 
 #[test]
@@ -761,7 +761,7 @@ fn test_monitor_update_raa_while_paused() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	send_payment(&nodes[0], &[&nodes[1]], 5000000, 5_000_000);
+	send_payment(&nodes[0], &[&nodes[1]], 5000000);
 	let (payment_preimage_1, our_payment_hash_1, our_payment_secret_1) = get_payment_preimage_hash!(nodes[1]);
 	{
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
@@ -825,8 +825,8 @@ fn test_monitor_update_raa_while_paused() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_received!(nodes[1], our_payment_hash_1, our_payment_secret_1, 1000000);
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
-	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2);
 }
 
 fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
@@ -840,7 +840,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 2 to 1.
-	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
 	// Route a first payment that we'll fail backwards
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
@@ -1079,10 +1079,10 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 			Event::PaymentReceived { payment_hash, .. } => assert_eq!(payment_hash, payment_hash_4.unwrap()),
 			_ => panic!("Unexpected event"),
 		};
-		claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_4.unwrap(), 1_000_000);
+		claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_4.unwrap());
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
 }
 
 #[test]
@@ -1108,7 +1108,7 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage, 1_000_000));
+	assert!(nodes[2].node.claim_funds(our_payment_preimage));
 	check_added_monitors!(nodes[2], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1289,9 +1289,9 @@ fn raa_no_response_awaiting_raa_state() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_received!(nodes[1], payment_hash_3, payment_secret_3, 1000000);
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
 }
 
 #[test]
@@ -1315,7 +1315,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
@@ -1417,7 +1417,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
 #[test]
@@ -1485,7 +1485,7 @@ fn monitor_failed_no_reestablish_response() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 }
 
 #[test]
@@ -1586,8 +1586,8 @@ fn first_message_on_recv_ordering() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1, 1_000_000);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
 #[test]
@@ -1606,12 +1606,12 @@ fn test_monitor_update_fail_claim() {
 	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 3 to 2.
-	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
 	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 
 	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[0]);
@@ -1687,7 +1687,7 @@ fn test_monitor_update_on_pending_forwards() {
 	let logger = test_utils::TestLogger::new();
 
 	// Rebalance a bit so that we can send backwards from 3 to 1.
-	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000, 5_000_000);
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
@@ -1742,7 +1742,7 @@ fn test_monitor_update_on_pending_forwards() {
 	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_received!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
 
-	claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_2);
 }
 
 #[test]
@@ -1777,7 +1777,7 @@ fn monitor_update_claim_fail_no_response() {
 	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true, false, true);
 
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	assert!(nodes[1].node.claim_funds(payment_preimage_1, 1_000_000));
+	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
@@ -1807,7 +1807,7 @@ fn monitor_update_claim_fail_no_response() {
 		_ => panic!("Unexpected event"),
 	}
 
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2, 1_000_000);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
 // confirm_a_first and restore_b_before_conf are wholly unrelated to earlier bools and
@@ -1897,7 +1897,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	}
 
-	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
+	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
 }
 
@@ -1965,5 +1965,5 @@ fn test_path_paused_mpp() {
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), payment_secret, events.pop().unwrap(), true);
 
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage, 200_000);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
 }

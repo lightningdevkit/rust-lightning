@@ -271,7 +271,7 @@ fn test_onion_failure() {
 	let logger = test_utils::TestLogger::new();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap();
 	// positve case
-	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 40000, 40_000);
+	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 40000);
 
 	// intermediate node failure
 	run_onion_failure_test("invalid_realm", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
@@ -418,7 +418,7 @@ fn test_onion_failure() {
 	// Test a positive test-case with one extra msat, meeting the minimum.
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward + 1;
 	let (preimage, _, _) = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1);
-	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage, amt_to_forward+1);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage);
 
 	//TODO: with new config API, we will be able to generate both valid and
 	//invalid channel_update cases.

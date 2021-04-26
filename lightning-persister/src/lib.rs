@@ -251,9 +251,9 @@ mod tests {
 		check_persisted_data!(0);
 
 		// Send a few payments and make sure the monitors are updated to the latest.
-		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000, 8_000_000);
+		send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 		check_persisted_data!(5);
-		send_payment(&nodes[1], &vec!(&nodes[0])[..], 4000000, 4_000_000);
+		send_payment(&nodes[1], &vec!(&nodes[0])[..], 4000000);
 		check_persisted_data!(10);
 
 		// Force close because cooperative close doesn't result in any persisted
