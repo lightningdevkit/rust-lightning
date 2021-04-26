@@ -332,20 +332,6 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
-	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
-	/// height than once reached we should generate a new bumped "version" of the claim tx to be sure than we safely claim outputs before
-	/// than our counterparty can do it too. If timelock expires soon, height timer is going to be scale down in consequence to increase
-	/// frequency of the bump and so increase our bets of success.
-	fn get_height_timer(current_height: u32, timelock_expiration: u32) -> u32 {
-		if timelock_expiration <= current_height + 3 {
-			return current_height + 1
-		} else if timelock_expiration - current_height <= 15 {
-			return current_height + 3
-		}
-		current_height + 15
-	}
-
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
@@ -358,7 +344,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Some(Self::get_height_timer(height, cached_request.timelock()));
+		let new_timer = Some(cached_request.get_height_timer(height));
 		let amt = cached_request.package_amount();
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script);

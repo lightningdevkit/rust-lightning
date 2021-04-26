@@ -49,6 +49,13 @@ pub(crate) const WEIGHT_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 139;
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
+/// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
+const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
+/// Height delay at which transactions are fee-bumped/rebroadcasted with a middle priority.
+const MIDDLE_FREQUENCY_BUMP_INTERVAL: u32 = 3;
+/// Height delay at which transactions are fee-bumped/rebroadcasted with a high priority.
+const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
+
 /// A struct to describe a revoked output and corresponding information to generate a solving
 /// witness spending a commitment `to_local` output or a second-stage HTLC transaction output.
 ///
@@ -634,6 +641,19 @@ impl PackageTemplate {
 			},
 		}
 	}
+	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
+	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
+	/// height that once reached we should generate a new bumped "version" of the claim tx to be sure that we safely claim outputs before
+	/// that our counterparty can do so. If timelock expires soon, height timer is going to be scaled down in consequence to increase
+	/// frequency of the bump and so increase our bets of success.
+	pub(crate) fn get_height_timer(&self, current_height: u32) -> u32 {
+		if self.soonest_conf_deadline <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
+			return current_height + HIGH_FREQUENCY_BUMP_INTERVAL
+		} else if self.soonest_conf_deadline - current_height <= LOW_FREQUENCY_BUMP_INTERVAL {
+			return current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+		}
+		current_height + LOW_FREQUENCY_BUMP_INTERVAL
+	}
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
 		let malleability = match input_solving_data {
 			PackageSolvingData::RevokedOutput(..) => { PackageMalleability::Malleable },
@@ -810,3 +830,4 @@ pub(crate) fn compute_output_value<F: Deref, L: Deref>(predicted_weight: usize, 
 	}
 	None
 }
+
