@@ -146,6 +146,7 @@ pub fn check_platform() {
 /// 	.description("Coins pls!".into())
 /// 	.payment_hash(payment_hash)
 /// 	.current_timestamp()
+/// 	.min_final_cltv_expiry(144)
 /// 	.build_signed(|hash| {
 /// 		Secp256k1::new().sign_recoverable(hash, &private_key)
 /// 	})
@@ -164,7 +165,7 @@ pub fn check_platform() {
 ///
 /// (C-not exported) as we likely need to manually select one set of boolean type parameters.
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool> {
+pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> {
 	currency: Currency,
 	amount: Option<u64>,
 	si_prefix: Option<SiPrefix>,
@@ -175,6 +176,7 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool> {
 	phantom_d: std::marker::PhantomData<D>,
 	phantom_h: std::marker::PhantomData<H>,
 	phantom_t: std::marker::PhantomData<T>,
+	phantom_c: std::marker::PhantomData<C>,
 }
 
 /// Represents a syntactically and semantically correct lightning BOLT11 invoice.
@@ -426,7 +428,7 @@ pub mod constants {
 	pub const TAG_FEATURES: u8 = 5;
 }
 
-impl InvoiceBuilder<tb::False, tb::False, tb::False> {
+impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False> {
 	/// Construct new, empty `InvoiceBuilder`. All necessary fields have to be filled first before
 	/// `InvoiceBuilder::build(self)` becomes available.
 	pub fn new(currrency: Currency) -> Self {
@@ -441,14 +443,15 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False> {
 			phantom_d: std::marker::PhantomData,
 			phantom_h: std::marker::PhantomData,
 			phantom_t: std::marker::PhantomData,
+			phantom_c: std::marker::PhantomData,
 		}
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C> {
 	/// Helper function to set the completeness flags.
-	fn set_flags<DN: tb::Bool, HN: tb::Bool, TN: tb::Bool>(self) -> InvoiceBuilder<DN, HN, TN> {
-		InvoiceBuilder::<DN, HN, TN> {
+	fn set_flags<DN: tb::Bool, HN: tb::Bool, TN: tb::Bool, CN: tb::Bool>(self) -> InvoiceBuilder<DN, HN, TN, CN> {
+		InvoiceBuilder::<DN, HN, TN, CN> {
 			currency: self.currency,
 			amount: self.amount,
 			si_prefix: self.si_prefix,
@@ -459,6 +462,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 			phantom_d: std::marker::PhantomData,
 			phantom_h: std::marker::PhantomData,
 			phantom_t: std::marker::PhantomData,
+			phantom_c: std::marker::PhantomData,
 		}
 	}
 
@@ -494,12 +498,6 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 		self
 	}
 
-	/// Sets `min_final_cltv_expiry`.
-	pub fn min_final_cltv_expiry(mut self, min_final_cltv_expiry: u64) -> Self {
-		self.tagged_fields.push(TaggedField::MinFinalCltvExpiry(MinFinalCltvExpiry(min_final_cltv_expiry)));
-		self
-	}
-
 	/// Adds a fallback address.
 	pub fn fallback(mut self, fallback: Fallback) -> Self {
 		self.tagged_fields.push(TaggedField::Fallback(fallback));
@@ -523,7 +521,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T> {
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool> InvoiceBuilder<D, H, tb::True> {
+impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::True, C> {
 	/// Builds a `RawInvoice` if no `CreationError` occurred while construction any of the fields.
 	pub fn build_raw(self) -> Result<RawInvoice, CreationError> {
 
@@ -556,9 +554,9 @@ impl<D: tb::Bool, H: tb::Bool> InvoiceBuilder<D, H, tb::True> {
 	}
 }
 
-impl<H: tb::Bool, T: tb::Bool> InvoiceBuilder<tb::False, H, T> {
+impl<H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<tb::False, H, T, C> {
 	/// Set the description. This function is only available if no description (hash) was set.
-	pub fn description(mut self, description: String) -> InvoiceBuilder<tb::True, H, T> {
+	pub fn description(mut self, description: String) -> InvoiceBuilder<tb::True, H, T, C> {
 		match Description::new(description) {
 			Ok(d) => self.tagged_fields.push(TaggedField::Description(d)),
 			Err(e) => self.error = Some(e),
@@ -567,23 +565,23 @@ impl<H: tb::Bool, T: tb::Bool> InvoiceBuilder<tb::False, H, T> {
 	}
 
 	/// Set the description hash. This function is only available if no description (hash) was set.
-	pub fn description_hash(mut self, description_hash: sha256::Hash) -> InvoiceBuilder<tb::True, H, T> {
+	pub fn description_hash(mut self, description_hash: sha256::Hash) -> InvoiceBuilder<tb::True, H, T, C> {
 		self.tagged_fields.push(TaggedField::DescriptionHash(Sha256(description_hash)));
 		self.set_flags()
 	}
 }
 
-impl<D: tb::Bool, T: tb::Bool> InvoiceBuilder<D, tb::False, T> {
+impl<D: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, tb::False, T, C> {
 	/// Set the payment hash. This function is only available if no payment hash was set.
-	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T> {
+	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C> {
 		self.tagged_fields.push(TaggedField::PaymentHash(Sha256(hash)));
 		self.set_flags()
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool> InvoiceBuilder<D, H, tb::False> {
+impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::False, C> {
 	/// Sets the timestamp.
-	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True> {
+	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True, C> {
 		match PositiveTimestamp::from_system_time(time) {
 			Ok(t) => self.timestamp = Some(t),
 			Err(e) => self.error = Some(e),
@@ -593,14 +591,22 @@ impl<D: tb::Bool, H: tb::Bool> InvoiceBuilder<D, H, tb::False> {
 	}
 
 	/// Sets the timestamp to the current UNIX timestamp.
-	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True> {
+	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True, C> {
 		let now = PositiveTimestamp::from_system_time(SystemTime::now());
 		self.timestamp = Some(now.expect("for the foreseeable future this shouldn't happen"));
 		self.set_flags()
 	}
 }
 
-impl InvoiceBuilder<tb::True, tb::True, tb::True> {
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T, tb::False> {
+	/// Sets `min_final_cltv_expiry`.
+	pub fn min_final_cltv_expiry(mut self, min_final_cltv_expiry: u64) -> InvoiceBuilder<D, H, T, tb::True> {
+		self.tagged_fields.push(TaggedField::MinFinalCltvExpiry(MinFinalCltvExpiry(min_final_cltv_expiry)));
+		self.set_flags()
+	}
+}
+
+impl InvoiceBuilder<tb::True, tb::True, tb::True, tb::True> {
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for
 	/// the included payee public key.
@@ -1489,7 +1495,8 @@ mod test {
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
-			.current_timestamp();
+			.current_timestamp()
+			.min_final_cltv_expiry(144);
 
 		let too_long_string = String::from_iter(
 			(0..1024).map(|_| '?')
@@ -1606,7 +1613,6 @@ mod test {
 			.payee_pub_key(public_key.clone())
 			.expiry_time(Duration::from_secs(54321))
 			.min_final_cltv_expiry(144)
-			.min_final_cltv_expiry(143)
 			.fallback(Fallback::PubKeyHash([0;20]))
 			.route(route_1.clone())
 			.route(route_2.clone())
@@ -1618,7 +1624,7 @@ mod test {
 		}).unwrap();
 
 		assert!(invoice.check_signature().is_ok());
-		assert_eq!(invoice.tagged_fields().count(), 9);
+		assert_eq!(invoice.tagged_fields().count(), 8);
 
 		assert_eq!(invoice.amount_pico_btc(), Some(123));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);

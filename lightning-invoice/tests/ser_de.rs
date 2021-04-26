@@ -110,13 +110,14 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, Option<SemanticError>)> {
 				.amount_pico_btc(20000000000)
 				.timestamp(UNIX_EPOCH + Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([42; 32]))
-				.build_signed(|msg_hash| {
+				.build_raw()
+				.unwrap()
+				.sign::<_, ()>(|msg_hash| {
 					let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
 					let secp_ctx = Secp256k1::new();
-					secp_ctx.sign_recoverable(msg_hash, &privkey)
+					Ok(secp_ctx.sign_recoverable(msg_hash, &privkey))
 				})
-				.unwrap()
-				.into_signed_raw(),
+				.unwrap(),
 			None
 		)
 	]
