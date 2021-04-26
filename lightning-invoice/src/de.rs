@@ -433,6 +433,8 @@ impl FromBase32 for TaggedField {
 				Ok(TaggedField::Route(RouteHint::from_base32(field_data)?)),
 			constants::TAG_PAYMENT_SECRET =>
 				Ok(TaggedField::PaymentSecret(PaymentSecret::from_base32(field_data)?)),
+			constants::TAG_FEATURES =>
+				Ok(TaggedField::Features(InvoiceFeatures::from_base32(field_data)?)),
 			_ => {
 				// "A reader MUST skip over unknown fields"
 				Err(ParseError::Skip)
@@ -993,16 +995,17 @@ mod test {
 	}
 
 	#[test]
-	fn test_payment_secret_deserialization() {
-		use bech32::CheckBase32;
+	fn test_payment_secret_and_features_de_and_ser() {
+		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 		use TaggedField::*;
-		use {SiPrefix, SignedRawInvoice, Signature, RawInvoice, RawTaggedField, RawHrp, RawDataPart,
+		use {SiPrefix, SignedRawInvoice, Signature, RawInvoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
 
-		assert_eq!( // BOLT 11 payment secret invoice. The unknown fields are invoice features.
-			"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu".parse(),
-			Ok(SignedRawInvoice {
+		// Feature bits 9, 15, and 99 are set.
+		let expected_features = InvoiceFeatures::from_le_bytes(vec![0, 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
+		let invoice_str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
+		let invoice = SignedRawInvoice {
 					raw_invoice: RawInvoice {
 						hrp: RawHrp {
 							currency: Currency::Bitcoin,
@@ -1017,10 +1020,7 @@ mod test {
 								).unwrap())).into(),
 								Description(::Description::new("coffee beans".to_owned()).unwrap()).into(),
 								PaymentSecret(::PaymentSecret([17; 32])).into(),
-								RawTaggedField::UnknownSemantics(vec![5, 0, 20, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-																											0, 0, 0, 0, 1, 0, 16,
-																											0].check_base32().unwrap())],
-									}
+								Features(expected_features).into()]}
 								},
 					hash: [0xb1, 0x96, 0x46, 0xc3, 0xbc, 0x56, 0x76, 0x1d, 0x20, 0x65, 0x6e, 0x0e, 0x32,
 									0xec, 0xd2, 0x69, 0x27, 0xb7, 0x62, 0x6e, 0x2a, 0x8b, 0xe6, 0x97, 0x71, 0x9f,
@@ -1033,8 +1033,12 @@ mod test {
 											0x60, 0x82, 0xea, 0xac, 0x81, 0x39, 0x11, 0xda, 0xe0, 0x1a, 0xf3, 0xc1],
 										RecoveryId::from_i32(1).unwrap()
 								).unwrap()),
-			})
-		)
+			};
+		assert_eq!(invoice_str, invoice.to_string());
+		assert_eq!(
+			invoice_str.parse(),
+			Ok(invoice)
+		);
 	}
 
 	#[test]
