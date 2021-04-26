@@ -1646,4 +1646,28 @@ mod test {
 		let raw_invoice = builder.build_raw().unwrap();
 		assert_eq!(raw_invoice, *invoice.into_signed_raw().raw_invoice())
 	}
+
+	#[test]
+	fn test_default_values() {
+		use ::*;
+		use secp256k1::Secp256k1;
+		use secp256k1::key::SecretKey;
+
+		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".into())
+			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
+			.current_timestamp()
+			.build_raw()
+			.unwrap()
+			.sign::<_, ()>(|hash| {
+				let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
+				let secp_ctx = Secp256k1::new();
+				Ok(secp_ctx.sign_recoverable(hash, &privkey))
+			})
+			.unwrap();
+		let invoice = Invoice::from_signed(signed_invoice).unwrap();
+
+		assert_eq!(invoice.min_final_cltv_expiry(), DEFAULT_MIN_FINAL_CLTV_EXPIRY);
+		assert_eq!(invoice.expiry_time(), Duration::from_secs(DEFAULT_EXPIRY_TIME));
+	}
 }
