@@ -824,3 +824,214 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 	};
 	Some((new_fee, new_fee * 1000 / (predicted_weight as u64)))
 }
+
+#[cfg(test)]
+mod tests {
+	use chain::package::{CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT};
+	use chain::Txid;
+	use ln::chan_utils::HTLCOutputInCommitment;
+	use ln::{PaymentPreimage, PaymentHash};
+
+	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
+	use bitcoin::blockdata::script::Script;
+	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+
+	use bitcoin::hashes::hex::FromHex;
+
+	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::Secp256k1;
+
+	macro_rules! dumb_revk_output {
+		($secp_ctx: expr) => {
+			{
+				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_point, dumb_point, dumb_scalar, 0, 0))
+			}
+		}
+	}
+
+	macro_rules! dumb_counterparty_output {
+		($secp_ctx: expr, $amt: expr) => {
+			{
+				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
+				let hash = PaymentHash([1; 32]);
+				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, dumb_point, dumb_point, htlc))
+			}
+		}
+	}
+
+	macro_rules! dumb_htlc_output {
+		() => {
+			{
+				let preimage = PaymentPreimage([2;32]);
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(Some(preimage), 0))
+			}
+		}
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_differing_heights() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
+		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 200);
+		package_one_hundred.merge_package(package_two_hundred);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_untractable_merge_to() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+		let htlc_outp = dumb_htlc_output!();
+
+		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
+		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000, true, 100);
+		untractable_package.merge_package(malleable_package);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_untractable_merge_from() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let htlc_outp = dumb_htlc_output!();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, true, 100);
+		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		malleable_package.merge_package(untractable_package);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_noaggregation_to() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, false, 100);
+		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		noaggregation_package.merge_package(aggregation_package);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_noaggregation_from() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
+		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, false, 100);
+		aggregation_package.merge_package(noaggregation_package);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_empty() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
+		empty_package.inputs = vec![];
+		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
+		empty_package.merge_package(package);
+	}
+
+	#[test]
+	#[should_panic]
+	fn test_package_differing_categories() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0);
+
+		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
+		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, true, 100);
+		revoked_package.merge_package(counterparty_package);
+	}
+
+	#[test]
+	fn test_package_split_malleable() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp_one = dumb_revk_output!(secp_ctx);
+		let revk_outp_two = dumb_revk_output!(secp_ctx);
+		let revk_outp_three = dumb_revk_output!(secp_ctx);
+
+		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, true, 100);
+		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, true, 100);
+		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000, true, 100);
+
+		package_one.merge_package(package_two);
+		package_one.merge_package(package_three);
+		assert_eq!(package_one.outpoints().len(), 3);
+
+		if let Some(split_package) = package_one.split_package(&BitcoinOutPoint { txid, vout: 1 }) {
+			// Packages attributes should be identical
+			assert!(split_package.is_malleable());
+			assert_eq!(split_package.soonest_conf_deadline, package_one.soonest_conf_deadline);
+			assert_eq!(split_package.aggregable, package_one.aggregable);
+			assert_eq!(split_package.feerate_previous, package_one.feerate_previous);
+			assert_eq!(split_package.height_timer, package_one.height_timer);
+			assert_eq!(split_package.height_original, package_one.height_original);
+		} else { panic!(); }
+		assert_eq!(package_one.outpoints().len(), 2);
+	}
+
+	#[test]
+	fn test_package_split_untractable() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let htlc_outp_one = dumb_htlc_output!();
+
+		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, true, 100);
+		let ret_split = package_one.split_package(&BitcoinOutPoint { txid, vout: 0});
+		assert!(ret_split.is_none());
+	}
+
+	#[test]
+	fn test_package_timer() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
+		let timer_none = package.timer();
+		assert!(timer_none.is_none());
+		package.set_timer(Some(100));
+		if let Some(timer_some) = package.timer() {
+			assert_eq!(timer_some, 100);
+		} else { panic!() }
+	}
+
+	#[test]
+	fn test_package_amounts() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
+
+		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+		assert_eq!(package.package_amount(), 1000);
+	}
+
+	#[test]
+	fn test_package_weight() {
+		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
+		let secp_ctx = Secp256k1::new();
+		let revk_outp = dumb_revk_output!(secp_ctx);
+
+		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
+		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR
+		// + witness marker (2) + WEIGHT_REVOKED_OUTPUT
+		assert_eq!(package.package_weight(&Script::new()), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
+	}
+}
