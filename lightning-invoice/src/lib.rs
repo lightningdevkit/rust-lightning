@@ -59,6 +59,11 @@ const MAX_EXPIRY_TIME: u64 = 60 * 60 * 24 * 356;
 /// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
 const DEFAULT_EXPIRY_TIME: u64 = 3600;
 
+/// Default minimum final CLTV expiry as defined by [BOLT 11].
+///
+/// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
+const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
+
 /// This function is used as a static assert for the size of `SystemTime`. If the crate fails to
 /// compile due to it this indicates that your system uses unexpected bounds for `SystemTime`. You
 /// can remove this functions and run the test `test_system_time_bounds_assumptions`. In any case,
@@ -1053,9 +1058,12 @@ impl Invoice {
 			.unwrap_or(Duration::from_secs(DEFAULT_EXPIRY_TIME))
 	}
 
-	/// Returns the invoice's `min_cltv_expiry` time if present
-	pub fn min_final_cltv_expiry(&self) -> Option<u64> {
-		self.signed_invoice.min_final_cltv_expiry().map(|x| x.0)
+	/// Returns the invoice's `min_final_cltv_expiry` time, if present, otherwise
+	/// [`DEFAULT_MIN_FINAL_CLTV_EXPIRY`].
+	pub fn min_final_cltv_expiry(&self) -> u64 {
+		self.signed_invoice.min_final_cltv_expiry()
+			.map(|x| x.0)
+			.unwrap_or(DEFAULT_MIN_FINAL_CLTV_EXPIRY)
 	}
 
 	/// Returns a list of all fallback addresses
@@ -1620,7 +1628,7 @@ mod test {
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
-		assert_eq!(invoice.min_final_cltv_expiry(), Some(144));
+		assert_eq!(invoice.min_final_cltv_expiry(), 144);
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
 		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
 		assert_eq!(
