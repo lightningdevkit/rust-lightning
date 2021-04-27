@@ -75,6 +75,15 @@ pub enum Event {
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).
 		amt: u64,
+		/// This is the `user_payment_id` which was provided to
+		/// [`ChannelManager::create_inbound_payment_for_hash`] or
+		/// [`ChannelManager::create_inbound_payment`]. It has no meaning inside of LDK and is
+		/// simply copied here. It may be used to correlate PaymentReceived events with invoice
+		/// metadata stored elsewhere.
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		user_payment_id: u64,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -129,11 +138,12 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt } => {
+			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt, ref user_payment_id } => {
 				1u8.write(writer)?;
 				payment_hash.write(writer)?;
 				payment_secret.write(writer)?;
 				amt.write(writer)?;
+				user_payment_id.write(writer)?;
 			},
 			&Event::PaymentSent { ref payment_preimage } => {
 				2u8.write(writer)?;
@@ -177,6 +187,7 @@ impl MaybeReadable for Event {
 					payment_hash: Readable::read(reader)?,
 					payment_secret: Readable::read(reader)?,
 					amt: Readable::read(reader)?,
+					user_payment_id: Readable::read(reader)?,
 				})),
 			2u8 => Ok(Some(Event::PaymentSent {
 					payment_preimage: Readable::read(reader)?,

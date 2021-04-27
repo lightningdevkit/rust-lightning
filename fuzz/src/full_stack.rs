@@ -497,7 +497,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let payment_hash = PaymentHash(Sha256::from_engine(sha).into_inner());
 				// Note that this may fail - our hashes may collide and we'll end up trying to
 				// double-register the same payment_hash.
-				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1);
+				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, 0);
 			},
 			9 => {
 				for (payment, payment_secret, _) in payments_received.drain(..) {
@@ -580,7 +580,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
 				},
-				Event::PaymentReceived { payment_hash, payment_secret, amt } => {
+				Event::PaymentReceived { payment_hash, payment_secret, amt, user_payment_id: _ } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push((payment_hash, payment_secret, amt));
 				},

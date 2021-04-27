@@ -266,7 +266,7 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(Payme
 	let mut payment_hash;
 	for _ in 0..256 {
 		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).into_inner());
-		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 7200) {
+		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 7200, 0) {
 			return Some((payment_secret, payment_hash));
 		}
 		*payment_id = payment_id.wrapping_add(1);
@@ -687,7 +687,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, payment_secret, amt } => {
+						events::Event::PaymentReceived { payment_hash, payment_secret, amt, user_payment_id: _ } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
 									assert!(nodes[$node].fail_htlc_backwards(&payment_hash, &payment_secret));

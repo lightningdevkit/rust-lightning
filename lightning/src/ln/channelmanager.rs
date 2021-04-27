@@ -362,6 +362,8 @@ struct PendingInboundPayment {
 	/// Time at which this HTLC expires - blocks with a header time above this value will result in
 	/// this payment being removed.
 	expiry_time: u64,
+	/// Arbitrary identifier the user specifies (or not)
+	user_payment_id: u64,
 	// Other required attributes of the payment, optionally enforced:
 	payment_preimage: Option<PaymentPreimage>,
 	min_value_msat: Option<u64>,
@@ -2024,6 +2026,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													payment_hash,
 													payment_secret: Some(payment_data.payment_secret),
 													amt: total_value,
+													user_payment_id: inbound_payment.get().user_payment_id,
 												});
 												// Only ever generate at most one PaymentReceived
 												// per registered payment_hash, even if it isn't
@@ -3377,7 +3380,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
+	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
 		assert!(invoice_expiry_delta_secs <= 60*60*24*365); // Sadly bitcoin timestamps are u32s, so panic before 2106
 
 		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
@@ -3387,7 +3390,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		match payment_secrets.entry(payment_hash) {
 			hash_map::Entry::Vacant(e) => {
 				e.insert(PendingInboundPayment {
-					payment_secret, min_value_msat, payment_preimage,
+					payment_secret, min_value_msat, user_payment_id, payment_preimage,
 					// We assume that highest_seen_timestamp is pretty close to the current time -
 					// its updated when we receive a new block with the maximum time we've seen in
 					// a header. It should never be more than two hours in the future.
@@ -3412,12 +3415,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
 	///
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> (PaymentHash, PaymentSecret) {
+	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> (PaymentHash, PaymentSecret) {
 		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		(payment_hash,
-			self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)
+			self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 				.expect("RNG Generated Duplicate PaymentHash"))
 	}
 
@@ -3430,6 +3433,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
 	/// method may return an Err if another payment with the same payment_hash is still pending.
+	///
+	/// `user_payment_id` will be provided back in [`PaymentReceived::user_payment_id`] events to
+	/// allow tracking of which events correspond with which calls to this and
+	/// [`create_inbound_payment`]. `user_payment_id` has no meaning inside of LDK, it is simply
+	/// copied to events and otherwise ignored. It may be used to correlate PaymentReceived events
+	/// with invoice metadata stored elsewhere.
 	///
 	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
 	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
@@ -3452,8 +3461,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
-	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
-		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
+	/// [`PaymentReceived::user_payment_id`]: events::Event::PaymentReceived::user_payment_id
+	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
+		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 	}
 }
 
@@ -4280,6 +4290,7 @@ impl Readable for HTLCForwardInfo {
 impl_writeable!(PendingInboundPayment, 0, {
 	payment_secret,
 	expiry_time,
+	user_payment_id,
 	payment_preimage,
 	min_value_msat
 });
@@ -4824,7 +4835,7 @@ pub mod bench {
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
+				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, 0).unwrap();
 
 				$node_a.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());

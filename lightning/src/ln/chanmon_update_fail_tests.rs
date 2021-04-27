@@ -206,7 +206,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(Some(payment_secret_1), *payment_secret);
 			assert_eq!(amt, 1000000);
@@ -574,7 +574,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(Some(payment_secret_2), *payment_secret);
 			assert_eq!(amt, 1000000);
@@ -688,7 +688,7 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, payment_secret, amt } => {
+		Event::PaymentReceived { payment_hash, payment_secret, amt, user_payment_id: _ } => {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(Some(our_payment_secret), payment_secret);
 			assert_eq!(amt, 1000000);
