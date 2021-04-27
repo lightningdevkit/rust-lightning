@@ -120,6 +120,16 @@ macro_rules! impl_writeable {
 				if $len != 0 {
 					w.size_hint($len);
 				}
+				#[cfg(any(test, feature = "fuzztarget"))]
+				{
+					// In tests, assert that the hard-coded length matches the actual one
+					if $len != 0 {
+						use util::ser::LengthCalculatingWriter;
+						let mut len_calc = LengthCalculatingWriter(0);
+						$( self.$field.write(&mut len_calc)?; )*
+						assert_eq!(len_calc.0, $len);
+					}
+				}
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
@@ -135,24 +145,36 @@ macro_rules! impl_writeable {
 	}
 }
 macro_rules! impl_writeable_len_match {
-	($st:ident, {$({$m: pat, $l: expr}),*}, {$($field:ident),*}) => {
-		impl Writeable for $st {
+	($struct: ident, $cmp: tt, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+		impl Writeable for $struct {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-				w.size_hint(match *self {
-					$($m => $l,)*
-				});
+				let len = match *self {
+					$($match => $length,)*
+				};
+				w.size_hint(len);
+				#[cfg(any(test, feature = "fuzztarget"))]
+				{
+					// In tests, assert that the hard-coded length matches the actual one
+					use util::ser::LengthCalculatingWriter;
+					let mut len_calc = LengthCalculatingWriter(0);
+					$( self.$field.write(&mut len_calc)?; )*
+					assert!(len_calc.0 $cmp len);
+				}
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
 		}
 
-		impl ::util::ser::Readable for $st {
+		impl ::util::ser::Readable for $struct {
 			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 				Ok(Self {
 					$($field: Readable::read(r)?),*
 				})
 			}
 		}
+	};
+	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+		impl_writeable_len_match!($struct, ==, { $({ $match, $length }),* }, { $($field),* });
 	}
 }
 
