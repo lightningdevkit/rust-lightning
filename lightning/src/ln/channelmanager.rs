@@ -588,6 +588,11 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 6;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
+/// Minimum CLTV difference between the current block height and received inbound payments.
+/// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
+/// this value.
+pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER;
+
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
 // LATENCY_GRACE_PERIOD_BLOCKS then we'll still have CLTV_CLAIM_BUFFER left to timeout it onchain,
@@ -3464,6 +3469,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`PaymentReceived`].
 	///
 	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
+	///
+	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
+	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
