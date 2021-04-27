@@ -9,10 +9,10 @@ jobs:
         platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
-                     # 1.30.0 is MSRV for Rust-Lightning
-                     1.30.0,
-                     # 1.34.2 is Debian stable
-                     1.34.2,
+                     # 1.36.0 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
+                     1.36.0,
+                     # 1.41.0 is Debian stable
+                     1.41.0,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
                      1.45.2]
         include:
@@ -47,7 +47,7 @@ jobs:
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo build --verbose  --color always -p lightning && cargo build --verbose  --color always -p lightning-invoice
+        run: cargo build --verbose  --color always -p lightning && cargo build --verbose  --color always -p lightning-invoice && cargo build --verbose  --color always -p lightning-persister
       - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
@@ -74,7 +74,7 @@ jobs:
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo test --verbose --color always  -p lightning && cargo test --verbose --color always  -p lightning-invoice
+        run: cargo test --verbose --color always  -p lightning && cargo test --verbose --color always  -p lightning-invoice && cargo build --verbose  --color always -p lightning-persister
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
