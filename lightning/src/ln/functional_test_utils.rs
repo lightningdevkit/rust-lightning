@@ -66,7 +66,7 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 		connect_blocks(node, conf_height - first_connect_height);
 	}
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: conf_height, bits: 42, nonce: 42 },
 		txdata: Vec::new(),
 	};
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
@@ -102,15 +102,16 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 		_ => false,
 	};
 
+	let height = node.best_block_info().1 + 1;
 	let mut block = Block {
-		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: height, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
 	assert!(depth >= 1);
-	for _ in 0..depth - 1 {
+	for i in 1..depth {
 		do_connect_block(node, &block, skip_intermediaries);
 		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
 	}
