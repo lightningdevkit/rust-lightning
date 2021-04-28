@@ -607,6 +607,20 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 	}
 }
 
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C, tb::True> {
+	/// Sets the `basic_mpp` feature as optional.
+	pub fn basic_mpp(mut self) -> Self {
+		self.tagged_fields = self.tagged_fields
+			.drain(..)
+			.map(|field| match field {
+				TaggedField::Features(f) => TaggedField::Features(f.set_basic_mpp_optional()),
+				_ => field,
+			})
+			.collect();
+		self
+	}
+}
+
 impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for

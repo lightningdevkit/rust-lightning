@@ -64,6 +64,7 @@ where
 		.payee_pub_key(our_node_pubkey)
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
+		.basic_mpp()
 		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_pico_btc(amt * 10);
