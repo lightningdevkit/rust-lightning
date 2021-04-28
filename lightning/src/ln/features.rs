@@ -646,11 +646,8 @@ impl<T: sealed::PaymentSecret> Features<T> {
 	pub(crate) fn requires_payment_secret(&self) -> bool {
 		<T as sealed::PaymentSecret>::requires_feature(&self.flags)
 	}
-	// Note that we never need to test this since what really matters is the invoice - iff the
-	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
-	// supports payment_secret).
-	#[allow(dead_code)]
-	pub(crate) fn supports_payment_secret(&self) -> bool {
+	/// Returns whether the `payment_secret` feature is supported.
+	pub fn supports_payment_secret(&self) -> bool {
 		<T as sealed::PaymentSecret>::supports_feature(&self.flags)
 	}
 }

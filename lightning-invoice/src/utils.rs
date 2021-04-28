@@ -6,7 +6,6 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY};
-use lightning::ln::features::InvoiceFeatures;
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
 use lightning::util::logger::Logger;
@@ -65,7 +64,6 @@ where
 		.payee_pub_key(our_node_pubkey)
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
-		.features(InvoiceFeatures::known())
 		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_pico_btc(amt * 10);
