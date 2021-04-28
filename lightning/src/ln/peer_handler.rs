@@ -233,7 +233,6 @@ enum InitSyncTracker{
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
-	outbound: bool,
 	their_node_id: Option<PublicKey>,
 	their_features: Option<InitFeatures>,
 
@@ -465,7 +464,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
 			channel_encryptor: peer_encryptor,
-			outbound: true,
 			their_node_id: None,
 			their_features: None,
 
@@ -502,7 +500,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		let mut peers = self.peers.lock().unwrap();
 		if peers.peers.insert(descriptor, Peer {
 			channel_encryptor: peer_encryptor,
-			outbound: false,
 			their_node_id: None,
 			their_features: None,
 
@@ -744,6 +741,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 									peer.pending_read_is_header = true;
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
+									let features = InitFeatures::known();
+									let resp = msgs::Init { features };
+									self.enqueue_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), &resp);
 								},
 								NextNoiseStep::NoiseComplete => {
 									if peer.pending_read_is_header {
@@ -852,12 +852,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				if !msg.features.supports_static_remote_key() {
 					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(peer.their_node_id.unwrap()));
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
-				}
-
-				if !peer.outbound {
-					let features = InitFeatures::known();
-					let resp = msgs::Init { features };
-					self.enqueue_message(peers_needing_send, peer, peer_descriptor.clone(), &resp);
 				}
 
 				self.message_handler.route_handler.sync_routing_table(&peer.their_node_id.unwrap(), &msg);
