@@ -34,10 +34,11 @@ use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 use bitcoin::secp256k1;
 
+use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
-use ln::channelmanager::{BestBlock, HTLCSource, PaymentPreimage, PaymentHash};
+use ln::channelmanager::{BestBlock, HTLCSource};
 use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 use chain;
 use chain::WatchedOutput;
@@ -3048,7 +3049,8 @@ mod tests {
 	use hex;
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::transaction::OutPoint;
-	use ln::channelmanager::{BestBlock, PaymentPreimage, PaymentHash};
+	use ln::{PaymentPreimage, PaymentHash};
+	use ln::channelmanager::BestBlock;
 	use ln::onchaintx::{OnchainTxHandler, InputDescriptors};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};

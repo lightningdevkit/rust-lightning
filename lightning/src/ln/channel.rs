@@ -21,10 +21,11 @@ use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
 
+use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmanager::{BestBlock, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{BestBlock, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -4824,7 +4825,8 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::hashes::hex::FromHex;
 	use hex;
-	use ln::channelmanager::{BestBlock, HTLCSource, PaymentPreimage, PaymentHash};
+	use ln::{PaymentPreimage, PaymentHash};
+	use ln::channelmanager::{BestBlock, HTLCSource};
 	use ln::channel::{Channel,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;

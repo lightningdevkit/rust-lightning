@@ -39,7 +39,7 @@ use std::io::Read;
 use util::events::MessageSendEventsProvider;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
-use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
@@ -854,7 +854,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 mod fuzzy_internal_msgs {
-	use ln::channelmanager::PaymentSecret;
+	use ln::PaymentSecret;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1813,9 +1813,9 @@ impl Writeable for GossipTimestampFilter {
 #[cfg(test)]
 mod tests {
 	use hex;
+	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use ln::msgs;
 	use ln::msgs::{ChannelFeatures, FinalOnionHopData, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use util::ser::{Writeable, Readable};
 
 	use bitcoin::hashes::hex::FromHex;

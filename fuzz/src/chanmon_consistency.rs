@@ -37,7 +37,8 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
-use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};

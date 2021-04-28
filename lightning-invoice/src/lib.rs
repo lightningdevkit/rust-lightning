@@ -24,8 +24,8 @@ extern crate secp256k1;
 use bech32::u5;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+use lightning::ln::PaymentSecret;
 use lightning::ln::features::InvoiceFeatures;
-use lightning::ln::channelmanager::PaymentSecret;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;

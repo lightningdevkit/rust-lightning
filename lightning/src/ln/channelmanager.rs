@@ -18,8 +18,6 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 //!
 
-use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
@@ -45,6 +43,7 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitor
 use chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
+use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
@@ -195,46 +194,6 @@ pub(super) enum HTLCFailReason {
 	Reason {
 		failure_code: u16,
 		data: Vec<u8>,
-	}
-}
-
-/// payment_hash type, use to cross-lock hop
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentHash(pub [u8;32]);
-/// payment_preimage type, use to route payment between hop
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentPreimage(pub [u8;32]);
-/// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentSecret(pub [u8;32]);
-
-impl FromBase32 for PaymentSecret {
-	type Err = bech32::Error;
-
-	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
-		if field_data.len() != 52 {
-			return Err(bech32::Error::InvalidLength)
-		} else {
-			let data_bytes = Vec::<u8>::from_base32(field_data)?;
-			let mut payment_secret = [0; 32];
-			payment_secret.copy_from_slice(&data_bytes);
-			Ok(PaymentSecret(payment_secret))
-		}
-	}
-}
-
-impl ToBase32 for PaymentSecret {
-	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
-		(&self.0[..]).write_base32(writer)
-	}
-}
-
-impl Base32Len for PaymentSecret {
-	fn base32_len(&self) -> usize {
-		52
 	}
 }
 

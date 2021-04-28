@@ -32,7 +32,8 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemorySigner, KeysInterface};
-use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::msgs::DecodeError;
 use lightning::routing::router::get_route;

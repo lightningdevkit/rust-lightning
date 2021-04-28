@@ -5,7 +5,7 @@ extern crate secp256k1;
 
 use bitcoin_hashes::hex::FromHex;
 use bitcoin_hashes::sha256;
-use lightning::ln::channelmanager::PaymentSecret;
+use lightning::ln::PaymentSecret;
 use lightning_invoice::*;
 use secp256k1::Secp256k1;
 use secp256k1::key::SecretKey;

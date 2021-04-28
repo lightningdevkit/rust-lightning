@@ -10,7 +10,7 @@ use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
-use lightning::ln::channelmanager::PaymentSecret;
+use lightning::ln::PaymentSecret;
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
 

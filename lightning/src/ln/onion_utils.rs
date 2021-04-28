@@ -7,7 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::channelmanager::{PaymentHash, PaymentSecret, HTLCSource};
+use ln::{PaymentHash, PaymentSecret};
+use ln::channelmanager::HTLCSource;
 use ln::msgs;
 use routing::router::RouteHop;
 use util::byte_utils;
@@ -477,7 +478,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 #[cfg(test)]
 mod tests {
-	use ln::channelmanager::PaymentHash;
+	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::router::{Route, RouteHop};
 	use ln::msgs;
