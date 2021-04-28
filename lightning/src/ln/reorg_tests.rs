@@ -56,10 +56,10 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
-	let (our_payment_preimage, our_payment_hash) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Provide preimage to node 2 by claiming payment
-	nodes[2].node.claim_funds(our_payment_preimage, &None, 1000000);
+	nodes[2].node.claim_funds(our_payment_preimage);
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
@@ -301,7 +301,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	// Now check that we can create a new channel
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	send_payment(&nodes[0], &[&nodes[1]], 8000000, 8_000_000);
+	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
 
 #[test]
@@ -358,8 +358,8 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
 	// Provide node A with both preimage
-	nodes[0].node.claim_funds(payment_preimage_1, &None, 3_000_000);
-	nodes[0].node.claim_funds(payment_preimage_2, &None, 3_000_000);
+	nodes[0].node.claim_funds(payment_preimage_1);
+	nodes[0].node.claim_funds(payment_preimage_2);
 	check_added_monitors!(nodes[0], 2);
 	nodes[0].node.get_and_clear_pending_events();
 	nodes[0].node.get_and_clear_pending_msg_events();

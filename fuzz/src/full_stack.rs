@@ -371,7 +371,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger)));
 
 	let mut should_forward = false;
-	let mut payments_received: Vec<(PaymentHash, Option<PaymentSecret>, u64)> = Vec::new();
+	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
 	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
@@ -476,23 +476,32 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			8 => {
-				for (payment, payment_secret, amt) in payments_received.drain(..) {
+				for payment in payments_received.drain(..) {
 					// SHA256 is defined as XOR of all input bytes placed in the first byte, and 0s
 					// for the remaining bytes. Thus, if not all remaining bytes are 0s we cannot
 					// fulfill this HTLC, but if they are, we can just take the first byte and
 					// place that anywhere in our preimage.
 					if &payment.0[1..] != &[0; 31] {
-						channelmanager.fail_htlc_backwards(&payment, &payment_secret);
+						channelmanager.fail_htlc_backwards(&payment);
 					} else {
 						let mut payment_preimage = PaymentPreimage([0; 32]);
 						payment_preimage.0[0] = payment.0[0];
-						channelmanager.claim_funds(payment_preimage, &payment_secret, amt);
+						channelmanager.claim_funds(payment_preimage);
 					}
 				}
 			},
+			16 => {
+				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
+				let mut sha = Sha256::engine();
+				sha.input(&payment_preimage.0[..]);
+				let payment_hash = PaymentHash(Sha256::from_engine(sha).into_inner());
+				// Note that this may fail - our hashes may collide and we'll end up trying to
+				// double-register the same payment_hash.
+				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, 0);
+			},
 			9 => {
-				for (payment, payment_secret, _) in payments_received.drain(..) {
-					channelmanager.fail_htlc_backwards(&payment, &payment_secret);
+				for payment in payments_received.drain(..) {
+					channelmanager.fail_htlc_backwards(&payment);
 				}
 			},
 			10 => {
@@ -571,9 +580,9 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
 				},
-				Event::PaymentReceived { payment_hash, payment_secret, amt } => {
+				Event::PaymentReceived { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
-					payments_received.push((payment_hash, payment_secret, amt));
+					payments_received.push(payment_hash);
 				},
 				Event::PaymentSent {..} => {},
 				Event::PaymentFailed {..} => {},

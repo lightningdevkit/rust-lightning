@@ -96,7 +96,7 @@ enum PendingHTLCRouting {
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
 	Receive {
-		payment_data: Option<msgs::FinalOnionHopData>,
+		payment_data: msgs::FinalOnionHopData,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
 }
@@ -156,11 +156,10 @@ pub(crate) struct HTLCPreviousHopData {
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	value: u64,
-	/// Filled in when the HTLC was received with a payment_secret packet, which contains a
-	/// total_msat (which may differ from value if this is a Multi-Path Payment) and a
+	/// Contains a total_msat (which may differ from value if this is a Multi-Path Payment) and a
 	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
 	/// are part of the same payment.
-	payment_data: Option<msgs::FinalOnionHopData>,
+	payment_data: msgs::FinalOnionHopData,
 	cltv_expiry: u32,
 }
 
@@ -327,12 +326,11 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
-	/// (payment_hash, payment_secret) -> Vec<HTLCs> for tracking HTLCs that
-	/// were to us and can be failed/claimed by the user
+	/// Map from payment hash to any HTLCs which are to us and can be failed/claimed by the user.
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<(PaymentHash, Option<PaymentSecret>), Vec<ClaimableHTLC>>,
+	claimable_htlcs: HashMap<PaymentHash, Vec<ClaimableHTLC>>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -351,6 +349,24 @@ enum BackgroundEvent {
 /// the latest Init features we heard from the peer.
 struct PeerState {
 	latest_features: InitFeatures,
+}
+
+/// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
+/// actually ours and not some duplicate HTLC sent to us by a node along the route.
+///
+/// For users who don't want to bother doing their own payment preimage storage, we also store that
+/// here.
+struct PendingInboundPayment {
+	/// The payment secret that the sender must use for us to accept this payment
+	payment_secret: PaymentSecret,
+	/// Time at which this HTLC expires - blocks with a header time above this value will result in
+	/// this payment being removed.
+	expiry_time: u64,
+	/// Arbitrary identifier the user specifies (or not)
+	user_payment_id: u64,
+	// Other required attributes of the payment, optionally enforced:
+	payment_preimage: Option<PaymentPreimage>,
+	min_value_msat: Option<u64>,
 }
 
 /// SimpleArcChannelManager is useful when you need a ChannelManager with a static lifetime, e.g.
@@ -431,12 +447,25 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	pub(super) channel_state: Mutex<ChannelHolder<Signer>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_state: Mutex<ChannelHolder<Signer>>,
+
+	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
+	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
+	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
+	/// after we generate a PaymentReceived upon receipt of all MPP parts or when they time out.
+	/// Locked *after* channel_state.
+	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
+
 	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicUsize,
+
+	/// The highest block timestamp we've seen, which is usually a good guess at the current time.
+	/// Assuming most miners are generating blocks with reasonable timestamps, this shouldn't be
+	/// very far in the past, and can only ever be up to two hours in the future.
+	highest_seen_timestamp: AtomicUsize,
 
 	/// The bulk of our storage will eventually be here (channels and message queues and the like).
 	/// If we are connected to a peer we always at least have an entry here, even if no channels
@@ -558,6 +587,11 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 // CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
 pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 6;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
+
+/// Minimum CLTV difference between the current block height and received inbound payments.
+/// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
+/// this value.
+pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER;
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
@@ -853,11 +887,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
+			pending_inbound_payments: Mutex::new(HashMap::new()),
+
 			our_network_key: keys_manager.get_node_secret(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()),
 			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(0),
+			highest_seen_timestamp: AtomicUsize::new(0),
 
 			per_peer_state: RwLock::new(HashMap::new()),
 
@@ -1215,6 +1252,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msgs::OnionHopDataFormat::FinalNode { payment_data } => payment_data,
 				};
 
+				if payment_data.is_none() {
+					return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
+				}
+
 				// Note that we could obviously respond immediately with an update_fulfill_htlc
 				// message, however that would leak that we are the recipient of this payment, so
 				// instead we stay symmetric with the forwarding case, only responding (after a
@@ -1222,7 +1263,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
 					routing: PendingHTLCRouting::Receive {
-						payment_data,
+						payment_data: payment_data.unwrap(),
 						incoming_cltv_expiry: msg.cltv_expiry,
 					},
 					payment_hash: msg.payment_hash.clone(),
@@ -1916,61 +1957,95 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
 									incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
-								let prev_hop = HTLCPreviousHopData {
-									short_channel_id: prev_short_channel_id,
-									outpoint: prev_funding_outpoint,
-									htlc_id: prev_htlc_id,
-									incoming_packet_shared_secret: incoming_shared_secret,
-								};
-
-								let mut total_value = 0;
-								let payment_secret_opt =
-									if let &Some(ref data) = &payment_data { Some(data.payment_secret.clone()) } else { None };
-								let htlcs = channel_state.claimable_htlcs.entry((payment_hash, payment_secret_opt))
-									.or_insert(Vec::new());
-								htlcs.push(ClaimableHTLC {
-									prev_hop,
+								let claimable_htlc = ClaimableHTLC {
+									prev_hop: HTLCPreviousHopData {
+										short_channel_id: prev_short_channel_id,
+										outpoint: prev_funding_outpoint,
+										htlc_id: prev_htlc_id,
+										incoming_packet_shared_secret: incoming_shared_secret,
+									},
 									value: amt_to_forward,
 									payment_data: payment_data.clone(),
 									cltv_expiry: incoming_cltv_expiry,
-								});
-								if let &Some(ref data) = &payment_data {
-									for htlc in htlcs.iter() {
-										total_value += htlc.value;
-										if htlc.payment_data.as_ref().unwrap().total_msat != data.total_msat {
-											total_value = msgs::MAX_VALUE_MSAT;
-										}
-										if total_value >= msgs::MAX_VALUE_MSAT { break; }
+								};
+
+								macro_rules! fail_htlc {
+									($htlc: expr) => {
+										let mut htlc_msat_height_data = byte_utils::be64_to_array($htlc.value).to_vec();
+										htlc_msat_height_data.extend_from_slice(
+											&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
+										);
+										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
+												short_channel_id: $htlc.prev_hop.short_channel_id,
+												outpoint: prev_funding_outpoint,
+												htlc_id: $htlc.prev_hop.htlc_id,
+												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
+											}), payment_hash,
+											HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
+										));
 									}
-									if total_value >= msgs::MAX_VALUE_MSAT || total_value > data.total_msat  {
-										for htlc in htlcs.iter() {
-											let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-											htlc_msat_height_data.extend_from_slice(
-												&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
-											);
-											failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
-													short_channel_id: htlc.prev_hop.short_channel_id,
-													outpoint: prev_funding_outpoint,
-													htlc_id: htlc.prev_hop.htlc_id,
-													incoming_packet_shared_secret: htlc.prev_hop.incoming_packet_shared_secret,
-												}), payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
-											));
-										}
-									} else if total_value == data.total_msat {
-										new_events.push(events::Event::PaymentReceived {
-											payment_hash,
-											payment_secret: Some(data.payment_secret),
-											amt: total_value,
-										});
-									}
-								} else {
-									new_events.push(events::Event::PaymentReceived {
-										payment_hash,
-										payment_secret: None,
-										amt: amt_to_forward,
-									});
 								}
+
+								// Check that the payment hash and secret are known. Note that we
+								// MUST take care to handle the "unknown payment hash" and
+								// "incorrect payment secret" cases here identically or we'd expose
+								// that we are the ultimate recipient of the given payment hash.
+								// Further, we must not expose whether we have any other HTLCs
+								// associated with the same payment_hash pending or not.
+								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+								match payment_secrets.entry(payment_hash) {
+									hash_map::Entry::Vacant(_) => {
+										log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
+										fail_htlc!(claimable_htlc);
+									},
+									hash_map::Entry::Occupied(inbound_payment) => {
+										if inbound_payment.get().payment_secret != payment_data.payment_secret {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
+											fail_htlc!(claimable_htlc);
+										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
+												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
+											fail_htlc!(claimable_htlc);
+										} else {
+											let mut total_value = 0;
+											let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
+												.or_insert(Vec::new());
+											htlcs.push(claimable_htlc);
+											for htlc in htlcs.iter() {
+												total_value += htlc.value;
+												if htlc.payment_data.total_msat != payment_data.total_msat {
+													log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
+														log_bytes!(payment_hash.0), payment_data.total_msat, htlc.payment_data.total_msat);
+													total_value = msgs::MAX_VALUE_MSAT;
+												}
+												if total_value >= msgs::MAX_VALUE_MSAT { break; }
+											}
+											if total_value >= msgs::MAX_VALUE_MSAT || total_value > payment_data.total_msat {
+												log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
+													log_bytes!(payment_hash.0), total_value, payment_data.total_msat);
+												for htlc in htlcs.iter() {
+													fail_htlc!(htlc);
+												}
+											} else if total_value == payment_data.total_msat {
+												new_events.push(events::Event::PaymentReceived {
+													payment_hash,
+													payment_preimage: inbound_payment.get().payment_preimage,
+													payment_secret: payment_data.payment_secret,
+													amt: total_value,
+													user_payment_id: inbound_payment.get().user_payment_id,
+												});
+												// Only ever generate at most one PaymentReceived
+												// per registered payment_hash, even if it isn't
+												// claimed.
+												inbound_payment.remove_entry();
+											} else {
+												// Nothing to do - we haven't reached the total
+												// payment value yet, wait until we receive more
+												// MPP parts.
+											}
+										}
+									},
+								};
 							},
 							HTLCForwardInfo::AddHTLC { .. } => {
 								panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -2056,11 +2131,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// along the path (including in our own channel on which we received it).
 	/// Returns false if no payment was found to fail backwards, true if the process of failing the
 	/// HTLC backwards has been started.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>) -> bool {
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(*payment_hash, *payment_secret));
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some(mut sources) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
@@ -2225,24 +2300,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// generating message events for the net layer to claim the payment, if possible. Thus, you
 	/// should probably kick the net layer to go send messages if this returns true!
 	///
-	/// You must specify the expected amounts for this HTLC, and we will only claim HTLCs
-	/// available within a few percent of the expected amount. This is critical for several
-	/// reasons : a) it avoids providing senders with `proof-of-payment` (in the form of the
-	/// payment_preimage without having provided the full value and b) it avoids certain
-	/// privacy-breaking recipient-probing attacks which may reveal payment activity to
-	/// motivated attackers.
-	///
-	/// Note that the privacy concerns in (b) are not relevant in payments with a payment_secret
-	/// set. Thus, for such payments we will claim any payments which do not under-pay.
+	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
+	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentReceived`
+	/// event matches your expectation. If you fail to do so and call this method, you may provide
+	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
 	/// May panic if called except in response to a PaymentReceived event.
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, payment_secret: &Option<PaymentSecret>, expected_amount: u64) -> bool {
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
-		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&(payment_hash, *payment_secret));
+		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some(mut sources) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -2257,27 +2330,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// we got all the HTLCs and then a channel closed while we were waiting for the user to
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
-
-			let (is_mpp, mut valid_mpp) = if let &Some(ref data) = &sources[0].payment_data {
-				assert!(payment_secret.is_some());
-				(true, data.total_msat >= expected_amount)
-			} else {
-				assert!(payment_secret.is_none());
-				(false, false)
-			};
-
+			let mut valid_mpp = true;
 			for htlc in sources.iter() {
-				if !is_mpp || !valid_mpp { break; }
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
+					break;
 				}
 			}
 
 			let mut errs = Vec::new();
 			let mut claimed_any_htlcs = false;
 			for htlc in sources.drain(..) {
-				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				if (is_mpp && !valid_mpp) || (!is_mpp && (htlc.value < expected_amount || htlc.value > expected_amount * 2)) {
+				if !valid_mpp {
+					if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
 							self.best_block.read().unwrap().height()));
@@ -2294,10 +2359,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								claimed_any_htlcs = true;
 							} else { errs.push(e); }
 						},
-						Err(None) if is_mpp => unreachable!("We already checked for channel existence, we can't fail here!"),
-						Err(None) => {
-							log_warn!(self.logger, "Channel we expected to claim an HTLC from was closed.");
-						},
+						Err(None) => unreachable!("We already checked for channel existence, we can't fail here!"),
 						Ok(()) => claimed_any_htlcs = true,
 					}
 				}
@@ -3321,6 +3383,102 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.finish_force_close_channel(failure);
 		}
 	}
+
+	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
+		assert!(invoice_expiry_delta_secs <= 60*60*24*365); // Sadly bitcoin timestamps are u32s, so panic before 2106
+
+		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
+
+		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		match payment_secrets.entry(payment_hash) {
+			hash_map::Entry::Vacant(e) => {
+				e.insert(PendingInboundPayment {
+					payment_secret, min_value_msat, user_payment_id, payment_preimage,
+					// We assume that highest_seen_timestamp is pretty close to the current time -
+					// its updated when we receive a new block with the maximum time we've seen in
+					// a header. It should never be more than two hours in the future.
+					// Thus, we add two hours here as a buffer to ensure we absolutely
+					// never fail a payment too early.
+					// Note that we assume that received blocks have reasonably up-to-date
+					// timestamps.
+					expiry_time: self.highest_seen_timestamp.load(Ordering::Acquire) as u64 + invoice_expiry_delta_secs as u64 + 7200,
+				});
+			},
+			hash_map::Entry::Occupied(_) => return Err(APIError::APIMisuseError { err: "Duplicate payment hash".to_owned() }),
+		}
+		Ok(payment_secret)
+	}
+
+	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
+	/// to pay us.
+	///
+	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
+	/// [`PaymentHash`] and [`PaymentPreimage`] for you, returning the first and storing the second.
+	///
+	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentReceived`], which
+	/// will have the [`PaymentReceived::payment_preimage`] field filled in. That should then be
+	/// passed directly to [`claim_funds`].
+	///
+	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
+	///
+	/// [`claim_funds`]: Self::claim_funds
+	/// [`PaymentReceived`]: events::Event::PaymentReceived
+	/// [`PaymentReceived::payment_preimage`]: events::Event::PaymentReceived::payment_preimage
+	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> (PaymentHash, PaymentSecret) {
+		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+
+		(payment_hash,
+			self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs, user_payment_id)
+				.expect("RNG Generated Duplicate PaymentHash"))
+	}
+
+	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
+	/// stored external to LDK.
+	///
+	/// A [`PaymentReceived`] event will only be generated if the [`PaymentSecret`] matches a
+	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
+	/// the `min_value_msat` provided here, if one is provided.
+	///
+	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
+	/// method may return an Err if another payment with the same payment_hash is still pending.
+	///
+	/// `user_payment_id` will be provided back in [`PaymentReceived::user_payment_id`] events to
+	/// allow tracking of which events correspond with which calls to this and
+	/// [`create_inbound_payment`]. `user_payment_id` has no meaning inside of LDK, it is simply
+	/// copied to events and otherwise ignored. It may be used to correlate PaymentReceived events
+	/// with invoice metadata stored elsewhere.
+	///
+	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
+	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
+	/// before a [`PaymentReceived`] event will be generated, ensuring that we do not provide the
+	/// sender "proof-of-payment" unless they have paid the required amount.
+	///
+	/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+	/// in excess of the current time. This should roughly match the expiry time set in the invoice.
+	/// After this many seconds, we will remove the inbound payment, resulting in any attempts to
+	/// pay the invoice failing. The BOLT spec suggests 7,200 secs as a default validity time for
+	/// invoices when no timeout is set.
+	///
+	/// Note that we use block header time to time-out pending inbound payments (with some margin
+	/// to compensate for the inaccuracy of block header timestamps). Thus, in practice we will
+	/// accept a payment and generate a [`PaymentReceived`] event for some time after the expiry.
+	/// If you need exact expiry semantics, you should enforce them upon receipt of
+	/// [`PaymentReceived`].
+	///
+	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
+	///
+	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
+	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	/// [`PaymentReceived`]: events::Event::PaymentReceived
+	/// [`PaymentReceived::user_payment_id`]: events::Event::PaymentReceived::user_payment_id
+	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
+		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
@@ -3433,18 +3591,28 @@ where
 
 		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time));
 
-		loop {
-			// Update last_node_announcement_serial to be the max of its current value and the
-			// block timestamp. This should keep us close to the current time without relying on
-			// having an explicit local time source.
-			// Just in case we end up in a race, we loop until we either successfully update
-			// last_node_announcement_serial or decide we don't need to.
-			let old_serial = self.last_node_announcement_serial.load(Ordering::Acquire);
-			if old_serial >= header.time as usize { break; }
-			if self.last_node_announcement_serial.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-				break;
+		macro_rules! max_time {
+			($timestamp: expr) => {
+				loop {
+					// Update $timestamp to be the max of its current value and the block
+					// timestamp. This should keep us close to the current time without relying on
+					// having an explicit local time source.
+					// Just in case we end up in a race, we loop until we either successfully
+					// update $timestamp or decide we don't need to.
+					let old_serial = $timestamp.load(Ordering::Acquire);
+					if old_serial >= header.time as usize { break; }
+					if $timestamp.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+						break;
+					}
+				}
 			}
 		}
+		max_time!(self.last_node_announcement_serial);
+		max_time!(self.highest_seen_timestamp);
+		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+		payment_secrets.retain(|_, inbound_payment| {
+			inbound_payment.expiry_time > header.time as u64
+		});
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
@@ -3542,7 +3710,7 @@ where
 			});
 
 			if let Some(height) = height_opt {
-				channel_state.claimable_htlcs.retain(|&(ref payment_hash, _), htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
 					htlcs.retain(|htlc| {
 						// If height is approaching the number of blocks we think it takes us to get
 						// our commitment transaction confirmed before the HTLC expires, plus the
@@ -3916,7 +4084,8 @@ impl Writeable for PendingHTLCInfo {
 			},
 			&PendingHTLCRouting::Receive { ref payment_data, ref incoming_cltv_expiry } => {
 				1u8.write(writer)?;
-				payment_data.write(writer)?;
+				payment_data.payment_secret.write(writer)?;
+				payment_data.total_msat.write(writer)?;
 				incoming_cltv_expiry.write(writer)?;
 			},
 		}
@@ -3937,7 +4106,10 @@ impl Readable for PendingHTLCInfo {
 					short_channel_id: Readable::read(reader)?,
 				},
 				1u8 => PendingHTLCRouting::Receive {
-					payment_data: Readable::read(reader)?,
+					payment_data: msgs::FinalOnionHopData {
+						payment_secret: Readable::read(reader)?,
+						total_msat: Readable::read(reader)?,
+					},
 					incoming_cltv_expiry: Readable::read(reader)?,
 				},
 				_ => return Err(DecodeError::InvalidValue),
@@ -4009,12 +4181,29 @@ impl_writeable!(HTLCPreviousHopData, 0, {
 	incoming_packet_shared_secret
 });
 
-impl_writeable!(ClaimableHTLC, 0, {
-	prev_hop,
-	value,
-	payment_data,
-	cltv_expiry
-});
+impl Writeable for ClaimableHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		self.prev_hop.write(writer)?;
+		self.value.write(writer)?;
+		self.payment_data.payment_secret.write(writer)?;
+		self.payment_data.total_msat.write(writer)?;
+		self.cltv_expiry.write(writer)
+	}
+}
+
+impl Readable for ClaimableHTLC {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(ClaimableHTLC {
+			prev_hop: Readable::read(reader)?,
+			value: Readable::read(reader)?,
+			payment_data: msgs::FinalOnionHopData {
+				payment_secret: Readable::read(reader)?,
+				total_msat: Readable::read(reader)?,
+			},
+			cltv_expiry: Readable::read(reader)?,
+		})
+	}
+}
 
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
@@ -4116,6 +4305,14 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
+impl_writeable!(PendingInboundPayment, 0, {
+	payment_secret,
+	expiry_time,
+	user_payment_id,
+	payment_preimage,
+	min_value_msat
+});
+
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
@@ -4195,6 +4392,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		}
 
 		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
+
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
+		(pending_inbound_payments.len() as u64).write(writer)?;
+		for (hash, pending_payment) in pending_inbound_payments.iter() {
+			hash.write(writer)?;
+			pending_payment.write(writer)?;
+		}
 
 		Ok(())
 	}
@@ -4425,6 +4630,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		}
 
 		let last_node_announcement_serial: u32 = Readable::read(reader)?;
+		let highest_seen_timestamp: u32 = Readable::read(reader)?;
+
+		let pending_inbound_payment_count: u64 = Readable::read(reader)?;
+		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = HashMap::with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
+		for _ in 0..pending_inbound_payment_count {
+			if pending_inbound_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
@@ -4444,11 +4658,14 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
+			pending_inbound_payments: Mutex::new(pending_inbound_payments),
+
 			our_network_key: args.keys_manager.get_node_secret(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret()),
 			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
+			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
 			per_peer_state: RwLock::new(per_peer_state),
 
@@ -4531,7 +4748,7 @@ pub mod bench {
 	use chain::channelmonitor::Persist;
 	use chain::keysinterface::{KeysManager, InMemorySigner};
 	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
-	use ln::features::InitFeatures;
+	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::network_graph::NetworkGraph;
@@ -4625,15 +4842,20 @@ pub mod bench {
 
 		let dummy_graph = NetworkGraph::new(genesis_hash);
 
+		let mut payment_count: u64 = 0;
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
-				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), None, Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
+				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), Some(InvoiceFeatures::known()),
+					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
 
-				let payment_preimage = PaymentPreimage([0; 32]);
+				let mut payment_preimage = PaymentPreimage([0; 32]);
+				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
+				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, 0).unwrap();
 
-				$node_a.send_payment(&route, payment_hash, &None).unwrap();
+				$node_a.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);
@@ -4643,8 +4865,8 @@ pub mod bench {
 				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
-				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
-				assert!($node_b.claim_funds(payment_preimage, &None, 10_000));
+				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
+				assert!($node_b.claim_funds(payment_preimage));
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {

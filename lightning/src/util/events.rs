@@ -61,20 +61,37 @@ pub enum Event {
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
+		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
+		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
+		/// [`ChannelManager::claim_funds`].
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
 		/// The "payment secret". This authenticates the sender to the recipient, preventing a
 		/// number of deanonymization attacks during the routing process.
-		/// As nodes upgrade, the invoices you provide should likely migrate to setting the
-		/// payment_secret feature to required, at which point you should fail_backwards any HTLCs
-		/// which have a None here.
-		/// Until then, however, values of None should be ignored, and only incorrect Some values
-		/// should result in an HTLC fail_backwards.
-		/// Note that, in any case, this value must be passed as-is to any fail or claim calls as
-		/// the HTLC index includes this value.
-		payment_secret: Option<PaymentSecret>,
+		/// It is provided here for your reference, however its accuracy is enforced directly by
+		/// [`ChannelManager`] using the values you previously provided to
+		/// [`ChannelManager::create_inbound_payment`] or
+		/// [`ChannelManager::create_inbound_payment_for_hash`].
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		payment_secret: PaymentSecret,
 		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).
 		amt: u64,
+		/// This is the `user_payment_id` which was provided to
+		/// [`ChannelManager::create_inbound_payment_for_hash`] or
+		/// [`ChannelManager::create_inbound_payment`]. It has no meaning inside of LDK and is
+		/// simply copied here. It may be used to correlate PaymentReceived events with invoice
+		/// metadata stored elsewhere.
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		user_payment_id: u64,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -129,11 +146,13 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref payment_secret, ref amt } => {
+			&Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, ref amt, ref user_payment_id } => {
 				1u8.write(writer)?;
 				payment_hash.write(writer)?;
+				payment_preimage.write(writer)?;
 				payment_secret.write(writer)?;
 				amt.write(writer)?;
+				user_payment_id.write(writer)?;
 			},
 			&Event::PaymentSent { ref payment_preimage } => {
 				2u8.write(writer)?;
@@ -175,8 +194,10 @@ impl MaybeReadable for Event {
 			0u8 => Ok(None),
 			1u8 => Ok(Some(Event::PaymentReceived {
 					payment_hash: Readable::read(reader)?,
+					payment_preimage: Readable::read(reader)?,
 					payment_secret: Readable::read(reader)?,
 					amt: Readable::read(reader)?,
+					user_payment_id: Readable::read(reader)?,
 				})),
 			2u8 => Ok(Some(Event::PaymentSent {
 					payment_preimage: Readable::read(reader)?,
