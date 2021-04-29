@@ -151,6 +151,8 @@ pub fn check_platform() {
 ///  * `D`: exactly one `Description` or `DescriptionHash`
 ///  * `H`: exactly one `PaymentHash`
 ///  * `T`: the timestamp is set
+///
+/// (C-not exported) as we likely need to manually select one set of boolean type parameters.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool> {
 	currency: Currency,
@@ -178,6 +180,9 @@ pub struct Invoice {
 
 /// Represents the description of an invoice which has to be either a directly included string or
 /// a hash of a description provided out of band.
+///
+/// (C-not exported) As we don't have a good way to map the reference lifetimes making this
+/// practically impossible to use safely in languages like C.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum InvoiceDescription<'f> {
 	/// Reference to the directly supplied description in the invoice
@@ -207,7 +212,7 @@ pub struct SignedRawInvoice {
 	hash: [u8; 32],
 
 	/// signature of the payment request
-	signature: Signature,
+	signature: InvoiceSignature,
 }
 
 /// Represents an syntactically correct Invoice for a payment on the lightning network,
@@ -225,6 +230,8 @@ pub struct RawInvoice {
 }
 
 /// Data of the `RawInvoice` that is encoded in the human readable part
+///
+/// (C-not exported) As we don't yet support Option<Enum>
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
@@ -283,6 +290,9 @@ impl SiPrefix {
 
 	/// Returns all enum variants of `SiPrefix` sorted in descending order of their associated
 	/// multiplier.
+	///
+	/// (C-not exported) As we don't yet support a slice of enums, and also because this function
+	/// isn't the most critical to expose.
 	pub fn values_desc() -> &'static [SiPrefix] {
 		use SiPrefix::*;
 		static VALUES: [SiPrefix; 4] = [Milli, Micro, Nano, Pico];
@@ -381,7 +391,7 @@ pub enum Fallback {
 
 /// Recoverable signature
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Signature(pub RecoverableSignature);
+pub struct InvoiceSignature(pub RecoverableSignature);
 
 /// Private routing information
 ///
@@ -630,7 +640,7 @@ impl SignedRawInvoice {
 	///  1. raw invoice
 	///  2. hash of the raw invoice
 	///  3. signature
-	pub fn into_parts(self) -> (RawInvoice, [u8; 32], Signature) {
+	pub fn into_parts(self) -> (RawInvoice, [u8; 32], InvoiceSignature) {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
@@ -644,8 +654,8 @@ impl SignedRawInvoice {
 		&self.hash
 	}
 
-	/// Signature for the invoice.
-	pub fn signature(&self) -> &Signature {
+	/// InvoiceSignature for the invoice.
+	pub fn signature(&self) -> &InvoiceSignature {
 		&self.signature
 	}
 
@@ -760,6 +770,9 @@ impl RawInvoice {
 	/// Signs the invoice using the supplied `sign_function`. This function MAY fail with an error
 	/// of type `E`. Since the signature of a `SignedRawInvoice` is not required to be valid there
 	/// are no constraints regarding the validity of the produced signature.
+	///
+	/// (C-not exported) As we don't currently support passing function pointers into methods
+	/// explicitly.
 	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawInvoice, E>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
@@ -771,11 +784,13 @@ impl RawInvoice {
 		Ok(SignedRawInvoice {
 			raw_invoice: self,
 			hash: raw_hash,
-			signature: Signature(signature),
+			signature: InvoiceSignature(signature),
 		})
 	}
 
 	/// Returns an iterator over all tagged fields with known semantics.
+	///
+	/// (C-not exported) As there is not yet a manual mapping for a FilterMap
 	pub fn known_tagged_fields(&self)
 		-> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>>
 	{
@@ -824,6 +839,7 @@ impl RawInvoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
 	}
 
+	/// (C-not exported) as we don't support Vec<&NonOpaqueType>
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
 		self.known_tagged_fields().filter_map(|tf| match tf {
 			&TaggedField::Fallback(ref f) => Some(f),
@@ -981,6 +997,8 @@ impl Invoice {
 	}
 
 	/// Returns an iterator over all tagged fields of this Invoice.
+	///
+	/// (C-not exported) As there is not yet a manual mapping for a FilterMap
 	pub fn tagged_fields(&self)
 		-> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
 		self.signed_invoice.raw_invoice().known_tagged_fields()
@@ -992,6 +1010,8 @@ impl Invoice {
 	}
 
 	/// Return the description or a hash of it for longer ones
+	///
+	/// (C-not exported) because we don't yet export InvoiceDescription
 	pub fn description(&self) -> InvoiceDescription {
 		if let Some(ref direct) = self.signed_invoice.description() {
 			return InvoiceDescription::Direct(direct);
@@ -1029,11 +1049,13 @@ impl Invoice {
 	}
 
 	/// Returns the invoice's `min_cltv_expiry` time if present
-	pub fn min_final_cltv_expiry(&self) -> Option<&u64> {
-		self.signed_invoice.min_final_cltv_expiry().map(|x| &x.0)
+	pub fn min_final_cltv_expiry(&self) -> Option<u64> {
+		self.signed_invoice.min_final_cltv_expiry().map(|x| x.0)
 	}
 
 	/// Returns a list of all fallback addresses
+	///
+	/// (C-not exported) as we don't support Vec<&NonOpaqueType>
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
 		self.signed_invoice.fallbacks()
 	}
@@ -1192,7 +1214,7 @@ impl Deref for RouteHint {
 	}
 }
 
-impl Deref for Signature {
+impl Deref for InvoiceSignature {
 	type Target = RecoverableSignature;
 
 	fn deref(&self) -> &RecoverableSignature {
@@ -1277,6 +1299,8 @@ impl std::error::Error for SemanticError { }
 
 /// When signing using a fallible method either an user-supplied `SignError` or a `CreationError`
 /// may occur.
+///
+/// (C-not exported) As we don't support unbounded generics
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum SignOrCreationError<S> {
 	/// An error occurred during signing
@@ -1354,7 +1378,7 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 		use secp256k1::key::{SecretKey, PublicKey};
-		use {SignedRawInvoice, Signature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		let invoice = SignedRawInvoice {
@@ -1383,7 +1407,7 @@ mod test {
 				0x7b, 0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7,
 				0x83, 0x5d, 0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9
 			],
-			signature: Signature(RecoverableSignature::from_compact(
+			signature: InvoiceSignature(RecoverableSignature::from_compact(
 				& [
 					0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
 					0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43,
@@ -1591,7 +1615,7 @@ mod test {
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
-		assert_eq!(invoice.min_final_cltv_expiry(), Some(&144));
+		assert_eq!(invoice.min_final_cltv_expiry(), Some(144));
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
 		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
 		assert_eq!(

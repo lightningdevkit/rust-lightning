@@ -144,7 +144,6 @@ where C::Target: chain::Filter,
 impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
-	ChannelSigner: Sign,
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
@@ -172,7 +171,6 @@ where
 impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
-	ChannelSigner: Sign,
 	C::Target: chain::Filter,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
