@@ -48,6 +48,7 @@ use utils::test_logger;
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
@@ -312,6 +313,10 @@ impl KeysInterface for KeyProvider {
 
 	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
 		EnforcingSigner::read(&mut std::io::Cursor::new(data))
+	}
+
+	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		unreachable!()
 	}
 }
 

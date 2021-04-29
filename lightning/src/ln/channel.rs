@@ -4843,6 +4843,7 @@ mod tests {
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::recovery::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
@@ -4888,6 +4889,7 @@ mod tests {
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
+		fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

@@ -32,6 +32,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 
 use regex;
 
@@ -75,6 +76,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		EnforcingSigner::read(&mut std::io::Cursor::new(reader))
 	}
+	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -482,6 +484,10 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 			revoked_commitment,
 			disable_revocation_policy_check: self.disable_revocation_policy_check,
 		})
+	}
+
+	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		self.backing.sign_invoice(invoice_preimage)
 	}
 }
 

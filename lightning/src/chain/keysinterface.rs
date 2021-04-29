@@ -26,6 +26,7 @@ use bitcoin::hash_types::WPubkeyHash;
 
 use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
@@ -391,6 +392,12 @@ pub trait KeysInterface {
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
+
+	/// Sign an invoice's preimage (note that this is the preimage of the invoice, not the HTLC's
+	/// preimage). By parameterizing by the preimage instead of the hash, we allow implementors of
+	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
+	/// blindly signing the hash.
+	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()>;
 }
 
 #[derive(Clone)]
@@ -1046,6 +1053,10 @@ impl KeysInterface for KeysManager {
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
 		InMemorySigner::read(&mut std::io::Cursor::new(reader))
+	}
+
+	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&invoice_preimage)), &self.get_node_secret()))
 	}
 }
 

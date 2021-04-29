@@ -56,6 +56,7 @@ use utils::test_logger;
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
@@ -205,6 +206,10 @@ impl KeysInterface for KeyProvider {
 			revoked_commitment,
 			disable_revocation_policy_check: false,
 		})
+	}
+
+	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		unreachable!()
 	}
 }
 
