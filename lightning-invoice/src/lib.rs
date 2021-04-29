@@ -207,7 +207,7 @@ pub struct SignedRawInvoice {
 	hash: [u8; 32],
 
 	/// signature of the payment request
-	signature: Signature,
+	signature: InvoiceSignature,
 }
 
 /// Represents an syntactically correct Invoice for a payment on the lightning network,
@@ -381,7 +381,7 @@ pub enum Fallback {
 
 /// Recoverable signature
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct Signature(pub RecoverableSignature);
+pub struct InvoiceSignature(pub RecoverableSignature);
 
 /// Private routing information
 ///
@@ -630,7 +630,7 @@ impl SignedRawInvoice {
 	///  1. raw invoice
 	///  2. hash of the raw invoice
 	///  3. signature
-	pub fn into_parts(self) -> (RawInvoice, [u8; 32], Signature) {
+	pub fn into_parts(self) -> (RawInvoice, [u8; 32], InvoiceSignature) {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
@@ -644,8 +644,8 @@ impl SignedRawInvoice {
 		&self.hash
 	}
 
-	/// Signature for the invoice.
-	pub fn signature(&self) -> &Signature {
+	/// InvoiceSignature for the invoice.
+	pub fn signature(&self) -> &InvoiceSignature {
 		&self.signature
 	}
 
@@ -771,7 +771,7 @@ impl RawInvoice {
 		Ok(SignedRawInvoice {
 			raw_invoice: self,
 			hash: raw_hash,
-			signature: Signature(signature),
+			signature: InvoiceSignature(signature),
 		})
 	}
 
@@ -1192,7 +1192,7 @@ impl Deref for RouteHint {
 	}
 }
 
-impl Deref for Signature {
+impl Deref for InvoiceSignature {
 	type Target = RecoverableSignature;
 
 	fn deref(&self) -> &RecoverableSignature {
@@ -1354,7 +1354,7 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 		use secp256k1::key::{SecretKey, PublicKey};
-		use {SignedRawInvoice, Signature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		let invoice = SignedRawInvoice {
@@ -1383,7 +1383,7 @@ mod test {
 				0x7b, 0x1d, 0x85, 0x8d, 0xb1, 0xd1, 0xf7, 0xab, 0x71, 0x37, 0xdc, 0xb7,
 				0x83, 0x5d, 0xb2, 0xec, 0xd5, 0x18, 0xe1, 0xc9
 			],
-			signature: Signature(RecoverableSignature::from_compact(
+			signature: InvoiceSignature(RecoverableSignature::from_compact(
 				& [
 					0x38u8, 0xec, 0x68, 0x91, 0x34, 0x5e, 0x20, 0x41, 0x45, 0xbe, 0x8a,
 					0x3a, 0x99, 0xde, 0x38, 0xe9, 0x8a, 0x39, 0xd6, 0xa5, 0x69, 0x43,

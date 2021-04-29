@@ -461,7 +461,7 @@ impl ToBase32 for TaggedField {
 	}
 }
 
-impl ToBase32 for Signature {
+impl ToBase32 for InvoiceSignature {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 		let (recovery_id, signature) = self.0.serialize_compact();
