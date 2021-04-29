@@ -13,7 +13,8 @@
 use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
-use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentPreimage, PaymentHash, PaymentSecret, PaymentSendFailure};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
 use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use ln::features::{InitFeatures, InvoiceFeatures};

@@ -37,7 +37,8 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr, 
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
-use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, ErrorAction, UpdateAddHTLC, Init};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
@@ -55,6 +56,7 @@ use utils::test_logger;
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
@@ -204,6 +206,10 @@ impl KeysInterface for KeyProvider {
 			revoked_commitment,
 			disable_revocation_policy_check: false,
 		})
+	}
+
+	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		unreachable!()
 	}
 }
 

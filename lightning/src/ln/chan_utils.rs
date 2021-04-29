@@ -20,7 +20,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hash_types::{Txid, PubkeyHash};
 
-use ln::channelmanager::{PaymentHash, PaymentPreimage};
+use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer, MAX_BUF_SIZE};
 use util::byte_utils;

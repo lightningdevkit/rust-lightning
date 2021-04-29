@@ -21,10 +21,11 @@ use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
 
+use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmanager::{BestBlock, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentPreimage, PaymentHash, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{BestBlock, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
 use ln::chan_utils;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
@@ -4824,7 +4825,8 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::hashes::hex::FromHex;
 	use hex;
-	use ln::channelmanager::{BestBlock, HTLCSource, PaymentPreimage, PaymentHash};
+	use ln::{PaymentPreimage, PaymentHash};
+	use ln::channelmanager::{BestBlock, HTLCSource};
 	use ln::channel::{Channel,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
@@ -4841,6 +4843,7 @@ mod tests {
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::recovery::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
@@ -4886,6 +4889,7 @@ mod tests {
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
+		fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

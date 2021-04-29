@@ -15,7 +15,7 @@
 //! few other things.
 
 use ln::msgs;
-use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use chain::keysinterface::SpendableOutputDescriptor;
 use util::ser::{Writeable, Writer, MaybeReadable, Readable};
 

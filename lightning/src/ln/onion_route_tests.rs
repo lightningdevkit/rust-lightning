@@ -12,7 +12,8 @@
 //! returned errors decode to the correct thing.
 
 use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use ln::channelmanager::{HTLCForwardInfo, PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::channelmanager::HTLCForwardInfo;
 use ln::onion_utils;
 use routing::router::{Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};

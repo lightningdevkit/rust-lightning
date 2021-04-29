@@ -43,6 +43,7 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitor
 use chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
+use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
 use ln::channel::{Channel, ChannelError};
 use ln::features::{InitFeatures, NodeFeatures};
@@ -195,19 +196,6 @@ pub(super) enum HTLCFailReason {
 		data: Vec<u8>,
 	}
 }
-
-/// payment_hash type, use to cross-lock hop
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentHash(pub [u8;32]);
-/// payment_preimage type, use to route payment between hop
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentPreimage(pub [u8;32]);
-/// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
-/// (C-not exported) as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentSecret(pub [u8;32]);
 
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
 

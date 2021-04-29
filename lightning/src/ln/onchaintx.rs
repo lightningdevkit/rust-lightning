@@ -22,7 +22,7 @@ use bitcoin::secp256k1::{Secp256k1, Signature};
 use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
-use ln::channelmanager::PaymentPreimage;
+use ln::PaymentPreimage;
 use ln::chan_utils;
 use ln::chan_utils::{TxCreationKeys, ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};

@@ -32,7 +32,8 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemorySigner, KeysInterface};
-use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::msgs::DecodeError;
 use lightning::routing::router::get_route;
@@ -47,6 +48,7 @@ use utils::test_logger;
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
@@ -311,6 +313,10 @@ impl KeysInterface for KeyProvider {
 
 	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
 		EnforcingSigner::read(&mut std::io::Cursor::new(data))
+	}
+
+	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+		unreachable!()
 	}
 }
 

@@ -27,7 +27,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use std::marker::Sized;
 use ln::msgs::DecodeError;
-use ln::channelmanager::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use util::byte_utils;
 
 use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
