@@ -3468,6 +3468,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
 	/// [`PaymentReceived`].
 	///
+	/// Pending inbound payments are stored in memory and in serialized versions of this
+	/// [`ChannelManager`]. If potentially unbounded numbers of inbound payments may exist and
+	/// space is limited, you may wish to rate-limit inbound payment creation.
+	///
 	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
 	///
 	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
