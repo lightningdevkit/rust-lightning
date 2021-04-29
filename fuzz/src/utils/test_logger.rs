@@ -11,7 +11,7 @@ use lightning::util::logger::{Logger, Record};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 
-pub trait Output : Clone + Sync + Send + 'static {
+pub trait Output : Clone  + 'static {
 	fn locked_write(&self, data: &[u8]);
 }
 

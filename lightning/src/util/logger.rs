@@ -117,7 +117,7 @@ impl<'a> Record<'a> {
 }
 
 /// A trait encapsulating the operations required of a logger
-pub trait Logger: Sync + Send {
+pub trait Logger {
 	/// Logs the `Record`
 	fn log(&self, record: &Record);
 }

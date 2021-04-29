@@ -68,7 +68,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 #[cfg(any(test, feature = "allow_wallclock_use"))]
 use std::time::Instant;
-use std::marker::{Sync, Send};
 use std::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
@@ -3764,7 +3763,7 @@ where
 	}
 }
 
-impl<Signer: Sign, M: Deref + Sync + Send, T: Deref + Sync + Send, K: Deref + Sync + Send, F: Deref + Sync + Send, L: Deref + Sync + Send>
+impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,

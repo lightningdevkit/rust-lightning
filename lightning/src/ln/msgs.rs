@@ -744,7 +744,7 @@ pub enum OptionalField<T> {
 ///
 /// Messages MAY be called in parallel when they originate from different their_node_ids, however
 /// they MUST NOT be called in parallel when the two calls have the same their_node_id.
-pub trait ChannelMessageHandler : MessageSendEventsProvider + Send + Sync {
+pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	//Channel init:
 	/// Handle an incoming open_channel message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &OpenChannel);
@@ -811,7 +811,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider + Send + Sync {
 /// For `gossip_queries` messages there are potential DoS vectors when handling
 /// inbound queries. Implementors using an on-disk network graph should be aware of
 /// repeated disk I/O for queries accessing different parts of the network graph.
-pub trait RoutingMessageHandler : Send + Sync + MessageSendEventsProvider {
+pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;

@@ -160,12 +160,12 @@ impl std::ops::Deref for ValidatedBlock {
 ///
 /// Other `Poll` implementations must be built using `ChainPoller` as it provides the only means of
 /// validating chain data.
-pub struct ChainPoller<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> {
+pub struct ChainPoller<B: DerefMut<Target=T> + Sized , T: BlockSource> {
 	block_source: B,
 	network: Network,
 }
 
-impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> ChainPoller<B, T> {
+impl<B: DerefMut<Target=T> + Sized , T: BlockSource> ChainPoller<B, T> {
 	/// Creates a new poller for the given block source.
 	///
 	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
@@ -175,7 +175,7 @@ impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> ChainPoller<B,
 	}
 }
 
-impl<B: DerefMut<Target=T> + Sized + Sync + Send, T: BlockSource> Poll for ChainPoller<B, T> {
+impl<B: DerefMut<Target=T> + Sized + Send + Sync, T: BlockSource> Poll for ChainPoller<B, T> {
 	fn poll_chain_tip<'a>(&'a mut self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>
 	{
