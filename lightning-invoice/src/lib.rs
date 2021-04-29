@@ -332,6 +332,8 @@ pub enum Currency {
 }
 
 /// Tagged field which may have an unknown tag
+///
+/// (C-not exported) as we don't currently support TaggedField
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
@@ -343,6 +345,9 @@ pub enum RawTaggedField {
 /// Tagged field with known tag
 ///
 /// For descriptions of the enum values please refer to the enclosed type's docs.
+///
+/// (C-not exported) As we don't yet support enum variants with the same name the struct contained
+/// in the variant.
 #[allow(missing_docs)]
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum TaggedField {
