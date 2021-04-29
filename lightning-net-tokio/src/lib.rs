@@ -31,12 +31,12 @@
 //! use std::sync::Arc;
 //!
 //! // Define concrete types for our high-level objects:
-//! type TxBroadcaster = dyn lightning::chain::chaininterface::BroadcasterInterface;
-//! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator;
-//! type Logger = dyn lightning::util::logger::Logger;
-//! type ChainAccess = dyn lightning::chain::Access;
-//! type ChainFilter = dyn lightning::chain::Filter;
-//! type DataPersister = dyn lightning::chain::channelmonitor::Persist<lightning::chain::keysinterface::InMemorySigner>;
+//! type TxBroadcaster = dyn lightning::chain::chaininterface::BroadcasterInterface + Send + Sync;
+//! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator + Send + Sync;
+//! type Logger = dyn lightning::util::logger::Logger + Send + Sync;
+//! type ChainAccess = dyn lightning::chain::Access + Send + Sync;
+//! type ChainFilter = dyn lightning::chain::Filter + Send + Sync;
+//! type DataPersister = dyn lightning::chain::channelmonitor::Persist<lightning::chain::keysinterface::InMemorySigner> + Send + Sync;
 //! type ChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::chain::keysinterface::InMemorySigner, Arc<ChainFilter>, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<DataPersister>>;
 //! type ChannelManager = Arc<lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor, TxBroadcaster, FeeEstimator, Logger>>;
 //! type PeerManager = Arc<lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>>;
@@ -254,9 +254,9 @@ impl Connection {
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
 pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, stream: StdTcpStream) -> impl std::future::Future<Output=()> where
-		CMH: ChannelMessageHandler + 'static,
-		RMH: RoutingMessageHandler + 'static,
-		L: Logger + 'static + ?Sized {
+		CMH: ChannelMessageHandler + 'static + Send + Sync,
+		RMH: RoutingMessageHandler + 'static + Send + Sync,
+		L: Logger + 'static + ?Sized + Send + Sync {
 	let (reader, write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -296,9 +296,9 @@ pub fn setup_inbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<So
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
 pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, stream: StdTcpStream) -> impl std::future::Future<Output=()> where
-		CMH: ChannelMessageHandler + 'static,
-		RMH: RoutingMessageHandler + 'static,
-		L: Logger + 'static + ?Sized {
+		CMH: ChannelMessageHandler + 'static + Send + Sync,
+		RMH: RoutingMessageHandler + 'static + Send + Sync,
+		L: Logger + 'static + ?Sized + Send + Sync {
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(event_notify, stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
@@ -368,9 +368,9 @@ pub fn setup_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<S
 ///
 /// See the module-level documentation for how to handle the event_notify mpsc::Sender.
 pub async fn connect_outbound<CMH, RMH, L>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>>>, event_notify: mpsc::Sender<()>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> where
-		CMH: ChannelMessageHandler + 'static,
-		RMH: RoutingMessageHandler + 'static,
-		L: Logger + 'static + ?Sized {
+		CMH: ChannelMessageHandler + 'static + Send + Sync,
+		RMH: RoutingMessageHandler + 'static + Send + Sync,
+		L: Logger + 'static + ?Sized + Send + Sync {
 	if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), async { TcpStream::connect(&addr).await.map(|s| s.into_std().unwrap()) }).await {
 		Some(setup_outbound(peer_manager, event_notify, their_node_id, stream))
 	} else { None }

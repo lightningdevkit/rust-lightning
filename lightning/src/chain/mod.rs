@@ -36,7 +36,7 @@ pub enum AccessError {
 
 /// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
 /// UTXOs.
-pub trait Access: Send + Sync {
+pub trait Access {
 	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
 	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
 	/// is unknown.
@@ -161,7 +161,7 @@ pub trait Confirm {
 /// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 /// [`ChannelMonitorUpdateErr`]: channelmonitor::ChannelMonitorUpdateErr
 /// [`PermanentFailure`]: channelmonitor::ChannelMonitorUpdateErr::PermanentFailure
-pub trait Watch<ChannelSigner: Sign>: Send + Sync {
+pub trait Watch<ChannelSigner: Sign> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along
@@ -207,7 +207,7 @@ pub trait Watch<ChannelSigner: Sign>: Send + Sync {
 /// [`TemporaryFailure`]: channelmonitor::ChannelMonitorUpdateErr::TemporaryFailure
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
-pub trait Filter: Send + Sync {
+pub trait Filter {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);

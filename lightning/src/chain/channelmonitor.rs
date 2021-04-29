@@ -2663,7 +2663,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 /// transaction and losing money. This is a risk because previous channel states
 /// are toxic, so it's important that whatever channel state is persisted is
 /// kept up-to-date.
-pub trait Persist<ChannelSigner: Sign>: Send + Sync {
+pub trait Persist<ChannelSigner: Sign> {
 	/// Persist a new channel's data. The data can be stored any way you want, but
 	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
 	/// it is up to you to maintain a correct mapping between the outpoint and the

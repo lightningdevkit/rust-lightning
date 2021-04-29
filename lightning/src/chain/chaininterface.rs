@@ -16,7 +16,7 @@
 use bitcoin::blockdata::transaction::Transaction;
 
 /// An interface to send a transaction to the Bitcoin network.
-pub trait BroadcasterInterface: Sync + Send {
+pub trait BroadcasterInterface {
 	/// Sends a transaction out to (hopefully) be mined.
 	fn broadcast_transaction(&self, tx: &Transaction);
 }
@@ -37,7 +37,7 @@ pub enum ConfirmationTarget {
 ///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to chain events, P2P events, or timer events).
-pub trait FeeEstimator: Sync + Send {
+pub trait FeeEstimator {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///
 	/// Must be no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later round-downs
