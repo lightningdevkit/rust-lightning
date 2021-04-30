@@ -1322,10 +1322,8 @@ impl std::error::Error for SemanticError { }
 
 /// When signing using a fallible method either an user-supplied `SignError` or a `CreationError`
 /// may occur.
-///
-/// (C-not exported) As we don't support unbounded generics
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub enum SignOrCreationError<S> {
+pub enum SignOrCreationError<S = ()> {
 	/// An error occurred during signing
 	SignError(S),
 
