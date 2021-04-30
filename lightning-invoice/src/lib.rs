@@ -1526,6 +1526,97 @@ mod test {
 	}
 
 	#[test]
+	fn test_check_feature_bits() {
+		use TaggedField::*;
+		use lightning::ln::features::InvoiceFeatures;
+		use secp256k1::Secp256k1;
+		use secp256k1::key::SecretKey;
+		use {RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
+			 SemanticError};
+
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
+		let invoice_template = RawInvoice {
+			hrp: RawHrp {
+				currency: Currency::Bitcoin,
+				raw_amount: None,
+				si_prefix: None,
+			},
+			data: RawDataPart {
+				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+				tagged_fields: vec ! [
+					PaymentHash(Sha256(sha256::Hash::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102"
+					).unwrap())).into(),
+					Description(
+						::Description::new(
+							"Please consider supporting this project".to_owned()
+						).unwrap()
+					).into(),
+				],
+			},
+		};
+
+		// Missing features
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Missing feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Including payment secret and feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// No payment secret or features
+		let invoice = {
+			let invoice = invoice_template.clone();
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// No payment secret or feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// Missing payment secret
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Multiple payment secrets
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::MultiplePaymentSecrets));
+	}
+
+	#[test]
 	fn test_builder_amount() {
 		use ::*;
 
