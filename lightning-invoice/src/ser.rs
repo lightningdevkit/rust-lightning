@@ -2,7 +2,8 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 
-use ::*;
+use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+	RouteHint, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
 /// be applied. That means the results of writing two data blocks with one or two `BytesToBase32`
