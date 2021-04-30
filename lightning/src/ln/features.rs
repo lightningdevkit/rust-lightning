@@ -730,8 +730,10 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_variable_length_onion());
 		assert!(NodeFeatures::known().supports_variable_length_onion());
+		assert!(InvoiceFeatures::known().supports_variable_length_onion());
 		assert!(InitFeatures::known().requires_variable_length_onion());
 		assert!(NodeFeatures::known().requires_variable_length_onion());
+		assert!(InvoiceFeatures::known().requires_variable_length_onion());
 
 		assert!(InitFeatures::known().supports_static_remote_key());
 		assert!(NodeFeatures::known().supports_static_remote_key());
@@ -740,13 +742,17 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_payment_secret());
 		assert!(NodeFeatures::known().supports_payment_secret());
+		assert!(InvoiceFeatures::known().supports_payment_secret());
 		assert!(InitFeatures::known().requires_payment_secret());
 		assert!(NodeFeatures::known().requires_payment_secret());
+		assert!(InvoiceFeatures::known().requires_payment_secret());
 
 		assert!(InitFeatures::known().supports_basic_mpp());
 		assert!(NodeFeatures::known().supports_basic_mpp());
+		assert!(InvoiceFeatures::known().supports_basic_mpp());
 		assert!(!InitFeatures::known().requires_basic_mpp());
 		assert!(!NodeFeatures::known().requires_basic_mpp());
+		assert!(!InvoiceFeatures::known().requires_basic_mpp());
 
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
