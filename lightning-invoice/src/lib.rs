@@ -3,6 +3,7 @@
 #![deny(non_camel_case_types)]
 #![deny(non_snake_case)]
 #![deny(unused_mut)]
+#![deny(broken_intra_doc_links)]
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 

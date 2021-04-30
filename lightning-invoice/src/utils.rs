@@ -108,7 +108,7 @@ mod test {
 		let _chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 		let invoice = ::utils::create_invoice_from_channelmanager(&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string()).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), Some(9));
+		assert_eq!(invoice.min_final_cltv_expiry(), 9);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
 		let mut route_hints = invoice.routes().clone();
@@ -129,7 +129,7 @@ mod test {
 			Some(&first_hops.iter().collect::<Vec<_>>()),
 			&last_hops.iter().collect::<Vec<_>>(),
 			amt_msat,
-			invoice.min_final_cltv_expiry().unwrap() as u32,
+			invoice.min_final_cltv_expiry() as u32,
 			&logger,
 		).unwrap();
 
