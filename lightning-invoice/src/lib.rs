@@ -1682,14 +1682,16 @@ mod test {
 			.route(route_1.clone())
 			.route(route_2.clone())
 			.description_hash(sha256::Hash::from_slice(&[3;32][..]).unwrap())
-			.payment_hash(sha256::Hash::from_slice(&[21;32][..]).unwrap());
+			.payment_hash(sha256::Hash::from_slice(&[21;32][..]).unwrap())
+			.payment_secret(PaymentSecret([42; 32]))
+			.basic_mpp();
 
 		let invoice = builder.clone().build_signed(|hash| {
 			secp_ctx.sign_recoverable(hash, &private_key)
 		}).unwrap();
 
 		assert!(invoice.check_signature().is_ok());
-		assert_eq!(invoice.tagged_fields().count(), 8);
+		assert_eq!(invoice.tagged_fields().count(), 10);
 
 		assert_eq!(invoice.amount_pico_btc(), Some(123));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
@@ -1707,6 +1709,8 @@ mod test {
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
+		assert_eq!(invoice.payment_secret(), Some(&PaymentSecret([42; 32])));
+		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
 
 		let raw_invoice = builder.build_raw().unwrap();
 		assert_eq!(raw_invoice, *invoice.into_signed_raw().raw_invoice())
