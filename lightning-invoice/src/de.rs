@@ -20,7 +20,9 @@ use secp256k1;
 use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 use secp256k1::key::PublicKey;
 
-use super::*;
+use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+	SemanticError, RouteHint, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice, constants, SignedRawInvoice,
+	RawDataPart, CreationError, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
 
