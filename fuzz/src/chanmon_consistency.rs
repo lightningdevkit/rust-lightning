@@ -338,7 +338,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
-			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
@@ -358,7 +357,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
-			config.peer_channel_config_limits.min_dust_limit_satoshis = 0;
 
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();

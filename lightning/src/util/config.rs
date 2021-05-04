@@ -98,22 +98,6 @@ pub struct ChannelHandshakeLimits {
 	///
 	/// Default value: 0.
 	pub min_max_accepted_htlcs: u16,
-	/// Outputs below a certain value will not be added to on-chain transactions. The dust value is
-	/// required to always be higher than this value so this only applies to HTLC outputs (and
-	/// potentially to-self outputs before any payments have been made).
-	/// Thus, HTLCs below this amount plus HTLC transaction fees are not enforceable on-chain.
-	/// This setting allows you to set a minimum dust limit for their commitment transactions,
-	/// reflecting the reality that tiny outputs are not considered standard transactions and will
-	/// not propagate through the Bitcoin network.
-	///
-	/// Default value: 546, the current dust limit on the Bitcoin network.
-	pub min_dust_limit_satoshis: u64,
-	/// Maximum allowed threshold above which outputs will not be generated in their commitment
-	/// transactions.
-	/// HTLCs below this amount plus HTLC transaction fees are not enforceable on-chain.
-	///
-	/// Default value: u64::max_value.
-	pub max_dust_limit_satoshis: u64,
 	/// Before a channel is usable the funding transaction will need to be confirmed by at least a
 	/// certain number of blocks, specified by the node which is not the funder (as the funder can
 	/// assume they aren't going to double-spend themselves).
@@ -145,8 +129,6 @@ impl Default for ChannelHandshakeLimits {
 			min_max_htlc_value_in_flight_msat: 0,
 			max_channel_reserve_satoshis: <u64>::max_value(),
 			min_max_accepted_htlcs: 0,
-			min_dust_limit_satoshis: 546,
-			max_dust_limit_satoshis: <u64>::max_value(),
 			max_minimum_depth: 144,
 			force_announced_channel_preference: true,
 			their_to_self_delay: MAX_LOCAL_BREAKDOWN_TIMEOUT,

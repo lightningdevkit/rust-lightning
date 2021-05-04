@@ -439,7 +439,6 @@ struct CommitmentTxInfoCached {
 
 pub const OUR_MAX_HTLCS: u16 = 50; //TODO
 const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
-const B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT: u64 = 104; // prevout: 40, nSequence: 4, script len: 1, witness lengths: 3/4, sig: 73/4, pubkey: 33/4, output: 31 (TODO: Wrong? Useless?)
 
 #[cfg(not(test))]
 const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
@@ -453,6 +452,22 @@ pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 /// Maximmum `funding_satoshis` value, according to the BOLT #2 specification
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
+
+/// Maximum counterparty `dust_limit_satoshis` allowed. 2 * standard dust threshold on p2wsh output
+/// Scales up on Bitcoin Core's proceeding policy with dust outputs. A typical p2wsh output is 43
+/// bytes to which Core's `GetDustThreshold()` sums up a minimal spend of 67 bytes (even if
+/// a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee` is set to 3000sat/kb, thus
+/// 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs are p2wsh, a value of
+/// 330 sats is the lower bound desired to ensure good propagation of transactions. We give a bit
+/// of margin to our counterparty and pick up 660 satoshis as an accepted `dust_limit_satoshis`
+/// upper bound to avoid negotiation conflicts with other implementations.
+pub const MAX_DUST_LIMIT_SATOSHIS: u64 = 2 * 330;
+
+/// A typical p2wsh output is 43 bytes to which Core's `GetDustThreshold()` sums up a minimal
+/// spend of 67 bytes (even if a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee`
+/// is set to 3000sat/kb, thus 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs
+/// are p2wsh, a value of 330 sats is the lower bound desired to ensure good propagation of transactions.
+pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 330;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
@@ -497,10 +512,6 @@ impl<Signer: Sign> Channel<Signer> {
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
 
-	fn derive_holder_dust_limit_satoshis(at_open_background_feerate: u32) -> u64 {
-		cmp::max(at_open_background_feerate as u64 * B_OUTPUT_PLUS_SPENDING_INPUT_WEIGHT / 1000, 546) //TODO
-	}
-
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
@@ -520,9 +531,9 @@ impl<Signer: Sign> Channel<Signer> {
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
-		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		if Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis) < Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate) {
-			return Err(APIError::FeeRateTooHigh{err: format!("Not enough reserve above dust limit can be found at current fee rate({})", background_feerate), feerate: background_feerate});
+		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis);
+		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
@@ -579,7 +590,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
-			holder_dust_limit_satoshis: Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate),
+			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
 			counterparty_selected_channel_reserve_satoshis: 0,
 			counterparty_htlc_minimum_msat: 0,
@@ -700,11 +711,11 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < config.peer_channel_config_limits.min_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the user specified limit ({})", msg.dust_limit_satoshis, config.peer_channel_config_limits.min_dust_limit_satoshis)));
+		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis > config.peer_channel_config_limits.max_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the user specified limit ({})", msg.dust_limit_satoshis, config.peer_channel_config_limits.max_dust_limit_satoshis)));
+		if msg.dust_limit_satoshis >  MAX_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -720,13 +731,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
-		let holder_dust_limit_satoshis = Channel::<Signer>::derive_holder_dust_limit_satoshis(background_feerate);
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
-		if holder_selected_channel_reserve_satoshis < holder_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, holder_dust_limit_satoshis)));
+		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.channel_reserve_satoshis < holder_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, holder_dust_limit_satoshis)));
+		if msg.channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
 		if holder_selected_channel_reserve_satoshis < msg.dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", msg.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
@@ -818,7 +828,7 @@ impl<Signer: Sign> Channel<Signer> {
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
-			holder_dust_limit_satoshis,
+			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			counterparty_selected_channel_reserve_satoshis: msg.channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -1442,11 +1452,11 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < config.peer_channel_config_limits.min_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the user specified limit ({})", msg.dust_limit_satoshis, config.peer_channel_config_limits.min_dust_limit_satoshis)));
+		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis > config.peer_channel_config_limits.max_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the user specified limit ({})", msg.dust_limit_satoshis, config.peer_channel_config_limits.max_dust_limit_satoshis)));
+		if msg.dust_limit_satoshis > MAX_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));
@@ -4939,7 +4949,6 @@ mod tests {
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
-		assert_eq!(open_channel_msg.dust_limit_satoshis, 1560);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
@@ -4947,6 +4956,7 @@ mod tests {
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
+		node_a_chan.holder_dust_limit_satoshis = 1560;
 
 		// Put some inbound and outbound HTLCs in A's channel.
 		let htlc_amount_msat = 11_092_000; // put an amount below A's effective dust limit but above B's.
