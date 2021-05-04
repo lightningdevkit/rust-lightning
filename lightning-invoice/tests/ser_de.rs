@@ -103,7 +103,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, Option<SemanticError>)> {
 			None
 		),
 		(
-			"lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp59g4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4q9gkzyrw8zhfxmrcxsx7hj40yejq6lkvn75l9yjmapjv94haz8x8jy2tvmgex8rnyqkj825csd2t64fu0p4ctad2cf4tgy5gh2fns6ygp6pnc3y".to_owned(),
+			"lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp59g4z52329g4z52329g4z52329g4z52329g4z52329g4z52329g4q9qrsgqzfhag3vsafx4e5qssalvw4rn0phsvpp3e5h2xxyk9l8fxsutvndx9t840dqvdrlu2gqmk0q8apqrgnjy9amc07hmjl9e9yzqjks5w2gqgjnyms".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"

@@ -95,7 +95,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			StaticRemoteKey | PaymentSecret,
+			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 			// Byte 2
 			,
 			// Byte 3
@@ -105,7 +105,7 @@ mod sealed {
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
-			VariableLengthOnion,
+			,
 			// Byte 2
 			BasicMPP,
 			// Byte 3
@@ -117,7 +117,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			StaticRemoteKey | PaymentSecret,
+			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 			// Byte 2
 			,
 			// Byte 3
@@ -127,7 +127,7 @@ mod sealed {
 			// Byte 0
 			DataLossProtect | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
-			VariableLengthOnion,
+			,
 			// Byte 2
 			BasicMPP,
 			// Byte 3
@@ -143,7 +143,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			PaymentSecret,
+			VariableLengthOnion | PaymentSecret,
 			// Byte 2
 			,
 		],
@@ -151,7 +151,7 @@ mod sealed {
 			// Byte 0
 			,
 			// Byte 1
-			VariableLengthOnion,
+			,
 			// Byte 2
 			BasicMPP,
 		],
@@ -646,11 +646,8 @@ impl<T: sealed::PaymentSecret> Features<T> {
 	pub(crate) fn requires_payment_secret(&self) -> bool {
 		<T as sealed::PaymentSecret>::requires_feature(&self.flags)
 	}
-	// Note that we never need to test this since what really matters is the invoice - iff the
-	// invoice provides a payment_secret, we assume that we can use it (ie that the recipient
-	// supports payment_secret).
-	#[allow(dead_code)]
-	pub(crate) fn supports_payment_secret(&self) -> bool {
+	/// Returns whether the `payment_secret` feature is supported.
+	pub fn supports_payment_secret(&self) -> bool {
 		<T as sealed::PaymentSecret>::supports_feature(&self.flags)
 	}
 }
@@ -730,8 +727,10 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_variable_length_onion());
 		assert!(NodeFeatures::known().supports_variable_length_onion());
-		assert!(!InitFeatures::known().requires_variable_length_onion());
-		assert!(!NodeFeatures::known().requires_variable_length_onion());
+		assert!(InvoiceFeatures::known().supports_variable_length_onion());
+		assert!(InitFeatures::known().requires_variable_length_onion());
+		assert!(NodeFeatures::known().requires_variable_length_onion());
+		assert!(InvoiceFeatures::known().requires_variable_length_onion());
 
 		assert!(InitFeatures::known().supports_static_remote_key());
 		assert!(NodeFeatures::known().supports_static_remote_key());
@@ -740,13 +739,17 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_payment_secret());
 		assert!(NodeFeatures::known().supports_payment_secret());
+		assert!(InvoiceFeatures::known().supports_payment_secret());
 		assert!(InitFeatures::known().requires_payment_secret());
 		assert!(NodeFeatures::known().requires_payment_secret());
+		assert!(InvoiceFeatures::known().requires_payment_secret());
 
 		assert!(InitFeatures::known().supports_basic_mpp());
 		assert!(NodeFeatures::known().supports_basic_mpp());
+		assert!(InvoiceFeatures::known().supports_basic_mpp());
 		assert!(!InitFeatures::known().requires_basic_mpp());
 		assert!(!NodeFeatures::known().requires_basic_mpp());
+		assert!(!InvoiceFeatures::known().requires_basic_mpp());
 
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
@@ -787,12 +790,12 @@ mod tests {
 		{
 			// Check that the flags are as expected:
 			// - option_data_loss_protect
-			// - var_onion_optin | static_remote_key (req) | payment_secret(req)
+			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp
 			// - opt_shutdown_anysegwit
 			assert_eq!(node_features.flags.len(), 4);
 			assert_eq!(node_features.flags[0], 0b00000010);
-			assert_eq!(node_features.flags[1], 0b01010010);
+			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 		}

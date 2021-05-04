@@ -168,7 +168,7 @@ pub fn check_platform() {
 ///
 /// (C-not exported) as we likely need to manually select one set of boolean type parameters.
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> {
+pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> {
 	currency: Currency,
 	amount: Option<u64>,
 	si_prefix: Option<SiPrefix>,
@@ -180,6 +180,7 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> {
 	phantom_h: std::marker::PhantomData<H>,
 	phantom_t: std::marker::PhantomData<T>,
 	phantom_c: std::marker::PhantomData<C>,
+	phantom_s: std::marker::PhantomData<S>,
 }
 
 /// Represents a syntactically and semantically correct lightning BOLT11 invoice.
@@ -432,7 +433,7 @@ pub mod constants {
 	pub const TAG_FEATURES: u8 = 5;
 }
 
-impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False> {
+impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False> {
 	/// Construct new, empty `InvoiceBuilder`. All necessary fields have to be filled first before
 	/// `InvoiceBuilder::build(self)` becomes available.
 	pub fn new(currrency: Currency) -> Self {
@@ -448,14 +449,15 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False> {
 			phantom_h: std::marker::PhantomData,
 			phantom_t: std::marker::PhantomData,
 			phantom_c: std::marker::PhantomData,
+			phantom_s: std::marker::PhantomData,
 		}
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C> {
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, T, C, S> {
 	/// Helper function to set the completeness flags.
-	fn set_flags<DN: tb::Bool, HN: tb::Bool, TN: tb::Bool, CN: tb::Bool>(self) -> InvoiceBuilder<DN, HN, TN, CN> {
-		InvoiceBuilder::<DN, HN, TN, CN> {
+	fn set_flags<DN: tb::Bool, HN: tb::Bool, TN: tb::Bool, CN: tb::Bool, SN: tb::Bool>(self) -> InvoiceBuilder<DN, HN, TN, CN, SN> {
+		InvoiceBuilder::<DN, HN, TN, CN, SN> {
 			currency: self.currency,
 			amount: self.amount,
 			si_prefix: self.si_prefix,
@@ -467,6 +469,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 			phantom_h: std::marker::PhantomData,
 			phantom_t: std::marker::PhantomData,
 			phantom_c: std::marker::PhantomData,
+			phantom_s: std::marker::PhantomData,
 		}
 	}
 
@@ -484,12 +487,6 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 	/// Sets the payee's public key.
 	pub fn payee_pub_key(mut self, pub_key: PublicKey) -> Self {
 		self.tagged_fields.push(TaggedField::PayeePubKey(PayeePubKey(pub_key)));
-		self
-	}
-
-	/// Sets the payment secret
-	pub fn payment_secret(mut self, payment_secret: PaymentSecret) -> Self {
-		self.tagged_fields.push(TaggedField::PaymentSecret(payment_secret));
 		self
 	}
 
@@ -516,16 +513,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 		}
 		self
 	}
-
-	/// Adds a features field which indicates the set of supported protocol extensions which the
-	/// origin node supports.
-	pub fn features(mut self, features: InvoiceFeatures) -> Self {
-		self.tagged_fields.push(TaggedField::Features(features));
-		self
-	}
 }
 
-impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::True, C> {
+impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb::True, C, S> {
 	/// Builds a `RawInvoice` if no `CreationError` occurred while construction any of the fields.
 	pub fn build_raw(self) -> Result<RawInvoice, CreationError> {
 
@@ -558,9 +548,9 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::True, C> {
 	}
 }
 
-impl<H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<tb::False, H, T, C> {
+impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<tb::False, H, T, C, S> {
 	/// Set the description. This function is only available if no description (hash) was set.
-	pub fn description(mut self, description: String) -> InvoiceBuilder<tb::True, H, T, C> {
+	pub fn description(mut self, description: String) -> InvoiceBuilder<tb::True, H, T, C, S> {
 		match Description::new(description) {
 			Ok(d) => self.tagged_fields.push(TaggedField::Description(d)),
 			Err(e) => self.error = Some(e),
@@ -569,23 +559,23 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<tb::False, H, T, C> {
 	}
 
 	/// Set the description hash. This function is only available if no description (hash) was set.
-	pub fn description_hash(mut self, description_hash: sha256::Hash) -> InvoiceBuilder<tb::True, H, T, C> {
+	pub fn description_hash(mut self, description_hash: sha256::Hash) -> InvoiceBuilder<tb::True, H, T, C, S> {
 		self.tagged_fields.push(TaggedField::DescriptionHash(Sha256(description_hash)));
 		self.set_flags()
 	}
 }
 
-impl<D: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, tb::False, T, C> {
+impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, tb::False, T, C, S> {
 	/// Set the payment hash. This function is only available if no payment hash was set.
-	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C> {
+	pub fn payment_hash(mut self, hash: sha256::Hash) -> InvoiceBuilder<D, tb::True, T, C, S> {
 		self.tagged_fields.push(TaggedField::PaymentHash(Sha256(hash)));
 		self.set_flags()
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::False, C> {
+impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb::False, C, S> {
 	/// Sets the timestamp.
-	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True, C> {
+	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		match PositiveTimestamp::from_system_time(time) {
 			Ok(t) => self.timestamp = Some(t),
 			Err(e) => self.error = Some(e),
@@ -595,22 +585,48 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, tb::False, C> {
 	}
 
 	/// Sets the timestamp to the current UNIX timestamp.
-	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True, C> {
+	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		let now = PositiveTimestamp::from_system_time(SystemTime::now());
 		self.timestamp = Some(now.expect("for the foreseeable future this shouldn't happen"));
 		self.set_flags()
 	}
 }
 
-impl<D: tb::Bool, H: tb::Bool, T: tb::Bool> InvoiceBuilder<D, H, T, tb::False> {
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, T, tb::False, S> {
 	/// Sets `min_final_cltv_expiry`.
-	pub fn min_final_cltv_expiry(mut self, min_final_cltv_expiry: u64) -> InvoiceBuilder<D, H, T, tb::True> {
+	pub fn min_final_cltv_expiry(mut self, min_final_cltv_expiry: u64) -> InvoiceBuilder<D, H, T, tb::True, S> {
 		self.tagged_fields.push(TaggedField::MinFinalCltvExpiry(MinFinalCltvExpiry(min_final_cltv_expiry)));
 		self.set_flags()
 	}
 }
 
-impl InvoiceBuilder<tb::True, tb::True, tb::True, tb::True> {
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C, tb::False> {
+	/// Sets the payment secret and relevant features.
+	pub fn payment_secret(mut self, payment_secret: PaymentSecret) -> InvoiceBuilder<D, H, T, C, tb::True> {
+		let features = InvoiceFeatures::empty()
+			.set_variable_length_onion_required()
+			.set_payment_secret_required();
+		self.tagged_fields.push(TaggedField::PaymentSecret(payment_secret));
+		self.tagged_fields.push(TaggedField::Features(features));
+		self.set_flags()
+	}
+}
+
+impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C, tb::True> {
+	/// Sets the `basic_mpp` feature as optional.
+	pub fn basic_mpp(mut self) -> Self {
+		self.tagged_fields = self.tagged_fields
+			.drain(..)
+			.map(|field| match field {
+				TaggedField::Features(f) => TaggedField::Features(f.set_basic_mpp_optional()),
+				_ => field,
+			})
+			.collect();
+		self
+	}
+}
+
+impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for
 	/// the included payee public key.
@@ -649,6 +665,7 @@ impl InvoiceBuilder<tb::True, tb::True, tb::True, tb::True> {
 		};
 
 		invoice.check_field_counts().expect("should be ensured by type signature of builder");
+		invoice.check_feature_bits().expect("should be ensured by type signature of builder");
 
 		Ok(invoice)
 	}
@@ -977,6 +994,41 @@ impl Invoice {
 		Ok(())
 	}
 
+	/// Check that feature bits are set as required
+	fn check_feature_bits(&self) -> Result<(), SemanticError> {
+		// "If the payment_secret feature is set, MUST include exactly one s field."
+		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
+			TaggedField::PaymentSecret(_) => true,
+			_ => false,
+		}).count();
+		if payment_secret_count > 1 {
+			return Err(SemanticError::MultiplePaymentSecrets);
+		}
+
+		// "A writer MUST set an s field if and only if the payment_secret feature is set."
+		let has_payment_secret = payment_secret_count == 1;
+		let features = self.tagged_fields().find(|&tf| match *tf {
+			TaggedField::Features(_) => true,
+			_ => false,
+		});
+		match features {
+			None if has_payment_secret => Err(SemanticError::InvalidFeatures),
+			None => Ok(()),
+			Some(TaggedField::Features(features)) => {
+				if features.supports_payment_secret() && has_payment_secret {
+					Ok(())
+				} else if has_payment_secret {
+					Err(SemanticError::InvalidFeatures)
+				} else if features.supports_payment_secret() {
+					Err(SemanticError::InvalidFeatures)
+				} else {
+					Ok(())
+				}
+			},
+			Some(_) => unreachable!(),
+		}
+	}
+
 	/// Check that the invoice is signed correctly and that key recovery works
 	pub fn check_signature(&self) -> Result<(), SemanticError> {
 		match self.signed_invoice.recover_payee_pub_key() {
@@ -1011,6 +1063,7 @@ impl Invoice {
 			signed_invoice: signed_invoice,
 		};
 		invoice.check_field_counts()?;
+		invoice.check_feature_bits()?;
 		invoice.check_signature()?;
 
 		Ok(invoice)
@@ -1303,6 +1356,12 @@ pub enum SemanticError {
 	/// The invoice contains multiple descriptions and/or description hashes which isn't allowed
 	MultipleDescriptions,
 
+	/// The invoice contains multiple payment secrets
+	MultiplePaymentSecrets,
+
+	/// The invoice's features are invalid
+	InvalidFeatures,
+
 	/// The recovery id doesn't fit the signature/pub key
 	InvalidRecoveryId,
 
@@ -1317,6 +1376,8 @@ impl Display for SemanticError {
 			SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
 			SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
 			SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
+			SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
+			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
 			SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
 		}
@@ -1465,6 +1526,97 @@ mod test {
 		}).unwrap();
 
 		assert!(new_signed.check_signature());
+	}
+
+	#[test]
+	fn test_check_feature_bits() {
+		use TaggedField::*;
+		use lightning::ln::features::InvoiceFeatures;
+		use secp256k1::Secp256k1;
+		use secp256k1::key::SecretKey;
+		use {RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
+			 SemanticError};
+
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
+		let invoice_template = RawInvoice {
+			hrp: RawHrp {
+				currency: Currency::Bitcoin,
+				raw_amount: None,
+				si_prefix: None,
+			},
+			data: RawDataPart {
+				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+				tagged_fields: vec ! [
+					PaymentHash(Sha256(sha256::Hash::from_hex(
+						"0001020304050607080900010203040506070809000102030405060708090102"
+					).unwrap())).into(),
+					Description(
+						::Description::new(
+							"Please consider supporting this project".to_owned()
+						).unwrap()
+					).into(),
+				],
+			},
+		};
+
+		// Missing features
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Missing feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Including payment secret and feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// No payment secret or features
+		let invoice = {
+			let invoice = invoice_template.clone();
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// No payment secret or feature bits
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert!(Invoice::from_signed(invoice).is_ok());
+
+		// Missing payment secret
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+
+		// Multiple payment secrets
+		let invoice = {
+			let mut invoice = invoice_template.clone();
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+		}.unwrap();
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::MultiplePaymentSecrets));
 	}
 
 	#[test]
@@ -1624,14 +1776,16 @@ mod test {
 			.route(route_1.clone())
 			.route(route_2.clone())
 			.description_hash(sha256::Hash::from_slice(&[3;32][..]).unwrap())
-			.payment_hash(sha256::Hash::from_slice(&[21;32][..]).unwrap());
+			.payment_hash(sha256::Hash::from_slice(&[21;32][..]).unwrap())
+			.payment_secret(PaymentSecret([42; 32]))
+			.basic_mpp();
 
 		let invoice = builder.clone().build_signed(|hash| {
 			secp_ctx.sign_recoverable(hash, &private_key)
 		}).unwrap();
 
 		assert!(invoice.check_signature().is_ok());
-		assert_eq!(invoice.tagged_fields().count(), 8);
+		assert_eq!(invoice.tagged_fields().count(), 10);
 
 		assert_eq!(invoice.amount_pico_btc(), Some(123));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
@@ -1649,6 +1803,8 @@ mod test {
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
+		assert_eq!(invoice.payment_secret(), Some(&PaymentSecret([42; 32])));
+		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
 
 		let raw_invoice = builder.build_raw().unwrap();
 		assert_eq!(raw_invoice, *invoice.into_signed_raw().raw_invoice())
