@@ -9,6 +9,7 @@
 
 macro_rules! encode_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+		#[allow(unused_imports)]
 		use util::ser::{BigSize, LengthCalculatingWriter};
 		$(
 			BigSize($type).write($stream)?;
@@ -23,6 +24,7 @@ macro_rules! encode_tlv {
 macro_rules! encode_varint_length_prefixed_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
 		use util::ser::{BigSize, LengthCalculatingWriter};
+		#[allow(unused_mut)]
 		let mut len = LengthCalculatingWriter(0);
 		{
 			$(
@@ -176,6 +178,64 @@ macro_rules! impl_writeable_len_match {
 	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
 		impl_writeable_len_match!($struct, ==, { $({ $match, $length }),* }, { $($field),* });
 	}
+}
+
+/// Write out two bytes to indicate the version of an object.
+/// $this_version represents a unique version of a type. Incremented whenever the type's
+///               serialization format has changed or has a new interpretation. Used by a type's
+///               reader to determine how to interpret fields or if it can understand a serialized
+///               object.
+/// $min_version_that_can_read_this is the minimum reader version which can understand this
+///                                 serialized object. Previous versions will simply err with a
+///                                 DecodeError::UnknownVersion.
+///
+/// Updates to either $this_version or $min_version_that_can_read_this should be included in
+/// release notes.
+///
+/// Both version fields can be specific to this type of object.
+macro_rules! write_ver_prefix {
+	($stream: expr, $this_version: expr, $min_version_that_can_read_this: expr) => {
+		$stream.write_all(&[$this_version; 1])?;
+		$stream.write_all(&[$min_version_that_can_read_this; 1])?;
+	}
+}
+
+/// Writes out a suffix to an object which contains potentially backwards-compatible, optional
+/// fields which old nodes can happily ignore.
+///
+/// It is written out in TLV format and, as with all TLV fields, unknown even fields cause a
+/// DecodeError::UnknownRequiredFeature error, with unknown odd fields ignored.
+///
+/// This is the preferred method of adding new fields that old nodes can ignore and still function
+/// correctly.
+macro_rules! write_tlv_fields {
+	($stream: expr, {$(($type: expr, $field: expr)),*}) => {
+		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*});
+	}
+}
+
+/// Reads a prefix added by write_ver_prefix!(), above. Takes the current version of the
+/// serialization logic for this object. This is compared against the
+/// $min_version_that_can_read_this added by write_ver_prefix!().
+macro_rules! read_ver_prefix {
+	($stream: expr, $this_version: expr) => { {
+		let ver: u8 = Readable::read($stream)?;
+		let min_ver: u8 = Readable::read($stream)?;
+		if min_ver > $this_version {
+			return Err(DecodeError::UnknownVersion);
+		}
+		ver
+	} }
+}
+
+/// Reads a suffix added by write_tlv_fields.
+macro_rules! read_tlv_fields {
+	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),*}, {$(($type: expr, $field: ident)),*}) => { {
+		let tlv_len = ::util::ser::BigSize::read($stream)?;
+		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
+		decode_tlv!(&mut rd, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
+		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+	} }
 }
 
 #[cfg(test)]

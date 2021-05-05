@@ -502,9 +502,6 @@ enum OnchainEvent {
 	},
 }
 
-const SERIALIZATION_VERSION: u8 = 1;
-const MIN_SERIALIZATION_VERSION: u8 = 1;
-
 #[cfg_attr(any(test, feature = "fuzztarget", feature = "_test_utils"), derive(PartialEq))]
 #[derive(Clone)]
 pub(crate) enum ChannelMonitorUpdateStep {
@@ -805,17 +802,17 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 
 impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		//TODO: We still write out all the serialization here manually instead of using the fancy
-		//serialization framework we have, we should migrate things over to it.
-		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
-		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
-
 		self.inner.lock().unwrap().write(writer)
 	}
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
 impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
 		self.latest_update_id.write(writer)?;
 
 		// Set in initial Channel-object creation, so should always be set by now:
@@ -990,6 +987,8 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
+
+		write_tlv_fields!(writer, {});
 
 		Ok(())
 	}
@@ -2754,11 +2753,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			}
 		}
 
-		let _ver: u8 = Readable::read(reader)?;
-		let min_ver: u8 = Readable::read(reader)?;
-		if min_ver > SERIALIZATION_VERSION {
-			return Err(DecodeError::UnknownVersion);
-		}
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let latest_update_id: u64 = Readable::read(reader)?;
 		let commitment_transaction_number_obscure_factor = <U48 as Readable>::read(reader)?.0;
@@ -2978,6 +2973,8 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
+
+		read_tlv_fields!(reader, {}, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());

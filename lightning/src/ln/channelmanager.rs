@@ -4568,8 +4568,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
-		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
-		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.genesis_hash.write(writer)?;
 		{
@@ -4651,6 +4650,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		for session_priv in pending_outbound_payments.iter() {
 			session_priv.write(writer)?;
 		}
+
+		write_tlv_fields!(writer, {});
 
 		Ok(())
 	}
@@ -4775,11 +4776,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
         L::Target: Logger,
 {
 	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let _ver: u8 = Readable::read(reader)?;
-		let min_ver: u8 = Readable::read(reader)?;
-		if min_ver > SERIALIZATION_VERSION {
-			return Err(DecodeError::UnknownVersion);
-		}
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let best_block_height: u32 = Readable::read(reader)?;
@@ -4898,6 +4895,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
+
+		read_tlv_fields!(reader, {}, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());

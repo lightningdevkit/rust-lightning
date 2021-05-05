@@ -4375,8 +4375,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
-		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.user_id.write(writer)?;
 		self.config.write(writer)?;
@@ -4565,6 +4564,9 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.commitment_secrets.write(writer)?;
 
 		self.channel_update_status.write(writer)?;
+
+		write_tlv_fields!(writer, {});
+
 		Ok(())
 	}
 }
@@ -4573,11 +4575,7 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		where K::Target: KeysInterface<Signer = Signer> {
 	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
-		let _ver: u8 = Readable::read(reader)?;
-		let min_ver: u8 = Readable::read(reader)?;
-		if min_ver > SERIALIZATION_VERSION {
-			return Err(DecodeError::UnknownVersion);
-		}
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let user_id = Readable::read(reader)?;
 		let config: ChannelConfig = Readable::read(reader)?;
@@ -4738,6 +4736,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let commitment_secrets = Readable::read(reader)?;
 
 		let channel_update_status = Readable::read(reader)?;
+
+		read_tlv_fields!(reader, {}, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
