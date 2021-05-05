@@ -604,6 +604,12 @@ pub struct ChannelDetails {
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
 	pub channel_id: [u8; 32],
+	/// The Channel's funding transaction output, if we've negotiated the funding transaction with
+	/// our counterparty already.
+	///
+	/// Note that, if this has been set, `channel_id` will be equivalent to
+	/// `funding_txo.unwrap().to_channel_id()`.
+	pub funding_txo: Option<OutPoint>,
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
@@ -631,7 +637,8 @@ pub struct ChannelDetails {
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) no monitor update failure is pending resolution.
 	pub is_live: bool,
-
+	/// True if this channel is (or will be) publicly-announced.
+	pub is_public: bool,
 	/// Information on the fees and requirements that the counterparty requires when forwarding
 	/// payments to us through this channel.
 	pub counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
@@ -954,6 +961,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
+					funding_txo: channel.get_funding_txo(),
 					short_channel_id: channel.get_short_channel_id(),
 					remote_network_id: channel.get_counterparty_node_id(),
 					counterparty_features: InitFeatures::empty(),
@@ -962,6 +970,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
 					is_live: channel.is_live(),
+					is_public: channel.should_announce(),
 					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
 			}
