@@ -1634,6 +1634,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -1953,6 +1954,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -2002,6 +2004,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -2068,6 +2071,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -2206,6 +2210,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -2336,6 +2341,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
@@ -2469,6 +2475,7 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 200_000_000,
 			inbound_capacity_msat: 0,
+			is_outbound: true, is_funding_locked: true,
 			is_live: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];

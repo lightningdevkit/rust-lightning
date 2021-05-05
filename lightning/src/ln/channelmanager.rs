@@ -634,8 +634,18 @@ pub struct ChannelDetails {
 	/// Note that there are some corner cases not fully handled here, so the actual available
 	/// inbound capacity may be slightly higher than this.
 	pub inbound_capacity_msat: u64,
+	/// True if the channel was initiated (and thus funded) by us.
+	pub is_outbound: bool,
+	/// True if the channel is confirmed, funding_locked messages have been exchanged, and the
+	/// channel is not currently being shut down. `funding_locked` message exchange implies the
+	/// required confirmation count has been reached (and we were connected to the peer at some
+	/// point after the funding transaction received enough confirmations).
+	pub is_funding_locked: bool,
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
-	/// the peer is connected, and (c) no monitor update failure is pending resolution.
+	/// the peer is connected, (c) no monitor update failure is pending resolution, and (d) the
+	/// channel is not currently negotiating a shutdown.
+	///
+	/// This is a strict superset of `is_funding_locked`.
 	pub is_live: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
@@ -969,6 +979,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					inbound_capacity_msat,
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
+					is_outbound: channel.is_outbound(),
+					is_funding_locked: channel.is_usable(),
 					is_live: channel.is_live(),
 					is_public: channel.should_announce(),
 					counterparty_forwarding_info: channel.counterparty_forwarding_info(),

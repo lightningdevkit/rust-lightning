@@ -213,6 +213,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
 								inbound_capacity_msat: 0,
+								is_outbound: true,
+								is_funding_locked: true,
 								is_live: true,
 								is_public: true,
 								outbound_capacity_msat: 0,
