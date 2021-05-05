@@ -308,8 +308,13 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
 impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
 		self.destination_script.write(writer)?;
 		self.holder_commitment.write(writer)?;
 		self.holder_htlc_sigs.write(writer)?;
@@ -355,12 +360,16 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		self.latest_height.write(writer)?;
+
+		write_tlv_fields!(writer, {});
 		Ok(())
 	}
 }
 
 impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+
 		let destination_script = Readable::read(reader)?;
 
 		let holder_commitment = Readable::read(reader)?;
@@ -420,6 +429,8 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
 		let latest_height = Readable::read(reader)?;
+
+		read_tlv_fields!(reader, {}, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
