@@ -563,7 +563,7 @@ pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
 pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 
 /// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
-/// HTLC's CLTV. The current default represents roughly six hours of blocks at six blocks/hour.
+/// HTLC's CLTV. The current default represents roughly seven hours of blocks at six blocks/hour.
 ///
 /// This can be increased (but not decreased) through [`ChannelConfig::cltv_expiry_delta`]
 ///
@@ -572,7 +572,7 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 // i.e. the node we forwarded the payment on to should always have enough room to reliably time out
 // the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 // CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
-pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 6;
+pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*7;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
