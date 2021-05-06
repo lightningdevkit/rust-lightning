@@ -1285,20 +1285,17 @@ impl Writeable for OnionHopData {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
 					(6, short_channel_id)
-				});
+				}, { });
 			},
-			OnionHopDataFormat::FinalNode { payment_data: Some(ref final_data) } => {
-				if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
-				encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
-					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
-					(8, final_data)
-				});
-			},
-			OnionHopDataFormat::FinalNode { payment_data: None } => {
+			OnionHopDataFormat::FinalNode { ref payment_data } => {
+				if let Some(final_data) = payment_data {
+					if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
+				}
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
+				}, {
+					(8, payment_data)
 				});
 			},
 		}
