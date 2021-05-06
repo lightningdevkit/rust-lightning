@@ -742,7 +742,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				self.pending_claim_requests.insert(txid, claim_material);
-				log_trace!(logger, "Broadcast onchain {}", log_tx!(tx));
+				log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(&tx);
 			}
 		}
@@ -859,7 +859,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, claim_material) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &*fee_estimator, &*logger) {
-				log_trace!(logger, "Broadcast onchain {}", log_tx!(bump_tx));
+				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 				if let Some(claim_material) = self.pending_claim_requests.get_mut(first_claim_txid) {
 					claim_material.height_timer = new_timer;
@@ -926,6 +926,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &claim_material, &&*fee_estimator, &&*logger) {
 				claim_material.height_timer = new_timer;
 				claim_material.feerate_previous = new_feerate;
+				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 			}
 		}
