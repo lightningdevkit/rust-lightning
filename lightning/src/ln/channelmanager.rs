@@ -2540,6 +2540,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				},
 			}
 			if let Some(tx) = funding_broadcastable {
+				log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
 				self.tx_broadcaster.broadcast_transaction(&tx);
 			}
 			if let Some(msg) = funding_locked {
@@ -2695,6 +2696,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
+		log_info!(self.logger, "Broadcasting funding transaction with txid {}", funding_tx.txid());
 		self.tx_broadcaster.broadcast_transaction(&funding_tx);
 		Ok(())
 	}
@@ -2809,7 +2811,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		if let Some(broadcast_tx) = tx {
-			log_trace!(self.logger, "Broadcast onchain {}", log_tx!(broadcast_tx));
+			log_info!(self.logger, "Broadcasting {}", log_tx!(broadcast_tx));
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
 		}
 		if let Some(chan) = chan_option {

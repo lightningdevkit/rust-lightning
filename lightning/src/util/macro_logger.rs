@@ -100,15 +100,15 @@ impl<'a> std::fmt::Display for DebugTx<'a> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
 			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
 					(self.0.input[0].sequence >> 8*3) as u8 == 0x80 {
-				write!(f, "commitment tx")?;
+				write!(f, "commitment tx ")?;
 			} else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 {
-				write!(f, "closing tx")?;
+				write!(f, "closing tx ")?;
 			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) &&
 					self.0.input[0].witness.len() == 5 {
-				write!(f, "HTLC-timeout tx")?;
+				write!(f, "HTLC-timeout tx ")?;
 			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) &&
 					self.0.input[0].witness.len() == 5 {
-				write!(f, "HTLC-success tx")?;
+				write!(f, "HTLC-success tx ")?;
 			} else {
 				for inp in &self.0.input {
 					if !inp.witness.is_empty() {
@@ -116,11 +116,13 @@ impl<'a> std::fmt::Display for DebugTx<'a> {
 						else if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) { write!(f, "timeout-")?; break }
 					}
 				}
-				write!(f, "tx")?;
+				write!(f, "tx ")?;
 			}
 		} else {
-			write!(f, "INVALID TRANSACTION")?;
+			debug_assert!(false, "We should never generate unknown transaction types");
+			write!(f, "unknown tx type ").unwrap();
 		}
+		write!(f, "with txid {}", self.0.txid())?;
 		Ok(())
 	}
 }

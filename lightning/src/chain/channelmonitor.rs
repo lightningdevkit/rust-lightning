@@ -1568,6 +1568,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					L::Target: Logger,
 	{
 		for tx in self.get_latest_holder_commitment_txn(logger).iter() {
+			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
 			broadcaster.broadcast_transaction(tx);
 		}
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
