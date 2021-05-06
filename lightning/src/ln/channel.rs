@@ -4565,7 +4565,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.channel_update_status.write(writer)?;
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {}, {});
 
 		Ok(())
 	}

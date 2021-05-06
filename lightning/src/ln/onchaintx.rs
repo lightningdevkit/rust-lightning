@@ -361,7 +361,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 		self.latest_height.write(writer)?;
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {}, {});
 		Ok(())
 	}
 }
