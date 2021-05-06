@@ -3301,39 +3301,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 				}
 
-				let our_node_id = self.get_our_node_id();
-				let (announcement, our_bitcoin_sig) =
-					try_chan_entry!(self, chan.get_mut().get_channel_announcement(our_node_id.clone(), self.genesis_hash.clone()), channel_state, chan);
-
-				let were_node_one = announcement.node_id_1 == our_node_id;
-				let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-				{
-					let their_node_key = if were_node_one { &announcement.node_id_2 } else { &announcement.node_id_1 };
-					let their_bitcoin_key = if were_node_one { &announcement.bitcoin_key_2 } else { &announcement.bitcoin_key_1 };
-					match (self.secp_ctx.verify(&msghash, &msg.node_signature, their_node_key),
-						   self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, their_bitcoin_key)) {
-						(Err(e), _) => {
-							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify node_signature: {:?}. Maybe using different node_secret for transport and routing msg? UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}", e, &announcement, their_node_key));
-							try_chan_entry!(self, Err(chan_err), channel_state, chan);
-						},
-						(_, Err(e)) => {
-							let chan_err: ChannelError = ChannelError::Close(format!("Bad announcement_signatures. Failed to verify bitcoin_signature: {:?}. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})", e, &announcement, their_bitcoin_key));
-							try_chan_entry!(self, Err(chan_err), channel_state, chan);
-						},
-						_ => {}
-					}
-				}
-
-				let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
-
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-					msg: msgs::ChannelAnnouncement {
-						node_signature_1: if were_node_one { our_node_sig } else { msg.node_signature },
-						node_signature_2: if were_node_one { msg.node_signature } else { our_node_sig },
-						bitcoin_signature_1: if were_node_one { our_bitcoin_sig } else { msg.bitcoin_signature },
-						bitcoin_signature_2: if were_node_one { msg.bitcoin_signature } else { our_bitcoin_sig },
-						contents: announcement,
-					},
+					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone(), msg), channel_state, chan),
 					update_msg: self.get_channel_update(chan.get()).unwrap(), // can only fail if we're not in a ready state
 				});
 			},
