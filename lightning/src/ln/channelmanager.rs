@@ -1933,19 +1933,24 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// smaller than 500:
 	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 500;
 
-	/// Generates a signed node_announcement from the given arguments and creates a
-	/// BroadcastNodeAnnouncement event. Note that such messages will be ignored unless peers have
-	/// seen a channel_announcement from us (ie unless we have public channels open).
+	/// Regenerates channel_announcements and generates a signed node_announcement from the given
+	/// arguments, providing them in corresponding events via
+	/// [`get_and_clear_pending_msg_events`], if at least one public channel has been confirmed
+	/// on-chain. This effectively re-broadcasts all channel announcements and sends our node
+	/// announcement to ensure that the lightning P2P network is aware of the channels we have and
+	/// our network addresses.
 	///
-	/// RGB is a node "color" and alias is a printable human-readable string to describe this node
-	/// to humans. They carry no in-protocol meaning.
+	/// `rgb` is a node "color" and `alias` is a printable human-readable string to describe this
+	/// node to humans. They carry no in-protocol meaning.
 	///
-	/// addresses represent the set (possibly empty) of socket addresses on which this node accepts
-	/// incoming connections. These will be broadcast to the network, publicly tying these
-	/// addresses together. If you wish to preserve user privacy, addresses should likely contain
-	/// only Tor Onion addresses.
+	/// `addresses` represent the set (possibly empty) of socket addresses on which this node
+	/// accepts incoming connections. These will be included in the node_announcement, publicly
+	/// tying these addresses together and to this node. If you wish to preserve user privacy,
+	/// addresses should likely contain only Tor Onion addresses.
 	///
-	/// Panics if addresses is absurdly large (more than 500).
+	/// Panics if `addresses` is absurdly large (more than 500).
+	///
+	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
 	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -1966,14 +1971,37 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
+		let node_announce_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
 
-		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastNodeAnnouncement {
-			msg: msgs::NodeAnnouncement {
-				signature: self.secp_ctx.sign(&msghash, &self.our_network_key),
-				contents: announcement
-			},
-		});
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+
+		let mut announced_chans = false;
+		for (_, chan) in channel_state.by_id.iter() {
+			if let Some(msg) = chan.get_signed_channel_announcement(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone()) {
+				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+					msg,
+					update_msg: match self.get_channel_update(chan) {
+						Ok(msg) => msg,
+						Err(_) => continue,
+					},
+				});
+				announced_chans = true;
+			} else {
+				// If the channel is not public or has not yet reached funding_locked, check the
+				// next channel. If we don't yet have any public channels, we'll skip the broadcast
+				// below as peers may not accept it without channels on chain first.
+			}
+		}
+
+		if announced_chans {
+			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastNodeAnnouncement {
+				msg: msgs::NodeAnnouncement {
+					signature: node_announce_sig,
+					contents: announcement
+				},
+			});
+		}
 	}
 
 	/// Processes HTLCs which are pending waiting on random forward delay.
