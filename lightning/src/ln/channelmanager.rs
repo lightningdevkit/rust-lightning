@@ -1743,12 +1743,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// only Tor Onion addresses.
 	///
 	/// Panics if addresses is absurdly large (more than 500).
-	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], addresses: Vec<NetAddress>) {
+	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
 		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
 
 		if addresses.len() > 500 {
 			panic!("More than half the message size was taken up by public addresses!");
 		}
+
+		// While all existing nodes handle unsorted addresses just fine, the spec requires that
+		// addresses be sorted for future compatibility.
+		addresses.sort_by_key(|addr| addr.get_id());
 
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features: NodeFeatures::known(),

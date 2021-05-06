@@ -390,6 +390,17 @@ pub enum NetAddress {
 	},
 }
 impl NetAddress {
+	/// Gets the ID of this address type. Addresses in node_announcement messages should be sorted
+	/// by this.
+	pub(crate) fn get_id(&self) -> u8 {
+		match self {
+			&NetAddress::IPv4 {..} => { 1 },
+			&NetAddress::IPv6 {..} => { 2 },
+			&NetAddress::OnionV2 {..} => { 3 },
+			&NetAddress::OnionV3 {..} => { 4 },
+		}
+	}
+
 	/// Strict byte-length of address descriptor, 1-byte type not recorded
 	fn len(&self) -> u16 {
 		match self {
