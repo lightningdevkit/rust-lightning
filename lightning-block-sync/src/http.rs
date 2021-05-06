@@ -24,6 +24,12 @@ use std::net::TcpStream;
 /// Timeout for operations on TCP streams.
 const TCP_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Timeout for reading the first byte of a response. This is separate from the general read
+/// timeout as it is not uncommon for Bitcoin Core to be blocked waiting on UTXO cache flushes for
+/// upwards of a minute or more. Note that we always retry once when we time out, so the maximum
+/// time we allow Bitcoin Core to block for is twice this value.
+const TCP_STREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Maximum HTTP message header size in bytes.
 const MAX_HTTP_MESSAGE_HEADER_SIZE: usize = 8192;
 
@@ -209,25 +215,44 @@ impl HttpClient {
 		#[cfg(not(feature = "tokio"))]
 		let mut reader = std::io::BufReader::new(limited_stream);
 
-		macro_rules! read_line { () => { {
-			let mut line = String::new();
-			#[cfg(feature = "tokio")]
-			let bytes_read = reader.read_line(&mut line).await?;
-			#[cfg(not(feature = "tokio"))]
-			let bytes_read = reader.read_line(&mut line)?;
+		macro_rules! read_line {
+			() => { read_line!(0) };
+			($retry_count: expr) => { {
+				let mut line = String::new();
+				let mut timeout_count: u64 = 0;
+				let bytes_read = loop {
+					#[cfg(feature = "tokio")]
+					let read_res = reader.read_line(&mut line).await;
+					#[cfg(not(feature = "tokio"))]
+					let read_res = reader.read_line(&mut line);
+					match read_res {
+						Ok(bytes_read) => break bytes_read,
+						Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							timeout_count += 1;
+							if timeout_count > $retry_count {
+								return Err(e);
+							} else {
+								continue;
+							}
+						}
+						Err(e) => return Err(e),
+					}
+				};
 
-			match bytes_read {
-				0 => None,
-				_ => {
-					// Remove trailing CRLF
-					if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
-					Some(line)
-				},
-			}
-		} } }
+				match bytes_read {
+					0 => None,
+					_ => {
+						// Remove trailing CRLF
+						if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
+						Some(line)
+					},
+				}
+			} }
+		}
 
 		// Read and parse status line
-		let status_line = read_line!()
+		// Note that we allow retrying a few times to reach TCP_STREAM_RESPONSE_TIMEOUT.
+		let status_line = read_line!(TCP_STREAM_RESPONSE_TIMEOUT.as_secs() / TCP_STREAM_TIMEOUT.as_secs())
 			.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no status line"))?;
 		let status = HttpStatus::parse(&status_line)?;
 
