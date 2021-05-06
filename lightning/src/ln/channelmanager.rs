@@ -646,7 +646,7 @@ pub struct ChannelDetails {
 	/// channel is not currently negotiating a shutdown.
 	///
 	/// This is a strict superset of `is_funding_locked`.
-	pub is_live: bool,
+	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
 	/// Information on the fees and requirements that the counterparty requires when forwarding
@@ -981,7 +981,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					user_id: channel.get_user_id(),
 					is_outbound: channel.is_outbound(),
 					is_funding_locked: channel.is_usable(),
-					is_live: channel.is_live(),
+					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
 					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
@@ -1005,8 +1005,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Gets the list of usable channels, in random order. Useful as an argument to
 	/// get_route to ensure non-announced channels are used.
 	///
-	/// These are guaranteed to have their is_live value set to true, see the documentation for
-	/// ChannelDetails::is_live for more info on exactly what the criteria are.
+	/// These are guaranteed to have their [`ChannelDetails::is_usable`] value set to true, see the
+	/// documentation for [`ChannelDetails::is_usable`] for more info on exactly what the criteria
+	/// are.
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
