@@ -206,7 +206,7 @@ pub(crate) const CLTV_SHARED_CLAIM_BUFFER: u32 = 12;
 /// HTLC-Success transaction.
 /// In other words, this is an upper bound on how many blocks we think it can take us to get a
 /// transaction confirmed (and we use it in a few more, equivalent, places).
-pub(crate) const CLTV_CLAIM_BUFFER: u32 = 6;
+pub(crate) const CLTV_CLAIM_BUFFER: u32 = 18;
 /// Number of blocks by which point we expect our counterparty to have seen new blocks on the
 /// network and done a full update_fail_htlc/commitment_signed dance (+ we've updated all our
 /// copies of ChannelMonitors, including watchtowers). We could enforce the contract by failing

@@ -563,7 +563,7 @@ pub const BREAKDOWN_TIMEOUT: u16 = 6 * 24;
 pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 
 /// The minimum number of blocks between an inbound HTLC's CLTV and the corresponding outbound
-/// HTLC's CLTV. The current default represents roughly six hours of blocks at six blocks/hour.
+/// HTLC's CLTV. The current default represents roughly seven hours of blocks at six blocks/hour.
 ///
 /// This can be increased (but not decreased) through [`ChannelConfig::cltv_expiry_delta`]
 ///
@@ -572,13 +572,16 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 // i.e. the node we forwarded the payment on to should always have enough room to reliably time out
 // the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 // CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
-pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6 * 6;
+pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*7;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
 /// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
 /// this value.
-pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER;
+// Note that we fail if exactly HTLC_FAIL_BACK_BUFFER + 1 was used, so we need to add one for
+// any payments to succeed. Further, we don't want payments to fail if a block was found while
+// a payment was being routed, so we add an extra block to be safe.
+pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER + 3;
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
@@ -590,7 +593,7 @@ pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER;
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
 
-// Check for ability of an attacker to make us fail on-chain by delaying inbound claim. See
+// Check for ability of an attacker to make us fail on-chain by delaying an HTLC claim. See
 // ChannelMontior::would_broadcast_at_height for a description of why this is needed.
 #[deny(const_err)]
 #[allow(dead_code)]

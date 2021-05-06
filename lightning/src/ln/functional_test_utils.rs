@@ -1144,7 +1144,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 	claim_payment_along_route(origin_node, &[expected_route], false, our_payment_preimage);
 }
 
-pub const TEST_FINAL_CLTV: u32 = 50;
+pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;

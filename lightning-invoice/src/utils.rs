@@ -92,6 +92,7 @@ where
 mod test {
 	use {Currency, Description, InvoiceDescription};
 	use lightning::ln::PaymentHash;
+	use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
@@ -107,7 +108,7 @@ mod test {
 		let _chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 		let invoice = ::utils::create_invoice_from_channelmanager(&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string()).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), 9);
+		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
 		let mut route_hints = invoice.routes().clone();

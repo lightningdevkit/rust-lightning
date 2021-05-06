@@ -4038,7 +4038,8 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	};
 	connect_block(&nodes[0], &block);
 	connect_block(&nodes[1], &block);
-	for _ in CHAN_CONFIRM_DEPTH + 2 ..TEST_FINAL_CLTV + CHAN_CONFIRM_DEPTH + 2 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS {
+	let block_count = TEST_FINAL_CLTV + CHAN_CONFIRM_DEPTH + 2 - CLTV_CLAIM_BUFFER - LATENCY_GRACE_PERIOD_BLOCKS;
+	for _ in CHAN_CONFIRM_DEPTH + 2..block_count {
 		block.header.prev_blockhash = block.block_hash();
 		connect_block(&nodes[0], &block);
 		connect_block(&nodes[1], &block);
@@ -4055,9 +4056,9 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
-	// 100_000 msat as u64, followed by a height of TEST_FINAL_CLTV + 2 as u32
+	// 100_000 msat as u64, followed by the height at which we failed back above
 	let mut expected_failure_data = byte_utils::be64_to_array(100_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(TEST_FINAL_CLTV + 2));
+	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(block_count - 1));
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
 }
 
@@ -5182,7 +5183,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
-	assert_eq!(htlc_updates.update_fail_htlcs[0].htlc_id, 1);
+	let first_htlc_id = htlc_updates.update_fail_htlcs[0].htlc_id;
 	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
 	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
 	check_added_monitors!(nodes[1], 1);
@@ -5207,7 +5208,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
-	assert_eq!(updates.update_fulfill_htlcs[0].htlc_id, 0);
+	assert_ne!(updates.update_fulfill_htlcs[0].htlc_id, first_htlc_id);
 	assert!(updates.update_fail_malformed_htlcs.is_empty());
 	check_added_monitors!(nodes[1], 1);
 
@@ -7743,9 +7744,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
-	// Lock HTLC in both directions
-	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3_000_000).0;
-	route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
+	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
+	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
+		&nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 3_000_000, 50, nodes[0].logger).unwrap();
+	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
+	let route = get_route(&nodes[1].node.get_our_node_id(), &nodes[1].net_graph_msg_handler.network_graph.read().unwrap(),
+		&nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 3_000_000, 50, nodes[0].logger).unwrap();
+	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
@@ -8058,7 +8063,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 
 	// Broadcast set of revoked txn on A
-	connect_blocks(&nodes[0], 52 - CHAN_CONFIRM_DEPTH);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + 2 - CHAN_CONFIRM_DEPTH);
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
