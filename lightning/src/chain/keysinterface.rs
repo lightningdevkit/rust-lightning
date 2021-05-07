@@ -704,10 +704,15 @@ impl BaseSign for InMemorySigner {
 	}
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
 impl Sign for InMemorySigner {}
 
 impl Writeable for InMemorySigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
 		self.funding_key.write(writer)?;
 		self.revocation_base_key.write(writer)?;
 		self.payment_key.write(writer)?;
@@ -718,12 +723,16 @@ impl Writeable for InMemorySigner {
 		self.channel_value_satoshis.write(writer)?;
 		self.channel_keys_id.write(writer)?;
 
+		write_tlv_fields!(writer, {}, {});
+
 		Ok(())
 	}
 }
 
 impl Readable for InMemorySigner {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+
 		let funding_key = Readable::read(reader)?;
 		let revocation_base_key = Readable::read(reader)?;
 		let payment_key = Readable::read(reader)?;
@@ -738,6 +747,8 @@ impl Readable for InMemorySigner {
 			                                     &payment_key, &delayed_payment_base_key,
 			                                     &htlc_base_key);
 		let keys_id = Readable::read(reader)?;
+
+		read_tlv_fields!(reader, {}, {});
 
 		Ok(InMemorySigner {
 			funding_key,
