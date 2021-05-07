@@ -40,7 +40,7 @@ use core::ops::Deref;
 use chain;
 
 // Maximum size of a serialized HTLCOutputInCommitment
-const HTLC_OUTPUT_IN_COMMITMENT_SIZE: usize = 1 + 8 + 4 + 32 + 5;
+pub(crate) const HTLC_OUTPUT_IN_COMMITMENT_SIZE: usize = 1 + 8 + 4 + 32 + 5;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
 
