@@ -25,6 +25,7 @@ use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, HTLC_OUTPUT_IN_COMM
 use ln::chan_utils;
 use ln::msgs::DecodeError;
 use ln::onchaintx::OnchainTxHandler;
+use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use chain::keysinterface::Sign;
 use util::byte_utils;
 use util::logger::Logger;
@@ -791,4 +792,108 @@ pub(crate) fn get_witnesses_weight(inputs: &[InputDescriptors]) -> usize {
 		};
 	}
 	tx_weight
+}
+
+/// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
+/// weight. We start with the highest priority feerate returned by the node's fee estimator then
+/// fall-back to lower priorities until we have enough value available to suck from.
+///
+/// If the proposed fee is less than the available spent output's values, we return the proposed
+/// fee and the corresponding updated feerate. If the proposed fee is equal or more than the
+/// available spent output's values, we return nothing
+fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: usize, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	where F::Target: FeeEstimator,
+	      L::Target: Logger,
+{
+	let mut updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64;
+	let mut fee = updated_feerate * (predicted_weight as u64) / 1000;
+	if input_amounts <= fee {
+		updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) as u64;
+		fee = updated_feerate * (predicted_weight as u64) / 1000;
+		if input_amounts <= fee {
+			updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u64;
+			fee = updated_feerate * (predicted_weight as u64) / 1000;
+			if input_amounts <= fee {
+				log_error!(logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
+					fee, input_amounts);
+				None
+			} else {
+				log_warn!(logger, "Used low priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+					input_amounts);
+				Some((fee, updated_feerate))
+			}
+		} else {
+			log_warn!(logger, "Used medium priority fee for on-chain punishment tx as high priority fee was more than the entire claim balance ({} sat)",
+				input_amounts);
+			Some((fee, updated_feerate))
+		}
+	} else {
+		Some((fee, updated_feerate))
+	}
+}
+
+/// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
+/// weight. If feerates proposed by the fee-estimator have been increasing since last fee-bumping
+/// attempt, use them. Otherwise, blindly bump the feerate by 25% of the previous feerate. We also
+/// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust
+/// the new fee to meet the RBF policy requirement.
+fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	where F::Target: FeeEstimator,
+	      L::Target: Logger,
+{
+	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
+	let new_fee = if let Some((new_fee, _)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+		let updated_feerate = new_fee / (predicted_weight as u64 * 1000);
+		if updated_feerate > previous_feerate {
+			new_fee
+		} else {
+			// ...else just increase the previous feerate by 25% (because that's a nice number)
+			let new_fee = previous_feerate * (predicted_weight as u64) / 750;
+			if input_amounts <= new_fee {
+				log_trace!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
+				return None;
+			}
+			new_fee
+		}
+	} else {
+		log_trace!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);
+		return None;
+	};
+
+	let previous_fee = previous_feerate * (predicted_weight as u64) / 1000;
+	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * (predicted_weight as u64) / 1000;
+	// BIP 125 Opt-in Full Replace-by-Fee Signaling
+	// 	* 3. The replacement transaction pays an absolute fee of at least the sum paid by the original transactions.
+	//	* 4. The replacement transaction must also pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting.
+	let new_fee = if new_fee < previous_fee + min_relay_fee {
+		new_fee + previous_fee + min_relay_fee - new_fee
+	} else {
+		new_fee
+	};
+	Some((new_fee, new_fee * 1000 / (predicted_weight as u64)))
+}
+
+/// Deduce a new proposed fee from the claiming transaction output value.
+/// If the new proposed fee is superior to the consumed outpoint's value, burn everything in miner's
+/// fee to deter counterparties attacker.
+pub(crate) fn compute_output_value<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	where F::Target: FeeEstimator,
+	      L::Target: Logger,
+{
+	// If old feerate is 0, first iteration of this claim, use normal fee calculation
+	if previous_feerate != 0 {
+		if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, previous_feerate, fee_estimator, logger) {
+			// If new computed fee is superior at the whole claimable amount burn all in fees
+			if new_fee > input_amounts {
+				return Some((0, feerate));
+			} else {
+				return Some((input_amounts - new_fee, feerate));
+			}
+		}
+	} else {
+		if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+				return Some((input_amounts - new_fee, feerate));
+		}
+	}
+	None
 }
