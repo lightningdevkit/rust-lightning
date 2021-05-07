@@ -7582,8 +7582,8 @@ fn test_announce_disable_channels() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.timer_tick_occurred(); // dirty -> stagged
-	nodes[0].node.timer_tick_occurred(); // staged -> fresh
+	nodes[0].node.timer_tick_occurred(); // enabled -> disabledstagged
+	nodes[0].node.timer_tick_occurred(); // disabledstaged -> disabled
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
 	for e in msg_events {

@@ -45,7 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
-use ln::channel::{Channel, ChannelError};
+use ln::channel::{Channel, ChannelError, UpdateStatus};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -2127,17 +2127,28 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		for (_, chan) in channel_state.by_id.iter_mut() {
-			if chan.is_disabled_staged() && !chan.is_live() {
-				if let Ok(update) = self.get_channel_update(&chan) {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-						msg: update
-					});
-				}
-				chan.to_fresh();
-			} else if chan.is_disabled_staged() && chan.is_live() {
-				chan.to_fresh();
-			} else if chan.is_disabled_marked() {
-				chan.to_disabled_staged();
+			match chan.get_update_status() {
+				UpdateStatus::Enabled if !chan.is_live() => chan.set_update_status(UpdateStatus::DisabledStaged),
+				UpdateStatus::Disabled if chan.is_live() => chan.set_update_status(UpdateStatus::EnabledStaged),
+				UpdateStatus::DisabledStaged if chan.is_live() => chan.set_update_status(UpdateStatus::Enabled),
+				UpdateStatus::EnabledStaged if !chan.is_live() => chan.set_update_status(UpdateStatus::Disabled),
+				UpdateStatus::DisabledStaged if !chan.is_live() => {
+					if let Ok(update) = self.get_channel_update(&chan) {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							msg: update
+						});
+					}
+					chan.set_update_status(UpdateStatus::Disabled);
+				},
+				UpdateStatus::EnabledStaged if chan.is_live() => {
+					if let Ok(update) = self.get_channel_update(&chan) {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							msg: update
+						});
+					}
+					chan.set_update_status(UpdateStatus::Enabled);
+				},
+				_ => {},
 			}
 		}
 	}
@@ -3916,7 +3927,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 						// on peer disconnect here, there will need to be corresponding changes in
 						// reestablish logic.
 						let failed_adds = chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
-						chan.to_disabled_marked();
 						if !failed_adds.is_empty() {
 							let chan_update = self.get_channel_update(&chan).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 							failed_payments.push((chan_update, failed_adds));
