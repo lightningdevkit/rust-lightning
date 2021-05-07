@@ -468,8 +468,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// Essentially just when we're serializing ourselves out.
 	/// Taken first everywhere where we are making changes before any other locks.
 	/// When acquiring this lock in read mode, rather than acquiring it directly, call
-	/// `PersistenceNotifierGuard::new(..)` and pass the lock to it, to ensure the PersistenceNotifier
-	/// the lock contains sends out a notification when the lock is released.
+	/// `PersistenceNotifierGuard::notify_on_drop(..)` and pass the lock to it, to ensure the
+	/// PersistenceNotifier the lock contains sends out a notification when the lock is released.
 	total_consistency_lock: RwLock<()>,
 
 	persistence_notifier: PersistenceNotifier,
@@ -522,32 +522,50 @@ impl BestBlock {
 	pub fn height(&self) -> u32 { self.height }
 }
 
+#[derive(Copy, Clone, PartialEq)]
+enum NotifyOption {
+	DoPersist,
+	SkipPersist,
+}
+
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
 /// desirable to notify any listeners on `await_persistable_update_timeout`/
-/// `await_persistable_update` that new updates are available for persistence. Therefore, this
+/// `await_persistable_update` when new updates are available for persistence. Therefore, this
 /// struct is responsible for locking the total consistency lock and, upon going out of scope,
 /// sending the aforementioned notification (since the lock being released indicates that the
 /// updates are ready for persistence).
-struct PersistenceNotifierGuard<'a> {
+///
+/// We allow callers to either always notify by constructing with `notify_on_drop` or choose to
+/// notify or not based on whether relevant changes have been made, providing a closure to
+/// `optionally_notify` which returns a `NotifyOption`.
+struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
 	persistence_notifier: &'a PersistenceNotifier,
+	should_persist: F,
 	// We hold onto this result so the lock doesn't get released immediately.
 	_read_guard: RwLockReadGuard<'a, ()>,
 }
 
-impl<'a> PersistenceNotifierGuard<'a> {
-	fn new(lock: &'a RwLock<()>, notifier: &'a PersistenceNotifier) -> Self {
+impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care what the concrete F is here, it's unused
+	fn notify_on_drop(lock: &'a RwLock<()>, notifier: &'a PersistenceNotifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
+		PersistenceNotifierGuard::optionally_notify(lock, notifier, || -> NotifyOption { NotifyOption::DoPersist })
+	}
+
+	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a PersistenceNotifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = lock.read().unwrap();
 
-		Self {
+		PersistenceNotifierGuard {
 			persistence_notifier: notifier,
+			should_persist: persist_check,
 			_read_guard: read_guard,
 		}
 	}
 }
 
-impl<'a> Drop for PersistenceNotifierGuard<'a> {
+impl<'a, F: Fn() -> NotifyOption> Drop for PersistenceNotifierGuard<'a, F> {
 	fn drop(&mut self) {
-		self.persistence_notifier.notify();
+		if (self.should_persist)() == NotifyOption::DoPersist {
+			self.persistence_notifier.notify();
+		}
 	}
 }
 
@@ -943,7 +961,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, channel_value_satoshis, push_msat, user_id, config)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone());
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
 
@@ -1024,7 +1042,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// May generate a SendShutdown message event on success, which should be relayed.
 	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let (mut failed_htlcs, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -1114,7 +1132,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		match self.force_close_channel_with_peer(channel_id, None) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
@@ -1459,7 +1477,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -1686,7 +1704,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// not currently support replacing a funding transaction on an existing channel. Instead,
 	/// create a new channel with a conflicting funding transaction.
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		for inp in funding_transaction.input.iter() {
 			if inp.witness.is_empty() {
@@ -1769,7 +1787,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Panics if addresses is absurdly large (more than 500).
 	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		if addresses.len() > 500 {
 			panic!("More than half the message size was taken up by public addresses!");
@@ -1803,7 +1821,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
@@ -2094,9 +2112,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// BroadcastChannelUpdate events in timer_tick_occurred.
 	///
 	/// Expects the caller to have a total_consistency_lock read lock.
-	fn process_background_events(&self) {
+	fn process_background_events(&self) -> bool {
 		let mut background_events = Vec::new();
 		mem::swap(&mut *self.pending_background_events.lock().unwrap(), &mut background_events);
+		if background_events.is_empty() {
+			return false;
+		}
+
 		for event in background_events.drain(..) {
 			match event {
 				BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)) => {
@@ -2106,6 +2128,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				},
 			}
 		}
+		true
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -2121,36 +2144,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Note that in some rare cases this may generate a `chain::Watch::update_channel` call.
 	pub fn timer_tick_occurred(&self) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
-		self.process_background_events();
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			let mut should_persist = NotifyOption::SkipPersist;
+			if self.process_background_events() { should_persist = NotifyOption::DoPersist; }
 
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		for (_, chan) in channel_state.by_id.iter_mut() {
-			match chan.get_update_status() {
-				UpdateStatus::Enabled if !chan.is_live() => chan.set_update_status(UpdateStatus::DisabledStaged),
-				UpdateStatus::Disabled if chan.is_live() => chan.set_update_status(UpdateStatus::EnabledStaged),
-				UpdateStatus::DisabledStaged if chan.is_live() => chan.set_update_status(UpdateStatus::Enabled),
-				UpdateStatus::EnabledStaged if !chan.is_live() => chan.set_update_status(UpdateStatus::Disabled),
-				UpdateStatus::DisabledStaged if !chan.is_live() => {
-					if let Ok(update) = self.get_channel_update(&chan) {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					chan.set_update_status(UpdateStatus::Disabled);
-				},
-				UpdateStatus::EnabledStaged if chan.is_live() => {
-					if let Ok(update) = self.get_channel_update(&chan) {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					chan.set_update_status(UpdateStatus::Enabled);
-				},
-				_ => {},
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
+			for (_, chan) in channel_state.by_id.iter_mut() {
+				match chan.get_update_status() {
+					UpdateStatus::Enabled if !chan.is_live() => chan.set_update_status(UpdateStatus::DisabledStaged),
+					UpdateStatus::Disabled if chan.is_live() => chan.set_update_status(UpdateStatus::EnabledStaged),
+					UpdateStatus::DisabledStaged if chan.is_live() => chan.set_update_status(UpdateStatus::Enabled),
+					UpdateStatus::EnabledStaged if !chan.is_live() => chan.set_update_status(UpdateStatus::Disabled),
+					UpdateStatus::DisabledStaged if !chan.is_live() => {
+						if let Ok(update) = self.get_channel_update(&chan) {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						should_persist = NotifyOption::DoPersist;
+						chan.set_update_status(UpdateStatus::Disabled);
+					},
+					UpdateStatus::EnabledStaged if chan.is_live() => {
+						if let Ok(update) = self.get_channel_update(&chan) {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						should_persist = NotifyOption::DoPersist;
+						chan.set_update_status(UpdateStatus::Enabled);
+					},
+					_ => {},
+				}
 			}
-		}
+
+			should_persist
+		});
 	}
 
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
@@ -2159,7 +2188,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Returns false if no payment was found to fail backwards, true if the process of failing the
 	/// HTLC backwards has been started.
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
@@ -2339,7 +2368,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
@@ -2523,7 +2552,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///  4) once all remote copies are updated, you call this function with the update_id that
 	///     completed, and once it is the latest the Channel will be re-enabled.
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut close_results = Vec::new();
 		let mut htlc_forwards = Vec::new();
@@ -3294,7 +3323,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// (C-not exported) Cause its doc(hidden) anyway
 	#[doc(hidden)]
 	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let counterparty_node_id;
 		let err: Result<(), _> = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -3418,7 +3447,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 		match payment_secrets.entry(payment_hash) {
 			hash_map::Entry::Vacant(e) => {
@@ -3575,7 +3604,7 @@ where
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let new_height = height - 1;
 		{
 			let mut best_block = self.best_block.write().unwrap();
@@ -3606,7 +3635,7 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|a| (a, Vec::new())));
 	}
 
@@ -3618,7 +3647,7 @@ where
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
@@ -3660,7 +3689,7 @@ where
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.get_funding_txo() {
 				if funding_txo.txid == *txid {
@@ -3806,92 +3835,92 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
         L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_open_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
 	fn handle_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_accept_channel(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_funding_created(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_funding_locked(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, their_features: &InitFeatures, msg: &msgs::Shutdown) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_shutdown(counterparty_node_id, their_features, msg), *counterparty_node_id);
 	}
 
 	fn handle_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_closing_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fulfill_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fail_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fail_malformed_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_commitment_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_revoke_and_ack(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fee(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_announcement_signatures(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		let mut failed_payments = Vec::new();
 		let mut no_channels_remain = true;
@@ -3984,7 +4013,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	fn peer_connected(&self, counterparty_node_id: &PublicKey, init_msg: &msgs::Init) {
 		log_debug!(self.logger, "Generating channel_reestablish events for {}", log_pubkey!(counterparty_node_id));
 
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		{
 			let mut peer_state_lock = self.per_peer_state.write().unwrap();
@@ -4024,7 +4053,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	}
 
 	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
-		let _persistence_guard = PersistenceNotifierGuard::new(&self.total_consistency_lock, &self.persistence_notifier);
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
