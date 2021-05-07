@@ -4088,6 +4088,10 @@ impl PersistenceNotifier {
 		loop {
 			let &(ref mtx, ref cvar) = &self.persistence_lock;
 			let mut guard = mtx.lock().unwrap();
+			if *guard {
+				*guard = false;
+				return;
+			}
 			guard = cvar.wait(guard).unwrap();
 			let result = *guard;
 			if result {
@@ -4103,6 +4107,10 @@ impl PersistenceNotifier {
 		loop {
 			let &(ref mtx, ref cvar) = &self.persistence_lock;
 			let mut guard = mtx.lock().unwrap();
+			if *guard {
+				*guard = false;
+				return true;
+			}
 			guard = cvar.wait_timeout(guard, max_wait).unwrap().0;
 			// Due to spurious wakeups that can happen on `wait_timeout`, here we need to check if the
 			// desired wait time has actually passed, and if not then restart the loop with a reduced wait
