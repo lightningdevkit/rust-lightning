@@ -12,6 +12,7 @@ use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
 use lightning::chain;
+use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
@@ -20,6 +21,7 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::key::PublicKey;
 use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
@@ -204,13 +206,17 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
 							first_hops_vec.push(ChannelDetails {
 								channel_id: [0; 32],
+								funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 								short_channel_id: Some(scid),
 								remote_network_id: *rnid,
 								counterparty_features: InitFeatures::known(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0,
 								inbound_capacity_msat: 0,
-								is_live: true,
+								is_outbound: true,
+								is_funding_locked: true,
+								is_usable: true,
+								is_public: true,
 								outbound_capacity_msat: 0,
 								counterparty_forwarding_info: None,
 							});

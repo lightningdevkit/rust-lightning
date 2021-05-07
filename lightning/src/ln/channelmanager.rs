@@ -607,6 +607,12 @@ pub struct ChannelDetails {
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
 	pub channel_id: [u8; 32],
+	/// The Channel's funding transaction output, if we've negotiated the funding transaction with
+	/// our counterparty already.
+	///
+	/// Note that, if this has been set, `channel_id` will be equivalent to
+	/// `funding_txo.unwrap().to_channel_id()`.
+	pub funding_txo: Option<OutPoint>,
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
@@ -631,10 +637,21 @@ pub struct ChannelDetails {
 	/// Note that there are some corner cases not fully handled here, so the actual available
 	/// inbound capacity may be slightly higher than this.
 	pub inbound_capacity_msat: u64,
+	/// True if the channel was initiated (and thus funded) by us.
+	pub is_outbound: bool,
+	/// True if the channel is confirmed, funding_locked messages have been exchanged, and the
+	/// channel is not currently being shut down. `funding_locked` message exchange implies the
+	/// required confirmation count has been reached (and we were connected to the peer at some
+	/// point after the funding transaction received enough confirmations).
+	pub is_funding_locked: bool,
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
-	/// the peer is connected, and (c) no monitor update failure is pending resolution.
-	pub is_live: bool,
-
+	/// the peer is connected, (c) no monitor update failure is pending resolution, and (d) the
+	/// channel is not currently negotiating a shutdown.
+	///
+	/// This is a strict superset of `is_funding_locked`.
+	pub is_usable: bool,
+	/// True if this channel is (or will be) publicly-announced.
+	pub is_public: bool,
 	/// Information on the fees and requirements that the counterparty requires when forwarding
 	/// payments to us through this channel.
 	pub counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
@@ -957,6 +974,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
+					funding_txo: channel.get_funding_txo(),
 					short_channel_id: channel.get_short_channel_id(),
 					remote_network_id: channel.get_counterparty_node_id(),
 					counterparty_features: InitFeatures::empty(),
@@ -964,7 +982,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					inbound_capacity_msat,
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
-					is_live: channel.is_live(),
+					is_outbound: channel.is_outbound(),
+					is_funding_locked: channel.is_usable(),
+					is_usable: channel.is_live(),
+					is_public: channel.should_announce(),
 					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
 			}
@@ -987,8 +1008,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Gets the list of usable channels, in random order. Useful as an argument to
 	/// get_route to ensure non-announced channels are used.
 	///
-	/// These are guaranteed to have their is_live value set to true, see the documentation for
-	/// ChannelDetails::is_live for more info on exactly what the criteria are.
+	/// These are guaranteed to have their [`ChannelDetails::is_usable`] value set to true, see the
+	/// documentation for [`ChannelDetails::is_usable`] for more info on exactly what the criteria
+	/// are.
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user

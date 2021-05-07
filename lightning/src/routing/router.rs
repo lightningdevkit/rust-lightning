@@ -1165,6 +1165,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 mod tests {
 	use routing::router::{get_route, RouteHintHop, RoutingFees};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
+	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	   NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
@@ -1625,6 +1626,7 @@ mod tests {
 
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(2),
 			remote_network_id: our_id,
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -1632,7 +1634,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 
@@ -1943,6 +1946,7 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -1950,7 +1954,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -1991,6 +1996,7 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -1998,7 +2004,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -2056,6 +2063,7 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: nodes[7].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -2063,7 +2071,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -2193,6 +2202,7 @@ mod tests {
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: nodes[3].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -2200,7 +2210,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 250_000_000,
 			inbound_capacity_msat: 0,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 		let mut last_hops = last_hops(&nodes);
@@ -2322,6 +2333,7 @@ mod tests {
 		}];
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: middle_node_id,
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -2329,7 +2341,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 100000,
 			inbound_capacity_msat: 100000,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
@@ -2454,6 +2467,7 @@ mod tests {
 		// Now, limit the first_hop by the outbound_capacity_msat of 200_000 sats.
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id: Some(42),
 			remote_network_id: nodes[0].clone(),
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
@@ -2461,7 +2475,8 @@ mod tests {
 			user_id: 0,
 			outbound_capacity_msat: 200_000_000,
 			inbound_capacity_msat: 0,
-			is_live: true,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
 
