@@ -158,16 +158,19 @@ impl HttpClient {
 		let endpoint = self.stream.peer_addr().unwrap();
 		match self.send_request(request).await {
 			Ok(bytes) => Ok(bytes),
-			Err(e) => match e.kind() {
-				std::io::ErrorKind::ConnectionReset |
-				std::io::ErrorKind::ConnectionAborted |
-				std::io::ErrorKind::UnexpectedEof => {
-					// Reconnect if the connection was closed. This may happen if the server's
-					// keep-alive limits are reached.
-					*self = Self::connect(endpoint)?;
-					self.send_request(request).await
-				},
-				_ => Err(e),
+			Err(_) => {
+				// Reconnect and retry on fail. This can happen if the connection was closed after
+				// the keep-alive limits are reached, or generally if the request timed out due to
+				// Bitcoin Core being stuck on a long-running operation or its RPC queue being
+				// full.
+				// Block 100ms before retrying the request as in many cases the source of the error
+				// may be persistent for some time.
+				#[cfg(feature = "tokio")]
+				tokio::time::sleep(Duration::from_millis(100)).await;
+				#[cfg(not(feature = "tokio"))]
+				std::thread::sleep(Duration::from_millis(100));
+				*self = Self::connect(endpoint)?;
+				self.send_request(request).await
 			},
 		}
 	}
