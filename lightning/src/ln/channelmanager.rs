@@ -45,7 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
-use ln::channel::{Channel, ChannelError};
+use ln::channel::{Channel, ChannelError, ForceShutdownResult};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -197,8 +197,6 @@ pub(super) enum HTLCFailReason {
 	}
 }
 
-type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
-
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
@@ -207,7 +205,7 @@ type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource
 
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
-	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	shutdown_finish: Option<(ForceShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
 	#[inline]
@@ -240,7 +238,7 @@ impl MsgHandleErrInternal {
 		Self { err, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ForceShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -1066,13 +1064,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	#[inline]
-	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
-		let (monitor_update_option, mut failed_htlcs) = shutdown_res;
-		log_trace!(self.logger, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
-		for htlc_source in failed_htlcs.drain(..) {
+	fn finish_force_close_channel(&self, mut shutdown_res: ForceShutdownResult) {
+		log_trace!(self.logger, "Finishing force-closure of channel {} HTLCs to fail", shutdown_res.outbound_htlcs_failed.len());
+		for htlc_source in shutdown_res.outbound_htlcs_failed.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
-		if let Some((funding_txo, monitor_update)) = monitor_update_option {
+		if let Some((funding_txo, monitor_update)) = shutdown_res.monitor_update {
 			// There isn't anything we can do if we get an update failure - we're already
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
@@ -2669,8 +2666,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// We do not do a force-close here as that would generate a monitor update for
 					// a monitor that we didn't manage to store (and that we don't care about - we
 					// don't respond with the funding_signed so the channel can never go on chain).
-					let (_monitor_update, failed_htlcs) = chan.force_shutdown(true);
-					assert!(failed_htlcs.is_empty());
+					let shutdown_res = chan.force_shutdown(true);
+					assert!(shutdown_res.outbound_htlcs_failed.is_empty());
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id));
 				},
 				ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -3382,7 +3379,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Handle a list of channel failures during a block_connected or block_disconnected call,
 	/// pushing the channel monitor update (if any) to the background events queue and removing the
 	/// Channel object.
-	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
+	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ForceShutdownResult>) {
 		for mut failure in failed_channels.drain(..) {
 			// Either a commitment transactions has been confirmed on-chain or
 			// Channel::block_disconnected detected that the funding transaction has been
@@ -3391,7 +3388,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// Channel::force_shutdown tries to make us do) as we may still be in initialization,
 			// so we track the update internally and handle it when the user next calls
 			// timer_tick_occurred, guaranteeing we're running normally.
-			if let Some((funding_txo, update)) = failure.0.take() {
+			if let Some((funding_txo, update)) = failure.monitor_update.take() {
 				assert_eq!(update.updates.len(), 1);
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
@@ -4578,8 +4575,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() < monitor.get_latest_update_id() {
 					// But if the channel is behind of the monitor, close the channel:
-					let (_, mut new_failed_htlcs) = channel.force_shutdown(true);
-					failed_htlcs.append(&mut new_failed_htlcs);
+					let mut shutdown_res = channel.force_shutdown(true);
+					failed_htlcs.append(&mut shutdown_res.outbound_htlcs_failed);
 					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {

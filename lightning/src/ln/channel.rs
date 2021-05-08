@@ -296,6 +296,12 @@ pub struct CounterpartyForwardingInfo {
 	pub cltv_expiry_delta: u16,
 }
 
+/// The result of a call to force_shutdown
+pub(super) struct ForceShutdownResult {
+	pub(super) monitor_update: Option<(OutPoint, ChannelMonitorUpdate)>,
+	pub(super) outbound_htlcs_failed: Vec<(HTLCSource, PaymentHash)>,
+}
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -4281,7 +4287,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> ForceShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
@@ -4318,7 +4324,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		(monitor_update, dropped_outbound_htlcs)
+		ForceShutdownResult { monitor_update, outbound_htlcs_failed: dropped_outbound_htlcs }
 	}
 }
 
