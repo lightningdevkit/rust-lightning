@@ -300,6 +300,7 @@ pub struct CounterpartyForwardingInfo {
 pub(super) struct ForceShutdownResult {
 	pub(super) monitor_update: Option<(OutPoint, ChannelMonitorUpdate)>,
 	pub(super) outbound_htlcs_failed: Vec<(HTLCSource, PaymentHash)>,
+	pub(super) outbound_onchain_pending_htlcs: Vec<HTLCSource>,
 }
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
@@ -4305,6 +4306,12 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => {}
 			}
 		}
+
+		// We track any HTLCs which were pending outbound via the ChannelMonitor now, but the
+		// ChannelManager still wants the list so that it can de-duplicate any onchain claim events
+		// (especially around restarts).
+		let outbound_onchain_pending_htlcs = self.pending_outbound_htlcs.drain(..).map(|htlc| htlc.source).collect();
+
 		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
 			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
 			// returning a channel monitor update here would imply a channel monitor update before
@@ -4324,7 +4331,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.channel_state = ChannelState::ShutdownComplete as u32;
 		self.update_time_counter += 1;
-		ForceShutdownResult { monitor_update, outbound_htlcs_failed: dropped_outbound_htlcs }
+		ForceShutdownResult { monitor_update, outbound_htlcs_failed: dropped_outbound_htlcs, outbound_onchain_pending_htlcs }
 	}
 }
 

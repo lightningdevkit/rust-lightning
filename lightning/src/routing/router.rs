@@ -26,7 +26,7 @@ use std::collections::{HashMap, BinaryHeap};
 use std::ops::Deref;
 
 /// A hop in a route
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
@@ -84,7 +84,7 @@ impl Readable for Vec<RouteHop> {
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Route {
 	/// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
 	/// last RouteHop in each path must be the same.
