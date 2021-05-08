@@ -7582,13 +7582,14 @@ fn test_announce_disable_channels() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	nodes[0].node.timer_tick_occurred(); // enabled -> disabledstagged
-	nodes[0].node.timer_tick_occurred(); // disabledstaged -> disabled
+	nodes[0].node.timer_tick_occurred(); // Enabled -> DisabledStaged
+	nodes[0].node.timer_tick_occurred(); // DisabledStaged -> Disabled
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				assert_eq!(msg.contents.flags & (1<<1), 1<<1); // The "channel disabled" bit should be set
 				let short_id = msg.contents.short_channel_id;
 				// Check generated channel_update match list in PendingChannelUpdate
 				if short_id != short_id_1 && short_id != short_id_2 && short_id != short_id_3 {
@@ -7624,6 +7625,22 @@ fn test_announce_disable_channels() {
 
 	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.timer_tick_occurred();
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3);
+	for e in msg_events {
+		match e {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				assert_eq!(msg.contents.flags & (1<<1), 0); // The "channel disabled" bit should be off
+				let short_id = msg.contents.short_channel_id;
+				// Check generated channel_update match list in PendingChannelUpdate
+				if short_id != short_id_1 && short_id != short_id_2 && short_id != short_id_3 {
+					panic!("Generated ChannelUpdate for wrong chan!");
+				}
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
 }
 
 #[test]
