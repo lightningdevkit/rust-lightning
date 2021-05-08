@@ -4303,6 +4303,108 @@ fn test_no_txn_manager_serialize_deserialize() {
 }
 
 #[test]
+fn test_dup_htlc_onchain_fails_on_reload() {
+	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
+	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
+	// having a copy of the relevant fail-/claim-back data and processes the HTLC fail/claim when
+	// the ChannelMonitor tells it to.
+	//
+	// If, due to an on-chain event, an HTLC is failed/claimed, and then we serialize the
+	// ChannelManager, we generally expect there not to be a duplicate HTLC fail/claim (eg via a
+	// PaymentFailed event appearing). However, because we may not serialize the relevant
+	// ChannelMonitor at the same time, this isn't strictly guaranteed. In order to provide this
+	// consistency, the ChannelManager explicitly tracks pending-onchain-resolution outbound HTLCs
+	// and de-duplicates ChannelMonitor events.
+	//
+	// This tests that explicit tracking behavior.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
+	// nodes[0].
+	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1]], 10000000);
+	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
+	check_closed_broadcast!(nodes[0], true);
+	check_added_monitors!(nodes[0], 1);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(node_txn.len(), 2);
+
+	assert!(nodes[1].node.claim_funds(payment_preimage));
+	check_added_monitors!(nodes[1], 1);
+
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]});
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 1);
+	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+	connect_block(&nodes[0], &Block { header, txdata: node_txn});
+
+	// Serialize out the ChannelMonitor before connecting the on-chain claim transactions. This is
+	// fairly normal behavior as ChannelMonitor(s) are often not re-serialized when on-chain events
+	// happen, unlike ChannelManager which tends to be re-serialized after any relevant event(s).
+	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+
+	header.prev_blockhash = header.block_hash();
+	let claim_block = Block { header, txdata: claim_txn};
+	connect_block(&nodes[0], &claim_block);
+	expect_payment_sent!(nodes[0], payment_preimage);
+
+	// ChannelManagers generally get re-serialized after any relevant event(s). Since we just
+	// connected a highly-relevant block, it likely gets serialized out now.
+	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
+	nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+
+	// Now reload nodes[0]...
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+	nodes[0].chain_monitor = &new_chain_monitor;
+	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+		&mut chan_0_monitor_read, keys_manager).unwrap();
+	assert!(chan_0_monitor_read.is_empty());
+
+	let (_, nodes_0_deserialized_tmp) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>
+			::read(&mut std::io::Cursor::new(&chan_manager_serialized.0[..]), ChannelManagerReadArgs {
+				default_config: Default::default(),
+				keys_manager,
+				fee_estimator: node_cfgs[0].fee_estimator,
+				chain_monitor: nodes[0].chain_monitor,
+				tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+				logger: nodes[0].logger,
+				channel_monitors,
+			}).unwrap()
+	};
+	nodes_0_deserialized = nodes_0_deserialized_tmp;
+
+	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].node = &nodes_0_deserialized;
+
+	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
+	// which the current ChannelMonitor has not seen), the ChannelManager's de-duplication of
+	// payment events should kick in, leaving us with no pending events here.
+	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, nodes[0].blocks.borrow().len() as u32 - 1);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
 fn test_manager_serialize_deserialize_events() {
 	// This test makes sure the events field in ChannelManager survives de/serialization
 	let chanmon_cfgs = create_chanmon_cfgs(2);
