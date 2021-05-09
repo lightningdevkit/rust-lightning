@@ -95,8 +95,6 @@ pub enum Event {
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
 	/// and we got back the payment preimage for it).
-	/// Note that duplicative PaymentSent Events may be generated - it is your responsibility to
-	/// deduplicate them by payment_preimage (which MUST be unique)!
 	PaymentSent {
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
@@ -105,8 +103,6 @@ pub enum Event {
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
-	/// Note that duplicative PaymentFailed Events may be generated - it is your responsibility to
-	/// deduplicate them by payment_hash (which MUST be unique)!
 	PaymentFailed {
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: PaymentHash,
