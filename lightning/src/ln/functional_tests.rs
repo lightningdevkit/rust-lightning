@@ -3497,6 +3497,34 @@ fn test_force_close_fail_back() {
 }
 
 #[test]
+fn test_dup_events_on_peer_disconnect() {
+	// Test that if we receive a duplicative update_fulfill_htlc message after a reconnect we do
+	// not generate a corresponding duplicative PaymentSent event. This did not use to be the case
+	// as we used to generate the event immediately upon receipt of the payment preimage in the
+	// update_fulfill_htlc message.
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1000000).0;
+
+	assert!(nodes[1].node.claim_funds(payment_preimage));
+	check_added_monitors!(nodes[1], 1);
+	let claim_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &claim_msgs.update_fulfill_htlcs[0]);
+	expect_payment_sent!(nodes[0], payment_preimage);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
 fn test_simple_peer_disconnect() {
 	// Test that we can reconnect when there are no lost messages
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -3718,8 +3746,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	if messages_delivered < 2 {
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
-		//TODO: Deduplicate PaymentSent events, then enable this if:
-		//if messages_delivered < 1 {
+		if messages_delivered < 1 {
 			let events_4 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_4.len(), 1);
 			match events_4[0] {
@@ -3728,7 +3755,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 				},
 				_ => panic!("Unexpected event"),
 			}
-		//}
+		} else {
+			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		}
 	} else if messages_delivered == 2 {
 		// nodes[0] still wants its RAA + commitment_signed
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, -1), (0, 0), (0, 0), (0, 0), (false, true));
