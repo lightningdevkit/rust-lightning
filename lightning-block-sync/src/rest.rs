@@ -84,7 +84,7 @@ mod tests {
 		let mut client = RestClient::new(server.endpoint()).unwrap();
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
 			Ok(_) => panic!("Expected error"),
 		}
 	}
