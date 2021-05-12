@@ -15,7 +15,7 @@ use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
 use util::ser::{ReadableArgs, Writeable};
 

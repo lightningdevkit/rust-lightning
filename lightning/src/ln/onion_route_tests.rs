@@ -20,7 +20,7 @@ use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, HTLCFailChannelUpdate, OptionalField};
 use util::test_utils;
-use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
 use util::config::UserConfig;
 

@@ -27,7 +27,7 @@ use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 

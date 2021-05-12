@@ -173,7 +173,7 @@ mod tests {
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
 	use lightning::util::config::UserConfig;
-	use lightning::util::events::{Event, EventsProvider, MessageSendEventsProvider, MessageSendEvent};
+	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::logger::Logger;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;

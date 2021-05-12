@@ -39,7 +39,7 @@ use lightning::ln::msgs::DecodeError;
 use lightning::routing::router::get_route;
 use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::config::UserConfig;
-use lightning::util::events::{EventsProvider,Event};
+use lightning::util::events::Event;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;

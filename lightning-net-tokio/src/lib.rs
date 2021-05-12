@@ -26,7 +26,7 @@
 //! use tokio::sync::mpsc;
 //! use std::net::TcpStream;
 //! use bitcoin::secp256k1::key::PublicKey;
-//! use lightning::util::events::EventsProvider;
+//! use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
 //!
@@ -47,12 +47,12 @@
 //!     lightning_net_tokio::connect_outbound(peer_manager, sender, their_node_id, addr).await;
 //!     loop {
 //!         receiver.recv().await;
-//!         for _event in channel_manager.get_and_clear_pending_events().drain(..) {
-//!             // Handle the event!
-//!         }
-//!         for _event in chain_monitor.get_and_clear_pending_events().drain(..) {
-//!             // Handle the event!
-//!         }
+//!         channel_manager.process_pending_events(&|event| {
+//!         	// Handle the event!
+//!         });
+//!         chain_monitor.process_pending_events(&|event| {
+//!         	// Handle the event!
+//!         });
 //!     }
 //! }
 //!
@@ -62,12 +62,12 @@
 //!     lightning_net_tokio::setup_inbound(peer_manager, sender, socket);
 //!     loop {
 //!         receiver.recv().await;
-//!         for _event in channel_manager.get_and_clear_pending_events().drain(..) {
-//!             // Handle the event!
-//!         }
-//!         for _event in chain_monitor.get_and_clear_pending_events().drain(..) {
-//!             // Handle the event!
-//!         }
+//!         channel_manager.process_pending_events(&|event| {
+//!         	// Handle the event!
+//!         });
+//!         chain_monitor.process_pending_events(&|event| {
+//!         	// Handle the event!
+//!         });
 //!     }
 //! }
 //! ```

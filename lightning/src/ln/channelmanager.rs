@@ -54,7 +54,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
-use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::{byte_utils, events};
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -1860,6 +1860,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
 	/// not currently support replacing a funding transaction on an existing channel. Instead,
 	/// create a new channel with a conflicting funding transaction.
+	///
+	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -3449,11 +3451,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Process pending events from the `chain::Watch`.
-	fn process_pending_monitor_events(&self) {
+	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
+	fn process_pending_monitor_events(&self) -> bool {
 		let mut failed_channels = Vec::new();
-		{
-			for monitor_event in self.chain_monitor.release_pending_monitor_events() {
+		let has_pending_monitor_events = {
+			let pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
+			let has_pending_monitor_events = !pending_monitor_events.is_empty();
+			for monitor_event in pending_monitor_events {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
@@ -3490,11 +3494,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					},
 				}
 			}
-		}
+			has_pending_monitor_events
+		};
 
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
 		}
+
+		has_pending_monitor_events
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
@@ -3670,6 +3677,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 	}
+
+	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
+		let events = std::cell::RefCell::new(Vec::new());
+		let event_handler = |event| events.borrow_mut().push(event);
+		self.process_pending_events(&event_handler);
+		events.into_inner()
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
@@ -3694,21 +3709,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-				L::Target: Logger,
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
-	fn get_and_clear_pending_events(&self) -> Vec<Event> {
-		//TODO: This behavior should be documented. It's non-intuitive that we query
-		// ChannelMonitors when clearing other events.
-		self.process_pending_monitor_events();
+	/// Processes events that must be periodically handled.
+	///
+	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
+	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
+	///
+	/// Pending events are persisted as part of [`ChannelManager`]. While these events are cleared
+	/// when processed, an [`EventHandler`] must be able to handle previously seen events when
+	/// restarting from an old state.
+	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			let mut result = NotifyOption::SkipPersist;
 
-		let mut ret = Vec::new();
-		let mut pending_events = self.pending_events.lock().unwrap();
-		mem::swap(&mut ret, &mut *pending_events);
-		ret
+			// TODO: This behavior should be documented. It's unintuitive that we query
+			// ChannelMonitors when clearing other events.
+			if self.process_pending_monitor_events() {
+				result = NotifyOption::DoPersist;
+			}
+
+			let mut pending_events = std::mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
+			if !pending_events.is_empty() {
+				result = NotifyOption::DoPersist;
+			}
+
+			for event in pending_events.drain(..) {
+				handler.handle_event(event);
+			}
+
+			result
+		});
 	}
 }
 
@@ -4956,7 +4992,7 @@ pub mod bench {
 	use routing::router::get_route;
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
