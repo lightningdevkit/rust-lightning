@@ -1474,7 +1474,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let payment_data = match next_hop_data.format {
 					msgs::OnionHopDataFormat::Legacy { .. } => None,
 					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
-					msgs::OnionHopDataFormat::FinalNode { payment_data } => payment_data,
+					msgs::OnionHopDataFormat::FinalNode { payment_data, .. } => payment_data,
 				};
 
 				if payment_data.is_none() {
