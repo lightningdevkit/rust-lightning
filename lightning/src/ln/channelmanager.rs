@@ -45,7 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
-use ln::channel::{Channel, ChannelError, UpdateStatus};
+use ln::channel::{Channel, ChannelError, ChannelUpdateStatus};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -2151,28 +2151,28 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			for (_, chan) in channel_state.by_id.iter_mut() {
-				match chan.get_update_status() {
-					UpdateStatus::Enabled if !chan.is_live() => chan.set_update_status(UpdateStatus::DisabledStaged),
-					UpdateStatus::Disabled if chan.is_live() => chan.set_update_status(UpdateStatus::EnabledStaged),
-					UpdateStatus::DisabledStaged if chan.is_live() => chan.set_update_status(UpdateStatus::Enabled),
-					UpdateStatus::EnabledStaged if !chan.is_live() => chan.set_update_status(UpdateStatus::Disabled),
-					UpdateStatus::DisabledStaged if !chan.is_live() => {
+				match chan.channel_update_status() {
+					ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
+					ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
+					ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
+					ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
+					ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
 						if let Ok(update) = self.get_channel_update(&chan) {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
 						}
 						should_persist = NotifyOption::DoPersist;
-						chan.set_update_status(UpdateStatus::Disabled);
+						chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
 					},
-					UpdateStatus::EnabledStaged if chan.is_live() => {
+					ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
 						if let Ok(update) = self.get_channel_update(&chan) {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
 						}
 						should_persist = NotifyOption::DoPersist;
-						chan.set_update_status(UpdateStatus::Enabled);
+						chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
 					},
 					_ => {},
 				}

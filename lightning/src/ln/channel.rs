@@ -248,12 +248,13 @@ const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisc
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
-/// Liveness is called to fluctuate given peer disconnecton/monitor failures/closing.
-/// If channel is public, network should have a liveness view announced by us on a
-/// best-effort, which means we may filter out some status transitions to avoid spam.
+/// The "channel disabled" bit in channel_update must be set based on whether we are connected to
+/// our counterparty or not. However, we don't want to announce updates right away to avoid
+/// spamming the network with updates if the connection is flapping. Instead, we "stage" updates to
+/// our channel_update message and track the current state here.
 /// See implementation at [`super::channelmanager::ChannelManager::timer_tick_occurred`].
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum UpdateStatus {
+pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
 	/// Our channel is no longer live, but we haven't announced the channel as disabled yet.
@@ -418,7 +419,7 @@ pub(super) struct Channel<Signer: Sign> {
 
 	commitment_secrets: CounterpartyCommitmentSecrets,
 
-	network_sync: UpdateStatus,
+	channel_update_status: ChannelUpdateStatus,
 
 	// We save these values so we can make sure `next_local_commit_tx_fee_msat` and
 	// `next_remote_commit_tx_fee_msat` properly predict what the next commitment transaction fee will
@@ -619,7 +620,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
-			network_sync: UpdateStatus::Enabled,
+			channel_update_status: ChannelUpdateStatus::Enabled,
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
@@ -860,7 +861,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
-			network_sync: UpdateStatus::Enabled,
+			channel_update_status: ChannelUpdateStatus::Enabled,
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
@@ -3497,12 +3498,12 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { false }
 	}
 
-	pub fn get_update_status(&self) -> UpdateStatus {
-		self.network_sync
+	pub fn channel_update_status(&self) -> ChannelUpdateStatus {
+		self.channel_update_status
 	}
 
-	pub fn set_update_status(&mut self, status: UpdateStatus) {
-		self.network_sync = status;
+	pub fn set_channel_update_status(&mut self, status: ChannelUpdateStatus) {
+		self.channel_update_status = status;
 	}
 
 	fn check_get_funding_locked(&mut self, height: u32) -> Option<msgs::FundingLocked> {
@@ -4365,26 +4366,26 @@ impl Readable for InboundHTLCRemovalReason {
 	}
 }
 
-impl Writeable for UpdateStatus {
+impl Writeable for ChannelUpdateStatus {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		// We only care about writing out the current state as it was announced, ie only either
 		// Enabled or Disabled. In the case of DisabledStaged, we most recently announced the
 		// channel as enabled, so we write 0. For EnabledStaged, we similarly write a 1.
 		match self {
-			UpdateStatus::Enabled => 0u8.write(writer)?,
-			UpdateStatus::DisabledStaged => 0u8.write(writer)?,
-			UpdateStatus::EnabledStaged => 1u8.write(writer)?,
-			UpdateStatus::Disabled => 1u8.write(writer)?,
+			ChannelUpdateStatus::Enabled => 0u8.write(writer)?,
+			ChannelUpdateStatus::DisabledStaged => 0u8.write(writer)?,
+			ChannelUpdateStatus::EnabledStaged => 1u8.write(writer)?,
+			ChannelUpdateStatus::Disabled => 1u8.write(writer)?,
 		}
 		Ok(())
 	}
 }
 
-impl Readable for UpdateStatus {
+impl Readable for ChannelUpdateStatus {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(match <u8 as Readable>::read(reader)? {
-			0 => UpdateStatus::Enabled,
-			1 => UpdateStatus::Disabled,
+			0 => ChannelUpdateStatus::Enabled,
+			1 => ChannelUpdateStatus::Disabled,
 			_ => return Err(DecodeError::InvalidValue),
 		})
 	}
@@ -4584,7 +4585,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.commitment_secrets.write(writer)?;
 
-		self.network_sync.write(writer)?;
+		self.channel_update_status.write(writer)?;
 		Ok(())
 	}
 }
@@ -4757,7 +4758,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_shutdown_scriptpubkey = Readable::read(reader)?;
 		let commitment_secrets = Readable::read(reader)?;
 
-		let network_sync = Readable::read(reader)?;
+		let channel_update_status = Readable::read(reader)?;
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
@@ -4833,7 +4834,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 			commitment_secrets,
 
-			network_sync,
+			channel_update_status,
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
