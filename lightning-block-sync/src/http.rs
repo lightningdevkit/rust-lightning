@@ -348,9 +348,11 @@ impl HttpClient {
 
 		if !status.is_ok() {
 			// TODO: Handle 3xx redirection responses.
-			let error_details = match contents.is_ascii() {
-				true => String::from_utf8_lossy(&contents).to_string(),
-				false => "binary".to_string()
+			let error_details = match String::from_utf8(contents) {
+				// Check that the string is all-ASCII with no control characters before returning
+				// it.
+				Ok(s) if s.as_bytes().iter().all(|c| c.is_ascii() && !c.is_ascii_control()) => s,
+				_ => "binary".to_string()
 			};
 			let error_msg = format!("Errored with status: {} and contents: {}",
 			                        status.code, error_details);
