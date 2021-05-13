@@ -118,7 +118,7 @@ mod tests {
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
 			Ok(_) => panic!("Expected error"),
 		}
 	}

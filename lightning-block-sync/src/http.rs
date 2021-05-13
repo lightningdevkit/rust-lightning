@@ -279,32 +279,27 @@ impl HttpClient {
 			}
 		}
 
-		if !status.is_ok() {
-			// TODO: Handle 3xx redirection responses.
-			return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
-		}
-
 		// Read message body
 		let read_limit = MAX_HTTP_MESSAGE_BODY_SIZE - reader.buffer().len();
 		reader.get_mut().set_limit(read_limit as u64);
-		match message_length {
-			HttpMessageLength::Empty => { Ok(Vec::new()) },
+		let contents = match message_length {
+			HttpMessageLength::Empty => { Vec::new() },
 			HttpMessageLength::ContentLength(length) => {
 				if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
-					Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
+					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
 				} else {
 					let mut content = vec![0; length];
 					#[cfg(feature = "tokio")]
 					reader.read_exact(&mut content[..]).await?;
 					#[cfg(not(feature = "tokio"))]
 					reader.read_exact(&mut content[..])?;
-					Ok(content)
+					content
 				}
 			},
 			HttpMessageLength::TransferEncoding(coding) => {
 				if !coding.eq_ignore_ascii_case("chunked") {
-					Err(std::io::Error::new(
-							std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
+					return Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
 				} else {
 					let mut content = Vec::new();
 					#[cfg(feature = "tokio")]
@@ -339,17 +334,30 @@ impl HttpClient {
 							reader.read_exact(&mut content[chunk_offset..]).await?;
 							content.resize(chunk_offset + chunk_size, 0);
 						}
-						Ok(content)
+						content
 					}
 					#[cfg(not(feature = "tokio"))]
 					{
 						let mut decoder = chunked_transfer::Decoder::new(reader);
 						decoder.read_to_end(&mut content)?;
-						Ok(content)
+						content
 					}
 				}
 			},
+		};
+
+		if !status.is_ok() {
+			// TODO: Handle 3xx redirection responses.
+			let error_details = match contents.is_ascii() {
+				true => String::from_utf8_lossy(&contents).to_string(),
+				false => "binary".to_string()
+			};
+			let error_msg = format!("Errored with status: {} and contents: {}",
+			                        status.code, error_details);
+			return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
 		}
+
+		Ok(contents)
 	}
 }
 
@@ -715,6 +723,23 @@ pub(crate) mod client_tests {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
 				assert_eq!(e.get_ref().unwrap().to_string(), "unsupported transfer coding");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[tokio::test]
+	async fn read_error() {
+		let response = String::from(
+			"HTTP/1.1 500 Internal Server Error\r\n\
+			 Content-Length: 10\r\n\r\ntest error\r\n");
+		let server = HttpServer::responding_with(response);
+
+		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
+		match client.get::<JsonResponse>("/foo", "foo.com").await {
+			Err(e) => {
+				assert_eq!(e.get_ref().unwrap().to_string(), "Errored with status: 500 and contents: test error");
+				assert_eq!(e.kind(), std::io::ErrorKind::Other);
 			},
 			Ok(_) => panic!("Expected error"),
 		}
