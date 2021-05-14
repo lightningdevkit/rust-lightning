@@ -3477,7 +3477,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 	/// in excess of the current time. This should roughly match the expiry time set in the invoice.
 	/// After this many seconds, we will remove the inbound payment, resulting in any attempts to
-	/// pay the invoice failing. The BOLT spec suggests 7,200 secs as a default validity time for
+	/// pay the invoice failing. The BOLT spec suggests 3,600 secs as a default validity time for
 	/// invoices when no timeout is set.
 	///
 	/// Note that we use block header time to time-out pending inbound payments (with some margin

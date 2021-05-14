@@ -1,5 +1,5 @@
 //! Convenient utilities to create an invoice.
-use {Currency, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
+use {Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
 use bech32::ToBase32;
 use bitcoin_hashes::Hash;
 use lightning::chain;
@@ -9,6 +9,7 @@ use lightning::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY};
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHintHop;
 use lightning::util::logger::Logger;
+use std::convert::TryInto;
 use std::ops::Deref;
 
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
@@ -54,7 +55,7 @@ where
 
 	let (payment_hash, payment_secret) = channelmanager.create_inbound_payment(
 		amt_msat,
-		7200, // default invoice expiry is 2 hours
+		DEFAULT_EXPIRY_TIME.try_into().unwrap(),
 		0,
 	);
 	let our_node_pubkey = channelmanager.get_our_node_id();
