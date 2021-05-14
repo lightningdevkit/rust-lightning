@@ -124,6 +124,12 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -134,6 +140,12 @@ mod sealed {
 			BasicMPP,
 			// Byte 3
 			ShutdownAnySegwit,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			Keysend,
 		],
 	});
 	define_context!(ChannelContext {
@@ -299,6 +311,8 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required);
+	define_feature!(55, Keysend, [NodeContext],
+		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required);
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
