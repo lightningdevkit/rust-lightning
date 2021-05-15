@@ -628,7 +628,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 								chan_utils::get_revokeable_redeemscript(&tx_keys.revocation_key, *on_counterparty_tx_csv, &tx_keys.broadcaster_delayed_payment_key)
 							};
 
-							let sig = self.signer.sign_justice_transaction(&bumped_tx, i, *amount, &per_commitment_key, htlc, &self.secp_ctx).expect("sign justice tx");
+							let sig = if let Some(ref htlc) = *htlc {
+								self.signer.sign_justice_revoked_htlc(&bumped_tx, i, *amount, &per_commitment_key, &htlc, &self.secp_ctx).expect("sign justice tx")
+							} else {
+								self.signer.sign_justice_revoked_output(&bumped_tx, i, *amount, &per_commitment_key, &self.secp_ctx).expect("sign justice tx")
+							};
 							bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
 							bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
 							if htlc.is_some() {
