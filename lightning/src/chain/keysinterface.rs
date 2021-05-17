@@ -608,10 +608,7 @@ impl BaseSign for InMemorySigner {
 			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 			let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
-			let holder_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
-				Ok(s) => s,
-				Err(_) => return Err(()),
-			};
+			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key).map_err(|_| ())?;
 			htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &holder_htlc_key));
 		}
 
@@ -640,20 +637,11 @@ impl BaseSign for InMemorySigner {
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		let revocation_key = match chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
-			Ok(revocation_key) => revocation_key,
-			Err(_) => return Err(())
-		};
+		let revocation_key = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key).map_err(|_| ())?;
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
-		let revocation_pubkey = match chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
-			Ok(revocation_pubkey) => revocation_pubkey,
-			Err(_) => return Err(())
-		};
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint).map_err(|_| ())?;
 		let witness_script = {
-			let counterparty_delayedpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().delayed_payment_basepoint) {
-				Ok(counterparty_delayedpubkey) => counterparty_delayedpubkey,
-				Err(_) => return Err(())
-			};
+			let counterparty_delayedpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().delayed_payment_basepoint).map_err(|_| ())?;
 			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.holder_selected_contest_delay(), &counterparty_delayedpubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
@@ -662,24 +650,12 @@ impl BaseSign for InMemorySigner {
 	}
 
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		let revocation_key = match chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
-			Ok(revocation_key) => revocation_key,
-			Err(_) => return Err(())
-		};
+		let revocation_key = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key).map_err(|_| ())?;
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
-		let revocation_pubkey = match chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
-			Ok(revocation_pubkey) => revocation_pubkey,
-			Err(_) => return Err(())
-		};
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint).map_err(|_| ())?;
 		let witness_script = {
-			let counterparty_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint) {
-				Ok(counterparty_htlcpubkey) => counterparty_htlcpubkey,
-				Err(_) => return Err(())
-			};
-			let holder_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
-				Ok(holder_htlcpubkey) => holder_htlcpubkey,
-				Err(_) => return Err(())
-			};
+			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint).map_err(|_| ())?;
+			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint).map_err(|_| ())?;
 			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
