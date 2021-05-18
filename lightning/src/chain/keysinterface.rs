@@ -279,12 +279,28 @@ pub trait BaseSign {
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
 
-	/// Create a signature for the given input in a transaction spending an HTLC or commitment
-	/// transaction output when our counterparty broadcasts an old state.
+	/// Create a signature for the given input in a transaction spending an HTLC transaction output
+	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
 	///
-	/// A justice transaction may claim multiples outputs at the same time if timelocks are
+	/// A justice transaction may claim multiple outputs at the same time if timelocks are
 	/// similar, but only a signature for the input at index `input` should be signed for here.
-	/// It may be called multiples time for same output(s) if a fee-bump is needed with regards
+	/// It may be called multiple times for same output(s) if a fee-bump is needed with regards
+	/// to an upcoming timelock expiration.
+	///
+	/// Amount is value of the output spent by this input, committed to in the BIP 143 signature.
+	///
+	/// per_commitment_key is revocation secret which was provided by our counterparty when they
+	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
+	/// not allow the spending of any funds by itself (you need our holder revocation_secret to do
+	/// so).
+	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+
+	/// Create a signature for the given input in a transaction spending a commitment transaction
+	/// HTLC output when our counterparty broadcasts an old state.
+	///
+	/// A justice transaction may claim multiple outputs at the same time if timelocks are
+	/// similar, but only a signature for the input at index `input` should be signed for here.
+	/// It may be called multiple times for same output(s) if a fee-bump is needed with regards
 	/// to an upcoming timelock expiration.
 	///
 	/// Amount is value of the output spent by this input, committed to in the BIP 143 signature.
@@ -294,10 +310,9 @@ pub trait BaseSign {
 	/// not allow the spending of any funds by itself (you need our holder revocation_secret to do
 	/// so).
 	///
-	/// htlc holds HTLC elements (hash, timelock) if the output being spent is a HTLC output, thus
-	/// changing the format of the witness script (which is committed to in the BIP 143
-	/// signatures).
-	fn sign_justice_transaction(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	/// htlc holds HTLC elements (hash, timelock), thus changing the format of the witness script
+	/// (which is committed to in the BIP 143 signatures).
+	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.
@@ -593,10 +608,7 @@ impl BaseSign for InMemorySigner {
 			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 			let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
-			let holder_htlc_key = match chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key) {
-				Ok(s) => s,
-				Err(_) => return Err(()),
-			};
+			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key).map_err(|_| ())?;
 			htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &holder_htlc_key));
 		}
 
@@ -624,32 +636,27 @@ impl BaseSign for InMemorySigner {
 		Ok((sig, htlc_sigs))
 	}
 
-	fn sign_justice_transaction(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &Option<HTLCOutputInCommitment>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		let revocation_key = match chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key) {
-			Ok(revocation_key) => revocation_key,
-			Err(_) => return Err(())
-		};
+	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		let revocation_key = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key).map_err(|_| ())?;
 		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
-		let revocation_pubkey = match chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
-			Ok(revocation_pubkey) => revocation_pubkey,
-			Err(_) => return Err(())
-		};
-		let witness_script = if let &Some(ref htlc) = htlc {
-			let counterparty_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint) {
-				Ok(counterparty_htlcpubkey) => counterparty_htlcpubkey,
-				Err(_) => return Err(())
-			};
-			let holder_htlcpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
-				Ok(holder_htlcpubkey) => holder_htlcpubkey,
-				Err(_) => return Err(())
-			};
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
-		} else {
-			let counterparty_delayedpubkey = match chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().delayed_payment_basepoint) {
-				Ok(counterparty_delayedpubkey) => counterparty_delayedpubkey,
-				Err(_) => return Err(())
-			};
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint).map_err(|_| ())?;
+		let witness_script = {
+			let counterparty_delayedpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().delayed_payment_basepoint).map_err(|_| ())?;
 			chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.holder_selected_contest_delay(), &counterparty_delayedpubkey)
+		};
+		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
+		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
+		return Ok(secp_ctx.sign(&sighash, &revocation_key))
+	}
+
+	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		let revocation_key = chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_key, &self.revocation_base_key).map_err(|_| ())?;
+		let per_commitment_point = PublicKey::from_secret_key(secp_ctx, &per_commitment_key);
+		let revocation_pubkey = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint).map_err(|_| ())?;
+		let witness_script = {
+			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint).map_err(|_| ())?;
+			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint).map_err(|_| ())?;
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
