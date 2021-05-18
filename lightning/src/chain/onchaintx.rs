@@ -28,7 +28,6 @@ use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use chain::keysinterface::{Sign, KeysInterface};
 use chain::package::PackageTemplate;
-use chain::package;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
@@ -348,7 +347,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		let amt = cached_request.package_amount();
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script);
-			if let Some((output_value, new_feerate)) = package::compute_output_value(predicted_weight, amt, cached_request.feerate(), fee_estimator, logger) {
+			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, amt, fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();

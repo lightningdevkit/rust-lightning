@@ -500,9 +500,6 @@ impl PackageTemplate {
 	pub(crate) fn aggregable(&self) -> bool {
 		self.aggregable
 	}
-	pub(crate) fn feerate(&self) -> u64 {
-		self.feerate_previous
-	}
 	pub(crate) fn set_feerate(&mut self, new_feerate: u64) {
 		self.feerate_previous = new_feerate;
 	}
@@ -653,6 +650,28 @@ impl PackageTemplate {
 			return current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
 		}
 		current_height + LOW_FREQUENCY_BUMP_INTERVAL
+	}
+	/// Returns value in satoshis to be included as package outgoing output amount and feerate with which package finalization should be done.
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, input_amounts: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+		where F::Target: FeeEstimator,
+		      L::Target: Logger,
+	{
+		// If old feerate is 0, first iteration of this claim, use normal fee calculation
+		if self.feerate_previous != 0 {
+			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {
+				// If new computed fee is superior at the whole claimable amount burn all in fees
+				if new_fee > input_amounts {
+					return Some((0, feerate));
+				} else {
+					return Some((input_amounts - new_fee, feerate));
+				}
+			}
+		} else {
+			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+				return Some((input_amounts - new_fee, feerate));
+			}
+		}
+		None
 	}
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
 		let malleability = match input_solving_data {
@@ -805,29 +824,3 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 	};
 	Some((new_fee, new_fee * 1000 / (predicted_weight as u64)))
 }
-
-/// Deduce a new proposed fee from the claiming transaction output value.
-/// If the new proposed fee is superior to the consumed outpoint's value, burn everything in miner's
-/// fee to deter counterparties attacker.
-pub(crate) fn compute_output_value<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
-	where F::Target: FeeEstimator,
-	      L::Target: Logger,
-{
-	// If old feerate is 0, first iteration of this claim, use normal fee calculation
-	if previous_feerate != 0 {
-		if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, previous_feerate, fee_estimator, logger) {
-			// If new computed fee is superior at the whole claimable amount burn all in fees
-			if new_fee > input_amounts {
-				return Some((0, feerate));
-			} else {
-				return Some((input_amounts - new_fee, feerate));
-			}
-		}
-	} else {
-		if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
-				return Some((input_amounts - new_fee, feerate));
-		}
-	}
-	None
-}
-
