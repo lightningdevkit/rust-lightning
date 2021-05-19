@@ -33,6 +33,7 @@ use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
 use prelude::*;
+use alloc::collections::BTreeMap;
 use std::collections::HashMap;
 use core::cmp;
 use core::ops::Deref;
@@ -165,8 +166,9 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	#[cfg(not(test))]
 	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 
-	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
+	locktimed_packages: BTreeMap<u32, Vec<PackageTemplate>>,
 
+	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 }
@@ -204,6 +206,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			outp.write(writer)?;
 			claim_and_height.0.write(writer)?;
 			claim_and_height.1.write(writer)?;
+		}
+
+		writer.write_all(&byte_utils::be64_to_array(self.locktimed_packages.len() as u64))?;
+		for (ref locktime, ref packages) in self.locktimed_packages.iter() {
+			locktime.write(writer)?;
+			writer.write_all(&byte_utils::be64_to_array(packages.len() as u64))?;
+			for ref package in packages.iter() {
+				package.write(writer)?;
+			}
 		}
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
@@ -265,6 +276,19 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			let height = Readable::read(reader)?;
 			claimable_outpoints.insert(outpoint, (ancestor_claim_txid, height));
 		}
+
+		let locktimed_packages_len: u64 = Readable::read(reader)?;
+		let mut locktimed_packages = BTreeMap::new();
+		for _ in 0..locktimed_packages_len {
+			let locktime = Readable::read(reader)?;
+			let packages_len: u64 = Readable::read(reader)?;
+			let mut packages = Vec::with_capacity(cmp::min(packages_len as usize, MAX_ALLOC_SIZE / std::mem::size_of::<PackageTemplate>()));
+			for _ in 0..packages_len {
+				packages.push(Readable::read(reader)?);
+			}
+			locktimed_packages.insert(locktime, packages);
+		}
+
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
@@ -302,6 +326,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			signer,
 			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
+			locktimed_packages,
 			pending_claim_requests,
 			onchain_events_awaiting_threshold_conf,
 			secp_ctx,
@@ -321,6 +346,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
+			locktimed_packages: BTreeMap::new(),
 			onchain_events_awaiting_threshold_conf: Vec::new(),
 
 			secp_ctx,
@@ -378,7 +404,26 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
 		for req in requests {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout); } else {
+			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) {
+				log_trace!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout);
+			} else {
+				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
+					.find(|locked_package| locked_package.outpoints() == req.outpoints());
+				if let Some(package) = timelocked_equivalent_package {
+					log_trace!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
+						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_timelock());
+					continue;
+				}
+
+				if req.package_timelock() > height + 1 {
+					log_debug!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), height);
+					for outpoint in req.outpoints() {
+						log_debug!(logger, "  Outpoint {}", outpoint);
+					}
+					self.locktimed_packages.entry(req.package_timelock()).or_insert(Vec::new()).push(req);
+					continue;
+				}
+
 				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.timelock(), height + CLTV_SHARED_CLAIM_BUFFER);
 				if req.timelock() <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
 					// Don't aggregate if outpoint package timelock is soon or marked as non-aggregable
@@ -393,6 +438,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		if let Some(req) = aggregated_request {
 			preprocessed_requests.push(req);
 		}
+
+		// Claim everything up to and including height + 1
+		let remaining_locked_packages = self.locktimed_packages.split_off(&(height + 2));
+		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
+			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
+			preprocessed_requests.append(&mut entry);
+		}
+		self.locktimed_packages = remaining_locked_packages;
 
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
