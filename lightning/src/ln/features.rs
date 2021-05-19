@@ -22,6 +22,7 @@
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
+use prelude::*;
 use core::{cmp, fmt};
 use core::marker::PhantomData;
 
@@ -31,6 +32,7 @@ use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
 mod sealed {
+	use prelude::*;
 	use ln::features::Features;
 
 	/// The context in which [`Features`] are applicable. Defines which features are required and

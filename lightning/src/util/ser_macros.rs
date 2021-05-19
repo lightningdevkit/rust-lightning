@@ -277,6 +277,7 @@ macro_rules! read_tlv_fields {
 
 #[cfg(test)]
 mod tests {
+	use prelude::*;
 	use std::io::{Cursor, Read};
 	use ln::msgs::DecodeError;
 	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};

@@ -27,6 +27,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
+use prelude::*;
 use std::io::Cursor;
 use core::ops::Deref;
 
@@ -478,6 +479,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 #[cfg(test)]
 mod tests {
+	use prelude::*;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::router::{Route, RouteHop};

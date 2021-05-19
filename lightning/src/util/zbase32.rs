@@ -8,6 +8,8 @@
  * at your option.
 */
 
+use prelude::*;
+
 const ALPHABET: &'static [u8] = b"ybndrfg8ejkmcpqxot1uwisza345h769";
 
 /// Encodes some bytes as a zbase32 string

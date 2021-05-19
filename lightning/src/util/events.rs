@@ -23,8 +23,9 @@ use bitcoin::blockdata::script::Script;
 
 use bitcoin::secp256k1::key::PublicKey;
 
+use prelude::*;
 use core::time::Duration;
-use std::ops::Deref;
+use core::ops::Deref;
 
 /// An Event which you should probably take some action in response to.
 ///

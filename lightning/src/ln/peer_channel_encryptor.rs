@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use prelude::*;
+
 use ln::msgs::LightningError;
 use ln::msgs;
 

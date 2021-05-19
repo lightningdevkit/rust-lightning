@@ -351,6 +351,7 @@ impl Encode for msgs::GossipTimestampFilter {
 mod tests {
 	use super::*;
 	use util::byte_utils;
+	use prelude::*;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];

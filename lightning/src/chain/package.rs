@@ -31,9 +31,9 @@ use util::byte_utils;
 use util::logger::Logger;
 use util::ser::{Readable, Writer, Writeable};
 
-use std::cmp;
-use std::mem;
-use std::ops::Deref;
+use core::cmp;
+use core::mem;
+use core::ops::Deref;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 

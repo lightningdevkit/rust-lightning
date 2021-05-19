@@ -30,7 +30,9 @@ use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
-use std::collections::{HashMap,hash_map,HashSet,LinkedList};
+use prelude::*;
+use alloc::collections::LinkedList;
+use std::collections::{HashMap,hash_map,HashSet};
 use std::sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
@@ -1421,6 +1423,7 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
+	use prelude::*;
 	use std::sync::{Arc, Mutex};
 	use core::sync::atomic::Ordering;
 

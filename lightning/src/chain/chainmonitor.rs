@@ -37,6 +37,7 @@ use util::logger::Logger;
 use util::events;
 use util::events::EventHandler;
 
+use prelude::*;
 use std::collections::{HashMap, hash_map};
 use std::sync::RwLock;
 use core::ops::Deref;
@@ -143,7 +144,7 @@ where C::Target: chain::Filter,
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use util::events::EventsProvider;
-		let events = std::cell::RefCell::new(Vec::new());
+		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()

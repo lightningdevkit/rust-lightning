@@ -31,6 +31,7 @@ use bitcoin::secp256k1::{Secp256k1, Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::secp256k1;
 
+use prelude::*;
 use core::cmp;
 use ln::chan_utils;
 use util::transaction_utils::sort_outputs;
@@ -1235,6 +1236,7 @@ fn script_for_p2wpkh(key: &PublicKey) -> Script {
 mod tests {
 	use super::CounterpartyCommitmentSecrets;
 	use hex;
+	use prelude::*;
 
 	#[test]
 	fn test_per_commitment_storage() {

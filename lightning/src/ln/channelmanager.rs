@@ -61,8 +61,9 @@ use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::Logger;
 use util::errors::APIError;
 
+use prelude::*;
 use core::{cmp, mem};
-use std::cell::RefCell;
+use core::cell::RefCell;
 use std::collections::{HashMap, hash_map, HashSet};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
@@ -3685,7 +3686,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		let events = std::cell::RefCell::new(Vec::new());
+		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
