@@ -63,6 +63,8 @@ pub enum DecodeError {
 	/// Error from std::io
 	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
         ::std::io::ErrorKind),
+	/// The message included zlib-compressed values, which we don't support.
+	UnsupportedCompression,
 }
 
 /// An init message to be sent or received from a peer
@@ -953,6 +955,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::ShortRead => f.write_str("Packet extended beyond the provided bytes"),
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
 			DecodeError::Io(ref e) => e.fmt(f),
+			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
 		}
 	}
 }
