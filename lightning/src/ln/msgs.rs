@@ -1637,17 +1637,18 @@ impl Readable for QueryShortChannelIds {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: BlockHash = Readable::read(r)?;
 
-		// We expect the encoding_len to always includes the 1-byte
-		// encoding_type and that short_channel_ids are 8-bytes each
 		let encoding_len: u16 = Readable::read(r)?;
-		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
-			return Err(DecodeError::InvalidValue);
-		}
+		let encoding_type: u8 = Readable::read(r)?;
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		let encoding_type: u8 = Readable::read(r)?;
 		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::UnsupportedCompression);
+		}
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
 
@@ -1749,17 +1750,18 @@ impl Readable for ReplyChannelRange {
 		let number_of_blocks: u32 = Readable::read(r)?;
 		let sync_complete: bool = Readable::read(r)?;
 
-		// We expect the encoding_len to always includes the 1-byte
-		// encoding_type and that short_channel_ids are 8-bytes each
 		let encoding_len: u16 = Readable::read(r)?;
-		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
-			return Err(DecodeError::InvalidValue);
-		}
+		let encoding_type: u8 = Readable::read(r)?;
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		let encoding_type: u8 = Readable::read(r)?;
 		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::UnsupportedCompression);
+		}
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
 
