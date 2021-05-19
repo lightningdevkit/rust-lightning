@@ -167,7 +167,6 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 
 	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
-	latest_height: u32,
 
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 }
@@ -222,7 +221,6 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 		}
-		self.latest_height.write(writer)?;
 
 		write_tlv_fields!(writer, {}, {});
 		Ok(())
@@ -289,7 +287,6 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			};
 			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
-		let latest_height = Readable::read(reader)?;
 
 		read_tlv_fields!(reader, {}, {});
 
@@ -307,7 +304,6 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			claimable_outpoints,
 			pending_claim_requests,
 			onchain_events_awaiting_threshold_conf,
-			latest_height,
 			secp_ctx,
 		})
 	}
@@ -326,7 +322,6 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
 			onchain_events_awaiting_threshold_conf: Vec::new(),
-			latest_height: 0,
 
 			secp_ctx,
 		}
@@ -370,15 +365,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
 	/// if we receive a preimage after force-close.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, latest_height: Option<u32>, broadcaster: &B, fee_estimator: &F, logger: &L)
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		let height = match latest_height {
-			Some(h) => h,
-			None => self.latest_height,
-		};
 		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;

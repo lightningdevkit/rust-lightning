@@ -1387,7 +1387,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, None, broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -1410,10 +1410,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
 			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 	}
@@ -2144,7 +2144,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, Some(height), &&*broadcaster, &&*fee_estimator, &&*logger);
+		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, height, &&*broadcaster, &&*fee_estimator, &&*logger);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
