@@ -783,6 +783,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 													}
 													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
+													msgs::DecodeError::UnsupportedCompression => {
+														log_debug!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
+														continue;
+													}
 												}
 											}
 										};

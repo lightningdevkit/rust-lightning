@@ -63,6 +63,8 @@ pub enum DecodeError {
 	/// Error from std::io
 	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
         ::std::io::ErrorKind),
+	/// The message included zlib-compressed values, which we don't support.
+	UnsupportedCompression,
 }
 
 /// An init message to be sent or received from a peer
@@ -953,6 +955,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::ShortRead => f.write_str("Packet extended beyond the provided bytes"),
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
 			DecodeError::Io(ref e) => e.fmt(f),
+			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
 		}
 	}
 }
@@ -1634,17 +1637,18 @@ impl Readable for QueryShortChannelIds {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let chain_hash: BlockHash = Readable::read(r)?;
 
-		// We expect the encoding_len to always includes the 1-byte
-		// encoding_type and that short_channel_ids are 8-bytes each
 		let encoding_len: u16 = Readable::read(r)?;
-		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
-			return Err(DecodeError::InvalidValue);
-		}
+		let encoding_type: u8 = Readable::read(r)?;
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		let encoding_type: u8 = Readable::read(r)?;
 		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::UnsupportedCompression);
+		}
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
 
@@ -1746,17 +1750,18 @@ impl Readable for ReplyChannelRange {
 		let number_of_blocks: u32 = Readable::read(r)?;
 		let sync_complete: bool = Readable::read(r)?;
 
-		// We expect the encoding_len to always includes the 1-byte
-		// encoding_type and that short_channel_ids are 8-bytes each
 		let encoding_len: u16 = Readable::read(r)?;
-		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
-			return Err(DecodeError::InvalidValue);
-		}
+		let encoding_type: u8 = Readable::read(r)?;
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		let encoding_type: u8 = Readable::read(r)?;
 		if encoding_type != EncodingType::Uncompressed as u8 {
+			return Err(DecodeError::UnsupportedCompression);
+		}
+
+		// We expect the encoding_len to always includes the 1-byte
+		// encoding_type and that short_channel_ids are 8-bytes each
+		if encoding_len == 0 || (encoding_len - 1) % 8 != 0 {
 			return Err(DecodeError::InvalidValue);
 		}
 
