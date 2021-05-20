@@ -22,7 +22,6 @@
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 
@@ -40,7 +39,7 @@ use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
 use ln::channelmanager::{BestBlock, HTLCSource};
 use ln::onchaintx::OnchainTxHandler;
-use ln::package::InputDescriptors;
+use ln::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use chain;
 use chain::WatchedOutput;
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -320,151 +319,6 @@ impl Readable for CounterpartyCommitmentTransaction {
 		};
 		Ok(counterparty_commitment_transaction)
 	}
-}
-
-/// When ChannelMonitor discovers an onchain outpoint being a step of a channel and that it needs
-/// to generate a tx to push channel state forward, we cache outpoint-solving tx material to build
-/// a new bumped one in case of lenghty confirmation delay
-#[derive(Clone, PartialEq)]
-pub(crate) enum InputMaterial {
-	Revoked {
-		per_commitment_point: PublicKey,
-		counterparty_delayed_payment_base_key: PublicKey,
-		counterparty_htlc_base_key: PublicKey,
-		per_commitment_key: SecretKey,
-		input_descriptor: InputDescriptors,
-		amount: u64,
-		htlc: Option<HTLCOutputInCommitment>,
-		on_counterparty_tx_csv: u16,
-	},
-	CounterpartyHTLC {
-		per_commitment_point: PublicKey,
-		counterparty_delayed_payment_base_key: PublicKey,
-		counterparty_htlc_base_key: PublicKey,
-		preimage: Option<PaymentPreimage>,
-		htlc: HTLCOutputInCommitment
-	},
-	HolderHTLC {
-		preimage: Option<PaymentPreimage>,
-		amount: u64,
-	},
-	Funding {
-		funding_redeemscript: Script,
-	}
-}
-
-impl Writeable for InputMaterial {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&InputMaterial::Revoked { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref per_commitment_key, ref input_descriptor, ref amount, ref htlc, ref on_counterparty_tx_csv} => {
-				writer.write_all(&[0; 1])?;
-				per_commitment_point.write(writer)?;
-				counterparty_delayed_payment_base_key.write(writer)?;
-				counterparty_htlc_base_key.write(writer)?;
-				writer.write_all(&per_commitment_key[..])?;
-				input_descriptor.write(writer)?;
-				writer.write_all(&byte_utils::be64_to_array(*amount))?;
-				htlc.write(writer)?;
-				on_counterparty_tx_csv.write(writer)?;
-			},
-			&InputMaterial::CounterpartyHTLC { ref per_commitment_point, ref counterparty_delayed_payment_base_key, ref counterparty_htlc_base_key, ref preimage, ref htlc} => {
-				writer.write_all(&[1; 1])?;
-				per_commitment_point.write(writer)?;
-				counterparty_delayed_payment_base_key.write(writer)?;
-				counterparty_htlc_base_key.write(writer)?;
-				preimage.write(writer)?;
-				htlc.write(writer)?;
-			},
-			&InputMaterial::HolderHTLC { ref preimage, ref amount } => {
-				writer.write_all(&[2; 1])?;
-				preimage.write(writer)?;
-				writer.write_all(&byte_utils::be64_to_array(*amount))?;
-			},
-			&InputMaterial::Funding { ref funding_redeemscript } => {
-				writer.write_all(&[3; 1])?;
-				funding_redeemscript.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for InputMaterial {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let input_material = match <u8 as Readable>::read(reader)? {
-			0 => {
-				let per_commitment_point = Readable::read(reader)?;
-				let counterparty_delayed_payment_base_key = Readable::read(reader)?;
-				let counterparty_htlc_base_key = Readable::read(reader)?;
-				let per_commitment_key = Readable::read(reader)?;
-				let input_descriptor = Readable::read(reader)?;
-				let amount = Readable::read(reader)?;
-				let htlc = Readable::read(reader)?;
-				let on_counterparty_tx_csv = Readable::read(reader)?;
-				InputMaterial::Revoked {
-					per_commitment_point,
-					counterparty_delayed_payment_base_key,
-					counterparty_htlc_base_key,
-					per_commitment_key,
-					input_descriptor,
-					amount,
-					htlc,
-					on_counterparty_tx_csv
-				}
-			},
-			1 => {
-				let per_commitment_point = Readable::read(reader)?;
-				let counterparty_delayed_payment_base_key = Readable::read(reader)?;
-				let counterparty_htlc_base_key = Readable::read(reader)?;
-				let preimage = Readable::read(reader)?;
-				let htlc = Readable::read(reader)?;
-				InputMaterial::CounterpartyHTLC {
-					per_commitment_point,
-					counterparty_delayed_payment_base_key,
-					counterparty_htlc_base_key,
-					preimage,
-					htlc
-				}
-			},
-			2 => {
-				let preimage = Readable::read(reader)?;
-				let amount = Readable::read(reader)?;
-				InputMaterial::HolderHTLC {
-					preimage,
-					amount,
-				}
-			},
-			3 => {
-				InputMaterial::Funding {
-					funding_redeemscript: Readable::read(reader)?,
-				}
-			}
-			_ => return Err(DecodeError::InvalidValue),
-		};
-		Ok(input_material)
-	}
-}
-
-/// ClaimRequest is a descriptor structure to communicate between detection
-/// and reaction module. They are generated by ChannelMonitor while parsing
-/// onchain txn leaked from a channel and handed over to OnchainTxHandler which
-/// is responsible for opportunistic aggregation, selecting and enforcing
-/// bumping logic, building and signing transactions.
-pub(crate) struct ClaimRequest {
-	// Block height before which claiming is exclusive to one party,
-	// after reaching it, claiming may be contentious.
-	pub(crate) absolute_timelock: u32,
-	// Timeout tx must have nLocktime set which means aggregating multiple
-	// ones must take the higher nLocktime among them to satisfy all of them.
-	// Sadly it has few pitfalls, a) it takes longuer to get fund back b) CLTV_DELTA
-	// of a sooner-HTLC could be swallowed by the highest nLocktime of the HTLC set.
-	// Do simplify we mark them as non-aggregable.
-	pub(crate) aggregable: bool,
-	// Basic bitcoin outpoint (txid, vout)
-	pub(crate) outpoint: BitcoinOutPoint,
-	// Following outpoint type, set of data needed to generate transaction digest
-	// and satisfy witness program.
-	pub(crate) witness_data: InputMaterial
 }
 
 /// An entry for an [`OnchainEvent`], stating the block height when the event was observed and the
@@ -1554,10 +1408,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// *we* sign a holder commitment transaction, not when e.g. a watchtower broadcasts one of our
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
-			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
 			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
 				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
 			}
 		}
@@ -1684,7 +1538,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// HTLC-Success/HTLC-Timeout transactions.
 	/// Return updates for HTLC pending in the channel and failed automatically by the broadcast of
 	/// revoked counterparty commitment tx
-	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, TransactionOutputs) where L::Target: Logger {
+	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<PackageTemplate>, TransactionOutputs) where L::Target: Logger {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
 		// a spend transaction...so we return no transactions to broadcast
 		let mut claimable_outpoints = Vec::new();
@@ -1716,8 +1570,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let witness_data = InputMaterial::Revoked { per_commitment_point, counterparty_delayed_payment_base_key: self.counterparty_tx_cache.counterparty_delayed_payment_base_key, counterparty_htlc_base_key: self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: outp.value, htlc: None, on_counterparty_tx_csv: self.counterparty_tx_cache.on_counterparty_tx_csv};
-					claimable_outpoints.push(ClaimRequest { absolute_timelock: height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: idx as u32 }, witness_data});
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_tx_cache.on_counterparty_tx_csv);
+					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+					claimable_outpoints.push(justice_package);
 				}
 			}
 
@@ -1729,8 +1584,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let witness_data = InputMaterial::Revoked { per_commitment_point, counterparty_delayed_payment_base_key: self.counterparty_tx_cache.counterparty_delayed_payment_base_key, counterparty_htlc_base_key: self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, input_descriptor: if htlc.offered { InputDescriptors::RevokedOfferedHTLC } else { InputDescriptors::RevokedReceivedHTLC }, amount: tx.output[transaction_output_index as usize].value, htlc: Some(htlc.clone()), on_counterparty_tx_csv: self.counterparty_tx_cache.on_counterparty_tx_csv};
-						claimable_outpoints.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable: true, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone());
+						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height);
+						claimable_outpoints.push(justice_package);
 					}
 				}
 			}
@@ -1852,8 +1708,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		(claimable_outpoints, (commitment_txid, watch_outputs))
 	}
 
-	fn get_counterparty_htlc_output_claim_reqs(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>) -> Vec<ClaimRequest> {
-		let mut claims = Vec::new();
+	fn get_counterparty_htlc_output_claim_reqs(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>) -> Vec<PackageTemplate> {
+		let mut claimable_outpoints = Vec::new();
 		if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&commitment_txid) {
 			if let Some(revocation_points) = self.their_cur_revocation_points {
 				let revocation_point_option =
@@ -1872,30 +1728,26 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							if let Some(transaction) = tx {
 								if transaction_output_index as usize >= transaction.output.len() ||
 									transaction.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
-										return claims; // Corrupted per_commitment_data, fuck this user
+										return claimable_outpoints; // Corrupted per_commitment_data, fuck this user
 									}
 							}
-							let preimage =
-								if htlc.offered {
-									if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) {
-										Some(*p)
-									} else { None }
-								} else { None };
-							let aggregable = if !htlc.offered { false } else { true };
+							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							if preimage.is_some() || !htlc.offered {
-								let witness_data = InputMaterial::CounterpartyHTLC { per_commitment_point: *revocation_point, counterparty_delayed_payment_base_key: self.counterparty_tx_cache.counterparty_delayed_payment_base_key, counterparty_htlc_base_key: self.counterparty_tx_cache.counterparty_htlc_base_key, preimage, htlc: htlc.clone() };
-								claims.push(ClaimRequest { absolute_timelock: htlc.cltv_expiry, aggregable, outpoint: BitcoinOutPoint { txid: commitment_txid, vout: transaction_output_index }, witness_data });
+								let counterparty_htlc_outp = if htlc.offered { PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, preimage.unwrap(), htlc.clone())) } else { PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, htlc.clone())) };
+								let aggregation = if !htlc.offered { false } else { true };
+								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
+								claimable_outpoints.push(counterparty_package);
 							}
 						}
 					}
 				}
 			}
 		}
-		claims
+		claimable_outpoints
 	}
 
 	/// Attempts to claim a counterparty HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<ClaimRequest>, Option<TransactionOutputs>) where L::Target: Logger {
+	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<PackageTemplate>, Option<TransactionOutputs>) where L::Target: Logger {
 		let htlc_txid = tx.txid();
 		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
 			return (Vec::new(), None)
@@ -1915,16 +1767,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 
 		log_trace!(logger, "Counterparty HTLC broadcast {}:{}", htlc_txid, 0);
-		let witness_data = InputMaterial::Revoked { per_commitment_point, counterparty_delayed_payment_base_key: self.counterparty_tx_cache.counterparty_delayed_payment_base_key, counterparty_htlc_base_key: self.counterparty_tx_cache.counterparty_htlc_base_key,  per_commitment_key, input_descriptor: InputDescriptors::RevokedOutput, amount: tx.output[0].value, htlc: None, on_counterparty_tx_csv: self.counterparty_tx_cache.on_counterparty_tx_csv };
-		let claimable_outpoints = vec!(ClaimRequest { absolute_timelock: height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, aggregable: true, outpoint: BitcoinOutPoint { txid: htlc_txid, vout: 0}, witness_data });
+		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_tx_cache.on_counterparty_tx_csv);
+		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+		let claimable_outpoints = vec!(justice_package);
 		let outputs = vec![(0, tx.output[0].clone())];
 		(claimable_outpoints, Some((htlc_txid, outputs)))
 	}
 
-	// Returns (1) `ClaimRequest`s that can be given to the OnChainTxHandler, so that the handler can
+	// Returns (1) `PackageTemplate`s that can be given to the OnChainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx) -> (Vec<ClaimRequest>, Option<(Script, PublicKey, PublicKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -1932,18 +1785,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				claim_requests.push(ClaimRequest { absolute_timelock: ::core::u32::MAX, aggregable: false, outpoint: BitcoinOutPoint { txid: holder_tx.txid, vout: transaction_output_index as u32 },
-					witness_data: InputMaterial::HolderHTLC {
-						preimage: if !htlc.offered {
-								if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-									Some(preimage.clone())
-								} else {
-									// We can't build an HTLC-Success transaction without the preimage
-									continue;
-								}
-							} else { None },
-						amount: htlc.amount_msat,
-				}});
+				let htlc_output = HolderHTLCOutput::build(if !htlc.offered {
+					if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+						Some(preimage.clone())
+					} else {
+						// We can't build an HTLC-Success transaction without the preimage
+						continue;
+					}
+				} else { None }, htlc.amount_msat);
+				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
+				claim_requests.push(htlc_package);
 			}
 		}
 
@@ -1964,7 +1815,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<ClaimRequest>, TransactionOutputs) where L::Target: Logger {
+	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<PackageTemplate>, TransactionOutputs) where L::Target: Logger {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -2004,14 +1855,14 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		if self.current_holder_commitment_tx.txid == commitment_txid {
 			is_holder_tx = true;
 			log_trace!(logger, "Got latest holder commitment tx broadcast, searching for available HTLCs to claim");
-			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
 			append_onchain_update!(res, to_watch);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
 			if holder_tx.txid == commitment_txid {
 				is_holder_tx = true;
 				log_trace!(logger, "Got previous holder commitment tx broadcast, searching for available HTLCs to claim");
-				let res = self.get_broadcasted_holder_claims(holder_tx);
+				let res = self.get_broadcasted_holder_claims(holder_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
 				append_onchain_update!(res, to_watch);
 			}
@@ -2203,7 +2054,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		height: u32,
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
-		mut claimable_outpoints: Vec<ClaimRequest>,
+		mut claimable_outpoints: Vec<PackageTemplate>,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: L,
@@ -2215,11 +2066,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	{
 		let should_broadcast = self.would_broadcast_at_height(height, &logger);
 		if should_broadcast {
-			claimable_outpoints.push(ClaimRequest { absolute_timelock: height, aggregable: false, outpoint: BitcoinOutPoint { txid: self.funding_info.0.txid.clone(), vout: self.funding_info.0.index as u32 }, witness_data: InputMaterial::Funding { funding_redeemscript: self.funding_redeemscript.clone() }});
+			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
+			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), height, false, height);
+			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
-			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
 			if !new_outputs.is_empty() {
 				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
@@ -3047,6 +2900,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use hex;
 	use chain::channelmonitor::ChannelMonitor;
+	use chain::onchain_utils::{WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC, WEIGHT_REVOKED_OUTPUT};
 	use chain::transaction::OutPoint;
 	use ln::{PaymentPreimage, PaymentHash};
 	use ln::channelmanager::BestBlock;
@@ -3207,25 +3061,25 @@ mod tests {
 		let mut sum_actual_sigs = 0;
 
 		macro_rules! sign_input {
-			($sighash_parts: expr, $idx: expr, $amount: expr, $input_type: expr, $sum_actual_sigs: expr) => {
+			($sighash_parts: expr, $idx: expr, $amount: expr, $weight: expr, $sum_actual_sigs: expr) => {
 				let htlc = HTLCOutputInCommitment {
-					offered: if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::OfferedHTLC { true } else { false },
+					offered: if *$weight == WEIGHT_REVOKED_OFFERED_HTLC || *$weight == WEIGHT_OFFERED_HTLC { true } else { false },
 					amount_msat: 0,
 					cltv_expiry: 2 << 16,
 					payment_hash: PaymentHash([1; 32]),
 					transaction_output_index: Some($idx as u32),
 				};
-				let redeem_script = if *$input_type == InputDescriptors::RevokedOutput { chan_utils::get_revokeable_redeemscript(&pubkey, 256, &pubkey) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &pubkey, &pubkey, &pubkey) };
+				let redeem_script = if *$weight == WEIGHT_REVOKED_OUTPUT { chan_utils::get_revokeable_redeemscript(&pubkey, 256, &pubkey) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &pubkey, &pubkey, &pubkey) };
 				let sighash = hash_to_message!(&$sighash_parts.signature_hash($idx, &redeem_script, $amount, SigHashType::All)[..]);
 				let sig = secp_ctx.sign(&sighash, &privkey);
 				$sighash_parts.access_witness($idx).push(sig.serialize_der().to_vec());
 				$sighash_parts.access_witness($idx)[0].push(SigHashType::All as u8);
 				sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
-				if *$input_type == InputDescriptors::RevokedOutput {
+				if *$weight == WEIGHT_REVOKED_OUTPUT {
 					$sighash_parts.access_witness($idx).push(vec!(1));
-				} else if *$input_type == InputDescriptors::RevokedOfferedHTLC || *$input_type == InputDescriptors::RevokedReceivedHTLC {
+				} else if *$weight == WEIGHT_REVOKED_OFFERED_HTLC || *$weight == WEIGHT_REVOKED_RECEIVED_HTLC {
 					$sighash_parts.access_witness($idx).push(pubkey.clone().serialize().to_vec());
-				} else if *$input_type == InputDescriptors::ReceivedHTLC {
+				} else if *$weight == WEIGHT_RECEIVED_HTLC {
 					$sighash_parts.access_witness($idx).push(vec![0]);
 				} else {
 					$sighash_parts.access_witness($idx).push(PaymentPreimage([1; 32]).0.to_vec());
@@ -3258,14 +3112,16 @@ mod tests {
 			value: 0,
 		});
 		let base_weight = claim_tx.get_weight();
-		let inputs_des = vec![InputDescriptors::RevokedOutput, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedOfferedHTLC, InputDescriptors::RevokedReceivedHTLC];
+		let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC];
+		let mut inputs_total_weight = 2; // count segwit flags
 		{
 			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_des.iter().enumerate() {
+			for (idx, inp) in inputs_weight.iter().enumerate() {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+				inputs_total_weight += inp;
 			}
 		}
-		assert_eq!(base_weight + package::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		claim_tx.input.clear();
@@ -3282,14 +3138,16 @@ mod tests {
 			});
 		}
 		let base_weight = claim_tx.get_weight();
-		let inputs_des = vec![InputDescriptors::OfferedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC, InputDescriptors::ReceivedHTLC];
+		let inputs_weight = vec![WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC];
+		let mut inputs_total_weight = 2; // count segwit flags
 		{
 			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_des.iter().enumerate() {
+			for (idx, inp) in inputs_weight.iter().enumerate() {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+				inputs_total_weight += inp;
 			}
 		}
-		assert_eq!(base_weight + package::get_witnesses_weight(&inputs_des[..]),  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		claim_tx.input.clear();
@@ -3304,14 +3162,16 @@ mod tests {
 			witness: Vec::new(),
 		});
 		let base_weight = claim_tx.get_weight();
-		let inputs_des = vec![InputDescriptors::RevokedOutput];
+		let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
+		let mut inputs_total_weight = 2; // count segwit flags
 		{
 			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_des.iter().enumerate() {
+			for (idx, inp) in inputs_weight.iter().enumerate() {
 				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs);
+				inputs_total_weight += inp;
 			}
 		}
-		assert_eq!(base_weight + package::get_witnesses_weight(&inputs_des[..]), claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_des.len() - sum_actual_sigs));
+		assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
