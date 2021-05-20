@@ -147,7 +147,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 
 struct KeyProvider {
 	node_id: u8,
-	rand_bytes_id: atomic::AtomicU8,
+	rand_bytes_id: atomic::AtomicU32,
 	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
 }
 impl KeysInterface for KeyProvider {
@@ -179,7 +179,7 @@ impl KeysInterface for KeyProvider {
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
-			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
+			[id as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
 			channel_value_satoshis,
 			[0; 32],
 		);
@@ -189,7 +189,9 @@ impl KeysInterface for KeyProvider {
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, id, 11, self.node_id]
+		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_id];
+		res[30-4..30].copy_from_slice(&id.to_le_bytes());
+		res
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
@@ -334,7 +336,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{})));
 
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU8::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
 			let mut config = UserConfig::default();
 			config.channel_options.fee_proportional_millionths = 0;
 			config.channel_options.announced_channel = true;
