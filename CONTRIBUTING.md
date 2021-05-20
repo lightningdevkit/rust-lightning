@@ -113,6 +113,14 @@ rustup component add clippy
 cargo clippy
 ```
 
+Significant structures that users persist should always have their serialization methods (usually
+`Writeable::write` and `ReadableArgs::read`) begin with
+`write_ver_prefix!()`/`read_ver_prefix!()` calls, and end with calls to
+`write_tlv_fields!()`/`read_tlv_fields!()`.
+
+Updates to the serialized format which has implications for backwards or forwards compatibility
+must be included in release notes.
+
 Security
 --------
 
