@@ -3454,48 +3454,45 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		let mut failed_channels = Vec::new();
-		let has_pending_monitor_events = {
-			let pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
-			let has_pending_monitor_events = !pending_monitor_events.is_empty();
-			for monitor_event in pending_monitor_events {
-				match monitor_event {
-					MonitorEvent::HTLCEvent(htlc_update) => {
-						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
-						} else {
-							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+		let pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
+		let has_pending_monitor_events = !pending_monitor_events.is_empty();
+		for monitor_event in pending_monitor_events {
+			match monitor_event {
+				MonitorEvent::HTLCEvent(htlc_update) => {
+					if let Some(preimage) = htlc_update.payment_preimage {
+						log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+						self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage);
+					} else {
+						log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+						self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+					}
+				},
+				MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
+					let mut channel_lock = self.channel_state.lock().unwrap();
+					let channel_state = &mut *channel_lock;
+					let by_id = &mut channel_state.by_id;
+					let short_to_id = &mut channel_state.short_to_id;
+					let pending_msg_events = &mut channel_state.pending_msg_events;
+					if let Some(mut chan) = by_id.remove(&funding_outpoint.to_channel_id()) {
+						if let Some(short_id) = chan.get_short_channel_id() {
+							short_to_id.remove(&short_id);
 						}
-					},
-					MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
-						let mut channel_lock = self.channel_state.lock().unwrap();
-						let channel_state = &mut *channel_lock;
-						let by_id = &mut channel_state.by_id;
-						let short_to_id = &mut channel_state.short_to_id;
-						let pending_msg_events = &mut channel_state.pending_msg_events;
-						if let Some(mut chan) = by_id.remove(&funding_outpoint.to_channel_id()) {
-							if let Some(short_id) = chan.get_short_channel_id() {
-								short_to_id.remove(&short_id);
-							}
-							failed_channels.push(chan.force_shutdown(false));
-							if let Ok(update) = self.get_channel_update(&chan) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-									msg: update
-								});
-							}
-							pending_msg_events.push(events::MessageSendEvent::HandleError {
-								node_id: chan.get_counterparty_node_id(),
-								action: msgs::ErrorAction::SendErrorMessage {
-									msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
-								},
+						failed_channels.push(chan.force_shutdown(false));
+						if let Ok(update) = self.get_channel_update(&chan) {
+							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
 							});
 						}
-					},
-				}
+						pending_msg_events.push(events::MessageSendEvent::HandleError {
+							node_id: chan.get_counterparty_node_id(),
+							action: msgs::ErrorAction::SendErrorMessage {
+								msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
+							},
+						});
+					}
+				},
 			}
-			has_pending_monitor_events
-		};
+		}
 
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
