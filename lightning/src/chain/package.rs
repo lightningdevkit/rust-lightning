@@ -387,6 +387,21 @@ impl PackageSolvingData {
 			_ => { panic!("API Error!"); }
 		}
 	}
+	fn absolute_tx_timelock(&self, output_conf_height: u32) -> u32 {
+		// Get the absolute timelock at which this output can be spent given the height at which
+		// this output was confirmed. We use `output_conf_height + 1` as a safe default as we can
+		// be confirmed in the next block and transactions with time lock `current_height + 1`
+		// always propagate.
+		let absolute_timelock = match self {
+			PackageSolvingData::RevokedOutput(_) => output_conf_height + 1,
+			PackageSolvingData::RevokedHTLCOutput(_) => output_conf_height + 1,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => output_conf_height + 1,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => std::cmp::max(outp.htlc.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => std::cmp::max(outp.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::HolderFundingOutput(_) => output_conf_height + 1,
+		};
+		absolute_timelock
+	}
 }
 
 impl Writeable for PackageSolvingData {
@@ -597,6 +612,10 @@ impl PackageTemplate {
 			amounts += outp.amount();
 		}
 		amounts
+	}
+	pub(crate) fn package_timelock(&self) -> u32 {
+		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
+			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
 		let mut inputs_weight = 0;
