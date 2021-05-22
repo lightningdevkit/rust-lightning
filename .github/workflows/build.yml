@@ -144,12 +144,12 @@ jobs:
         uses: actions/cache@v2
         with:
           path: lightning/net_graph-2021-02-12.bin
-          key: net_graph-2021-02-12
+          key: ldk-net_graph-05f0c5a0d772-2020-02-12.bin
       - name: Fetch routing graph snapshot
         if: steps.cache-graph.outputs.cache-hit != 'true'
         run: |
-          wget -O lightning/net_graph-2021-02-12.bin https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin
-          if [ "$(sha256sum lightning/net_graph-2021-02-12.bin | awk '{ print $1 }')" != "890a1f80dfb6ef674a1e4ff0f23cd73d740731c395f99d85abbede0cfbb701ab" ]; then
+          wget -O lightning/net_graph-2021-02-12.bin https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin
+          if [ "$(sha256sum lightning/net_graph-2021-02-12.bin | awk '{ print $1 }')" != "7116fca78551fedc714a604cec0ad1ca66caa77bb4d0051290258e7a10e0c6e7" ]; then
             echo "Bad hash"
             exit 1
           fi

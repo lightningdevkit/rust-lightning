@@ -3890,7 +3890,7 @@ mod tests {
 		let mut d = match get_route_file() {
 			Ok(f) => f,
 			Err(_) => {
-				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 				return;
 			},
 		};
@@ -3917,7 +3917,7 @@ mod tests {
 		let mut d = match get_route_file() {
 			Ok(f) => f,
 			Err(_) => {
-				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 				return;
 			},
 		};
@@ -3955,7 +3955,7 @@ mod benches {
 	#[bench]
 	fn generate_routes(bench: &mut Bencher) {
 		let mut d = tests::get_route_file()
-			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
@@ -3987,7 +3987,7 @@ mod benches {
 	#[bench]
 	fn generate_mpp_routes(bench: &mut Bencher) {
 		let mut d = tests::get_route_file()
-			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
