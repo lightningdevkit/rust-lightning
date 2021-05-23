@@ -1499,16 +1499,17 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	// Check we only broadcast 1 timeout tx
 	let claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	let htlc_pair = if claim_txn[0].output[0].value == 800_000 / 1000 { (claim_txn[0].clone(), claim_txn[1].clone()) } else { (claim_txn[1].clone(), claim_txn[0].clone()) };
 	assert_eq!(claim_txn.len(), 5);
 	check_spends!(claim_txn[2], chan_1.3);
 	check_spends!(claim_txn[3], claim_txn[2]);
-	assert_eq!(htlc_pair.0.input.len(), 1);
-	assert_eq!(htlc_pair.0.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
-	check_spends!(htlc_pair.0, remote_txn[0]);
-	assert_eq!(htlc_pair.1.input.len(), 1);
-	assert_eq!(htlc_pair.1.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
-	check_spends!(htlc_pair.1, remote_txn[0]);
+	assert_eq!(claim_txn[1].input.len(), 1);
+	assert_eq!(claim_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
+	check_spends!(claim_txn[1], remote_txn[0]);
+	assert_eq!(remote_txn[0].output[claim_txn[1].input[0].previous_output.vout as usize].value, 800);
+	assert_eq!(claim_txn[0].input.len(), 1);
+	assert_eq!(claim_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
+	check_spends!(claim_txn[0], remote_txn[0]);
+	assert_eq!(remote_txn[0].output[claim_txn[0].input[0].previous_output.vout as usize].value, 900);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 3);
@@ -5308,11 +5309,20 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
+	let node_max_height = std::cmp::max(std::cmp::max(nodes[0].blocks.borrow().len(), nodes[1].blocks.borrow().len()), std::cmp::max(nodes[2].blocks.borrow().len(), nodes[3].blocks.borrow().len())) as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
+
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 
 	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, 0).unwrap();
+	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
+	// script push size limit so that the below script length checks match
+	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
 	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
-		&nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
+		&nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV - 40, nodes[0].logger).unwrap();
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 900000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
@@ -5355,18 +5365,17 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	}
 	let htlc_success_txn: Vec<_> = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(htlc_success_txn.len(), 5); // ChannelMonitor: HTLC-Success txn (*2 due to 2-HTLC outputs), ChannelManager: local commitment tx + HTLC-Success txn (*2 due to 2-HTLC outputs)
-	check_spends!(htlc_success_txn[2], chan_2.3);
-	check_spends!(htlc_success_txn[3], htlc_success_txn[2]);
-	check_spends!(htlc_success_txn[4], htlc_success_txn[2]);
-	assert_eq!(htlc_success_txn[0], htlc_success_txn[3]);
+	check_spends!(htlc_success_txn[0], commitment_txn[0]);
+	check_spends!(htlc_success_txn[1], commitment_txn[0]);
 	assert_eq!(htlc_success_txn[0].input.len(), 1);
 	assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(htlc_success_txn[1], htlc_success_txn[4]);
 	assert_eq!(htlc_success_txn[1].input.len(), 1);
 	assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	assert_ne!(htlc_success_txn[0].input[0], htlc_success_txn[1].input[0]);
-	check_spends!(htlc_success_txn[0], commitment_txn[0]);
-	check_spends!(htlc_success_txn[1], commitment_txn[0]);
+	assert_eq!(htlc_success_txn[2], commitment_txn[0]);
+	assert_eq!(htlc_success_txn[3], htlc_success_txn[0]);
+	assert_eq!(htlc_success_txn[4], htlc_success_txn[1]);
+
 
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
