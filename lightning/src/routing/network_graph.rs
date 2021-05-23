@@ -32,13 +32,13 @@ use util::logger::Logger;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
-use std::{cmp, fmt};
+use core::{cmp, fmt};
 use std::sync::{RwLock, RwLockReadGuard};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry as BtreeEntry;
-use std::ops::Deref;
+use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
 /// The maximum number of extra bytes which we do not understand in a gossip message before we will
@@ -423,7 +423,7 @@ where
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let mut ret = Vec::new();
 		let mut pending_events = self.pending_events.lock().unwrap();
-		std::mem::swap(&mut ret, &mut pending_events);
+		core::mem::swap(&mut ret, &mut pending_events);
 		ret
 	}
 }

@@ -39,7 +39,7 @@ use util::events::Event;
 
 use std::collections::{HashMap, hash_map};
 use std::sync::RwLock;
-use std::ops::Deref;
+use core::ops::Deref;
 
 /// An implementation of [`chain::Watch`] for monitoring channels.
 ///

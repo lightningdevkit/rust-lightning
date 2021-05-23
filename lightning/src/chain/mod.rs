@@ -246,7 +246,7 @@ pub struct WatchedOutput {
 	pub script_pubkey: Script,
 }
 
-impl<T: Listen> Listen for std::ops::Deref<Target = T> {
+impl<T: Listen> Listen for core::ops::Deref<Target = T> {
 	fn block_connected(&self, block: &Block, height: u32) {
 		(**self).block_connected(block, height);
 	}
@@ -256,7 +256,7 @@ impl<T: Listen> Listen for std::ops::Deref<Target = T> {
 	}
 }
 
-impl<T: std::ops::Deref, U: std::ops::Deref> Listen for (T, U)
+impl<T: core::ops::Deref, U: core::ops::Deref> Listen for (T, U)
 where
 	T::Target: Listen,
 	U::Target: Listen,

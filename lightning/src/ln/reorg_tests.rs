@@ -23,7 +23,7 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::hash_types::BlockHash;
 
 use std::collections::HashMap;
-use std::mem;
+use core::mem;
 
 use ln::functional_test_utils::*;
 

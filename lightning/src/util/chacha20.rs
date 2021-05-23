@@ -13,13 +13,13 @@ use std::io;
 
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chacha {
-	use std::cmp;
+	use core::cmp;
 	use util::byte_utils::{slice_to_le32, le32_to_array};
 
 	#[derive(Clone, Copy, PartialEq, Eq)]
 	#[allow(non_camel_case_types)]
 	struct u32x4(pub u32, pub u32, pub u32, pub u32);
-	impl ::std::ops::Add for u32x4 {
+	impl ::core::ops::Add for u32x4 {
 		type Output = u32x4;
 		fn add(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0.wrapping_add(rhs.0),
@@ -28,7 +28,7 @@ mod real_chacha {
 			      self.3.wrapping_add(rhs.3))
 		}
 	}
-	impl ::std::ops::Sub for u32x4 {
+	impl ::core::ops::Sub for u32x4 {
 		type Output = u32x4;
 		fn sub(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0.wrapping_sub(rhs.0),
@@ -37,19 +37,19 @@ mod real_chacha {
 			      self.3.wrapping_sub(rhs.3))
 		}
 	}
-	impl ::std::ops::BitXor for u32x4 {
+	impl ::core::ops::BitXor for u32x4 {
 		type Output = u32x4;
 		fn bitxor(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0 ^ rhs.0, self.1 ^ rhs.1, self.2 ^ rhs.2, self.3 ^ rhs.3)
 		}
 	}
-	impl ::std::ops::Shr<u32x4> for u32x4 {
+	impl ::core::ops::Shr<u32x4> for u32x4 {
 		type Output = u32x4;
 		fn shr(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0 >> rhs.0, self.1 >> rhs.1, self.2 >> rhs.2, self.3 >> rhs.3)
 		}
 	}
-	impl ::std::ops::Shl<u32x4> for u32x4 {
+	impl ::core::ops::Shl<u32x4> for u32x4 {
 		type Output = u32x4;
 		fn shl(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0 << rhs.0, self.1 << rhs.1, self.2 << rhs.2, self.3 << rhs.3)
@@ -318,7 +318,7 @@ impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 
 #[cfg(test)]
 mod test {
-	use std::iter::repeat;
+	use core::iter::repeat;
 
 	use super::ChaCha20;
 

@@ -32,6 +32,7 @@
 #[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))] extern crate test;
 
 extern crate bitcoin;
+extern crate core;
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))] extern crate regex;
 

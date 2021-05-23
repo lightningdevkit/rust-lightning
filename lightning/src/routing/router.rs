@@ -21,9 +21,9 @@ use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
-use std::cmp;
+use core::cmp;
 use std::collections::{HashMap, BinaryHeap};
-use std::ops::Deref;
+use core::ops::Deref;
 
 /// A hop in a route
 #[derive(Clone, PartialEq)]
@@ -3872,7 +3872,7 @@ mod tests {
 
 	pub(super) fn random_init_seed() -> u64 {
 		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
-		use std::hash::{BuildHasher, Hasher};
+		use core::hash::{BuildHasher, Hasher};
 		let seed = std::collections::hash_map::RandomState::new().build_hasher().finish();
 		println!("Using seed of {}", seed);
 		seed

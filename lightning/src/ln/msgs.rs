@@ -32,8 +32,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 
-use std::{cmp, fmt};
-use std::fmt::Debug;
+use core::{cmp, fmt};
+use core::fmt::Debug;
 use std::io::Read;
 
 use util::events::MessageSendEventsProvider;

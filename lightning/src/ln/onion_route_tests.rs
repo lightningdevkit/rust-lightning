@@ -32,7 +32,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::SecretKey;
 
-use std::default::Default;
+use core::default::Default;
 use std::io;
 
 use ln::functional_test_utils::*;

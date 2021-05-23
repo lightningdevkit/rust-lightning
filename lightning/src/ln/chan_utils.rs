@@ -31,12 +31,12 @@ use bitcoin::secp256k1::{Secp256k1, Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::secp256k1;
 
-use std::cmp;
+use core::cmp;
 use ln::chan_utils;
 use util::transaction_utils::sort_outputs;
 use ln::channel::INITIAL_COMMITMENT_NUMBER;
 use std::io::Read;
-use std::ops::Deref;
+use core::ops::Deref;
 use chain;
 
 // Maximum size of a serialized HTLCOutputInCommitment

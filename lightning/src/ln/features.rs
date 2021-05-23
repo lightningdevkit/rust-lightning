@@ -22,8 +22,8 @@
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use std::{cmp, fmt};
-use std::marker::PhantomData;
+use core::{cmp, fmt};
+use core::marker::PhantomData;
 
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};

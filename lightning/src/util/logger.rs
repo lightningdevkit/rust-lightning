@@ -14,8 +14,8 @@
 //! The second one, client-side by implementing check against Record Level field.
 //! Each module may have its own Logger or share one.
 
-use std::cmp;
-use std::fmt;
+use core::cmp;
+use core::fmt;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
 

@@ -32,9 +32,10 @@ use routing::network_graph::NetGraphMsgHandler;
 
 use std::collections::{HashMap,hash_map,HashSet,LinkedList};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{cmp, error, hash, fmt, mem};
-use std::ops::Deref;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{cmp, hash, fmt, mem};
+use core::ops::Deref;
+use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
@@ -1420,9 +1421,8 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
-	use std;
 	use std::sync::{Arc, Mutex};
-	use std::sync::atomic::Ordering;
+	use core::sync::atomic::Ordering;
 
 	#[derive(Clone)]
 	struct FileDescriptor {
@@ -1435,8 +1435,8 @@ mod tests {
 		}
 	}
 	impl Eq for FileDescriptor { }
-	impl std::hash::Hash for FileDescriptor {
-		fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+	impl core::hash::Hash for FileDescriptor {
+		fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 			self.fd.hash(hasher)
 		}
 	}
