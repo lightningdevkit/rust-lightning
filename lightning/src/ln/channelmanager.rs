@@ -1788,7 +1788,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// smaller than 500:
 	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 500;
 
-	/// Regenerates channel_announcements and a generates a signed node_announcement from the given
+	/// Regenerates channel_announcements and generates a signed node_announcement from the given
 	/// arguments, providing them in corresponding events via
 	/// [`get_and_clear_pending_msg_events`], if at least one public channel has been confirmed
 	/// on-chain. This effectively re-broadcasts all channel announcements and sends our node
