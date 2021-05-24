@@ -3894,7 +3894,7 @@ impl<Signer: Sign> Channel<Signer> {
 				contents: announcement,
 			})
 		} else {
-			Err(ChannelError::Ignore("Attempted to get channel announcement before we'd received announcement_signatures".to_string()))
+			Err(ChannelError::Ignore("Attempted to sign channel announcement before we'd received announcement_signatures".to_string()))
 		}
 	}
 
