@@ -1331,7 +1331,7 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// Note that it is still possible to hit these assertions in case we find a preimage on-chain
 	/// but then have a reorg which settles on an HTLC-failure on chain.
-	pub fn get_update_fail_htlc(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> {
+	pub fn get_update_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -1381,6 +1381,7 @@ impl<Signer: Sign> Channel<Signer> {
 					_ => {}
 				}
 			}
+			log_trace!(logger, "Placing failure for HTLC ID {} in holding cell", htlc_id_arg);
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::FailHTLC {
 				htlc_id: htlc_id_arg,
 				err_packet,
@@ -1388,6 +1389,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Ok(None);
 		}
 
+		log_trace!(logger, "Failing HTLC ID {} back with a update_fail_htlc message", htlc_id_arg);
 		{
 			let htlc = &mut self.pending_inbound_htlcs[pending_idx];
 			htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(err_packet.clone()));
@@ -2307,6 +2309,16 @@ impl<Signer: Sign> Channel<Signer> {
 		}, commitment_signed, closing_signed, monitor_update))
 	}
 
+	/// Public version of the below, checking relevant preconditions first.
+	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
+	/// returns `(None, Vec::new())`.
+	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
+		if self.channel_state >= ChannelState::ChannelFunded as u32 &&
+		   (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+			self.free_holding_cell_htlcs(logger)
+		} else { Ok((None, Vec::new())) }
+	}
+
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
 	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
@@ -2371,7 +2383,7 @@ impl<Signer: Sign> Channel<Signer> {
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-						match self.get_update_fail_htlc(htlc_id, err_packet.clone()) {
+						match self.get_update_fail_htlc(htlc_id, err_packet.clone(), logger) {
 							Ok(update_fail_msg_option) => update_fail_htlcs.push(update_fail_msg_option.unwrap()),
 							Err(e) => {
 								if let ChannelError::Ignore(_) = e {}
@@ -2684,19 +2696,16 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
-	/// Removes any uncommitted HTLCs, to be used on peer disconnection, including any pending
-	/// HTLCs that we intended to add but haven't as we were waiting on a remote revoke.
-	/// Returns the set of PendingHTLCStatuses from remote uncommitted HTLCs (which we're
-	/// implicitly dropping) and the payment_hashes of HTLCs we tried to add but are dropping.
+	/// Removes any uncommitted inbound HTLCs and resets the state of uncommitted outbound HTLC
+	/// updates, to be used on peer disconnection. After this, update_*_htlc messages need to be
+	/// resent.
 	/// No further message handling calls may be made until a channel_reestablish dance has
 	/// completed.
-	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L) -> Vec<(HTLCSource, PaymentHash)> where L::Target: Logger {
-		let mut outbound_drops = Vec::new();
-
+	pub fn remove_uncommitted_htlcs_and_mark_paused<L: Deref>(&mut self, logger: &L)  where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state < ChannelState::FundingSent as u32 {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
-			return outbound_drops;
+			return;
 		}
 		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
 		// will be retransmitted.
@@ -2739,23 +2748,8 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		self.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				// Note that currently on channel reestablish we assert that there are
-				// no holding cell HTLC update_adds, so if in the future we stop
-				// dropping added HTLCs here and failing them backwards, then there will
-				// need to be corresponding changes made in the Channel's re-establish
-				// logic.
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, .. } => {
-					outbound_drops.push((source.clone(), payment_hash.clone()));
-					false
-				},
-				&HTLCUpdateAwaitingACK::ClaimHTLC {..} | &HTLCUpdateAwaitingACK::FailHTLC {..} => true,
-			}
-		});
 		self.channel_state |= ChannelState::PeerDisconnected as u32;
-		log_debug!(logger, "Peer disconnection resulted in {} remote-announced HTLC drops and {} waiting-to-locally-announced HTLC drops on channel {}", outbound_drops.len(), inbound_drop_count, log_bytes!(self.channel_id()));
-		outbound_drops
+		log_debug!(logger, "Peer disconnection resulted in {} remote-announced HTLC drops on channel {}", inbound_drop_count, log_bytes!(self.channel_id()));
 	}
 
 	/// Indicates that a ChannelMonitor update failed to be stored by the client and further
@@ -2914,7 +2908,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitorUpdate>, RAACommitmentOrder, Option<msgs::Shutdown>), ChannelError> where L::Target: Logger {
+	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitorUpdate>, RAACommitmentOrder, Vec<(HTLCSource, PaymentHash)>, Option<msgs::Shutdown>), ChannelError> where L::Target: Logger {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -2965,7 +2959,7 @@ impl<Signer: Sign> Channel<Signer> {
 					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet".to_owned()));
 				}
 				// Short circuit the whole handler as there is nothing we can resend them
-				return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
+				return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, Vec::new(), shutdown_msg));
 			}
 
 			// We have OurFundingLocked set!
@@ -2973,7 +2967,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Ok((Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
-			}), None, None, None, RAACommitmentOrder::CommitmentFirst, shutdown_msg));
+			}), None, None, None, RAACommitmentOrder::CommitmentFirst, Vec::new(), shutdown_msg));
 		}
 
 		let required_revoke = if msg.next_remote_commitment_number + 1 == INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
@@ -3014,14 +3008,6 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 
 			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
-				// Note that if in the future we no longer drop holding cell update_adds on peer
-				// disconnect, this logic will need to be updated.
-				for htlc_update in self.holding_cell_htlc_updates.iter() {
-					if let &HTLCUpdateAwaitingACK::AddHTLC { .. } = htlc_update {
-						debug_assert!(false, "There shouldn't be any add-HTLCs in the holding cell now because they should have been dropped on peer disconnect. Panic here because said HTLCs won't be handled correctly.");
-					}
-				}
-
 				// We're up-to-date and not waiting on a remote revoke (if we are our
 				// channel_reestablish should result in them sending a revoke_and_ack), but we may
 				// have received some updates while we were disconnected. Free the holding cell
@@ -3030,20 +3016,14 @@ impl<Signer: Sign> Channel<Signer> {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
 					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok((Some((commitment_update, monitor_update)), htlcs_to_fail)) => {
-						// If in the future we no longer drop holding cell update_adds on peer
-						// disconnect, we may be handed some HTLCs to fail backwards here.
-						assert!(htlcs_to_fail.is_empty());
-						return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), shutdown_msg));
+						return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), htlcs_to_fail, shutdown_msg));
 					},
 					Ok((None, htlcs_to_fail)) => {
-						// If in the future we no longer drop holding cell update_adds on peer
-						// disconnect, we may be handed some HTLCs to fail backwards here.
-						assert!(htlcs_to_fail.is_empty());
-						return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
+						return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), htlcs_to_fail, shutdown_msg));
 					},
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), shutdown_msg));
+				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), Vec::new(), shutdown_msg));
 			}
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -3054,10 +3034,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
-				return Ok((resend_funding_locked, None, None, None, self.resend_order.clone(), shutdown_msg));
+				return Ok((resend_funding_locked, None, None, None, self.resend_order.clone(), Vec::new(), shutdown_msg));
 			}
 
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update(logger)), None, self.resend_order.clone(), shutdown_msg));
+			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update(logger)), None, self.resend_order.clone(), Vec::new(), shutdown_msg));
 		} else {
 			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction".to_owned()));
 		}
@@ -4393,7 +4373,7 @@ impl Readable for ChannelUpdateStatus {
 impl<Signer: Sign> Writeable for Channel<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
-		// called but include holding cell updates (and obviously we don't modify self).
+		// called.
 
 		writer.write_all(&[SERIALIZATION_VERSION; 1])?;
 		writer.write_all(&[MIN_SERIALIZATION_VERSION; 1])?;

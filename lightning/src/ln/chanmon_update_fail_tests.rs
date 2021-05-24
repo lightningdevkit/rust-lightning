@@ -20,11 +20,12 @@ use chain::transaction::OutPoint;
 use chain::Listen;
 use chain::Watch;
 use ln::{PaymentPreimage, PaymentHash};
-use ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
+use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
@@ -36,6 +37,8 @@ use bitcoin::hashes::Hash;
 use ln::functional_test_utils::*;
 
 use util::test_utils;
+
+use std::collections::HashMap;
 
 // If persister_fail is true, we have the persister return a PermanentFailure
 // instead of the higher-level ChainMonitor.
@@ -1970,4 +1973,203 @@ fn test_path_paused_mpp() {
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), payment_secret, events.pop().unwrap(), true);
 
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+}
+
+fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
+	// Tests that, when we serialize a channel with AddHTLC entries in the holding cell, we
+	// properly free them on reconnect. We previously failed such HTLCs upon serialization, but
+	// that behavior was both somewhat unexpected and also broken (there was a debug assertion
+	// which failed in such a case).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 15_000_000, 7_000_000_000, InitFeatures::known(), InitFeatures::known()).2;
+	let (payment_preimage_1, payment_hash_1, payment_secret_1) = get_payment_preimage_hash!(&nodes[1]);
+	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(&nodes[1]);
+
+	// Do a really complicated dance to get an HTLC into the holding cell, with MonitorUpdateFailed
+	// set but AwaitingRemoteRevoke unset. When this test was written, any attempts to send an HTLC
+	// while MonitorUpdateFailed is set are immediately failed-backwards. Thus, the only way to get
+	// an AddHTLC into the holding cell is to add it while AwaitingRemoteRevoke is set but
+	// MonitorUpdateFailed is unset, and then swap the flags.
+	//
+	// We do this by:
+	//  a) routing a payment from node B to node A,
+	//  b) sending a payment from node A to node B without delivering any of the generated messages,
+	//     putting node A in AwaitingRemoteRevoke,
+	//  c) sending a second payment from node A to node B, which is immediately placed in the
+	//     holding cell,
+	//  d) claiming the first payment from B, allowing us to fail the monitor update which occurs
+	//     when we try to persist the payment preimage,
+	//  e) delivering A's commitment_signed from (b) and the resulting B revoke_and_ack message,
+	//     clearing AwaitingRemoteRevoke on node A.
+	//
+	// Note that because, at the end, MonitorUpdateFailed is still set, the HTLC generated in (c)
+	// will not be freed from the holding cell.
+	let (payment_preimage_0, _, _) = route_payment(&nodes[1], &[&nodes[0]], 100000);
+
+	let route = {
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), None, None, &Vec::new(), 100000, TEST_FINAL_CLTV, nodes[0].logger).unwrap()
+	};
+
+	nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let send = SendEvent::from_node(&nodes[0]);
+	assert_eq!(send.msgs.len(), 1);
+
+	nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
+	check_added_monitors!(nodes[0], 0);
+
+	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	assert!(nodes[0].node.claim_funds(payment_preimage_0));
+	check_added_monitors!(nodes[0], 1);
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send.msgs[0]);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send.commitment_msg);
+	check_added_monitors!(nodes[1], 1);
+
+	let (raa, cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
+	check_added_monitors!(nodes[0], 1);
+
+	if disconnect {
+		// Optionally reload nodes[0] entirely through a serialization roundtrip, otherwise just
+		// disconnect the peers. Note that the fuzzer originally found this issue because
+		// deserializing a ChannelManager in this state causes an assertion failure.
+		if reload_a {
+			let nodes_0_serialized = nodes[0].node.encode();
+			let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+			nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+
+			persister = test_utils::TestPersister::new();
+			let keys_manager = &chanmon_cfgs[0].keys_manager;
+			new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+			nodes[0].chain_monitor = &new_chain_monitor;
+			let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+			let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+				&mut chan_0_monitor_read, keys_manager).unwrap();
+			assert!(chan_0_monitor_read.is_empty());
+
+			let mut nodes_0_read = &nodes_0_serialized[..];
+			let config = UserConfig::default();
+			nodes_0_deserialized = {
+				let mut channel_monitors = HashMap::new();
+				channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+					default_config: config,
+					keys_manager,
+					fee_estimator: node_cfgs[0].fee_estimator,
+					chain_monitor: nodes[0].chain_monitor,
+					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+					logger: nodes[0].logger,
+					channel_monitors,
+				}).unwrap().1
+			};
+			nodes[0].node = &nodes_0_deserialized;
+			assert!(nodes_0_read.is_empty());
+
+			nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor).unwrap();
+			check_added_monitors!(nodes[0], 1);
+		} else {
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		}
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+		// Now reconnect the two
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+		assert_eq!(reestablish_1.len(), 1);
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+		let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		assert_eq!(reestablish_2.len(), 1);
+
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+		let resp_1 = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		check_added_monitors!(nodes[1], 0);
+
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+		let resp_0 = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+
+		assert!(resp_0.0.is_none());
+		assert!(resp_0.1.is_none());
+		assert!(resp_0.2.is_none());
+		assert!(resp_1.0.is_none());
+		assert!(resp_1.1.is_none());
+
+		// Check that the freshly-generated cs is equal to the original (which we will deliver in a
+		// moment).
+		if let Some(pending_cs) = resp_1.2 {
+			assert!(pending_cs.update_add_htlcs.is_empty());
+			assert!(pending_cs.update_fail_htlcs.is_empty());
+			assert!(pending_cs.update_fulfill_htlcs.is_empty());
+			assert_eq!(pending_cs.commitment_signed, cs);
+		} else { panic!(); }
+
+		// There should be no monitor updates as we are still pending awaiting a failed one.
+		check_added_monitors!(nodes[0], 0);
+		check_added_monitors!(nodes[1], 0);
+	}
+
+	// If we finish updating the monitor, we should free the holding cell right away (this did
+	// not occur prior to #756).
+	*nodes[0].chain_monitor.update_ret.lock().unwrap() = None;
+	let (funding_txo, mon_id) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+	nodes[0].node.channel_monitor_updated(&funding_txo, mon_id);
+
+	// New outbound messages should be generated immediately upon a call to
+	// get_and_clear_pending_msg_events (but not before).
+	check_added_monitors!(nodes[0], 0);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	check_added_monitors!(nodes[0], 1);
+	assert_eq!(events.len(), 1);
+
+	// Deliver the pending in-flight CS
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &cs);
+	check_added_monitors!(nodes[0], 1);
+
+	let commitment_msg = match events.pop().unwrap() {
+		MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			assert!(updates.update_fail_htlcs.is_empty());
+			assert!(updates.update_fail_malformed_htlcs.is_empty());
+			assert!(updates.update_fee.is_none());
+			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+			nodes[1].node.handle_update_fulfill_htlc(&nodes[0].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			expect_payment_sent!(nodes[1], payment_preimage_0);
+			assert_eq!(updates.update_add_htlcs.len(), 1);
+			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+			updates.commitment_signed
+		},
+		_ => panic!("Unexpected event type!"),
+	};
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_msg);
+	check_added_monitors!(nodes[1], 1);
+
+	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 100000);
+	check_added_monitors!(nodes[1], 1);
+
+	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 100000);
+
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
+}
+#[test]
+fn channel_holding_cell_serialize() {
+	do_channel_holding_cell_serialize(true, true);
+	do_channel_holding_cell_serialize(true, false);
+	do_channel_holding_cell_serialize(false, true); // last arg doesn't matter
 }

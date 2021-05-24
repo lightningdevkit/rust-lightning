@@ -1515,6 +1515,11 @@ macro_rules! handle_chan_reestablish_msgs {
 				None
 			};
 
+			if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, msg: _ }) = msg_events.get(idx) {
+				idx += 1;
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			}
+
 			let mut revoke_and_ack = None;
 			let mut commitment_update = None;
 			let order = if let Some(ev) = msg_events.get(idx) {
