@@ -28,7 +28,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use std::io::Cursor;
-use std::ops::Deref;
+use core::ops::Deref;
 
 pub(super) struct OnionKeys {
 	#[cfg(test)]

@@ -12,9 +12,9 @@
 
 use std::io::{Read, Write};
 use std::collections::HashMap;
-use std::hash::Hash;
+use core::hash::Hash;
 use std::sync::Mutex;
-use std::cmp;
+use core::cmp;
 
 use bitcoin::secp256k1::Signature;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
@@ -25,7 +25,7 @@ use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
-use std::marker::Sized;
+use core::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use util::byte_utils;

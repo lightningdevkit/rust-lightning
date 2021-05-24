@@ -61,15 +61,15 @@ use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::Logger;
 use util::errors::APIError;
 
-use std::{cmp, mem};
+use core::{cmp, mem};
 use std::collections::{HashMap, hash_map, HashSet};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 #[cfg(any(test, feature = "allow_wallclock_use"))]
 use std::time::Instant;
-use std::ops::Deref;
+use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -1781,7 +1781,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// be absurd. We ensure this by checking that at least 500 (our stated public contract on when
 	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
 	// message...
-	const HALF_MESSAGE_IS_ADDRS: u32 = ::std::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
+	const HALF_MESSAGE_IS_ADDRS: u32 = ::core::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
 	#[deny(const_err)]
 	#[allow(dead_code)]
 	// ...by failing to compile if the number of addresses that would be half of a message is
@@ -4817,9 +4817,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 mod tests {
 	use ln::channelmanager::PersistenceNotifier;
 	use std::sync::Arc;
-	use std::sync::atomic::{AtomicBool, Ordering};
+	use core::sync::atomic::{AtomicBool, Ordering};
 	use std::thread;
-	use std::time::Duration;
+	use core::time::Duration;
 
 	#[test]
 	fn test_wait_timeout() {

@@ -33,9 +33,9 @@ use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
 use std::collections::HashMap;
-use std::cmp;
-use std::ops::Deref;
-use std::mem::replace;
+use core::cmp;
+use core::ops::Deref;
+use core::mem::replace;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -220,7 +220,7 @@ impl Readable for Option<Vec<Option<(usize, Signature)>>> {
 			0u8 => Ok(None),
 			1u8 => {
 				let vlen: u64 = Readable::read(reader)?;
-				let mut ret = Vec::with_capacity(cmp::min(vlen as usize, MAX_ALLOC_SIZE / ::std::mem::size_of::<Option<(usize, Signature)>>()));
+				let mut ret = Vec::with_capacity(cmp::min(vlen as usize, MAX_ALLOC_SIZE / ::core::mem::size_of::<Option<(usize, Signature)>>()));
 				for _ in 0..vlen {
 					ret.push(match Readable::read(reader)? {
 						0u8 => None,
@@ -320,8 +320,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		let mut key_data = VecWriter(Vec::new());
 		self.signer.write(&mut key_data)?;
-		assert!(key_data.0.len() < std::usize::MAX);
-		assert!(key_data.0.len() < std::u32::MAX as usize);
+		assert!(key_data.0.len() < core::usize::MAX);
+		assert!(key_data.0.len() < core::u32::MAX as usize);
 		(key_data.0.len() as u32).write(writer)?;
 		writer.write_all(&key_data.0[..])?;
 
@@ -711,7 +711,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), claimable_outpoints.len());
 		let mut new_claims = Vec::new();
 		let mut aggregated_claim = HashMap::new();
-		let mut aggregated_soonest = ::std::u32::MAX;
+		let mut aggregated_soonest = ::core::u32::MAX;
 
 		// Try to aggregate outputs if their timelock expiration isn't imminent (absolute_timelock
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).

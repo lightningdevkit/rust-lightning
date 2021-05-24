@@ -82,7 +82,7 @@ pub fn verify(msg: &[u8], sig: &str, pk: PublicKey) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::str::FromStr;
+    use core::str::FromStr;
     use util::message_signing::{sign, recover_pk, verify};
     use bitcoin::secp256k1::key::ONE_KEY;
     use bitcoin::secp256k1::{PublicKey, Secp256k1};

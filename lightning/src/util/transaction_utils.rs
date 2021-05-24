@@ -14,7 +14,7 @@ use bitcoin::consensus::encode::VarInt;
 
 use ln::msgs::MAX_VALUE_MSAT;
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 
 pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
 	outputs.sort_unstable_by(|a, b| {

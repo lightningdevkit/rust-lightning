@@ -17,11 +17,9 @@ use bitcoin::secp256k1::key::PublicKey;
 use routing::router::Route;
 use ln::chan_utils::HTLCType;
 
-use std;
-
 pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
-impl<'a> std::fmt::Display for DebugPubKey<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugPubKey<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		for i in self.0.serialize().iter() {
 			write!(f, "{:02x}", i)?;
 		}
@@ -35,8 +33,8 @@ macro_rules! log_pubkey {
 }
 
 pub(crate) struct DebugBytes<'a>(pub &'a [u8]);
-impl<'a> std::fmt::Display for DebugBytes<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugBytes<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		for i in self.0 {
 			write!(f, "{:02x}", i)?;
 		}
@@ -50,8 +48,8 @@ macro_rules! log_bytes {
 }
 
 pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
-impl<'a> std::fmt::Display for DebugFundingChannelId<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		for i in (OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().iter() {
 			write!(f, "{:02x}", i)?;
 		}
@@ -65,8 +63,8 @@ macro_rules! log_funding_channel_id {
 }
 
 pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
-impl<'a, T> std::fmt::Display for DebugFundingInfo<'a, T> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a, T> core::fmt::Display for DebugFundingInfo<'a, T> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		DebugBytes(&(self.0).0.to_channel_id()[..]).fmt(f)
 	}
 }
@@ -77,8 +75,8 @@ macro_rules! log_funding_info {
 }
 
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
-impl<'a> std::fmt::Display for DebugRoute<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugRoute<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		for (idx, p) in self.0.paths.iter().enumerate() {
 			writeln!(f, "path {}:", idx)?;
 			for h in p.iter() {
@@ -95,8 +93,8 @@ macro_rules! log_route {
 }
 
 pub(crate) struct DebugTx<'a>(pub &'a Transaction);
-impl<'a> std::fmt::Display for DebugTx<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugTx<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
 			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
 					(self.0.input[0].sequence >> 8*3) as u8 == 0x80 {
@@ -134,8 +132,8 @@ macro_rules! log_tx {
 }
 
 pub(crate) struct DebugSpendable<'a>(pub &'a SpendableOutputDescriptor);
-impl<'a> std::fmt::Display for DebugSpendable<'a> {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+impl<'a> core::fmt::Display for DebugSpendable<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		match self.0 {
 			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
 				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.index)?;

@@ -38,7 +38,7 @@ use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelP
 use ln::msgs::UnsignedChannelAnnouncement;
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
 use ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 
@@ -857,7 +857,7 @@ impl KeysManager {
 	/// onchain output detection for which a corresponding delayed_payment_key must be derived.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = byte_utils::slice_to_be64(&params[0..8]);
-		assert!(chan_id <= std::u32::MAX as u64); // Otherwise the params field wasn't created by us
+		assert!(chan_id <= core::u32::MAX as u64); // Otherwise the params field wasn't created by us
 		let mut unique_start = Sha256::engine();
 		unique_start.input(params);
 		unique_start.input(&self.seed);
@@ -1039,7 +1039,7 @@ impl KeysInterface for KeysManager {
 
 	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
 		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
-		assert!(child_ix <= std::u32::MAX as usize);
+		assert!(child_ix <= core::u32::MAX as usize);
 		let mut id = [0; 32];
 		id[0..8].copy_from_slice(&byte_utils::be64_to_array(child_ix as u64));
 		id[8..16].copy_from_slice(&byte_utils::be64_to_array(self.starting_time_nanos as u64));

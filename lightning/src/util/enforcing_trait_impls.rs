@@ -11,7 +11,7 @@ use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitment
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
-use std::cmp;
+use core::cmp;
 use std::sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::{Transaction, SigHashType};

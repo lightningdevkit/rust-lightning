@@ -36,10 +36,10 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 
 use regex;
 
-use std::time::Duration;
+use core::time::Duration;
 use std::sync::{Mutex, Arc};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{cmp, mem};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{cmp, mem};
 use std::collections::{HashMap, HashSet, VecDeque};
 use chain::keysinterface::InMemorySigner;
 
@@ -624,8 +624,8 @@ impl OnRegisterOutput {
 	}
 }
 
-impl std::fmt::Debug for OnRegisterOutput {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for OnRegisterOutput {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		f.debug_struct("OnRegisterOutput")
 			.field("outpoint", &self.outpoint())
 			.field("script_pubkey", self.script_pubkey())
