@@ -180,13 +180,13 @@ macro_rules! impl_writeable_len_match {
 	}
 }
 
-/// Write out two bytes to indicate the version of this object.
-/// $this_version represents a unique version of this object, incremented whenever the reader may
-///               wish to interpret fields differently based on the version or when we wish to
-///               communicate to previous versions that they can no longer reasonably understand
-///               this serialized object.
-/// $min_version_that_can_read_this is the minimum client version which can reasonably understand
-///                                 this serialized object. Previous versions will simply err with a
+/// Write out two bytes to indicate the version of an object.
+/// $this_version represents a unique version of a type. Incremented whenever the type's
+///               serialization format has changed or has a new interpretation. Used by a type's
+///               reader to determine how to interpret fields or if it can understand a serialized
+///               object.
+/// $min_version_that_can_read_this is the minimum reader version which can understand this
+///                                 serialized object. Previous versions will simply err with a
 ///                                 DecodeError::UnknownVersion.
 ///
 /// Updates to either $this_version or $min_version_that_can_read_this should be included in
@@ -206,7 +206,7 @@ macro_rules! write_ver_prefix {
 /// It is written out in TLV format and, as with all TLV fields, unknown even fields cause a
 /// DecodeError::UnknownRequiredFeature error, with unknown odd fields ignored.
 ///
-/// This is the preferred method of adding new fields which old nodes can ignore and still function
+/// This is the preferred method of adding new fields that old nodes can ignore and still function
 /// correctly.
 macro_rules! write_tlv_fields {
 	($stream: expr, {$(($type: expr, $field: expr)),*}) => {
