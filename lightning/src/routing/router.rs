@@ -95,23 +95,30 @@ pub struct Route {
 	pub paths: Vec<Vec<RouteHop>>,
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
 impl Writeable for Route {
 	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		for hops in self.paths.iter() {
 			hops.write(writer)?;
 		}
+		write_tlv_fields!(writer, {}, {});
 		Ok(())
 	}
 }
 
 impl Readable for Route {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
 		for _ in 0..path_count {
 			paths.push(Readable::read(reader)?);
 		}
+		read_tlv_fields!(reader, {}, {});
 		Ok(Route { paths })
 	}
 }
@@ -3883,7 +3890,7 @@ mod tests {
 		let mut d = match get_route_file() {
 			Ok(f) => f,
 			Err(_) => {
-				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 				return;
 			},
 		};
@@ -3910,7 +3917,7 @@ mod tests {
 		let mut d = match get_route_file() {
 			Ok(f) => f,
 			Err(_) => {
-				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+				eprintln!("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 				return;
 			},
 		};
@@ -3948,7 +3955,7 @@ mod benches {
 	#[bench]
 	fn generate_routes(bench: &mut Bencher) {
 		let mut d = tests::get_route_file()
-			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
@@ -3980,7 +3987,7 @@ mod benches {
 	#[bench]
 	fn generate_mpp_routes(bench: &mut Bencher) {
 		let mut d = tests::get_route_file()
-			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-879e309c128-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
+			.expect("Please fetch https://bitcoin.ninja/ldk-net_graph-05f0c5a0d772-2020-02-12.bin and place it at lightning/net_graph-2021-02-12.bin");
 		let graph = NetworkGraph::read(&mut d).unwrap();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...

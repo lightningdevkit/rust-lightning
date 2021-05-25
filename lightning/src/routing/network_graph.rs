@@ -660,8 +660,13 @@ impl Readable for NodeInfo {
 	}
 }
 
+const SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 1;
+
 impl Writeable for NetworkGraph {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+
 		self.genesis_hash.write(writer)?;
 		(self.channels.len() as u64).write(writer)?;
 		for (ref chan_id, ref chan_info) in self.channels.iter() {
@@ -673,12 +678,16 @@ impl Writeable for NetworkGraph {
 			node_id.write(writer)?;
 			node_info.write(writer)?;
 		}
+
+		write_tlv_fields!(writer, {}, {});
 		Ok(())
 	}
 }
 
 impl Readable for NetworkGraph {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+
 		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
 		let mut channels = BTreeMap::new();
@@ -694,6 +703,8 @@ impl Readable for NetworkGraph {
 			let node_info = Readable::read(reader)?;
 			nodes.insert(node_id, node_info);
 		}
+		read_tlv_fields!(reader, {}, {});
+
 		Ok(NetworkGraph {
 			genesis_hash,
 			channels,

@@ -3806,7 +3806,10 @@ fn test_funding_peer_disconnect() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
@@ -3884,6 +3887,61 @@ fn test_funding_peer_disconnect() {
 	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 1000000, TEST_FINAL_CLTV, &logger).unwrap();
 	let (payment_preimage, _, _) = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	// Check that after deserialization and reconnection we can still generate an identical
+	// channel_announcement from the cached signatures.
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	let nodes_0_serialized = nodes[0].node.encode();
+	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+	nodes[0].chain_monitor = &new_chain_monitor;
+	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+		&mut chan_0_monitor_read, keys_manager).unwrap();
+	assert!(chan_0_monitor_read.is_empty());
+
+	let mut nodes_0_read = &nodes_0_serialized[..];
+	let (_, nodes_0_deserialized_tmp) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			default_config: UserConfig::default(),
+			keys_manager,
+			fee_estimator: node_cfgs[0].fee_estimator,
+			chain_monitor: nodes[0].chain_monitor,
+			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+			logger: nodes[0].logger,
+			channel_monitors,
+		}).unwrap()
+	};
+	nodes_0_deserialized = nodes_0_deserialized_tmp;
+	assert!(nodes_0_read.is_empty());
+
+	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	nodes[0].node = &nodes_0_deserialized;
+	check_added_monitors!(nodes[0], 1);
+
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	// as_announcement should be re-generated exactly by broadcast_node_announcement.
+	nodes[0].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
+	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
+	let mut found_announcement = false;
+	for event in msgs.iter() {
+		match event {
+			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
+				if *msg == as_announcement { found_announcement = true; }
+			},
+			MessageSendEvent::BroadcastNodeAnnouncement { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+	}
+	assert!(found_announcement);
 }
 
 #[test]

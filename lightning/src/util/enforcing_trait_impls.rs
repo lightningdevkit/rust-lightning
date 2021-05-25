@@ -38,6 +38,9 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 ///
 /// Eventually we will probably want to expose a variant of this which would essentially
 /// be what you'd want to run on a hardware wallet.
+///
+/// Note that before we do so we should ensure its serialization format has backwards- and
+/// forwards-compatibility prefix/suffixes!
 #[derive(Clone)]
 pub struct EnforcingSigner {
 	pub inner: InMemorySigner,

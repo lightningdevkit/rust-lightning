@@ -8,21 +8,53 @@
 // licenses.
 
 macro_rules! encode_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
+		#[allow(unused_imports)]
 		use util::ser::{BigSize, LengthCalculatingWriter};
+		// Fields must be serialized in order, so we have to potentially switch between optional
+		// fields and normal fields while serializing. Thus, we end up having to loop over the type
+		// counts.
+		// Sadly, while LLVM does appear smart enough to make `max_field` a constant, it appears to
+		// refuse to unroll the loop. If we have enough entries that this is slow we can revisit
+		// this design in the future.
+		#[allow(unused_mut)]
+		let mut max_field: u64 = 0;
 		$(
-			BigSize($type).write($stream)?;
-			let mut len_calc = LengthCalculatingWriter(0);
-			$field.write(&mut len_calc)?;
-			BigSize(len_calc.0 as u64).write($stream)?;
-			$field.write($stream)?;
+			if $type >= max_field { max_field = $type + 1; }
 		)*
+		$(
+			if $optional_type >= max_field { max_field = $optional_type + 1; }
+		)*
+		#[allow(unused_variables)]
+		for i in 0..max_field {
+			$(
+				if i == $type {
+					BigSize($type).write($stream)?;
+					let mut len_calc = LengthCalculatingWriter(0);
+					$field.write(&mut len_calc)?;
+					BigSize(len_calc.0 as u64).write($stream)?;
+					$field.write($stream)?;
+				}
+			)*
+			$(
+				if i == $optional_type {
+					if let Some(ref field) = $optional_field {
+						BigSize($optional_type).write($stream)?;
+						let mut len_calc = LengthCalculatingWriter(0);
+						field.write(&mut len_calc)?;
+						BigSize(len_calc.0 as u64).write($stream)?;
+						field.write($stream)?;
+					}
+				}
+			)*
+		}
 	} }
 }
 
 macro_rules! encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
 		use util::ser::{BigSize, LengthCalculatingWriter};
+		#[allow(unused_mut)]
 		let mut len = LengthCalculatingWriter(0);
 		{
 			$(
@@ -32,12 +64,19 @@ macro_rules! encode_varint_length_prefixed_tlv {
 				BigSize(field_len.0 as u64).write(&mut len)?;
 				len.0 += field_len.0;
 			)*
+			$(
+				if let Some(ref field) = $optional_field {
+					BigSize($optional_type).write(&mut len)?;
+					let mut field_len = LengthCalculatingWriter(0);
+					field.write(&mut field_len)?;
+					BigSize(field_len.0 as u64).write(&mut len)?;
+					len.0 += field_len.0;
+				}
+			)*
 		}
 
 		BigSize(len.0 as u64).write($stream)?;
-		encode_tlv!($stream, {
-			$(($type, $field)),*
-		});
+		encode_tlv!($stream, { $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
 	} }
 }
 
@@ -176,6 +215,64 @@ macro_rules! impl_writeable_len_match {
 	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
 		impl_writeable_len_match!($struct, ==, { $({ $match, $length }),* }, { $($field),* });
 	}
+}
+
+/// Write out two bytes to indicate the version of an object.
+/// $this_version represents a unique version of a type. Incremented whenever the type's
+///               serialization format has changed or has a new interpretation. Used by a type's
+///               reader to determine how to interpret fields or if it can understand a serialized
+///               object.
+/// $min_version_that_can_read_this is the minimum reader version which can understand this
+///                                 serialized object. Previous versions will simply err with a
+///                                 DecodeError::UnknownVersion.
+///
+/// Updates to either $this_version or $min_version_that_can_read_this should be included in
+/// release notes.
+///
+/// Both version fields can be specific to this type of object.
+macro_rules! write_ver_prefix {
+	($stream: expr, $this_version: expr, $min_version_that_can_read_this: expr) => {
+		$stream.write_all(&[$this_version; 1])?;
+		$stream.write_all(&[$min_version_that_can_read_this; 1])?;
+	}
+}
+
+/// Writes out a suffix to an object which contains potentially backwards-compatible, optional
+/// fields which old nodes can happily ignore.
+///
+/// It is written out in TLV format and, as with all TLV fields, unknown even fields cause a
+/// DecodeError::UnknownRequiredFeature error, with unknown odd fields ignored.
+///
+/// This is the preferred method of adding new fields that old nodes can ignore and still function
+/// correctly.
+macro_rules! write_tlv_fields {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => {
+		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
+	}
+}
+
+/// Reads a prefix added by write_ver_prefix!(), above. Takes the current version of the
+/// serialization logic for this object. This is compared against the
+/// $min_version_that_can_read_this added by write_ver_prefix!().
+macro_rules! read_ver_prefix {
+	($stream: expr, $this_version: expr) => { {
+		let ver: u8 = Readable::read($stream)?;
+		let min_ver: u8 = Readable::read($stream)?;
+		if min_ver > $this_version {
+			return Err(DecodeError::UnknownVersion);
+		}
+		ver
+	} }
+}
+
+/// Reads a suffix added by write_tlv_fields.
+macro_rules! read_tlv_fields {
+	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),*}, {$(($type: expr, $field: ident)),*}) => { {
+		let tlv_len = ::util::ser::BigSize::read($stream)?;
+		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
+		decode_tlv!(&mut rd, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
+		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+	} }
 }
 
 #[cfg(test)]
@@ -375,19 +472,27 @@ mod tests {
 		let mut stream = VecWriter(Vec::new());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (1, 1u8) });
+		encode_varint_length_prefixed_tlv!(&mut stream, { (1, 1u8) }, { (42, None::<u64>) });
 		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (4, 0xabcdu16) });
+		encode_varint_length_prefixed_tlv!(&mut stream, { }, { (1, Some(1u8)) });
+		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
+
+		stream.0.clear();
+		encode_varint_length_prefixed_tlv!(&mut stream, { (4, 0xabcdu16) }, { (42, None::<u64>) });
 		assert_eq!(stream.0, ::hex::decode("040402abcd").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (0xff, 0xabcdu16) });
+		encode_varint_length_prefixed_tlv!(&mut stream, { (0xff, 0xabcdu16) }, { (42, None::<u64>) });
 		assert_eq!(stream.0, ::hex::decode("06fd00ff02abcd").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (0, 1u64), (0xff, HighZeroBytesDroppedVarInt(0u64)) });
+		encode_varint_length_prefixed_tlv!(&mut stream, { (0, 1u64), (0xff, HighZeroBytesDroppedVarInt(0u64)) }, { (42, None::<u64>) });
+		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
+
+		stream.0.clear();
+		encode_varint_length_prefixed_tlv!(&mut stream, { (0xff, HighZeroBytesDroppedVarInt(0u64)) }, { (0, Some(1u64)) });
 		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
 
 		Ok(())
