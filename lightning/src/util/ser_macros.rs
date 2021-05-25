@@ -254,7 +254,7 @@ macro_rules! write_ver_prefix {
 /// This is the preferred method of adding new fields that old nodes can ignore and still function
 /// correctly.
 macro_rules! write_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => {
+	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
 		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
 	}
 }
@@ -275,12 +275,107 @@ macro_rules! read_ver_prefix {
 
 /// Reads a suffix added by write_tlv_fields.
 macro_rules! read_tlv_fields {
-	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),*}, {$(($type: expr, $field: ident)),*}) => { {
+	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}) => { {
 		let tlv_len = ::util::ser::BigSize::read($stream)?;
 		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
 		decode_tlv!(&mut rd, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 	} }
+}
+
+// If we naively create a struct in impl_writeable_tlv_based below, we may end up returning
+// `Self { ,,vecfield: vecfield }` which is obviously incorrect. Instead, we have to match here to
+// detect at least one empty field set and skip the potentially-extra comma.
+macro_rules! _init_tlv_based_struct {
+	({}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok(Self {
+			$($field),*,
+			$($vecfield: $vecfield.unwrap().0),*
+		})
+	};
+	({$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
+		Ok(Self {
+			$($reqfield: $reqfield.0.unwrap()),*,
+			$($vecfield: $vecfield.unwrap().0),*
+		})
+	};
+	({$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
+		Ok(Self {
+			$($reqfield: $reqfield.0.unwrap()),*,
+			$($field),*
+		})
+	};
+	({$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok(Self {
+			$($reqfield: $reqfield.0.unwrap()),*,
+			$($field),*,
+			$($vecfield: $vecfield.unwrap().0),*
+		})
+	}
+}
+
+// If we don't have any optional types below, but do have some vec types, we end up calling
+// `write_tlv_field!($stream, {..}, {, (vec_ty, vec_val)})`, which is obviously broken.
+// Instead, for write and read we match the missing values and skip the extra comma.
+macro_rules! _write_tlv_fields {
+	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
+		write_tlv_fields!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
+	};
+	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}, {$(($optional_type_2: expr, $optional_field_2: expr)),* $(,)*}) => {
+		write_tlv_fields!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*, $(($optional_type_2, $optional_field_2)),*});
+	}
+}
+macro_rules! _read_tlv_fields {
+	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {}, {$(($type: expr, $field: ident)),* $(,)*}) => {
+		read_tlv_fields!($stream, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
+	};
+	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}, {$(($type_2: expr, $field_2: ident)),* $(,)*}) => {
+		read_tlv_fields!($stream, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*, $(($type_2, $field_2)),*});
+	}
+}
+
+/// Implements Readable/Writeable for a struct storing it as a set of TLVs
+/// First block includes all the required fields including a dummy value which is used during
+/// deserialization but which will never be exposed to other code.
+/// The second block includes optional fields.
+/// The third block includes any Vecs which need to have their individual elements serialized.
+macro_rules! impl_writeable_tlv_based {
+	($st: ident, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}, {$(($vectype: expr, $vecfield: ident)),* $(,)*}) => {
+		impl ::util::ser::Writeable for $st {
+			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+				_write_tlv_fields!(writer, {
+					$(($reqtype, self.$reqfield)),*
+				}, {
+					$(($type, self.$field)),*
+				}, {
+					$(($vectype, Some(::util::ser::VecWriteWrapper(&self.$vecfield)))),*
+				});
+				Ok(())
+			}
+		}
+
+		impl ::util::ser::Readable for $st {
+			fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+				$(
+					let mut $reqfield = ::util::ser::OptionDeserWrapper(None);
+				)*
+				$(
+					let mut $field = None;
+				)*
+				$(
+					let mut $vecfield = Some(::util::ser::VecReadWrapper(Vec::new()));
+				)*
+				_read_tlv_fields!(reader, {
+					$(($reqtype, $reqfield)),*
+				}, {
+					$(($type, $field)),*
+				}, {
+					$(($vectype, $vecfield)),*
+				});
+				_init_tlv_based_struct!({$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+			}
+		}
+	}
 }
 
 #[cfg(test)]
