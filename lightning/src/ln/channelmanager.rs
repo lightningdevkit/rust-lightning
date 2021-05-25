@@ -3503,11 +3503,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
+	/// Returns whether there were any updates such as if pending HTLCs were freed or a monitor
+	/// update was applied.
+	///
 	/// This should only apply to HTLCs which were added to the holding cell because we were
 	/// waiting on a monitor update to finish. In that case, we don't want to free the holding cell
 	/// directly in `channel_monitor_updated` as it may introduce deadlocks calling back into user
 	/// code to inform them of a channel monitor update.
-	fn check_free_holding_cells(&self) {
+	fn check_free_holding_cells(&self) -> bool {
+		let mut has_monitor_update = false;
 		let mut failed_htlcs = Vec::new();
 		let mut handle_errors = Vec::new();
 		{
@@ -3519,11 +3523,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			by_id.retain(|channel_id, chan| {
 				match chan.maybe_free_holding_cell_htlcs(&self.logger) {
-					Ok((None, ref htlcs)) if htlcs.is_empty() => true,
 					Ok((commitment_opt, holding_cell_failed_htlcs)) => {
-						failed_htlcs.push((holding_cell_failed_htlcs, *channel_id));
+						if !holding_cell_failed_htlcs.is_empty() {
+							failed_htlcs.push((holding_cell_failed_htlcs, *channel_id));
+						}
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
 							if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+								has_monitor_update = true;
 								let (res, close_channel) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, false, true, Vec::new(), Vec::new(), channel_id);
 								handle_errors.push((chan.get_counterparty_node_id(), res));
 								if close_channel { return false; }
@@ -3544,6 +3550,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			});
 		}
+
+		let has_update = has_monitor_update || !failed_htlcs.is_empty();
 		for (failures, channel_id) in failed_htlcs.drain(..) {
 			self.fail_holding_cell_htlcs(failures, channel_id);
 		}
@@ -3551,6 +3559,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
+
+		has_update
 	}
 
 	/// Handle a list of channel failures during a block_connected or block_disconnected call,
@@ -3703,7 +3713,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 				result = NotifyOption::DoPersist;
 			}
 
-			self.check_free_holding_cells();
+			if self.check_free_holding_cells() {
+				result = NotifyOption::DoPersist;
+			}
 
 			let mut pending_events = Vec::new();
 			let mut channel_state = self.channel_state.lock().unwrap();
