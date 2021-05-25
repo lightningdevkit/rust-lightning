@@ -222,11 +222,11 @@ pub(crate) const CLTV_CLAIM_BUFFER: u32 = 18;
 pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 /// Number of blocks we wait on seeing a HTLC output being solved before we fail corresponding inbound
 /// HTLCs. This prevents us from failing backwards and then getting a reorg resulting in us losing money.
-/// We use also this delay to be sure we can remove our in-flight claim txn from bump candidates buffer.
-/// It may cause spurrious generation of bumped claim txn but that's allright given the outpoint is already
-/// solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
-/// keeping bumping another claim tx to solve the outpoint.
-pub(crate) const ANTI_REORG_DELAY: u32 = 6;
+// We also use this delay to be sure we can remove our in-flight claim txn from bump candidates buffer.
+// It may cause spurious generation of bumped claim txn but that's alright given the outpoint is already
+// solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
+// keep bumping another claim tx to solve the outpoint.
+pub const ANTI_REORG_DELAY: u32 = 6;
 /// Number of blocks before confirmation at which we fail back an un-relayed HTLC or at which we
 /// refuse to accept a new HTLC.
 ///
