@@ -115,8 +115,12 @@ macro_rules! decode_tlv {
 				_ => {},
 			}
 			// As we read types, make sure we hit every required type:
-			$(if (last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype) && typ.0 > $reqtype {
-				Err(DecodeError::InvalidValue)?
+			$({
+				#[allow(unused_comparisons)] // Note that $reqtype may be 0 making the second comparison always true
+				let invalid_order = (last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype) && typ.0 > $reqtype;
+				if invalid_order {
+					Err(DecodeError::InvalidValue)?
+				}
 			})*
 			last_seen_type = Some(typ.0);
 
@@ -146,8 +150,12 @@ macro_rules! decode_tlv {
 			s.eat_remaining()?;
 		}
 		// Make sure we got to each required type after we've read every TLV:
-		$(if last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype {
-			Err(DecodeError::InvalidValue)?
+		$({
+			#[allow(unused_comparisons)] // Note that $reqtype may be 0 making the second comparison always true
+			let missing_req_type = last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype;
+			if missing_req_type {
+				Err(DecodeError::InvalidValue)?
+			}
 		})*
 	} }
 }
