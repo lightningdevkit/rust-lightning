@@ -1899,7 +1899,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.holder_tx_signed = true;
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
-		let mut res = vec![commitment_tx];
+		let mut holder_transactions = vec![commitment_tx];
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -1907,24 +1907,32 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						// We can't build an HTLC-Success transaction without the preimage
 						continue;
 					}
+				} else if htlc.0.cltv_expiry > self.best_block.height() + 1 {
+					// Don't broadcast HTLC-Timeout transactions immediately as they don't meet the
+					// current locktime requirements on-chain. We will broadcast them in
+					// `block_confirmed` when `would_broadcast_at_height` returns true.
+					// Note that we add + 1 as transactions are broadcastable when they can be
+					// confirmed in the next block.
+					continue;
 				} else { None };
 				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					res.push(htlc_tx);
+					holder_transactions.push(htlc_tx);
 				}
 			}
 		}
 		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
 		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-		return res;
+		holder_transactions
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	/// Note that this includes possibly-locktimed-in-the-future transactions!
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
 		log_trace!(logger, "Getting signed copy of latest holder commitment transaction!");
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
-		let mut res = vec![commitment_tx];
+		let mut holder_transactions = vec![commitment_tx];
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -1935,11 +1943,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				} else { None };
 				if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					res.push(htlc_tx);
+					holder_transactions.push(htlc_tx);
 				}
 			}
 		}
-		return res
+		holder_transactions
 	}
 
 	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
