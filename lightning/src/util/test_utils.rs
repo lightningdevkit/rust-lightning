@@ -206,6 +206,14 @@ pub struct TestBroadcaster {
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
+		assert!(tx.lock_time < 1_500_000_000);
+		if tx.lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && tx.lock_time < 500_000_000 {
+			for inp in tx.input.iter() {
+				if inp.sequence != 0xffffffff {
+					return;
+				}
+			}
+		}
 		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }

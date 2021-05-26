@@ -103,17 +103,15 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// Give node 1 node 2's commitment transaction and get its response (timing the HTLC out)
 		mine_transaction(&nodes[1], &node_2_commitment_txn[0]);
 		connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
-		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_1_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Timeout, ChannelManger: 1 local commitment tx, 1 Offered HTLC-Timeout
+		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		assert_eq!(node_1_commitment_txn.len(), 2); // ChannelMonitor: 1 offered HTLC-Timeout, ChannelManger: 1 local commitment tx
 		assert_eq!(node_1_commitment_txn[0].output.len(), 2); // to-local and Offered HTLC (to-remote is dust)
 		check_spends!(node_1_commitment_txn[0], chan_2.3);
-		check_spends!(node_1_commitment_txn[1], node_1_commitment_txn[0]);
-		check_spends!(node_1_commitment_txn[2], node_2_commitment_txn[0]);
+		check_spends!(node_1_commitment_txn[1], node_2_commitment_txn[0]);
 
 		// Confirm node 2's commitment txn (and node 1's HTLC-Timeout) on node 1
 		header.prev_blockhash = nodes[1].best_block_hash();
-		let block = Block { header, txdata: vec![node_2_commitment_txn[0].clone(), node_1_commitment_txn[2].clone()] };
-		std::mem::drop(node_1_commitment_txn);
+		let block = Block { header, txdata: vec![node_2_commitment_txn[0].clone(), node_1_commitment_txn[1].clone()] };
 		connect_block(&nodes[1], &block);
 		// ...but return node 2's commitment tx (and claim) in case claim is set and we're preparing to reorg
 		node_2_commitment_txn
