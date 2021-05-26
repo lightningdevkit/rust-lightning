@@ -54,7 +54,7 @@ use prelude::*;
 use alloc::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use core::default::Default;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ln::functional_test_utils::*;
 use ln::chan_utils::CommitmentTransaction;
@@ -2750,7 +2750,7 @@ fn test_htlc_on_chain_success() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Ensure all nodes are at the same height
-	let node_max_height = nodes.iter().map(|node| node.blocks.borrow().len()).max().unwrap() as u32;
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
 	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
@@ -4523,7 +4523,7 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
 	// which the current ChannelMonitor has not seen), the ChannelManager's de-duplication of
 	// payment events should kick in, leaving us with no pending events here.
-	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, nodes[0].blocks.borrow().len() as u32 - 1);
+	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, nodes[0].blocks.lock().unwrap().len() as u32 - 1);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
 
@@ -5244,7 +5244,7 @@ fn test_onchain_to_onchain_claim() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Ensure all nodes are at the same height
-	let node_max_height = nodes.iter().map(|node| node.blocks.borrow().len()).max().unwrap() as u32;
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
 	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
@@ -5357,7 +5357,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
-	let node_max_height = nodes.iter().map(|node| node.blocks.borrow().len()).max().unwrap() as u32;
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
 	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
 	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
@@ -7689,7 +7689,7 @@ fn test_data_loss_protect() {
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
+	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
 	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
@@ -8474,13 +8474,16 @@ fn test_secret_timeout() {
 	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
-	let mut block = Block {
-		header: BlockHeader {
-			version: 0x2000000,
-			prev_blockhash: nodes[1].blocks.borrow().last().unwrap().0.block_hash(),
-			merkle_root: Default::default(),
-			time: nodes[1].blocks.borrow().len() as u32 + 7200, bits: 42, nonce: 42 },
-		txdata: vec![],
+	let mut block = {
+		let node_1_blocks = nodes[1].blocks.lock().unwrap();
+		Block {
+			header: BlockHeader {
+				version: 0x2000000,
+				prev_blockhash: node_1_blocks.last().unwrap().0.block_hash(),
+				merkle_root: Default::default(),
+				time: node_1_blocks.len() as u32 + 7200, bits: 42, nonce: 42 },
+			txdata: vec![],
+		}
 	};
 	connect_block(&nodes[1], &block);
 	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
@@ -8630,6 +8633,9 @@ fn test_update_err_monitor_lockdown() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
+	// transaction lock time requirements here.
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (header, 0));
 	watchtower.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
 
 	// Try to update ChannelMonitor
@@ -8689,6 +8695,9 @@ fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
+	// transaction lock time requirements here.
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize((CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS) as usize, (header, 0));
 	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![] }, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout

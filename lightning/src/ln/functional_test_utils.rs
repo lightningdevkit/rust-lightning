@@ -42,7 +42,7 @@ use bitcoin::secp256k1::key::PublicKey;
 use prelude::*;
 use core::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use core::mem;
 use std::collections::HashMap;
 
@@ -149,14 +149,14 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 		}
 	}
 	node.node.test_process_background_events();
-	node.blocks.borrow_mut().push((block.header, height));
+	node.blocks.lock().unwrap().push((block.header, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	for i in 0..count {
-		let orig_header = node.blocks.borrow_mut().pop().unwrap();
+		let orig_header = node.blocks.lock().unwrap().pop().unwrap();
 		assert!(orig_header.1 > 0); // Cannot disconnect genesis
-		let prev_header = node.blocks.borrow().last().unwrap().clone();
+		let prev_header = node.blocks.lock().unwrap().last().unwrap().clone();
 
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
@@ -178,7 +178,7 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 }
 
 pub fn disconnect_all_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
-	let count = node.blocks.borrow_mut().len() as u32 - 1;
+	let count = node.blocks.lock().unwrap().len() as u32 - 1;
 	disconnect_blocks(node, count);
 }
 
@@ -212,15 +212,15 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
-	pub blocks: RefCell<Vec<(BlockHeader, u32)>>,
+	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
 	pub connect_style: Rc<RefCell<ConnectStyle>>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_hash(&self) -> BlockHash {
-		self.blocks.borrow_mut().last().unwrap().0.block_hash()
+		self.blocks.lock().unwrap().last().unwrap().0.block_hash()
 	}
 	pub fn best_block_info(&self) -> (BlockHash, u32) {
-		self.blocks.borrow_mut().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
+		self.blocks.lock().unwrap().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
 	}
 }
 
@@ -296,7 +296,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &test_utils::TestBroadcaster {
-						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone())
+						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
+						blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
 					},
 					logger: &test_utils::TestLogger::new(),
 					channel_monitors,
@@ -305,7 +306,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 			let persister = test_utils::TestPersister::new();
 			let broadcaster = test_utils::TestBroadcaster {
-				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone())
+				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
+				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
 			};
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
@@ -1284,7 +1286,10 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
+		let tx_broadcaster = test_utils::TestBroadcaster {
+			txn_broadcasted: Mutex::new(Vec::new()),
+			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 0)])),
+		};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
@@ -1345,7 +1350,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
 		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
-		                 blocks: RefCell::new(vec![(genesis_block(Network::Testnet).header, 0)]),
+		                 blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 		                 connect_style: Rc::clone(&connect_style),
 		})
 	}
