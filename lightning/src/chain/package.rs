@@ -274,8 +274,8 @@ impl PackageSolvingData {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { 0 },
-			PackageSolvingData::HolderFundingOutput(..) => { 0 },
+			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
 		};
 		amt
 	}
@@ -288,8 +288,8 @@ impl PackageSolvingData {
 			// Note: Currently, weights of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { debug_assert!(false); 0 },
-			PackageSolvingData::HolderFundingOutput(..) => { debug_assert!(false); 0 },
+			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
 		};
 		weight
 	}
@@ -577,7 +577,9 @@ impl PackageTemplate {
 		}
 		self.height_timer = cmp::min(self.height_timer, merge_from.height_timer);
 	}
-	pub(crate) fn package_amount(&self) -> u64 {
+	/// Gets the amount of all outptus being spent by this package, only valid for malleable
+	/// packages.
+	fn package_amount(&self) -> u64 {
 		let mut amounts = 0;
 		for (_, outp) in self.inputs.iter() {
 			amounts += outp.amount();
@@ -628,6 +630,7 @@ impl PackageTemplate {
 				return Some(bumped_tx);
 			},
 			PackageMalleability::Untractable => {
+				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
 				if let Some((outpoint, outp)) = self.inputs.first() {
 					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
 						log_trace!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
@@ -653,10 +656,12 @@ impl PackageTemplate {
 		current_height + LOW_FREQUENCY_BUMP_INTERVAL
 	}
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate with which package finalization should be done.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, input_amounts: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
 		where F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
+		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
+		let input_amounts = self.package_amount();
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {

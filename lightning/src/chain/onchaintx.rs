@@ -345,10 +345,9 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(cached_request.get_height_timer(height));
-		let amt = cached_request.package_amount();
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script);
-			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, amt, fee_estimator, logger) {
+			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
@@ -360,8 +359,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			debug_assert!(amt == 0);
-			if let Some(transaction) = cached_request.finalize_package(self, amt, self.destination_script.clone(), logger) {
+			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger) {
 				return Some((None, 0, transaction));
 			}
 		}
