@@ -703,10 +703,11 @@ impl Writeable for PackageTemplate {
 			outpoint.write(writer)?;
 			rev_outp.write(writer)?;
 		}
-		self.soonest_conf_deadline.write(writer)?;
-		self.feerate_previous.write(writer)?;
-		self.height_timer.write(writer)?;
-		self.height_original.write(writer)?;
+		write_tlv_fields!(writer, {
+			(0, self.soonest_conf_deadline),
+			(2, self.feerate_previous),
+			(4, self.height_original),
+		}, { (6, self.height_timer) });
 		Ok(())
 	}
 }
@@ -730,10 +731,15 @@ impl Readable for PackageTemplate {
 				PackageSolvingData::HolderFundingOutput(..) => { (PackageMalleability::Untractable, false) },
 			}
 		} else { return Err(DecodeError::InvalidValue); };
-		let soonest_conf_deadline = Readable::read(reader)?;
-		let feerate_previous = Readable::read(reader)?;
-		let height_timer = Readable::read(reader)?;
-		let height_original = Readable::read(reader)?;
+		let mut soonest_conf_deadline = 0;
+		let mut feerate_previous = 0;
+		let mut height_timer = None;
+		let mut height_original = 0;
+		read_tlv_fields!(reader, {
+			(0, soonest_conf_deadline),
+			(2, feerate_previous),
+			(4, height_original)
+		}, { (6, height_timer) });
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
