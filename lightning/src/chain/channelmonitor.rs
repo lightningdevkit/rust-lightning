@@ -1786,14 +1786,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let htlc_output = HolderHTLCOutput::build(if !htlc.offered {
-					if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-						Some(preimage.clone())
+				let htlc_output = if htlc.offered {
+						HolderHTLCOutput::build_offered(htlc.amount_msat, htlc.cltv_expiry)
 					} else {
-						// We can't build an HTLC-Success transaction without the preimage
-						continue;
-					}
-				} else { None }, htlc.amount_msat);
+						let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+							preimage.clone()
+						} else {
+							// We can't build an HTLC-Success transaction without the preimage
+							continue;
+						};
+						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
+					};
 				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
 				claim_requests.push(htlc_package);
 			}

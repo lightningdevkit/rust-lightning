@@ -213,21 +213,33 @@ impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
 pub(crate) struct HolderHTLCOutput {
 	preimage: Option<PaymentPreimage>,
 	amount: u64,
+	/// Defaults to 0 for HTLC-Success transactions, which have no expiry
+	cltv_expiry: u32,
 }
 
 impl HolderHTLCOutput {
-	pub(crate) fn build(preimage: Option<PaymentPreimage>, amount: u64) -> Self {
+	pub(crate) fn build_offered(amount: u64, cltv_expiry: u32) -> Self {
 		HolderHTLCOutput {
-			preimage,
-			amount
+			preimage: None,
+			amount,
+			cltv_expiry,
+		}
+	}
+
+	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount: u64) -> Self {
+		HolderHTLCOutput {
+			preimage: Some(preimage),
+			amount,
+			cltv_expiry: 0,
 		}
 	}
 }
 
 impl_writeable_tlv_based!(HolderHTLCOutput, {
 	(0, amount),
+	(2, cltv_expiry),
 }, {
-	(2, preimage),
+	(4, preimage),
 }, {});
 
 /// A struct to describe the channel output on the funding transaction.
@@ -879,7 +891,7 @@ mod tests {
 		() => {
 			{
 				let preimage = PaymentPreimage([2;32]);
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(Some(preimage), 0))
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0))
 			}
 		}
 	}
