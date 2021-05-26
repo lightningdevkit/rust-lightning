@@ -210,7 +210,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 		if tx.lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && tx.lock_time < 500_000_000 {
 			for inp in tx.input.iter() {
 				if inp.sequence != 0xffffffff {
-					return;
+					panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
 				}
 			}
 		}
