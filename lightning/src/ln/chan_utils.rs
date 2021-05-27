@@ -178,6 +178,7 @@ impl Writeable for CounterpartyCommitmentSecrets {
 			writer.write_all(secret)?;
 			writer.write_all(&byte_utils::be64_to_array(*idx))?;
 		}
+		write_tlv_fields!(writer, {}, {});
 		Ok(())
 	}
 }
@@ -188,7 +189,7 @@ impl Readable for CounterpartyCommitmentSecrets {
 			*secret = Readable::read(reader)?;
 			*idx = Readable::read(reader)?;
 		}
-
+		read_tlv_fields!(reader, {}, {});
 		Ok(Self { old_secrets })
 	}
 }
@@ -322,8 +323,13 @@ pub struct TxCreationKeys {
 	pub broadcaster_delayed_payment_key: PublicKey,
 }
 
-impl_writeable!(TxCreationKeys, 33*5,
-	{ per_commitment_point, revocation_key, broadcaster_htlc_key, countersignatory_htlc_key, broadcaster_delayed_payment_key });
+impl_writeable_tlv_based!(TxCreationKeys, {
+	(0, per_commitment_point),
+	(2, revocation_key),
+	(4, broadcaster_htlc_key),
+	(6, countersignatory_htlc_key),
+	(8, broadcaster_delayed_payment_key),
+}, {}, {});
 
 /// One counterparty's public keys which do not change over the life of a channel.
 #[derive(Clone, PartialEq)]
@@ -349,14 +355,13 @@ pub struct ChannelPublicKeys {
 	pub htlc_basepoint: PublicKey,
 }
 
-impl_writeable!(ChannelPublicKeys, 33*5, {
-	funding_pubkey,
-	revocation_basepoint,
-	payment_point,
-	delayed_payment_basepoint,
-	htlc_basepoint
-});
-
+impl_writeable_tlv_based!(ChannelPublicKeys, {
+	(0, funding_pubkey),
+	(2, revocation_basepoint),
+	(4, payment_point),
+	(6, delayed_payment_basepoint),
+	(8, htlc_basepoint),
+}, {}, {});
 
 impl TxCreationKeys {
 	/// Create per-state keys from channel base points and the per-commitment point.
@@ -429,16 +434,14 @@ pub struct HTLCOutputInCommitment {
 	pub transaction_output_index: Option<u32>,
 }
 
-impl_writeable_len_match!(HTLCOutputInCommitment, {
-		{ HTLCOutputInCommitment { transaction_output_index: None, .. }, HTLC_OUTPUT_IN_COMMITMENT_SIZE - 4 },
-		{ _, HTLC_OUTPUT_IN_COMMITMENT_SIZE }
-	}, {
-	offered,
-	amount_msat,
-	cltv_expiry,
-	payment_hash,
-	transaction_output_index
-});
+impl_writeable_tlv_based!(HTLCOutputInCommitment, {
+	(0, offered),
+	(2, amount_msat),
+	(4, cltv_expiry),
+	(6, payment_hash),
+}, {
+	(8, transaction_output_index)
+}, {});
 
 #[inline]
 pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
@@ -622,18 +625,19 @@ impl ChannelTransactionParameters {
 	}
 }
 
-impl_writeable!(CounterpartyChannelTransactionParameters, 0, {
-	pubkeys,
-	selected_contest_delay
-});
+impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
+	(0, pubkeys),
+	(2, selected_contest_delay),
+}, {}, {});
 
-impl_writeable!(ChannelTransactionParameters, 0, {
-	holder_pubkeys,
-	holder_selected_contest_delay,
-	is_outbound_from_holder,
-	counterparty_parameters,
-	funding_outpoint
-});
+impl_writeable_tlv_based!(ChannelTransactionParameters, {
+	(0, holder_pubkeys),
+	(2, holder_selected_contest_delay),
+	(4, is_outbound_from_holder),
+}, {
+	(6, counterparty_parameters),
+	(8, funding_outpoint),
+}, {});
 
 /// Static channel fields used to build transactions given per-commitment fields, organized by
 /// broadcaster/countersignatory.
@@ -715,8 +719,12 @@ impl PartialEq for HolderCommitmentTransaction {
 	}
 }
 
-impl_writeable!(HolderCommitmentTransaction, 0, {
-	inner, counterparty_sig, counterparty_htlc_sigs, holder_sig_first
+impl_writeable_tlv_based!(HolderCommitmentTransaction, {
+	(0, inner),
+	(2, counterparty_sig),
+	(4, holder_sig_first),
+}, {}, {
+	(6, counterparty_htlc_sigs),
 });
 
 impl HolderCommitmentTransaction {
@@ -800,7 +808,10 @@ pub struct BuiltCommitmentTransaction {
 	pub txid: Txid,
 }
 
-impl_writeable!(BuiltCommitmentTransaction, 0, { transaction, txid });
+impl_writeable_tlv_based!(BuiltCommitmentTransaction, {
+	(0, transaction),
+	(2, txid)
+}, {}, {});
 
 impl BuiltCommitmentTransaction {
 	/// Get the SIGHASH_ALL sighash value of the transaction.
@@ -883,15 +894,15 @@ impl Readable for Vec<HTLCOutputInCommitment> {
 	}
 }
 
-impl_writeable!(CommitmentTransaction, 0, {
-	commitment_number,
-	to_broadcaster_value_sat,
-	to_countersignatory_value_sat,
-	feerate_per_kw,
-	htlcs,
-	keys,
-	built
-});
+impl_writeable_tlv_based!(CommitmentTransaction, {
+	(0, commitment_number),
+	(2, to_broadcaster_value_sat),
+	(4, to_countersignatory_value_sat),
+	(6, feerate_per_kw),
+	(8, htlcs),
+	(10, keys),
+	(12, built),
+}, {}, {});
 
 impl CommitmentTransaction {
 	/// Construct an object of the class while assigning transaction output indices to HTLCs.
