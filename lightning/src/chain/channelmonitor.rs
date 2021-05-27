@@ -51,6 +51,7 @@ use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
 use util::byte_utils;
 use util::events::Event;
 
+use prelude::*;
 use std::collections::{HashMap, HashSet};
 use core::{cmp, mem};
 use std::io::Error;
@@ -2911,6 +2912,7 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use std::sync::{Arc, Mutex};
 	use chain::keysinterface::InMemorySigner;
+	use prelude::*;
 
 	#[test]
 	fn test_prune_preimages() {

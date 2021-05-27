@@ -318,6 +318,7 @@ impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 
 #[cfg(test)]
 mod test {
+	use prelude::*;
 	use core::iter::repeat;
 
 	use super::ChaCha20;

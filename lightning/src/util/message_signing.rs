@@ -20,6 +20,7 @@
 //! https://lightning.readthedocs.io/lightning-signmessage.7.html
 //! https://api.lightning.community/#signmessage
 
+use prelude::*;
 use crate::util::zbase32;
 use bitcoin::hashes::{sha256d, Hash};
 use bitcoin::secp256k1::recovery::{RecoverableSignature, RecoveryId};

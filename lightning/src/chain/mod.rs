@@ -18,6 +18,8 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitor
 use chain::keysinterface::Sign;
 use chain::transaction::{OutPoint, TransactionData};
 
+use prelude::*;
+
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;

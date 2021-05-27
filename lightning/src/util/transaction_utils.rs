@@ -14,6 +14,7 @@ use bitcoin::consensus::encode::VarInt;
 
 use ln::msgs::MAX_VALUE_MSAT;
 
+use prelude::*;
 use core::cmp::Ordering;
 
 pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
@@ -82,6 +83,8 @@ mod tests {
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 
 	use hex::decode;
+
+	use alloc::vec;
 
 	#[test]
 	fn sort_output_by_value() {

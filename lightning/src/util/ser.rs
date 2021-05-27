@@ -10,6 +10,7 @@
 //! A very simple serialization framework which is used to serialize/deserialize messages as well
 //! as ChannelsManagers and ChannelMonitors.
 
+use prelude::*;
 use std::io::{Read, Write};
 use std::collections::HashMap;
 use core::hash::Hash;

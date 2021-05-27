@@ -37,6 +37,7 @@ use ln::chan_utils;
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
 
+use prelude::*;
 use std::collections::HashSet;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;

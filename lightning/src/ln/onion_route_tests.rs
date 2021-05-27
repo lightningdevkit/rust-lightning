@@ -32,6 +32,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::SecretKey;
 
+use prelude::*;
 use core::default::Default;
 use std::io;
 
