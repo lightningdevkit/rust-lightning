@@ -21,7 +21,7 @@ use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
 use ln::PaymentPreimage;
-use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment, HTLC_OUTPUT_IN_COMMITMENT_SIZE};
+use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use ln::chan_utils;
 use ln::msgs::DecodeError;
 use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
@@ -86,15 +86,15 @@ impl RevokedOutput {
 	}
 }
 
-impl_writeable!(RevokedOutput, 33*3 + 32 + 8 + 8 + 2, {
-	per_commitment_point,
-	counterparty_delayed_payment_base_key,
-	counterparty_htlc_base_key,
-	per_commitment_key,
-	weight,
-	amount,
-	on_counterparty_tx_csv
-});
+impl_writeable_tlv_based!(RevokedOutput, {
+	(0, per_commitment_point),
+	(2, counterparty_delayed_payment_base_key),
+	(4, counterparty_htlc_base_key),
+	(6, per_commitment_key),
+	(8, weight),
+	(10, amount),
+	(12, on_counterparty_tx_csv),
+}, {}, {});
 
 /// A struct to describe a revoked offered output and corresponding information to generate a
 /// solving witness.
@@ -130,15 +130,15 @@ impl RevokedHTLCOutput {
 	}
 }
 
-impl_writeable!(RevokedHTLCOutput, 33*3 + 32 + 8 + 8 + HTLC_OUTPUT_IN_COMMITMENT_SIZE, {
-	per_commitment_point,
-	counterparty_delayed_payment_base_key,
-	counterparty_htlc_base_key,
-	per_commitment_key,
-	weight,
-	amount,
-	htlc
-});
+impl_writeable_tlv_based!(RevokedHTLCOutput, {
+	(0, per_commitment_point),
+	(2, counterparty_delayed_payment_base_key),
+	(4, counterparty_htlc_base_key),
+	(6, per_commitment_key),
+	(8, weight),
+	(10, amount),
+	(12, htlc),
+}, {}, {});
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
 ///
@@ -167,13 +167,13 @@ impl CounterpartyOfferedHTLCOutput {
 	}
 }
 
-impl_writeable!(CounterpartyOfferedHTLCOutput, 33*3 + 32 + HTLC_OUTPUT_IN_COMMITMENT_SIZE, {
-	per_commitment_point,
-	counterparty_delayed_payment_base_key,
-	counterparty_htlc_base_key,
-	preimage,
-	htlc
-});
+impl_writeable_tlv_based!(CounterpartyOfferedHTLCOutput, {
+	(0, per_commitment_point),
+	(2, counterparty_delayed_payment_base_key),
+	(4, counterparty_htlc_base_key),
+	(6, preimage),
+	(8, htlc),
+}, {}, {});
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
 ///
@@ -198,12 +198,12 @@ impl CounterpartyReceivedHTLCOutput {
 	}
 }
 
-impl_writeable!(CounterpartyReceivedHTLCOutput, 33*3 + HTLC_OUTPUT_IN_COMMITMENT_SIZE, {
-	per_commitment_point,
-	counterparty_delayed_payment_base_key,
-	counterparty_htlc_base_key,
-	htlc
-});
+impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
+	(0, per_commitment_point),
+	(2, counterparty_delayed_payment_base_key),
+	(4, counterparty_htlc_base_key),
+	(6, htlc),
+}, {}, {});
 
 /// A struct to describe a HTLC output on holder commitment transaction.
 ///
@@ -224,10 +224,11 @@ impl HolderHTLCOutput {
 	}
 }
 
-impl_writeable!(HolderHTLCOutput, 0, {
-	preimage,
-	amount
-});
+impl_writeable_tlv_based!(HolderHTLCOutput, {
+	(0, amount),
+}, {
+	(2, preimage),
+}, {});
 
 /// A struct to describe the channel output on the funding transaction.
 ///
@@ -245,9 +246,9 @@ impl HolderFundingOutput {
 	}
 }
 
-impl_writeable!(HolderFundingOutput, 0, {
-	funding_redeemscript
-});
+impl_writeable_tlv_based!(HolderFundingOutput, {
+	(0, funding_redeemscript),
+}, {}, {});
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
 ///
