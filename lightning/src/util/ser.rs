@@ -223,6 +223,40 @@ pub trait MaybeReadable
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
 }
 
+pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
+impl<T: Readable> Readable for OptionDeserWrapper<T> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(Some(Readable::read(reader)?)))
+	}
+}
+
+const MAX_ALLOC_SIZE: u64 = 64*1024;
+
+pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
+impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		(self.0.len() as u64).write(writer)?;
+		for ref v in self.0.iter() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
+impl<T: Readable> Readable for VecReadWrapper<T> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let count: u64 = Readable::read(reader)?;
+		let mut values = Vec::with_capacity(cmp::min(count, MAX_ALLOC_SIZE / (core::mem::size_of::<T>() as u64)) as usize);
+		for _ in 0..count {
+			match Readable::read(reader) {
+				Ok(v) => { values.push(v); },
+				Err(e) => return Err(e),
+			}
+		}
+		Ok(Self(values))
+	}
+}
+
 pub(crate) struct U48(pub u64);
 impl Writeable for U48 {
 	#[inline]

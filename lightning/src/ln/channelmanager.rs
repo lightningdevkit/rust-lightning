@@ -4317,9 +4317,9 @@ impl PersistenceNotifier {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for PendingHTLCInfo {
+impl Writeable for PendingHTLCRouting {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match &self.routing {
+		match &self {
 			&PendingHTLCRouting::Forward { ref onion_packet, ref short_channel_id } => {
 				0u8.write(writer)?;
 				onion_packet.write(writer)?;
@@ -4332,38 +4332,36 @@ impl Writeable for PendingHTLCInfo {
 				incoming_cltv_expiry.write(writer)?;
 			},
 		}
-		self.incoming_shared_secret.write(writer)?;
-		self.payment_hash.write(writer)?;
-		self.amt_to_forward.write(writer)?;
-		self.outgoing_cltv_value.write(writer)?;
 		Ok(())
 	}
 }
 
-impl Readable for PendingHTLCInfo {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<PendingHTLCInfo, DecodeError> {
-		Ok(PendingHTLCInfo {
-			routing: match Readable::read(reader)? {
-				0u8 => PendingHTLCRouting::Forward {
-					onion_packet: Readable::read(reader)?,
-					short_channel_id: Readable::read(reader)?,
+impl Readable for PendingHTLCRouting {
+	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<PendingHTLCRouting, DecodeError> {
+		match Readable::read(reader)? {
+			0u8 => Ok(PendingHTLCRouting::Forward {
+				onion_packet: Readable::read(reader)?,
+				short_channel_id: Readable::read(reader)?,
+			}),
+			1u8 => Ok(PendingHTLCRouting::Receive {
+				payment_data: msgs::FinalOnionHopData {
+					payment_secret: Readable::read(reader)?,
+					total_msat: Readable::read(reader)?,
 				},
-				1u8 => PendingHTLCRouting::Receive {
-					payment_data: msgs::FinalOnionHopData {
-						payment_secret: Readable::read(reader)?,
-						total_msat: Readable::read(reader)?,
-					},
-					incoming_cltv_expiry: Readable::read(reader)?,
-				},
-				_ => return Err(DecodeError::InvalidValue),
-			},
-			incoming_shared_secret: Readable::read(reader)?,
-			payment_hash: Readable::read(reader)?,
-			amt_to_forward: Readable::read(reader)?,
-			outgoing_cltv_value: Readable::read(reader)?,
-		})
+				incoming_cltv_expiry: Readable::read(reader)?,
+			}),
+			_ => Err(DecodeError::InvalidValue),
+		}
 	}
 }
+
+impl_writeable_tlv_based!(PendingHTLCInfo, {
+	(0, routing),
+	(2, incoming_shared_secret),
+	(4, payment_hash),
+	(6, amt_to_forward),
+	(8, outgoing_cltv_value)
+}, {}, {});
 
 impl Writeable for HTLCFailureMsg {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
@@ -4417,33 +4415,52 @@ impl Readable for PendingHTLCStatus {
 	}
 }
 
-impl_writeable!(HTLCPreviousHopData, 0, {
-	short_channel_id,
-	outpoint,
-	htlc_id,
-	incoming_packet_shared_secret
-});
+impl_writeable_tlv_based!(HTLCPreviousHopData, {
+	(0, short_channel_id),
+	(2, outpoint),
+	(4, htlc_id),
+	(6, incoming_packet_shared_secret)
+}, {}, {});
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.prev_hop.write(writer)?;
-		self.value.write(writer)?;
-		self.payment_data.payment_secret.write(writer)?;
-		self.payment_data.total_msat.write(writer)?;
-		self.cltv_expiry.write(writer)
+		write_tlv_fields!(writer, {
+			(0, self.prev_hop),
+			(2, self.value),
+			(4, self.payment_data.payment_secret),
+			(6, self.payment_data.total_msat),
+			(8, self.cltv_expiry)
+		}, {});
+		Ok(())
 	}
 }
 
 impl Readable for ClaimableHTLC {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut prev_hop = HTLCPreviousHopData {
+			short_channel_id: 0, htlc_id: 0,
+			incoming_packet_shared_secret: [0; 32],
+			outpoint: OutPoint::null(),
+		};
+		let mut value = 0;
+		let mut payment_secret = PaymentSecret([0; 32]);
+		let mut total_msat = 0;
+		let mut cltv_expiry = 0;
+		read_tlv_fields!(reader, {
+			(0, prev_hop),
+			(2, value),
+			(4, payment_secret),
+			(6, total_msat),
+			(8, cltv_expiry)
+		}, {});
 		Ok(ClaimableHTLC {
-			prev_hop: Readable::read(reader)?,
-			value: Readable::read(reader)?,
+			prev_hop,
+			value,
 			payment_data: msgs::FinalOnionHopData {
-				payment_secret: Readable::read(reader)?,
-				total_msat: Readable::read(reader)?,
+				payment_secret,
+				total_msat,
 			},
-			cltv_expiry: Readable::read(reader)?,
+			cltv_expiry,
 		})
 	}
 }
@@ -4548,13 +4565,13 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl_writeable!(PendingInboundPayment, 0, {
-	payment_secret,
-	expiry_time,
-	user_payment_id,
-	payment_preimage,
-	min_value_msat
-});
+impl_writeable_tlv_based!(PendingInboundPayment, {
+	(0, payment_secret),
+	(2, expiry_time),
+	(4, user_payment_id),
+	(6, payment_preimage),
+	(8, min_value_msat),
+}, {}, {});
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,

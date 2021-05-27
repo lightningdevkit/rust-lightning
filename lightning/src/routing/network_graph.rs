@@ -459,15 +459,15 @@ impl fmt::Display for DirectionalChannelInfo {
 	}
 }
 
-impl_writeable!(DirectionalChannelInfo, 0, {
-	last_update,
-	enabled,
-	cltv_expiry_delta,
-	htlc_minimum_msat,
-	htlc_maximum_msat,
-	fees,
-	last_update_message
-});
+impl_writeable_tlv_based!(DirectionalChannelInfo, {
+	(0, last_update),
+	(2, enabled),
+	(4, cltv_expiry_delta),
+	(6, htlc_minimum_msat),
+	(8, htlc_maximum_msat),
+	(10, fees),
+	(12, last_update_message),
+}, {}, {});
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a channel (both directions).
@@ -500,15 +500,15 @@ impl fmt::Display for ChannelInfo {
 	}
 }
 
-impl_writeable!(ChannelInfo, 0, {
-	features,
-	node_one,
-	one_to_two,
-	node_two,
-	two_to_one,
-	capacity_sats,
-	announcement_message
-});
+impl_writeable_tlv_based!(ChannelInfo, {
+	(0, features),
+	(2, node_one),
+	(4, one_to_two),
+	(6, node_two),
+	(8, two_to_one),
+	(10, capacity_sats),
+	(12, announcement_message),
+}, {}, {});
 
 
 /// Fees for routing via a given channel or a node
@@ -521,24 +521,7 @@ pub struct RoutingFees {
 	pub proportional_millionths: u32,
 }
 
-impl Readable for RoutingFees{
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<RoutingFees, DecodeError> {
-		let base_msat: u32 = Readable::read(reader)?;
-		let proportional_millionths: u32 = Readable::read(reader)?;
-		Ok(RoutingFees {
-			base_msat,
-			proportional_millionths,
-		})
-	}
-}
-
-impl Writeable for RoutingFees {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.base_msat.write(writer)?;
-		self.proportional_millionths.write(writer)?;
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(RoutingFees, {(0, base_msat), (2, proportional_millionths)}, {}, {});
 
 #[derive(Clone, Debug, PartialEq)]
 /// Information received in the latest node_announcement from this node.
@@ -563,48 +546,16 @@ pub struct NodeAnnouncementInfo {
 	pub announcement_message: Option<NodeAnnouncement>
 }
 
-impl Writeable for NodeAnnouncementInfo {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		self.features.write(writer)?;
-		self.last_update.write(writer)?;
-		self.rgb.write(writer)?;
-		self.alias.write(writer)?;
-		(self.addresses.len() as u64).write(writer)?;
-		for ref addr in &self.addresses {
-			addr.write(writer)?;
-		}
-		self.announcement_message.write(writer)?;
-		Ok(())
-	}
-}
-
-impl Readable for NodeAnnouncementInfo {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeAnnouncementInfo, DecodeError> {
-		let features = Readable::read(reader)?;
-		let last_update = Readable::read(reader)?;
-		let rgb = Readable::read(reader)?;
-		let alias = Readable::read(reader)?;
-		let addresses_count: u64 = Readable::read(reader)?;
-		let mut addresses = Vec::with_capacity(cmp::min(addresses_count, MAX_ALLOC_SIZE / 40) as usize);
-		for _ in 0..addresses_count {
-			match Readable::read(reader) {
-				Ok(Ok(addr)) => { addresses.push(addr); },
-				Ok(Err(_)) => return Err(DecodeError::InvalidValue),
-				Err(DecodeError::ShortRead) => return Err(DecodeError::BadLengthDescriptor),
-				_ => unreachable!(),
-			}
-		}
-		let announcement_message = Readable::read(reader)?;
-		Ok(NodeAnnouncementInfo {
-			features,
-			last_update,
-			rgb,
-			alias,
-			addresses,
-			announcement_message
-		})
-	}
-}
+impl_writeable_tlv_based!(NodeAnnouncementInfo, {
+	(0, features),
+	(2, last_update),
+	(4, rgb),
+	(6, alias),
+}, {
+	(8, announcement_message),
+}, {
+	(10, addresses),
+});
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a node in the network, known from the network announcement.
@@ -629,36 +580,12 @@ impl fmt::Display for NodeInfo {
 	}
 }
 
-impl Writeable for NodeInfo {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		(self.channels.len() as u64).write(writer)?;
-		for ref chan in self.channels.iter() {
-			chan.write(writer)?;
-		}
-		self.lowest_inbound_channel_fees.write(writer)?;
-		self.announcement_info.write(writer)?;
-		Ok(())
-	}
-}
-
-const MAX_ALLOC_SIZE: u64 = 64*1024;
-
-impl Readable for NodeInfo {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NodeInfo, DecodeError> {
-		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = Vec::with_capacity(cmp::min(channels_count, MAX_ALLOC_SIZE / 8) as usize);
-		for _ in 0..channels_count {
-			channels.push(Readable::read(reader)?);
-		}
-		let lowest_inbound_channel_fees = Readable::read(reader)?;
-		let announcement_info = Readable::read(reader)?;
-		Ok(NodeInfo {
-			channels,
-			lowest_inbound_channel_fees,
-			announcement_info,
-		})
-	}
-}
+impl_writeable_tlv_based!(NodeInfo, {}, {
+	(0, lowest_inbound_channel_fees),
+	(2, announcement_info),
+}, {
+	(4, channels),
+});
 
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;

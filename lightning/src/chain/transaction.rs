@@ -73,6 +73,14 @@ impl OutPoint {
 			vout: self.index as u32,
 		}
 	}
+
+	/// Creates a dummy BitcoinOutPoint, useful for deserializing into.
+	pub(crate) fn null() -> Self {
+		Self {
+			txid: Default::default(),
+			index: 0
+		}
+	}
 }
 
 impl_writeable!(OutPoint, 0, { txid, index });

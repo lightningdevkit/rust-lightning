@@ -483,6 +483,17 @@ impl Readable for Result<NetAddress, u8> {
 	}
 }
 
+impl Readable for NetAddress {
+	fn read<R: Read>(reader: &mut R) -> Result<NetAddress, DecodeError> {
+		match Readable::read(reader) {
+			Ok(Ok(res)) => Ok(res),
+			Ok(Err(_)) => Err(DecodeError::UnknownVersion),
+			Err(e) => Err(e),
+		}
+	}
+}
+
+
 /// The unsigned part of a node_announcement
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnsignedNodeAnnouncement {
