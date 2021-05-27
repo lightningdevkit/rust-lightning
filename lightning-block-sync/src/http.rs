@@ -5,6 +5,7 @@ use chunked_transfer;
 use serde_json;
 
 use std::convert::TryFrom;
+use std::fmt;
 #[cfg(not(feature = "tokio"))]
 use std::io::Write;
 use std::net::ToSocketAddrs;
@@ -348,18 +349,30 @@ impl HttpClient {
 
 		if !status.is_ok() {
 			// TODO: Handle 3xx redirection responses.
-			let error_details = match String::from_utf8(contents) {
-				// Check that the string is all-ASCII with no control characters before returning
-				// it.
-				Ok(s) if s.as_bytes().iter().all(|c| c.is_ascii() && !c.is_ascii_control()) => s,
-				_ => "binary".to_string()
+			let error = HttpError {
+				status_code: status.code.to_string(),
+				contents,
 			};
-			let error_msg = format!("Errored with status: {} and contents: {}",
-			                        status.code, error_details);
-			return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+			return Err(std::io::Error::new(std::io::ErrorKind::Other, error));
 		}
 
 		Ok(contents)
+	}
+}
+
+/// HTTP error consisting of a status code and body contents.
+#[derive(Debug)]
+pub(crate) struct HttpError {
+	pub(crate) status_code: String,
+	pub(crate) contents: Vec<u8>,
+}
+
+impl std::error::Error for HttpError {}
+
+impl fmt::Display for HttpError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		let contents = String::from_utf8_lossy(&self.contents);
+		write!(f, "status_code: {}, contents: {}", self.status_code, contents)
 	}
 }
 
@@ -538,16 +551,16 @@ pub(crate) mod client_tests {
 	}
 
 	impl HttpServer {
-		pub fn responding_with_ok<T: ToString>(body: MessageBody<T>) -> Self {
+		fn responding_with_body<T: ToString>(status: &str, body: MessageBody<T>) -> Self {
 			let response = match body {
-				MessageBody::Empty => "HTTP/1.1 200 OK\r\n\r\n".to_string(),
+				MessageBody::Empty => format!("{}\r\n\r\n", status),
 				MessageBody::Content(body) => {
 					let body = body.to_string();
 					format!(
-						"HTTP/1.1 200 OK\r\n\
+						"{}\r\n\
 						 Content-Length: {}\r\n\
 						 \r\n\
-						 {}", body.len(), body)
+						 {}", status, body.len(), body)
 				},
 				MessageBody::ChunkedContent(body) => {
 					let mut chuncked_body = Vec::new();
@@ -557,18 +570,26 @@ pub(crate) mod client_tests {
 						encoder.write_all(body.to_string().as_bytes()).unwrap();
 					}
 					format!(
-						"HTTP/1.1 200 OK\r\n\
+						"{}\r\n\
 						 Transfer-Encoding: chunked\r\n\
 						 \r\n\
-						 {}", String::from_utf8(chuncked_body).unwrap())
+						 {}", status, String::from_utf8(chuncked_body).unwrap())
 				},
 			};
 			HttpServer::responding_with(response)
 		}
 
+		pub fn responding_with_ok<T: ToString>(body: MessageBody<T>) -> Self {
+			HttpServer::responding_with_body("HTTP/1.1 200 OK", body)
+		}
+
 		pub fn responding_with_not_found() -> Self {
-			let response = "HTTP/1.1 404 Not Found\r\n\r\n".to_string();
-			HttpServer::responding_with(response)
+			HttpServer::responding_with_body::<String>("HTTP/1.1 404 Not Found", MessageBody::Empty)
+		}
+
+		pub fn responding_with_server_error<T: ToString>(content: T) -> Self {
+			let body = MessageBody::Content(content);
+			HttpServer::responding_with_body("HTTP/1.1 500 Internal Server Error", body)
 		}
 
 		fn responding_with(response: String) -> Self {
@@ -732,16 +753,15 @@ pub(crate) mod client_tests {
 
 	#[tokio::test]
 	async fn read_error() {
-		let response = String::from(
-			"HTTP/1.1 500 Internal Server Error\r\n\
-			 Content-Length: 10\r\n\r\ntest error\r\n");
-		let server = HttpServer::responding_with(response);
+		let server = HttpServer::responding_with_server_error("foo");
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
 		match client.get::<JsonResponse>("/foo", "foo.com").await {
 			Err(e) => {
-				assert_eq!(e.get_ref().unwrap().to_string(), "Errored with status: 500 and contents: test error");
 				assert_eq!(e.kind(), std::io::ErrorKind::Other);
+				let http_error = e.into_inner().unwrap().downcast::<HttpError>().unwrap();
+				assert_eq!(http_error.status_code, "500");
+				assert_eq!(http_error.contents, "foo".as_bytes());
 			},
 			Ok(_) => panic!("Expected error"),
 		}

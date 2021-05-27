@@ -2,7 +2,7 @@
 //! endpoint.
 
 use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
-use crate::http::{HttpClient, HttpEndpoint, JsonResponse};
+use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 
 use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
@@ -47,8 +47,20 @@ impl RpcClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut response = self.client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content)
-			.await?.0;
+		let mut response = match self.client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await {
+			Ok(JsonResponse(response)) => response,
+			Err(e) if e.kind() == std::io::ErrorKind::Other => {
+				match e.get_ref().unwrap().downcast_ref::<HttpError>() {
+					Some(http_error) => match JsonResponse::try_from(http_error.contents.clone()) {
+						Ok(JsonResponse(response)) => response,
+						Err(_) => Err(e)?,
+					},
+					None => Err(e)?,
+				}
+			},
+			Err(e) => Err(e)?,
+		};
+
 		if !response.is_object() {
 			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
 		}
@@ -143,7 +155,7 @@ mod tests {
 		let response = serde_json::json!({
 			"error": { "code": -8, "message": "invalid parameter" },
 		});
-		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
+		let server = HttpServer::responding_with_server_error(response);
 		let mut client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 
 		let invalid_block_hash = serde_json::json!("foo");
