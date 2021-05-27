@@ -14,21 +14,34 @@ jobs:
                      # 1.41.0 is Debian stable
                      1.41.0,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
-                     1.45.2]
+                     1.45.2,
+                     # 1.49.0 is MSRV for no_std builds using hashbrown
+                     1.49.0]
         include:
           - toolchain: stable
             build-net-tokio: true
+            build-no-std: true
           - toolchain: stable
             platform: macos-latest
             build-net-tokio: true
+            build-no-std: true
           - toolchain: stable
             platform: windows-latest
             build-net-tokio: true
+            build-no-std: true
           - toolchain: beta
             build-net-tokio: true
+            build-no-std: true
+          - toolchain: 1.36.0
+            build-no-std: false
+          - toolchain: 1.41.0
+            build-no-std: false
           - toolchain: 1.45.2
             build-net-tokio: true
+            build-no-std: false
             coverage: true
+          - toolchain: 1.49.0
+            build-no-std: true
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -47,7 +60,10 @@ jobs:
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo build --verbose  --color always -p lightning && cargo build --verbose  --color always -p lightning-invoice && cargo build --verbose  --color always -p lightning-persister
+        run: |
+          cargo build --verbose  --color always -p lightning
+          cargo build --verbose  --color always -p lightning-invoice
+          cargo build --verbose  --color always -p lightning-persister
       - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
@@ -56,7 +72,6 @@ jobs:
           cargo build --verbose --color always --features rpc-client
           cargo build --verbose --color always --features rpc-client,rest-client
           cargo build --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
       - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
         if: matrix.coverage
         run: |
@@ -65,16 +80,30 @@ jobs:
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo test --verbose --color always
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
+      - name: Test on no_std bullds Rust ${{ matrix.toolchain }}
+        if: "matrix.build-no-std && !matrix.coverage"
+        run: |
+          cd lightning
+          cargo test --verbose --color always --features hashbrown
+          cd ..
+      - name: Test on no_std bullds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
+        if: "matrix.build-no-std && matrix.coverage"
+        run: |
+          cd lightning
+          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features hashbrown
+          cd ..
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
-        run: cargo test --verbose --color always  -p lightning && cargo test --verbose --color always  -p lightning-invoice && cargo build --verbose  --color always -p lightning-persister
+        run: |
+          cargo test --verbose --color always  -p lightning
+          cargo test --verbose --color always  -p lightning-invoice
+          cargo build --verbose  --color always -p lightning-persister
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
@@ -83,7 +112,6 @@ jobs:
           cargo test --verbose --color always --features rpc-client
           cargo test --verbose --color always --features rpc-client,rest-client
           cargo test --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
         if: matrix.coverage
         run: |
@@ -92,7 +120,6 @@ jobs:
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
-          cd ..
       - name: Install deps for kcov
         if: matrix.coverage
         run: |
@@ -157,6 +184,7 @@ jobs:
         run: |
           cd lightning
           RUSTFLAGS="--cfg=require_route_graph_test" cargo test
+          RUSTFLAGS="--cfg=require_route_graph_test" cargo test --features hashbrown
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |

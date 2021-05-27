@@ -52,7 +52,6 @@ use regex;
 
 use prelude::*;
 use alloc::collections::BTreeSet;
-use std::collections::{HashMap, HashSet};
 use core::default::Default;
 use std::sync::{Arc, Mutex};
 

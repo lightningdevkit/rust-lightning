@@ -52,7 +52,6 @@ use util::byte_utils;
 use util::events::Event;
 
 use prelude::*;
-use std::collections::{HashMap, HashSet};
 use core::{cmp, mem};
 use std::io::Error;
 use core::ops::Deref;

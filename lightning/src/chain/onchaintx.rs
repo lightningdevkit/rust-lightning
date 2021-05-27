@@ -34,7 +34,6 @@ use util::byte_utils;
 
 use prelude::*;
 use alloc::collections::BTreeMap;
-use std::collections::HashMap;
 use core::cmp;
 use core::ops::Deref;
 use core::mem::replace;

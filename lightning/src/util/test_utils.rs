@@ -42,7 +42,6 @@ use core::time::Duration;
 use std::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
-use std::collections::{HashMap, HashSet, VecDeque};
 use chain::keysinterface::InMemorySigner;
 
 pub struct TestVecWriter(pub Vec<u8>);

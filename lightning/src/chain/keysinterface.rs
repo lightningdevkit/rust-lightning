@@ -38,7 +38,6 @@ use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelP
 use ln::msgs::UnsignedChannelAnnouncement;
 
 use prelude::*;
-use std::collections::HashSet;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::io::Error;
 use ln::msgs::{DecodeError, MAX_VALUE_MSAT};

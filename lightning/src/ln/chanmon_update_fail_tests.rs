@@ -41,7 +41,6 @@ use ln::functional_test_utils::*;
 use util::test_utils;
 
 use prelude::*;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // If persister_fail is true, we have the persister return a PermanentFailure
