@@ -60,13 +60,16 @@ impl<W: Write> Writer for W {
 
 pub(crate) struct WriterWriteAdaptor<'a, W: Writer + 'a>(pub &'a mut W);
 impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
+	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.write_all(buf)
 	}
+	#[inline]
 	fn write(&mut self, buf: &[u8]) -> Result<usize, ::std::io::Error> {
 		self.0.write_all(buf)?;
 		Ok(buf.len())
 	}
+	#[inline]
 	fn flush(&mut self) -> Result<(), ::std::io::Error> {
 		Ok(())
 	}
@@ -74,10 +77,12 @@ impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
 
 pub(crate) struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
+	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
+	#[inline]
 	fn size_hint(&mut self, size: usize) {
 		self.0.reserve_exact(size);
 	}
@@ -108,10 +113,12 @@ impl<R: Read> FixedLengthReader<R> {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
+	#[inline]
 	pub fn bytes_remain(&mut self) -> bool {
 		self.bytes_read != self.total_bytes
 	}
 
+	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
 		::std::io::copy(self, &mut ::std::io::sink()).unwrap();
 		if self.bytes_read != self.total_bytes {
@@ -122,6 +129,7 @@ impl<R: Read> FixedLengthReader<R> {
 	}
 }
 impl<R: Read> Read for FixedLengthReader<R> {
+	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
 		if self.total_bytes == self.bytes_read {
 			Ok(0)
@@ -150,6 +158,7 @@ impl<R: Read> ReadTrackingReader<R> {
 	}
 }
 impl<R: Read> Read for ReadTrackingReader<R> {
+	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
 		match self.read.read(dest) {
 			Ok(0) => Ok(0),
@@ -234,6 +243,7 @@ pub trait MaybeReadable
 
 pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
+	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self(Some(Readable::read(reader)?)))
 	}
@@ -243,6 +253,7 @@ const MAX_ALLOC_SIZE: u64 = 64*1024;
 
 pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
 impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
+	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		(self.0.len() as u64).write(writer)?;
 		for ref v in self.0.iter() {
@@ -253,6 +264,7 @@ impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 }
 pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
 impl<T: Readable> Readable for VecReadWrapper<T> {
+	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let count: u64 = Readable::read(reader)?;
 		let mut values = Vec::with_capacity(cmp::min(count, MAX_ALLOC_SIZE / (core::mem::size_of::<T>() as u64)) as usize);
