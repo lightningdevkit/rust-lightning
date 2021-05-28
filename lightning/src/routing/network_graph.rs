@@ -2424,3 +2424,30 @@ mod tests {
 		assert!(result.is_err());
 	}
 }
+
+#[cfg(all(test, feature = "unstable"))]
+mod benches {
+	use super::*;
+
+	use test::Bencher;
+	use std::io::Read;
+
+	#[bench]
+	fn read_network_graph(bench: &mut Bencher) {
+		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
+		let mut v = Vec::new();
+		d.read_to_end(&mut v).unwrap();
+		bench.iter(|| {
+			let _ = NetworkGraph::read(&mut std::io::Cursor::new(&v)).unwrap();
+		});
+	}
+
+	#[bench]
+	fn write_network_graph(bench: &mut Bencher) {
+		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
+		let net_graph = NetworkGraph::read(&mut d).unwrap();
+		bench.iter(|| {
+			let _ = net_graph.encode();
+		});
+	}
+}
