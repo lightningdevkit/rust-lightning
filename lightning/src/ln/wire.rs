@@ -350,8 +350,8 @@ impl Encode for msgs::GossipTimestampFilter {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use util::byte_utils;
 	use prelude::*;
+	use core::convert::TryInto;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];
@@ -397,7 +397,7 @@ mod tests {
 
 	#[test]
 	fn read_unknown_message() {
-		let buffer = &byte_utils::be16_to_array(::core::u16::MAX);
+		let buffer = &::core::u16::MAX.to_be_bytes();
 		let mut reader = ::std::io::Cursor::new(buffer);
 		let message = read(&mut reader).unwrap();
 		match message {
@@ -414,7 +414,7 @@ mod tests {
 
 		let type_length = ::core::mem::size_of::<u16>();
 		let (type_bytes, payload_bytes) = buffer.split_at(type_length);
-		assert_eq!(byte_utils::slice_to_be16(type_bytes), msgs::Pong::TYPE);
+		assert_eq!(u16::from_be_bytes(type_bytes.try_into().unwrap()), msgs::Pong::TYPE);
 		assert_eq!(payload_bytes, &ENCODED_PONG[type_length..]);
 	}
 

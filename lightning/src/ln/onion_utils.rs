@@ -11,7 +11,6 @@ use ln::{PaymentHash, PaymentSecret};
 use ln::channelmanager::HTLCSource;
 use ln::msgs;
 use routing::router::RouteHop;
-use util::byte_utils;
 use util::chacha20::ChaCha20;
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable, LengthCalculatingWriter};
@@ -29,6 +28,7 @@ use bitcoin::secp256k1;
 
 use prelude::*;
 use std::io::Cursor;
+use core::convert::TryInto;
 use core::ops::Deref;
 
 pub(super) struct OnionKeys {
@@ -367,7 +367,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						const NODE: u16 = 0x2000;
 						const UPDATE: u16 = 0x1000;
 
-						let error_code = byte_utils::slice_to_be16(&error_code_slice);
+						let error_code = u16::from_be_bytes(error_code_slice.try_into().expect("len is 2"));
 						error_code_ret = Some(error_code);
 						error_packet_ret = Some(err_packet.failuremsg[2..].to_vec());
 
@@ -394,7 +394,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						}
 						else if error_code & UPDATE == UPDATE {
 							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
-								let update_len = byte_utils::slice_to_be16(&update_len_slice) as usize;
+								let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
 								if let Some(update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
 									if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice)) {
 										// if channel_update should NOT have caused the failure:

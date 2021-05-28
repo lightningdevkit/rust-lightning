@@ -14,7 +14,7 @@ use std::io;
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chacha {
 	use core::cmp;
-	use util::byte_utils::{slice_to_le32, le32_to_array};
+	use core::convert::TryInto;
 
 	#[derive(Clone, Copy, PartialEq, Eq)]
 	#[allow(non_camel_case_types)]
@@ -53,6 +53,17 @@ mod real_chacha {
 		type Output = u32x4;
 		fn shl(self, rhs: u32x4) -> u32x4 {
 			u32x4(self.0 << rhs.0, self.1 << rhs.1, self.2 << rhs.2, self.3 << rhs.3)
+		}
+	}
+	impl u32x4 {
+		fn from_bytes(bytes: &[u8]) -> Self {
+			assert_eq!(bytes.len(), 4*4);
+			Self (
+				u32::from_le_bytes(bytes[0*4..1*4].try_into().expect("len is 4")),
+				u32::from_le_bytes(bytes[1*4..2*4].try_into().expect("len is 4")),
+				u32::from_le_bytes(bytes[2*4..3*4].try_into().expect("len is 4")),
+				u32::from_le_bytes(bytes[3*4..4*4].try_into().expect("len is 4")),
+			)
 		}
 	}
 
@@ -99,7 +110,7 @@ mod real_chacha {
 				d1,d2,d3,d4
 			];
 			for i in 0..lens.len() {
-				$output[i*4..(i+1)*4].copy_from_slice(&le32_to_array(lens[i]));
+				$output[i*4..(i+1)*4].copy_from_slice(&lens[i].to_le_bytes());
 			}
 		}}
 	}
@@ -147,54 +158,23 @@ mod real_chacha {
 				_  => unreachable!(),
 			};
 			ChaChaState {
-				a: u32x4(
-					slice_to_le32(&constant[0..4]),
-					slice_to_le32(&constant[4..8]),
-					slice_to_le32(&constant[8..12]),
-					slice_to_le32(&constant[12..16])
-				),
-				b: u32x4(
-					slice_to_le32(&key[0..4]),
-					slice_to_le32(&key[4..8]),
-					slice_to_le32(&key[8..12]),
-					slice_to_le32(&key[12..16])
-				),
+				a: u32x4::from_bytes(&constant[0..16]),
+				b: u32x4::from_bytes(&key[0..16]),
 				c: if key.len() == 16 {
-					u32x4(
-						slice_to_le32(&key[0..4]),
-						slice_to_le32(&key[4..8]),
-						slice_to_le32(&key[8..12]),
-						slice_to_le32(&key[12..16])
-					)
+					u32x4::from_bytes(&key[0..16])
 				} else {
-					u32x4(
-						slice_to_le32(&key[16..20]),
-						slice_to_le32(&key[20..24]),
-						slice_to_le32(&key[24..28]),
-						slice_to_le32(&key[28..32])
-					)
+					u32x4::from_bytes(&key[16..32])
 				},
 				d: if nonce.len() == 16 {
-					u32x4(
-						slice_to_le32(&nonce[0..4]),
-						slice_to_le32(&nonce[4..8]),
-						slice_to_le32(&nonce[8..12]),
-						slice_to_le32(&nonce[12..16])
-					)
+					u32x4::from_bytes(&nonce[0..16])
 				} else if nonce.len() == 12 {
-					u32x4(
-						0,
-						slice_to_le32(&nonce[0..4]),
-						slice_to_le32(&nonce[4..8]),
-						slice_to_le32(&nonce[8..12])
-					)
+					let mut nonce4 = [0; 4*4];
+					nonce4[4..].copy_from_slice(nonce);
+					u32x4::from_bytes(&nonce4)
 				} else {
-					u32x4(
-						0,
-						0,
-						slice_to_le32(&nonce[0..4]),
-						slice_to_le32(&nonce[4..8])
-					)
+					let mut nonce4 = [0; 4*4];
+					nonce4[8..].copy_from_slice(nonce);
+					u32x4::from_bytes(&nonce4)
 				}
 			}
 		}

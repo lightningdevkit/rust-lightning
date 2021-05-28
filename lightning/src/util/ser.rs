@@ -29,9 +29,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use util::byte_utils;
 
-use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
+use util::byte_utils::{be48_to_array, slice_to_be48};
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -183,7 +182,7 @@ pub trait Writeable {
 		0u16.write(&mut msg).unwrap();
 		self.write(&mut msg).unwrap();
 		let len = msg.0.len();
-		msg.0[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
+		msg.0[..2].copy_from_slice(&(len as u16 - 2).to_be_bytes());
 		msg.0
 	}
 }
@@ -344,18 +343,18 @@ impl Readable for BigSize {
 pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
-	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
+	($val_type:ty, $len: expr) => {
 		impl Writeable for $val_type {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-				writer.write_all(&$meth_write(*self))
+				writer.write_all(&self.to_be_bytes())
 			}
 		}
 		impl Writeable for HighZeroBytesDroppedVarInt<$val_type> {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 				// Skip any full leading 0 bytes when writing (in BE):
-				writer.write_all(&$meth_write(self.0)[(self.0.leading_zeros()/8) as usize..$len])
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros()/8) as usize..$len])
 			}
 		}
 		impl Readable for $val_type {
@@ -363,7 +362,7 @@ macro_rules! impl_writeable_primitive {
 			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
 				let mut buf = [0; $len];
 				reader.read_exact(&mut buf)?;
-				Ok($meth_read(&buf))
+				Ok(<$val_type>::from_be_bytes(buf))
 			}
 		}
 		impl Readable for HighZeroBytesDroppedVarInt<$val_type> {
@@ -382,7 +381,9 @@ macro_rules! impl_writeable_primitive {
 				}
 				if total_read_len == 0 || buf[$len] != 0 {
 					let first_byte = $len - ($len - total_read_len);
-					Ok(HighZeroBytesDroppedVarInt($meth_read(&buf[first_byte..first_byte + $len])))
+					let mut bytes = [0; $len];
+					bytes.copy_from_slice(&buf[first_byte..first_byte + $len]);
+					Ok(HighZeroBytesDroppedVarInt(<$val_type>::from_be_bytes(bytes)))
 				} else {
 					// If the encoding had extra zero bytes, return a failure even though we know
 					// what they meant (as the TLV test vectors require this)
@@ -393,9 +394,9 @@ macro_rules! impl_writeable_primitive {
 	}
 }
 
-impl_writeable_primitive!(u64, be64_to_array, 8, slice_to_be64);
-impl_writeable_primitive!(u32, be32_to_array, 4, slice_to_be32);
-impl_writeable_primitive!(u16, be16_to_array, 2, slice_to_be16);
+impl_writeable_primitive!(u64, 8);
+impl_writeable_primitive!(u32, 4);
+impl_writeable_primitive!(u16, 2);
 
 impl Writeable for u8 {
 	#[inline]
