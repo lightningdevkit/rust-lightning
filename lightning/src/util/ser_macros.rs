@@ -10,7 +10,7 @@
 macro_rules! encode_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
 		#[allow(unused_imports)]
-		use util::ser::{BigSize, LengthCalculatingWriter};
+		use util::ser::BigSize;
 		// Fields must be serialized in order, so we have to potentially switch between optional
 		// fields and normal fields while serializing. Thus, we end up having to loop over the type
 		// counts.
@@ -30,9 +30,7 @@ macro_rules! encode_tlv {
 			$(
 				if i == $type {
 					BigSize($type).write($stream)?;
-					let mut len_calc = LengthCalculatingWriter(0);
-					$field.write(&mut len_calc)?;
-					BigSize(len_calc.0 as u64).write($stream)?;
+					BigSize($field.serialized_length() as u64).write($stream)?;
 					$field.write($stream)?;
 				}
 			)*
@@ -40,9 +38,7 @@ macro_rules! encode_tlv {
 				if i == $optional_type {
 					if let Some(ref field) = $optional_field {
 						BigSize($optional_type).write($stream)?;
-						let mut len_calc = LengthCalculatingWriter(0);
-						field.write(&mut len_calc)?;
-						BigSize(len_calc.0 as u64).write($stream)?;
+						BigSize(field.serialized_length() as u64).write($stream)?;
 						field.write($stream)?;
 					}
 				}
@@ -59,18 +55,16 @@ macro_rules! encode_varint_length_prefixed_tlv {
 		{
 			$(
 				BigSize($type).write(&mut len)?;
-				let mut field_len = LengthCalculatingWriter(0);
-				$field.write(&mut field_len)?;
-				BigSize(field_len.0 as u64).write(&mut len)?;
-				len.0 += field_len.0;
+				let field_len = $field.serialized_length();
+				BigSize(field_len as u64).write(&mut len)?;
+				len.0 += field_len;
 			)*
 			$(
 				if let Some(ref field) = $optional_field {
 					BigSize($optional_type).write(&mut len)?;
-					let mut field_len = LengthCalculatingWriter(0);
-					field.write(&mut field_len)?;
-					BigSize(field_len.0 as u64).write(&mut len)?;
-					len.0 += field_len.0;
+					let field_len = field.serialized_length();
+					BigSize(field_len as u64).write(&mut len)?;
+					len.0 += field_len;
 				}
 			)*
 		}
