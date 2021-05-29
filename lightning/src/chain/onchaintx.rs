@@ -33,6 +33,7 @@ use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
 use prelude::*;
+use alloc::collections::BTreeMap;
 use std::collections::HashMap;
 use core::cmp;
 use core::ops::Deref;
@@ -165,9 +166,9 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	#[cfg(not(test))]
 	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
 
-	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
+	locktimed_packages: BTreeMap<u32, Vec<PackageTemplate>>,
 
-	latest_height: u32,
+	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 }
@@ -207,6 +208,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			claim_and_height.1.write(writer)?;
 		}
 
+		writer.write_all(&byte_utils::be64_to_array(self.locktimed_packages.len() as u64))?;
+		for (ref locktime, ref packages) in self.locktimed_packages.iter() {
+			locktime.write(writer)?;
+			writer.write_all(&byte_utils::be64_to_array(packages.len() as u64))?;
+			for ref package in packages.iter() {
+				package.write(writer)?;
+			}
+		}
+
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.txid.write(writer)?;
@@ -222,7 +232,6 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 		}
-		self.latest_height.write(writer)?;
 
 		write_tlv_fields!(writer, {}, {});
 		Ok(())
@@ -267,6 +276,19 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			let height = Readable::read(reader)?;
 			claimable_outpoints.insert(outpoint, (ancestor_claim_txid, height));
 		}
+
+		let locktimed_packages_len: u64 = Readable::read(reader)?;
+		let mut locktimed_packages = BTreeMap::new();
+		for _ in 0..locktimed_packages_len {
+			let locktime = Readable::read(reader)?;
+			let packages_len: u64 = Readable::read(reader)?;
+			let mut packages = Vec::with_capacity(cmp::min(packages_len as usize, MAX_ALLOC_SIZE / std::mem::size_of::<PackageTemplate>()));
+			for _ in 0..packages_len {
+				packages.push(Readable::read(reader)?);
+			}
+			locktimed_packages.insert(locktime, packages);
+		}
+
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
@@ -289,7 +311,6 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			};
 			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
 		}
-		let latest_height = Readable::read(reader)?;
 
 		read_tlv_fields!(reader, {}, {});
 
@@ -305,9 +326,9 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			signer,
 			channel_transaction_parameters: channel_parameters,
 			claimable_outpoints,
+			locktimed_packages,
 			pending_claim_requests,
 			onchain_events_awaiting_threshold_conf,
-			latest_height,
 			secp_ctx,
 		})
 	}
@@ -325,8 +346,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			channel_transaction_parameters: channel_parameters,
 			pending_claim_requests: HashMap::new(),
 			claimable_outpoints: HashMap::new(),
+			locktimed_packages: BTreeMap::new(),
 			onchain_events_awaiting_threshold_conf: Vec::new(),
-			latest_height: 0,
 
 			secp_ctx,
 		}
@@ -345,10 +366,9 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(cached_request.get_height_timer(height));
-		let amt = cached_request.package_amount();
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script);
-			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, amt, fee_estimator, logger) {
+			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
@@ -360,8 +380,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			debug_assert!(amt == 0);
-			if let Some(transaction) = cached_request.finalize_package(self, amt, self.destination_script.clone(), logger) {
+			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger) {
 				return Some((None, 0, transaction));
 			}
 		}
@@ -372,15 +391,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
 	/// if we receive a preimage after force-close.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, latest_height: Option<u32>, broadcaster: &B, fee_estimator: &F, logger: &L)
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		let height = match latest_height {
-			Some(h) => h,
-			None => self.latest_height,
-		};
 		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;
@@ -389,7 +404,26 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
 		for req in requests {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) { log_trace!(logger, "Bouncing off outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout); } else {
+			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) {
+				log_trace!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout);
+			} else {
+				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
+					.find(|locked_package| locked_package.outpoints() == req.outpoints());
+				if let Some(package) = timelocked_equivalent_package {
+					log_trace!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
+						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_timelock());
+					continue;
+				}
+
+				if req.package_timelock() > height + 1 {
+					log_debug!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), height);
+					for outpoint in req.outpoints() {
+						log_debug!(logger, "  Outpoint {}", outpoint);
+					}
+					self.locktimed_packages.entry(req.package_timelock()).or_insert(Vec::new()).push(req);
+					continue;
+				}
+
 				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.timelock(), height + CLTV_SHARED_CLAIM_BUFFER);
 				if req.timelock() <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
 					// Don't aggregate if outpoint package timelock is soon or marked as non-aggregable
@@ -404,6 +438,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		if let Some(req) = aggregated_request {
 			preprocessed_requests.push(req);
 		}
+
+		// Claim everything up to and including height + 1
+		let remaining_locked_packages = self.locktimed_packages.split_off(&(height + 2));
+		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
+			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
+			preprocessed_requests.append(&mut entry);
+		}
+		self.locktimed_packages = remaining_locked_packages;
 
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).

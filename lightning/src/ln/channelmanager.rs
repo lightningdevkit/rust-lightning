@@ -5035,7 +5035,7 @@ pub mod bench {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Block, BlockHeader, Transaction, TxOut};
 
-	use std::sync::Mutex;
+	use std::sync::{Arc, Mutex};
 
 	use test::Bencher;
 
@@ -5061,7 +5061,7 @@ pub mod bench {
 		let network = bitcoin::Network::Testnet;
 		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
 
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
+		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 
 		let mut config: UserConfig = Default::default();

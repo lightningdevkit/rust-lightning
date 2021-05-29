@@ -13,6 +13,7 @@
 //! here. See also the chanmon_fail_consistency fuzz test.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateErr};
@@ -30,6 +31,7 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
+use util::test_utils::TestBroadcaster;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -40,6 +42,7 @@ use util::test_utils;
 
 use prelude::*;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // If persister_fail is true, we have the persister return a PermanentFailure
 // instead of the higher-level ChainMonitor.
@@ -107,6 +110,13 @@ fn test_monitor_and_persister_update_fail() {
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
+	let tx_broadcaster = TestBroadcaster {
+		txn_broadcasted: Mutex::new(Vec::new()),
+		// Because we will connect a block at height 200 below, we need the TestBroadcaster to know
+		// that we are at height 200 so that it doesn't think we're violating the time lock
+		// requirements of transactions broadcasted at that point.
+		blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 200); 200])),
+	};
 	let chain_mon = {
 		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap();
 		let monitor = monitors.get(&outpoint).unwrap();
@@ -115,7 +125,7 @@ fn test_monitor_and_persister_update_fail() {
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 			&mut ::std::io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
-		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert!(chain_mon.watch_channel(outpoint, new_monitor).is_ok());
 		chain_mon
 	};

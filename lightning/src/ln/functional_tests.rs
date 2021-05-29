@@ -20,7 +20,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface::{KeysInterface, BaseSign};
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
-use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use routing::router::{Route, RouteHop, get_route};
@@ -54,7 +54,7 @@ use prelude::*;
 use alloc::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use core::default::Default;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ln::functional_test_utils::*;
 use ln::chan_utils::CommitmentTransaction;
@@ -1496,19 +1496,29 @@ fn test_duplicate_htlc_different_direction_onchain() {
 
 	mine_transaction(&nodes[0], &remote_txn[0]);
 	check_added_monitors!(nodes[0], 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
 	// Check we only broadcast 1 timeout tx
 	let claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	let htlc_pair = if claim_txn[0].output[0].value == 800_000 / 1000 { (claim_txn[0].clone(), claim_txn[1].clone()) } else { (claim_txn[1].clone(), claim_txn[0].clone()) };
-	assert_eq!(claim_txn.len(), 5);
-	check_spends!(claim_txn[2], chan_1.3);
-	check_spends!(claim_txn[3], claim_txn[2]);
-	assert_eq!(htlc_pair.0.input.len(), 1);
-	assert_eq!(htlc_pair.0.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
-	check_spends!(htlc_pair.0, remote_txn[0]);
-	assert_eq!(htlc_pair.1.input.len(), 1);
-	assert_eq!(htlc_pair.1.input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
-	check_spends!(htlc_pair.1, remote_txn[0]);
+	assert_eq!(claim_txn.len(), 8);
+	assert_eq!(claim_txn[1], claim_txn[4]);
+	assert_eq!(claim_txn[2], claim_txn[5]);
+	check_spends!(claim_txn[1], chan_1.3);
+	check_spends!(claim_txn[2], claim_txn[1]);
+	check_spends!(claim_txn[7], claim_txn[1]);
+
+	assert_eq!(claim_txn[0].input.len(), 1);
+	assert_eq!(claim_txn[3].input.len(), 1);
+	assert_eq!(claim_txn[0].input[0].previous_output, claim_txn[3].input[0].previous_output);
+
+	assert_eq!(claim_txn[0].input.len(), 1);
+	assert_eq!(claim_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC 1 <--> 0, preimage tx
+	check_spends!(claim_txn[0], remote_txn[0]);
+	assert_eq!(remote_txn[0].output[claim_txn[0].input[0].previous_output.vout as usize].value, 800);
+	assert_eq!(claim_txn[6].input.len(), 1);
+	assert_eq!(claim_txn[6].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // HTLC 0 <--> 1, timeout tx
+	check_spends!(claim_txn[6], remote_txn[0]);
+	assert_eq!(remote_txn[0].output[claim_txn[6].input[0].previous_output.vout as usize].value, 900);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 3);
@@ -2308,12 +2318,15 @@ fn channel_monitor_network_test() {
 	// One pending HTLC is discarded by the force-close:
 	let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[2], &nodes[3])[..], 3000000).0;
 
-	// Simple case of one pending HTLC to HTLC-Timeout
+	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
+	// broadcasted until we reach the timelock time).
 	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), true);
 	check_closed_broadcast!(nodes[1], false);
 	check_added_monitors!(nodes[1], 1);
 	{
-		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::NONE);
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + MIN_CLTV_EXPIRY_DELTA as u32 + 1);
+		test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
 		mine_transaction(&nodes[2], &node_txn[0]);
 		check_added_monitors!(nodes[2], 1);
 		test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::NONE);
@@ -2349,7 +2362,9 @@ fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[2], false);
 	let node2_commitment_txid;
 	{
-		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
+		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::NONE);
+		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + MIN_CLTV_EXPIRY_DELTA as u32 + 1);
+		test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
 		node2_commitment_txid = node_txn[0].txid();
 
 		// Claim the payment on nodes[3], giving it knowledge of the preimage
@@ -2484,6 +2499,7 @@ fn test_justice_tx() {
 		test_txn_broadcast(&nodes[1], &chan_5, None, HTLCType::NONE);
 
 		mine_transaction(&nodes[0], &revoked_local_txn[0]);
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 		// Verify broadcast of revoked HTLC-timeout
 		let node_txn = test_txn_broadcast(&nodes[0], &chan_5, Some(revoked_local_txn[0].clone()), HTLCType::TIMEOUT);
 		check_added_monitors!(nodes[0], 1);
@@ -2610,7 +2626,7 @@ fn claim_htlc_outputs_shared_tx() {
 		expect_payment_failed!(nodes[1], payment_hash_2, true);
 
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 3); // ChannelMonitor: penalty tx, ChannelManager: local commitment + HTLC-timeout
+		assert_eq!(node_txn.len(), 2); // ChannelMonitor: penalty tx, ChannelManager: local commitment
 
 		assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
 		check_spends!(node_txn[0], revoked_local_txn[0]);
@@ -2627,13 +2643,6 @@ fn claim_htlc_outputs_shared_tx() {
 		// Next nodes[1] broadcasts its current local tx state:
 		assert_eq!(node_txn[1].input.len(), 1);
 		assert_eq!(node_txn[1].input[0].previous_output.txid, chan_1.3.txid()); //Spending funding tx unique txouput, tx broadcasted by ChannelManager
-
-		assert_eq!(node_txn[2].input.len(), 1);
-		let witness_script = node_txn[2].clone().input[0].witness.pop().unwrap();
-		assert_eq!(witness_script.len(), OFFERED_HTLC_SCRIPT_WEIGHT); //Spending an offered htlc output
-		assert_eq!(node_txn[2].input[0].previous_output.txid, node_txn[1].txid());
-		assert_ne!(node_txn[2].input[0].previous_output.txid, node_txn[0].input[0].previous_output.txid);
-		assert_ne!(node_txn[2].input[0].previous_output.txid, node_txn[0].input[1].previous_output.txid);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -2737,6 +2746,12 @@ fn test_htlc_on_chain_success() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
+	// Ensure all nodes are at the same height
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+
 	// Rebalance the network a bit by relaying one payment through all the channels...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
@@ -2778,6 +2793,7 @@ fn test_htlc_on_chain_success() {
 	// Verify that B's ChannelManager is able to extract preimage from HTLC Success tx and pass it backward
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	connect_block(&nodes[1], &Block { header, txdata: node_txn});
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
@@ -2815,34 +2831,26 @@ fn test_htlc_on_chain_success() {
 	macro_rules! check_tx_local_broadcast {
 		($node: expr, $htlc_offered: expr, $commitment_tx: expr, $chan_tx: expr) => { {
 			let mut node_txn = $node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-			assert_eq!(node_txn.len(), 5);
+			assert_eq!(node_txn.len(), 3);
 			// Node[1]: ChannelManager: 3 (commitment tx, 2*HTLC-Timeout tx), ChannelMonitor: 2 (timeout tx)
 			// Node[0]: ChannelManager: 3 (commtiemtn tx, 2*HTLC-Timeout tx), ChannelMonitor: 2 HTLC-timeout
-			check_spends!(node_txn[0], $commitment_tx);
 			check_spends!(node_txn[1], $commitment_tx);
-			assert_ne!(node_txn[0].lock_time, 0);
+			check_spends!(node_txn[2], $commitment_tx);
 			assert_ne!(node_txn[1].lock_time, 0);
+			assert_ne!(node_txn[2].lock_time, 0);
 			if $htlc_offered {
-				assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 				assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-				assert!(node_txn[0].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
+				assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 				assert!(node_txn[1].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
+				assert!(node_txn[2].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
 			} else {
-				assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 				assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-				assert!(node_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+				assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 				assert!(node_txn[1].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+				assert!(node_txn[2].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 			}
-			check_spends!(node_txn[2], $chan_tx);
-			check_spends!(node_txn[3], node_txn[2]);
-			check_spends!(node_txn[4], node_txn[2]);
-			assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), 71);
-			assert_eq!(node_txn[3].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-			assert_eq!(node_txn[4].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-			assert!(node_txn[3].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
-			assert!(node_txn[4].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
-			assert_ne!(node_txn[3].lock_time, 0);
-			assert_ne!(node_txn[4].lock_time, 0);
+			check_spends!(node_txn[0], $chan_tx);
+			assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), 71);
 			node_txn.clear();
 		} }
 	}
@@ -2853,29 +2861,43 @@ fn test_htlc_on_chain_success() {
 
 	// Broadcast legit commitment tx from A on B's chain
 	// Broadcast preimage tx by B on offered output from A commitment tx  on A's chain
-	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
-	check_spends!(commitment_tx[0], chan_1.3);
-	mine_transaction(&nodes[1], &commitment_tx[0]);
+	let node_a_commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
+	check_spends!(node_a_commitment_tx[0], chan_1.3);
+	mine_transaction(&nodes[1], &node_a_commitment_tx[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 3 (commitment tx + HTLC-Sucess * 2), ChannelMonitor : 1 (HTLC-Success)
-	assert_eq!(node_txn.len(), 4);
-	check_spends!(node_txn[0], commitment_tx[0]);
-	assert_eq!(node_txn[0].input.len(), 2);
-	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(node_txn[0].input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(node_txn[0].lock_time, 0);
-	assert!(node_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	check_spends!(node_txn[1], chan_1.3);
-	assert_eq!(node_txn[1].input[0].witness.clone().last().unwrap().len(), 71);
-	check_spends!(node_txn[2], node_txn[1]);
-	check_spends!(node_txn[3], node_txn[1]);
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	assert_eq!(node_txn.len(), 6); // ChannelManager : 3 (commitment tx + HTLC-Sucess * 2), ChannelMonitor : 3 (HTLC-Success, 2* RBF bumps of above HTLC txn)
+	let commitment_spend =
+		if node_txn[0].input[0].previous_output.txid == node_a_commitment_tx[0].txid() {
+			check_spends!(node_txn[1], commitment_tx[0]);
+			check_spends!(node_txn[2], commitment_tx[0]);
+			assert_ne!(node_txn[1].input[0].previous_output.vout, node_txn[2].input[0].previous_output.vout);
+			&node_txn[0]
+		} else {
+			check_spends!(node_txn[0], commitment_tx[0]);
+			check_spends!(node_txn[1], commitment_tx[0]);
+			assert_ne!(node_txn[0].input[0].previous_output.vout, node_txn[1].input[0].previous_output.vout);
+			&node_txn[2]
+		};
+
+	check_spends!(commitment_spend, node_a_commitment_tx[0]);
+	assert_eq!(commitment_spend.input.len(), 2);
+	assert_eq!(commitment_spend.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(commitment_spend.input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(commitment_spend.lock_time, 0);
+	assert!(commitment_spend.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+	check_spends!(node_txn[3], chan_1.3);
+	assert_eq!(node_txn[3].input[0].witness.clone().last().unwrap().len(), 71);
+	check_spends!(node_txn[4], node_txn[3]);
+	check_spends!(node_txn[5], node_txn[3]);
 	// We don't bother to check that B can claim the HTLC output on its commitment tx here as
 	// we already checked the same situation with A.
 
 	// Verify that A's ChannelManager is able to extract preimage from preimage tx and generate PaymentSent
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
-	connect_block(&nodes[0], &Block { header, txdata: vec![commitment_tx[0].clone(), node_txn[0].clone()] });
+	connect_block(&nodes[0], &Block { header, txdata: vec![node_a_commitment_tx[0].clone(), commitment_spend.clone()] });
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + MIN_CLTV_EXPIRY_DELTA as u32 - 1); // Confirm blocks until the HTLC expires
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -2894,7 +2916,7 @@ fn test_htlc_on_chain_success() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_tx_local_broadcast!(nodes[0], true, commitment_tx[0], chan_1.3);
+	check_tx_local_broadcast!(nodes[0], true, node_a_commitment_tx[0], chan_1.3);
 }
 
 fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
@@ -3013,17 +3035,16 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	check_spends!(commitment_tx[0], chan_1.3);
 
 	mine_transaction(&nodes[0], &commitment_tx[0]);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + MIN_CLTV_EXPIRY_DELTA as u32 - 1); // Confirm blocks until the HTLC expires
 
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (commitment tx, HTLC-Timeout tx), ChannelMonitor : 1 timeout tx
-	assert_eq!(node_txn.len(), 3);
-	check_spends!(node_txn[0], commitment_tx[0]);
-	assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(node_txn[1], chan_1.3);
-	check_spends!(node_txn[2], node_txn[1]);
-	assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), 71);
-	assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 1 commitment tx, ChannelMonitor : 1 timeout tx
+	assert_eq!(node_txn.len(), 2);
+	check_spends!(node_txn[0], chan_1.3);
+	assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), 71);
+	check_spends!(node_txn[1], commitment_tx[0]);
+	assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 }
 
 #[test]
@@ -3402,11 +3423,13 @@ fn test_htlc_ignore_latest_remote_commitment() {
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
 	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 2);
+	assert_eq!(node_txn.len(), 3);
+	assert_eq!(node_txn[0], node_txn[1]);
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]});
@@ -3416,7 +3439,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	// Duplicate the connect_block call since this may happen due to other listeners
 	// registering new transactions
 	header.prev_blockhash = header.block_hash();
-	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]});
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[2].clone()]});
 }
 
 #[test]
@@ -4426,19 +4449,23 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
+	// Connect blocks until the CLTV timeout is up so that we get an HTLC-Timeout transaction
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(node_txn.len(), 2);
+	assert_eq!(node_txn.len(), 3);
+	assert_eq!(node_txn[0], node_txn[1]);
 
 	assert!(nodes[1].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[1], 1);
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]});
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone(), node_txn[2].clone()]});
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
-	connect_block(&nodes[0], &Block { header, txdata: node_txn});
+	header.prev_blockhash = nodes[0].best_block_hash();
+	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone(), node_txn[2].clone()]});
 
 	// Serialize out the ChannelMonitor before connecting the on-chain claim transactions. This is
 	// fairly normal behavior as ChannelMonitor(s) are often not re-serialized when on-chain events
@@ -4446,7 +4473,7 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
 
-	header.prev_blockhash = header.block_hash();
+	header.prev_blockhash = nodes[0].best_block_hash();
 	let claim_block = Block { header, txdata: claim_txn};
 	connect_block(&nodes[0], &claim_block);
 	expect_payment_sent!(nodes[0], payment_preimage);
@@ -4489,7 +4516,8 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
 	// which the current ChannelMonitor has not seen), the ChannelManager's de-duplication of
 	// payment events should kick in, leaving us with no pending events here.
-	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, nodes[0].blocks.borrow().len() as u32 - 1);
+	let height = nodes[0].blocks.lock().unwrap().len() as u32 - 1;
+	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, height);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
 
@@ -4766,11 +4794,11 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	{ // Channel close should result in a commitment tx and an HTLC tx
+	{ // Channel close should result in a commitment tx
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(txn.len(), 2);
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], funding_tx);
 		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
-		assert_eq!(txn[1].input[0].previous_output.txid, txn[0].txid());
 	}
 
 	for monitor in node_0_monitors.drain(..) {
@@ -4989,24 +5017,24 @@ fn test_static_spendable_outputs_timeout_tx() {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
 	// Check B's monitor was able to send back output descriptor event for timeout tx on A's commitment tx
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(node_txn.len(), 3); // ChannelManager : 2 (local commitent tx + HTLC-timeout), ChannelMonitor: timeout tx
-	check_spends!(node_txn[0],  commitment_tx[0].clone());
-	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(node_txn[1], chan_1.3.clone());
-	check_spends!(node_txn[2], node_txn[1]);
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(node_txn.len(), 2); // ChannelManager : 1 local commitent tx, ChannelMonitor: timeout tx
+	check_spends!(node_txn[0], chan_1.3.clone());
+	check_spends!(node_txn[1],  commitment_tx[0].clone());
+	assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 
-	mine_transaction(&nodes[1], &node_txn[0]);
+	mine_transaction(&nodes[1], &node_txn[1]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
 	check_spends!(spend_txn[0], commitment_tx[0]);
-	check_spends!(spend_txn[1], node_txn[0]);
-	check_spends!(spend_txn[2], node_txn[0], commitment_tx[0]); // All outputs
+	check_spends!(spend_txn[1], node_txn[1]);
+	check_spends!(spend_txn[2], node_txn[1], commitment_tx[0]); // All outputs
 }
 
 #[test]
@@ -5065,35 +5093,37 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
 	let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(revoked_htlc_txn.len(), 2);
-	assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-	assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
-	check_spends!(revoked_htlc_txn[1], chan_1.3);
+	check_spends!(revoked_htlc_txn[0], chan_1.3);
+	assert_eq!(revoked_htlc_txn[1].input.len(), 1);
+	assert_eq!(revoked_htlc_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
+	assert_ne!(revoked_htlc_txn[1].lock_time, 0); // HTLC-Timeout
 
 	// B will generate justice tx from A's revoked commitment/HTLC tx
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[0].clone()] });
+	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone(), revoked_htlc_txn[1].clone()] });
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert_eq!(node_txn.len(), 3); // ChannelMonitor: bogus justice tx, justice tx on revoked outputs, ChannelManager: local commitment tx
 	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
-	// including the one already spent by revoked_htlc_txn[0]. That's OK, we'll spend with valid
+	// including the one already spent by revoked_htlc_txn[1]. That's OK, we'll spend with valid
 	// transactions next...
 	assert_eq!(node_txn[0].input.len(), 3);
-	check_spends!(node_txn[0], revoked_local_txn[0], revoked_htlc_txn[0]);
+	check_spends!(node_txn[0], revoked_local_txn[0], revoked_htlc_txn[1]);
 
 	assert_eq!(node_txn[1].input.len(), 2);
-	check_spends!(node_txn[1], revoked_local_txn[0], revoked_htlc_txn[0]);
-	if node_txn[1].input[1].previous_output.txid == revoked_htlc_txn[0].txid() {
-		assert_ne!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+	check_spends!(node_txn[1], revoked_local_txn[0], revoked_htlc_txn[1]);
+	if node_txn[1].input[1].previous_output.txid == revoked_htlc_txn[1].txid() {
+		assert_ne!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
 	} else {
-		assert_eq!(node_txn[1].input[0].previous_output.txid, revoked_htlc_txn[0].txid());
-		assert_ne!(node_txn[1].input[1].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+		assert_eq!(node_txn[1].input[0].previous_output.txid, revoked_htlc_txn[1].txid());
+		assert_ne!(node_txn[1].input[1].previous_output, revoked_htlc_txn[1].input[0].previous_output);
 	}
 
 	assert_eq!(node_txn[2].input.len(), 1);
@@ -5206,6 +5236,12 @@ fn test_onchain_to_onchain_claim() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
+	// Ensure all nodes are at the same height
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+
 	// Rebalance the network a bit by relaying one payment through all the channels ...
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 8000000);
@@ -5239,19 +5275,16 @@ fn test_onchain_to_onchain_claim() {
 	// So we broadcast C's commitment tx and HTLC-Success on B's chain, we should successfully be able to extract preimage and update downstream monitor
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	connect_block(&nodes[1], &Block { header, txdata: vec![c_txn[1].clone(), c_txn[2].clone()]});
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 	{
 		let mut b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: claim tx, ChannelManager: local commitment tx + HTLC-timeout tx
-		assert_eq!(b_txn.len(), 3);
-		check_spends!(b_txn[1], chan_2.3); // B local commitment tx, issued by ChannelManager
-		check_spends!(b_txn[2], b_txn[1]); // HTLC-Timeout on B local commitment tx, issued by ChannelManager
-		assert_eq!(b_txn[2].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		assert!(b_txn[2].output[0].script_pubkey.is_v0_p2wsh()); // revokeable output
-		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
-		check_spends!(b_txn[0], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
-		assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-		assert_ne!(b_txn[2].lock_time, 0); // Timeout tx
+		// ChannelMonitor: claim tx, ChannelManager: local commitment tx
+		assert_eq!(b_txn.len(), 2);
+		check_spends!(b_txn[0], chan_2.3); // B local commitment tx, issued by ChannelManager
+		check_spends!(b_txn[1], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
+		assert_eq!(b_txn[1].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		assert!(b_txn[1].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+		assert_ne!(b_txn[1].lock_time, 0); // Timeout tx
 		b_txn.clear();
 	}
 	check_added_monitors!(nodes[1], 1);
@@ -5280,14 +5313,19 @@ fn test_onchain_to_onchain_claim() {
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
-	assert_eq!(b_txn.len(), 3);
-	check_spends!(b_txn[1], chan_1.3);
-	check_spends!(b_txn[2], b_txn[1]);
-	check_spends!(b_txn[0], commitment_tx[0]);
-	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	assert_eq!(b_txn[0].lock_time, 0); // Success tx
+	// ChannelMonitor: HTLC-Success tx + HTLC-Timeout RBF Bump, ChannelManager: local commitment tx + HTLC-Success tx
+	assert_eq!(b_txn.len(), 4);
+	check_spends!(b_txn[2], chan_1.3);
+	check_spends!(b_txn[3], b_txn[2]);
+	let (htlc_success_claim, htlc_timeout_bumped) =
+		if b_txn[0].input[0].previous_output.txid == commitment_tx[0].txid()
+			{ (&b_txn[0], &b_txn[1]) } else { (&b_txn[1], &b_txn[0]) };
+	check_spends!(htlc_success_claim, commitment_tx[0]);
+	assert_eq!(htlc_success_claim.input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert!(htlc_success_claim.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+	assert_eq!(htlc_success_claim.lock_time, 0); // Success tx
+	check_spends!(htlc_timeout_bumped, c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
+	assert_ne!(htlc_timeout_bumped.lock_time, 0); // Success tx
 
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -5308,11 +5346,20 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+	connect_blocks(&nodes[3], node_max_height - nodes[3].best_block_info().1);
+
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 
 	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, 0).unwrap();
+	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
+	// script push size limit so that the below script length checks match
+	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
 	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
-		&nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
+		&nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 900000, TEST_FINAL_CLTV - 40, nodes[0].logger).unwrap();
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 900000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
@@ -5322,22 +5369,26 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	mine_transaction(&nodes[1], &commitment_txn[0]);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 40 + MIN_CLTV_EXPIRY_DELTA as u32 - 1); // Confirm blocks until the HTLC expires
 
 	let htlc_timeout_tx;
 	{ // Extract one of the two HTLC-Timeout transaction
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: timeout tx * 2, ChannelManager: local commitment tx + HTLC-timeout * 2
-		assert_eq!(node_txn.len(), 5);
-		check_spends!(node_txn[0], commitment_txn[0]);
-		assert_eq!(node_txn[0].input.len(), 1);
+		// ChannelMonitor: timeout tx * 3, ChannelManager: local commitment tx
+		assert_eq!(node_txn.len(), 4);
+		check_spends!(node_txn[0], chan_2.3);
+
 		check_spends!(node_txn[1], commitment_txn[0]);
 		assert_eq!(node_txn[1].input.len(), 1);
-		assert_ne!(node_txn[0].input[0], node_txn[1].input[0]);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[2], commitment_txn[0]);
+		assert_eq!(node_txn[2].input.len(), 1);
+		assert_eq!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
+		check_spends!(node_txn[3], commitment_txn[0]);
+		assert_ne!(node_txn[1].input[0].previous_output, node_txn[3].input[0].previous_output);
+
 		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		check_spends!(node_txn[2], chan_2.3);
-		check_spends!(node_txn[3], node_txn[2]);
-		check_spends!(node_txn[4], node_txn[2]);
+		assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(node_txn[3].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		htlc_timeout_tx = node_txn[1].clone();
 	}
 
@@ -5355,18 +5406,17 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	}
 	let htlc_success_txn: Vec<_> = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(htlc_success_txn.len(), 5); // ChannelMonitor: HTLC-Success txn (*2 due to 2-HTLC outputs), ChannelManager: local commitment tx + HTLC-Success txn (*2 due to 2-HTLC outputs)
-	check_spends!(htlc_success_txn[2], chan_2.3);
-	check_spends!(htlc_success_txn[3], htlc_success_txn[2]);
-	check_spends!(htlc_success_txn[4], htlc_success_txn[2]);
-	assert_eq!(htlc_success_txn[0], htlc_success_txn[3]);
-	assert_eq!(htlc_success_txn[0].input.len(), 1);
-	assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(htlc_success_txn[1], htlc_success_txn[4]);
-	assert_eq!(htlc_success_txn[1].input.len(), 1);
-	assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	assert_ne!(htlc_success_txn[0].input[0], htlc_success_txn[1].input[0]);
 	check_spends!(htlc_success_txn[0], commitment_txn[0]);
 	check_spends!(htlc_success_txn[1], commitment_txn[0]);
+	assert_eq!(htlc_success_txn[0].input.len(), 1);
+	assert_eq!(htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(htlc_success_txn[1].input.len(), 1);
+	assert_eq!(htlc_success_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	assert_ne!(htlc_success_txn[0].input[0].previous_output, htlc_success_txn[1].input[0].previous_output);
+	assert_eq!(htlc_success_txn[2], commitment_txn[0]);
+	assert_eq!(htlc_success_txn[3], htlc_success_txn[0]);
+	assert_eq!(htlc_success_txn[4], htlc_success_txn[1]);
+	assert_ne!(htlc_success_txn[0].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
 
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -5739,13 +5789,16 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	mine_transaction(&nodes[0], &local_txn[0]);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
 	let htlc_timeout = {
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		check_spends!(node_txn[0], local_txn[0]);
-		node_txn[0].clone()
+		assert_eq!(node_txn.len(), 2);
+		check_spends!(node_txn[0], chan_1.3);
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[1], local_txn[0]);
+		node_txn[1].clone()
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
@@ -5787,6 +5840,12 @@ fn test_key_derivation_params() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	assert_ne!(chan_0.3.output[0].script_pubkey, chan_1.3.output[0].script_pubkey);
 
+	// Ensure all nodes are at the same height
+	let node_max_height = nodes.iter().map(|node| node.blocks.lock().unwrap().len()).max().unwrap() as u32;
+	connect_blocks(&nodes[0], node_max_height - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], node_max_height - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], node_max_height - nodes[2].best_block_info().1);
+
 	let (_, our_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 9000000);
 	let local_txn_0 = get_local_commitment_txn!(nodes[0], chan_0.2);
 	let local_txn_1 = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -5805,15 +5864,16 @@ fn test_key_derivation_params() {
 
 	// Timeout HTLC on A's chain and so it can generate a HTLC-Timeout tx
 	mine_transaction(&nodes[0], &local_txn_1[0]);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 
 	let htlc_timeout = {
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		check_spends!(node_txn[0], local_txn_1[0]);
-		node_txn[0].clone()
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[1], local_txn_1[0]);
+		node_txn[1].clone()
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
@@ -7246,12 +7306,14 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	if local {
 		// We fail dust-HTLC 1 by broadcast of local commitment tx
 		mine_transaction(&nodes[0], &as_commitment_tx[0]);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		expect_payment_failed!(nodes[0], dust_hash, true);
+
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS - ANTI_REORG_DELAY);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[0], dust_hash, true);
+		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone());
 		assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 		// We fail non-dust-HTLC 2 by broadcast of local HTLC-timeout tx on local commitment tx
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
@@ -7264,8 +7326,8 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone());
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
+		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone());
 		if !revoked {
 			expect_payment_failed!(nodes[0], dust_hash, true);
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
@@ -7622,7 +7684,7 @@ fn test_data_loss_protect() {
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())};
+	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
 	persister = test_utils::TestPersister::new();
 	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
@@ -7880,7 +7942,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let feerate_1;
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 3); // justice tx (broadcasted from ChannelMonitor) + local commitment tx + local HTLC-timeout (broadcasted from ChannelManager)
+		assert_eq!(node_txn.len(), 2); // justice tx (broadcasted from ChannelMonitor) + local commitment tx
 		assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
 		assert_eq!(node_txn[0].output.len(), 1);
 		check_spends!(node_txn[0], revoked_txn[0]);
@@ -7972,31 +8034,27 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	connect_block(&nodes[1], &Block { header, txdata: vec![revoked_local_txn[0].clone()] });
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
+	connect_blocks(&nodes[1], 49); // Confirm blocks until the HTLC expires (note CLTV was explicitly 50 above)
 
 	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	assert_eq!(revoked_htlc_txn.len(), 4);
-	if revoked_htlc_txn[0].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
-		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
-		assert_eq!(revoked_htlc_txn[1].input.len(), 1);
-		assert_eq!(revoked_htlc_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		assert_eq!(revoked_htlc_txn[1].output.len(), 1);
-		check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
-	} else if revoked_htlc_txn[1].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
-		assert_eq!(revoked_htlc_txn[1].input.len(), 1);
-		check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
-		assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-		assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		assert_eq!(revoked_htlc_txn[0].output.len(), 1);
-		check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
-	}
+	assert_eq!(revoked_htlc_txn.len(), 3);
+	check_spends!(revoked_htlc_txn[1], chan.3);
+
+	assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(revoked_htlc_txn[0].input.len(), 1);
+	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
+
+	assert_eq!(revoked_htlc_txn[2].input.len(), 1);
+	assert_eq!(revoked_htlc_txn[2].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert_eq!(revoked_htlc_txn[2].output.len(), 1);
+	check_spends!(revoked_htlc_txn[2], revoked_local_txn[0]);
 
 	// Broadcast set of revoked txn on A
 	let hash_128 = connect_blocks(&nodes[0], 40);
 	let header_11 = BlockHeader { version: 0x20000000, prev_blockhash: hash_128, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_11, txdata: vec![revoked_local_txn[0].clone()] });
 	let header_129 = BlockHeader { version: 0x20000000, prev_blockhash: header_11.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()] });
+	connect_block(&nodes[0], &Block { header: header_129, txdata: vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[2].clone()] });
 	expect_pending_htlcs_forwardable_ignore!(nodes[0]);
 	let first;
 	let feerate_1;
@@ -8025,7 +8083,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_ne!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
 
 		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
-		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[2].input[0].previous_output);
 
 		// node_txn[3] is the local commitment tx broadcast just because (and somewhat in case of
 		// reorgs, though its not clear its ever worth broadcasting conflicting txn like this when
@@ -8036,11 +8094,11 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// output, checked above).
 		assert_eq!(node_txn[4].input.len(), 2);
 		assert_eq!(node_txn[4].output.len(), 1);
-		check_spends!(node_txn[4], revoked_htlc_txn[0], revoked_htlc_txn[1]);
+		check_spends!(node_txn[4], revoked_htlc_txn[0], revoked_htlc_txn[2]);
 
 		first = node_txn[4].txid();
 		// Store both feerates for later comparison
-		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[4].output[0].value;
+		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[2].output[0].value - node_txn[4].output[0].value;
 		feerate_1 = fee_1 * 1000 / node_txn[4].get_weight() as u64;
 		penalty_txn = vec![node_txn[2].clone()];
 		node_txn.clear();
@@ -8059,9 +8117,9 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		check_spends!(node_txn[1], revoked_local_txn[0]);
 		// Note that these are both bogus - they spend outputs already claimed in block 129:
 		if node_txn[0].input[0].previous_output == revoked_htlc_txn[0].input[0].previous_output  {
-			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[2].input[0].previous_output);
 		} else {
-			assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+			assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[2].input[0].previous_output);
 			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 		}
 
@@ -8077,10 +8135,10 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_eq!(node_txn.len(), 1);
 
 		assert_eq!(node_txn[0].input.len(), 2);
-		check_spends!(node_txn[0], revoked_htlc_txn[0], revoked_htlc_txn[1]);
+		check_spends!(node_txn[0], revoked_htlc_txn[0], revoked_htlc_txn[2]);
 		// Verify bumped tx is different and 25% bump heuristic
 		assert_ne!(first, node_txn[0].txid());
-		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
+		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[2].output[0].value - node_txn[0].output[0].value;
 		let feerate_2 = fee_2 * 1000 / node_txn[0].get_weight() as u64;
 		assert!(feerate_2 * 100 > feerate_1 * 125);
 		let txn = vec![node_txn[0].clone()];
@@ -8134,43 +8192,44 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	nodes[1].node.claim_funds(payment_preimage);
 	mine_transaction(&nodes[1], &remote_txn[0]);
 	check_added_monitors!(nodes[1], 2);
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
 	// One or more claim tx should have been broadcast, check it
 	let timeout;
 	let preimage;
+	let preimage_bump;
 	let feerate_timeout;
 	let feerate_preimage;
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 5); // 2 * claim tx (broadcasted from ChannelMonitor) + local commitment tx + local HTLC-timeout + local HTLC-success (broadcasted from ChannelManager)
+		// 9 transactions including:
+		// 1*2 ChannelManager local broadcasts of commitment + HTLC-Success
+		// 1*3 ChannelManager local broadcasts of commitment + HTLC-Success + HTLC-Timeout
+		// 2 * HTLC-Success (one RBF bump we'll check later)
+		// 1 * HTLC-Timeout
+		assert_eq!(node_txn.len(), 8);
 		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[6].input.len(), 1);
 		check_spends!(node_txn[0], remote_txn[0]);
-		check_spends!(node_txn[1], remote_txn[0]);
-		check_spends!(node_txn[2], chan.3);
-		check_spends!(node_txn[3], node_txn[2]);
-		check_spends!(node_txn[4], node_txn[2]);
-		if node_txn[0].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
-			timeout = node_txn[0].txid();
-			let index = node_txn[0].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-			feerate_timeout = fee * 1000 / node_txn[0].get_weight() as u64;
+		check_spends!(node_txn[6], remote_txn[0]);
+		assert_eq!(node_txn[0].input[0].previous_output, node_txn[3].input[0].previous_output);
+		preimage_bump = node_txn[3].clone();
 
-			preimage = node_txn[1].txid();
-			let index = node_txn[1].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
-			feerate_preimage = fee * 1000 / node_txn[1].get_weight() as u64;
-		} else {
-			timeout = node_txn[1].txid();
-			let index = node_txn[1].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
-			feerate_timeout = fee * 1000 / node_txn[1].get_weight() as u64;
+		check_spends!(node_txn[1], chan.3);
+		check_spends!(node_txn[2], node_txn[1]);
+		assert_eq!(node_txn[1], node_txn[4]);
+		assert_eq!(node_txn[2], node_txn[5]);
 
-			preimage = node_txn[0].txid();
-			let index = node_txn[0].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-			feerate_preimage = fee * 1000 / node_txn[0].get_weight() as u64;
-		}
+		timeout = node_txn[6].txid();
+		let index = node_txn[6].input[0].previous_output.vout;
+		let fee = remote_txn[0].output[index as usize].value - node_txn[6].output[0].value;
+		feerate_timeout = fee * 1000 / node_txn[6].get_weight() as u64;
+
+		preimage = node_txn[0].txid();
+		let index = node_txn[0].input[0].previous_output.vout;
+		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+		feerate_preimage = fee * 1000 / node_txn[0].get_weight() as u64;
+
 		node_txn.clear();
 	};
 	assert_ne!(feerate_timeout, 0);
@@ -8180,36 +8239,24 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	connect_blocks(&nodes[1], 15);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 2);
+		assert_eq!(node_txn.len(), 1);
 		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(preimage_bump.input.len(), 1);
 		check_spends!(node_txn[0], remote_txn[0]);
-		check_spends!(node_txn[1], remote_txn[0]);
-		if node_txn[0].input[0].witness.last().unwrap().len() == ACCEPTED_HTLC_SCRIPT_WEIGHT {
-			let index = node_txn[0].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
-			assert!(new_feerate * 100 > feerate_timeout * 125);
-			assert_ne!(timeout, node_txn[0].txid());
+		check_spends!(preimage_bump, remote_txn[0]);
 
-			let index = node_txn[1].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
-			assert!(new_feerate * 100 > feerate_preimage * 125);
-			assert_ne!(preimage, node_txn[1].txid());
-		} else {
-			let index = node_txn[1].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[1].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[1].get_weight() as u64;
-			assert!(new_feerate * 100 > feerate_timeout * 125);
-			assert_ne!(timeout, node_txn[1].txid());
+		let index = preimage_bump.input[0].previous_output.vout;
+		let fee = remote_txn[0].output[index as usize].value - preimage_bump.output[0].value;
+		let new_feerate = fee * 1000 / preimage_bump.get_weight() as u64;
+		assert!(new_feerate * 100 > feerate_timeout * 125);
+		assert_ne!(timeout, preimage_bump.txid());
 
-			let index = node_txn[0].input[0].previous_output.vout;
-			let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-			let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
-			assert!(new_feerate * 100 > feerate_preimage * 125);
-			assert_ne!(preimage, node_txn[0].txid());
-		}
+		let index = node_txn[0].input[0].previous_output.vout;
+		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
+		let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
+		assert!(new_feerate * 100 > feerate_preimage * 125);
+		assert_ne!(preimage, node_txn[0].txid());
+
 		node_txn.clear();
 	}
 
@@ -8420,13 +8467,16 @@ fn test_secret_timeout() {
 	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
-	let mut block = Block {
-		header: BlockHeader {
-			version: 0x2000000,
-			prev_blockhash: nodes[1].blocks.borrow().last().unwrap().0.block_hash(),
-			merkle_root: Default::default(),
-			time: nodes[1].blocks.borrow().len() as u32 + 7200, bits: 42, nonce: 42 },
-		txdata: vec![],
+	let mut block = {
+		let node_1_blocks = nodes[1].blocks.lock().unwrap();
+		Block {
+			header: BlockHeader {
+				version: 0x2000000,
+				prev_blockhash: node_1_blocks.last().unwrap().0.block_hash(),
+				merkle_root: Default::default(),
+				time: node_1_blocks.len() as u32 + 7200, bits: 42, nonce: 42 },
+			txdata: vec![],
+		}
 	};
 	connect_block(&nodes[1], &block);
 	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
@@ -8576,6 +8626,9 @@ fn test_update_err_monitor_lockdown() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
+	// transaction lock time requirements here.
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (header, 0));
 	watchtower.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
 
 	// Try to update ChannelMonitor
@@ -8635,6 +8688,9 @@ fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
+	// transaction lock time requirements here.
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize((CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS) as usize, (header, 0));
 	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![] }, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
@@ -8781,16 +8837,17 @@ fn test_htlc_no_detection() {
 	chain::Listen::block_connected(&nodes[0].chain_monitor.chain_monitor, &Block { header, txdata: vec![local_txn[0].clone()] }, nodes[0].best_block_info().1 + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1);
 
 	let htlc_timeout = {
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn[0].input.len(), 1);
-		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		check_spends!(node_txn[0], local_txn[0]);
-		node_txn[0].clone()
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(node_txn[1], local_txn[0]);
+		node_txn[1].clone()
 	};
 
-	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] });
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);

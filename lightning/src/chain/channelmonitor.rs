@@ -1387,7 +1387,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, None, broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -1410,10 +1410,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
 			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, None, broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 	}
@@ -1786,14 +1786,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let htlc_output = HolderHTLCOutput::build(if !htlc.offered {
-					if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-						Some(preimage.clone())
+				let htlc_output = if htlc.offered {
+						HolderHTLCOutput::build_offered(htlc.amount_msat, htlc.cltv_expiry)
 					} else {
-						// We can't build an HTLC-Success transaction without the preimage
-						continue;
-					}
-				} else { None }, htlc.amount_msat);
+						let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+							preimage.clone()
+						} else {
+							// We can't build an HTLC-Success transaction without the preimage
+							continue;
+						};
+						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
+					};
 				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
 				claim_requests.push(htlc_package);
 			}
@@ -1896,7 +1899,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.holder_tx_signed = true;
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
-		let mut res = vec![commitment_tx];
+		let mut holder_transactions = vec![commitment_tx];
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -1904,24 +1907,32 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						// We can't build an HTLC-Success transaction without the preimage
 						continue;
 					}
+				} else if htlc.0.cltv_expiry > self.best_block.height() + 1 {
+					// Don't broadcast HTLC-Timeout transactions immediately as they don't meet the
+					// current locktime requirements on-chain. We will broadcast them in
+					// `block_confirmed` when `would_broadcast_at_height` returns true.
+					// Note that we add + 1 as transactions are broadcastable when they can be
+					// confirmed in the next block.
+					continue;
 				} else { None };
 				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					res.push(htlc_tx);
+					holder_transactions.push(htlc_tx);
 				}
 			}
 		}
 		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
 		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-		return res;
+		holder_transactions
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	/// Note that this includes possibly-locktimed-in-the-future transactions!
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
 		log_trace!(logger, "Getting signed copy of latest holder commitment transaction!");
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
-		let mut res = vec![commitment_tx];
+		let mut holder_transactions = vec![commitment_tx];
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -1932,11 +1943,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				} else { None };
 				if let Some(htlc_tx) = self.onchain_tx_handler.unsafe_get_fully_signed_htlc_tx(
 					&::bitcoin::OutPoint { txid, vout }, &preimage) {
-					res.push(htlc_tx);
+					holder_transactions.push(htlc_tx);
 				}
 			}
 		}
-		return res
+		holder_transactions
 	}
 
 	pub fn block_connected<B: Deref, F: Deref, L: Deref>(&mut self, header: &BlockHeader, txdata: &TransactionData, height: u32, broadcaster: B, fee_estimator: F, logger: L) -> Vec<TransactionOutputs>
@@ -2141,7 +2152,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, Some(height), &&*broadcaster, &&*fee_estimator, &&*logger);
+		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, height, &&*broadcaster, &&*fee_estimator, &&*logger);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -2918,7 +2929,7 @@ mod tests {
 	fn test_prune_preimages() {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
-		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new())});
+		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
 		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: 253 });
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());

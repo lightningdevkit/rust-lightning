@@ -213,21 +213,33 @@ impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
 pub(crate) struct HolderHTLCOutput {
 	preimage: Option<PaymentPreimage>,
 	amount: u64,
+	/// Defaults to 0 for HTLC-Success transactions, which have no expiry
+	cltv_expiry: u32,
 }
 
 impl HolderHTLCOutput {
-	pub(crate) fn build(preimage: Option<PaymentPreimage>, amount: u64) -> Self {
+	pub(crate) fn build_offered(amount: u64, cltv_expiry: u32) -> Self {
 		HolderHTLCOutput {
-			preimage,
-			amount
+			preimage: None,
+			amount,
+			cltv_expiry,
+		}
+	}
+
+	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount: u64) -> Self {
+		HolderHTLCOutput {
+			preimage: Some(preimage),
+			amount,
+			cltv_expiry: 0,
 		}
 	}
 }
 
 impl_writeable_tlv_based!(HolderHTLCOutput, {
 	(0, amount),
+	(2, cltv_expiry),
 }, {
-	(2, preimage),
+	(4, preimage),
 }, {});
 
 /// A struct to describe the channel output on the funding transaction.
@@ -274,8 +286,8 @@ impl PackageSolvingData {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { 0 },
-			PackageSolvingData::HolderFundingOutput(..) => { 0 },
+			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
 		};
 		amt
 	}
@@ -288,8 +300,8 @@ impl PackageSolvingData {
 			// Note: Currently, weights of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { debug_assert!(false); 0 },
-			PackageSolvingData::HolderFundingOutput(..) => { debug_assert!(false); 0 },
+			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
 		};
 		weight
 	}
@@ -374,6 +386,21 @@ impl PackageSolvingData {
 			PackageSolvingData::HolderFundingOutput(ref outp) => { return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript)); }
 			_ => { panic!("API Error!"); }
 		}
+	}
+	fn absolute_tx_timelock(&self, output_conf_height: u32) -> u32 {
+		// Get the absolute timelock at which this output can be spent given the height at which
+		// this output was confirmed. We use `output_conf_height + 1` as a safe default as we can
+		// be confirmed in the next block and transactions with time lock `current_height + 1`
+		// always propagate.
+		let absolute_timelock = match self {
+			PackageSolvingData::RevokedOutput(_) => output_conf_height + 1,
+			PackageSolvingData::RevokedHTLCOutput(_) => output_conf_height + 1,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => output_conf_height + 1,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => std::cmp::max(outp.htlc.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => std::cmp::max(outp.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::HolderFundingOutput(_) => output_conf_height + 1,
+		};
+		absolute_timelock
 	}
 }
 
@@ -577,12 +604,18 @@ impl PackageTemplate {
 		}
 		self.height_timer = cmp::min(self.height_timer, merge_from.height_timer);
 	}
-	pub(crate) fn package_amount(&self) -> u64 {
+	/// Gets the amount of all outptus being spent by this package, only valid for malleable
+	/// packages.
+	fn package_amount(&self) -> u64 {
 		let mut amounts = 0;
 		for (_, outp) in self.inputs.iter() {
 			amounts += outp.amount();
 		}
 		amounts
+	}
+	pub(crate) fn package_timelock(&self) -> u32 {
+		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
+			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
 		let mut inputs_weight = 0;
@@ -628,6 +661,7 @@ impl PackageTemplate {
 				return Some(bumped_tx);
 			},
 			PackageMalleability::Untractable => {
+				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
 				if let Some((outpoint, outp)) = self.inputs.first() {
 					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
 						log_trace!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
@@ -653,10 +687,12 @@ impl PackageTemplate {
 		current_height + LOW_FREQUENCY_BUMP_INTERVAL
 	}
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate with which package finalization should be done.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, input_amounts: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
 		where F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
+		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
+		let input_amounts = self.package_amount();
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {
@@ -874,7 +910,7 @@ mod tests {
 		() => {
 			{
 				let preimage = PaymentPreimage([2;32]);
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build(Some(preimage), 0))
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0))
 			}
 		}
 	}

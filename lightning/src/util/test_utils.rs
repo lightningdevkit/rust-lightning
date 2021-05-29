@@ -28,6 +28,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
@@ -201,9 +202,18 @@ impl<Signer: keysinterface::Sign> channelmonitor::Persist<Signer> for TestPersis
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
+	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
 }
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
+		assert!(tx.lock_time < 1_500_000_000);
+		if tx.lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && tx.lock_time < 500_000_000 {
+			for inp in tx.input.iter() {
+				if inp.sequence != 0xffffffff {
+					panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
+				}
+			}
+		}
 		self.txn_broadcasted.lock().unwrap().push(tx.clone());
 	}
 }
