@@ -325,26 +325,26 @@ macro_rules! read_tlv_fields {
 // `Self { ,,vecfield: vecfield }` which is obviously incorrect. Instead, we have to match here to
 // detect at least one empty field set and skip the potentially-extra comma.
 macro_rules! _init_tlv_based_struct {
-	({}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok(Self {
+	($($type: ident)::*, {}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($field),*,
 			$($vecfield: $vecfield.unwrap().0),*
 		})
 	};
-	({$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
-		Ok(Self {
+	($($type: ident)::*, {$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($vecfield: $vecfield.unwrap().0),*
 		})
 	};
-	({$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
-		Ok(Self {
+	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($field),*
 		})
 	};
-	({$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok(Self {
+	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($field),*,
 			$($vecfield: $vecfield.unwrap().0),*
@@ -433,7 +433,88 @@ macro_rules! impl_writeable_tlv_based {
 				}, {
 					$(($vectype, $vecfield)),*
 				});
-				_init_tlv_based_struct!({$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+				_init_tlv_based_struct!($st, {$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+			}
+		}
+	}
+}
+
+/// Implement Readable and Writeable for an enum, with struct variants stored as TLVs and tuple
+/// variants stored directly.
+/// The format is, for example
+/// impl_writeable_tlv_based_enum!(EnumName,
+///   (0, StructVariantA) => {(0, variant_field)}, {(1, variant_optional_field)}, {},
+///   (1, StructVariantB) => {(0, variant_field_a), (1, variant_field_b)}, {}, {(2, variant_vec_field)};
+///   (2, TupleVariantA), (3, TupleVariantB),
+/// );
+/// The type is written as a single byte, followed by any variant data.
+/// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
+macro_rules! impl_writeable_tlv_based_enum {
+	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
+		{$(($reqtype: expr, $reqfield: ident)),* $(,)*},
+		{$(($type: expr, $field: ident)),* $(,)*},
+		{$(($vectype: expr, $vecfield: ident)),* $(,)*}
+	),* $(,)*;
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
+		impl ::util::ser::Writeable for $st {
+			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+				match self {
+					$($st::$variant_name { $(ref $reqfield),* $(ref $field),*, $(ref $vecfield),* } => {
+						let id: u8 = $variant_id;
+						id.write(writer)?;
+						_write_tlv_fields!(writer, {
+							$(($reqtype, $reqfield)),*
+						}, {
+							$(($type, $field)),*
+						}, {
+							$(($vectype, Some(::util::ser::VecWriteWrapper(&$vecfield)))),*
+						});
+					}),*
+					$($st::$tuple_variant_name (ref field) => {
+						let id: u8 = $tuple_variant_id;
+						id.write(writer)?;
+						field.write(writer)?;
+					}),*
+				}
+				Ok(())
+			}
+		}
+
+		impl ::util::ser::Readable for $st {
+			fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+				let id: u8 = ::util::ser::Readable::read(reader)?;
+				match id {
+					$($variant_id => {
+						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
+						// in the same function body. Instead, we define a closure and call it.
+						let f = || {
+							$(
+								let mut $reqfield = ::util::ser::OptionDeserWrapper(None);
+							)*
+							$(
+								let mut $field = None;
+							)*
+							$(
+								let mut $vecfield = Some(::util::ser::VecReadWrapper(Vec::new()));
+							)*
+							_read_tlv_fields!(reader, {
+								$(($reqtype, $reqfield)),*
+							}, {
+								$(($type, $field)),*
+							}, {
+								$(($vectype, $vecfield)),*
+							});
+							_init_tlv_based_struct!($st::$variant_name, {$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+						};
+						f()
+					}),*
+					$($tuple_variant_id => {
+						Ok($st::$tuple_variant_name(Readable::read(reader)?))
+					}),*
+					_ => {
+						Err(DecodeError::UnknownRequiredFeature)?
+					},
+				}
 			}
 		}
 	}
