@@ -46,7 +46,7 @@ use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
 /// An error in decoding a message or struct.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DecodeError {
 	/// A version byte specified something we don't know how to handle.
 	/// Includes unknown realm byte in an OnionHopData packet
