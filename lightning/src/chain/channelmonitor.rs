@@ -351,7 +351,8 @@ enum OnchainEvent {
 	/// inbound HTLC in backward channel. Note, in case of preimage, we pass info to upstream without delay as we can
 	/// only win from it, so it's never an OnchainEvent
 	HTLCUpdate {
-		htlc_update: (HTLCSource, PaymentHash),
+		source: HTLCSource,
+		payment_hash: PaymentHash,
 	},
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
@@ -818,10 +819,10 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			entry.txid.write(writer)?;
 			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref htlc_update } => {
+				OnchainEvent::HTLCUpdate { ref source, ref payment_hash } => {
 					0u8.write(writer)?;
-					htlc_update.0.write(writer)?;
-					htlc_update.1.write(writer)?;
+					source.write(writer)?;
+					payment_hash.write(writer)?;
 				},
 				OnchainEvent::MaturingOutput { ref descriptor } => {
 					1u8.write(writer)?;
@@ -1609,17 +1610,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 										if entry.height != height { return true; }
 										match entry.event {
-											 OnchainEvent::HTLCUpdate { ref htlc_update } => {
-												 htlc_update.0 != **source
-											 },
-											 _ => true,
+											OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
+												*update_source != **source
+											},
+											_ => true,
 										}
 									});
 									let entry = OnchainEventEntry {
 										txid: *$txid,
 										height,
 										event: OnchainEvent::HTLCUpdate {
-											htlc_update: ((**source).clone(), htlc.payment_hash.clone())
+											source: (**source).clone(),
+											payment_hash: htlc.payment_hash.clone(),
 										},
 									};
 									log_info!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of revoked counterparty commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, entry.confirmation_threshold());
@@ -1675,17 +1677,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 									if entry.height != height { return true; }
 									match entry.event {
-										 OnchainEvent::HTLCUpdate { ref htlc_update } => {
-											 htlc_update.0 != **source
-										 },
-										 _ => true,
+										OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
+											*update_source != **source
+										},
+										_ => true,
 									}
 								});
 								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 									txid: *$txid,
 									height,
 									event: OnchainEvent::HTLCUpdate {
-										htlc_update: ((**source).clone(), htlc.payment_hash.clone())
+										source: (**source).clone(),
+										payment_hash: htlc.payment_hash.clone(),
 									},
 								});
 							}
@@ -1829,16 +1832,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 					if entry.height != height { return true; }
 					match entry.event {
-						 OnchainEvent::HTLCUpdate { ref htlc_update } => {
-							 htlc_update.0 != $source
-						 },
-						 _ => true,
+						OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
+							*update_source != $source
+						},
+						_ => true,
 					}
 				});
 				let entry = OnchainEventEntry {
 					txid: commitment_txid,
 					height,
-					event: OnchainEvent::HTLCUpdate { htlc_update: ($source, $payment_hash) },
+					event: OnchainEvent::HTLCUpdate { source: $source, payment_hash: $payment_hash },
 				};
 				log_trace!(logger, "Failing HTLC with payment_hash {} from {} holder commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, entry.confirmation_threshold());
 				self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -2109,7 +2112,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let unmatured_htlcs: Vec<_> = self.onchain_events_awaiting_threshold_conf
 			.iter()
 			.filter_map(|entry| match &entry.event {
-				OnchainEvent::HTLCUpdate { htlc_update } => Some(htlc_update.0.clone()),
+				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
 				OnchainEvent::MaturingOutput { .. } => None,
 			})
 			.collect();
@@ -2119,28 +2122,28 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// Produce actionable events from on-chain events having reached their threshold.
 		for entry in onchain_events_reaching_threshold_conf.drain(..) {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { htlc_update } => {
+				OnchainEvent::HTLCUpdate { ref source, payment_hash } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
 						debug_assert!(
-							unmatured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
+							unmatured_htlcs.iter().find(|&htlc| htlc == &source).is_none(),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
 						debug_assert!(
-							matured_htlcs.iter().find(|&htlc| htlc == &htlc_update.0).is_none(),
+							matured_htlcs.iter().find(|&htlc| htlc == source).is_none(),
 							"A matured HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
-						matured_htlcs.push(htlc_update.0.clone());
+						matured_htlcs.push(source.clone());
 					}
 
-					log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!((htlc_update.1).0));
+					log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!(payment_hash.0));
 					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-						payment_hash: htlc_update.1,
+						payment_hash: payment_hash,
 						payment_preimage: None,
-						source: htlc_update.0,
+						source: source.clone(),
 					}));
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
@@ -2437,16 +2440,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
 						if entry.height != height { return true; }
 						match entry.event {
-							 OnchainEvent::HTLCUpdate { ref htlc_update } => {
-								 htlc_update.0 != source
-							 },
-							 _ => true,
+							OnchainEvent::HTLCUpdate { source: ref htlc_source, .. } => {
+								*htlc_source != source
+							},
+							_ => true,
 						}
 					});
 					let entry = OnchainEventEntry {
 						txid: tx.txid(),
 						height,
-						event: OnchainEvent::HTLCUpdate { htlc_update: (source, payment_hash) },
+						event: OnchainEvent::HTLCUpdate { source: source, payment_hash: payment_hash },
 					};
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
 					self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -2808,7 +2811,8 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 					let htlc_source = Readable::read(reader)?;
 					let hash = Readable::read(reader)?;
 					OnchainEvent::HTLCUpdate {
-						htlc_update: (htlc_source, hash)
+						source: htlc_source,
+						payment_hash: hash,
 					}
 				},
 				1 => {
