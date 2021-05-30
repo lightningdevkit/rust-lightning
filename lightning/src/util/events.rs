@@ -395,6 +395,9 @@ pub trait MessageSendEventsProvider {
 /// may safely use the provider (e.g., see [`ChannelManager::process_pending_events`] and
 /// [`ChainMonitor::process_pending_events`]).
 ///
+/// (C-not implementable) As there is likely no reason for a user to implement this trait on their
+/// own type(s).
+///
 /// [`process_pending_events`]: Self::process_pending_events
 /// [`handle_event`]: EventHandler::handle_event
 /// [`ChannelManager::process_pending_events`]: crate::ln::channelmanager::ChannelManager#method.process_pending_events
