@@ -698,6 +698,18 @@ impl Readable for PaymentSecret {
 	}
 }
 
+impl<T: Writeable> Writeable for Box<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		T::write(&**self, w)
+	}
+}
+
+impl<T: Readable> Readable for Box<T> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Box::new(Readable::read(r)?))
+	}
+}
+
 impl<T: Writeable> Writeable for Option<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		match *self {
@@ -822,5 +834,21 @@ impl<A: Writeable, B: Writeable> Writeable for (A, B) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.0.write(w)?;
 		self.1.write(w)
+	}
+}
+
+impl<A: Readable, B: Readable, C: Readable> Readable for (A, B, C) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		let c: C = Readable::read(r)?;
+		Ok((a, b, c))
+	}
+}
+impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)?;
+		self.2.write(w)
 	}
 }

@@ -523,7 +523,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 #[cfg(test)]
 mod tests {
 	use prelude::*;
-	use std::io::{Cursor, Read};
+	use std::io::Cursor;
 	use ln::msgs::DecodeError;
 	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
@@ -591,13 +591,6 @@ mod tests {
 				concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
 				).unwrap()[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
-	}
-
-	impl Readable for (PublicKey, u64, u64) {
-		#[inline]
-		fn read<R: Read>(reader: &mut R) -> Result<(PublicKey, u64, u64), DecodeError> {
-			Ok((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?))
-		}
 	}
 
 	// BOLT TLV test cases
