@@ -260,6 +260,7 @@ impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 		Ok(())
 	}
 }
+
 /// Wrapper to read elements from a given stream until it reaches the end of the stream.
 pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
 impl<T: Readable> Readable for VecReadWrapper<T> {
