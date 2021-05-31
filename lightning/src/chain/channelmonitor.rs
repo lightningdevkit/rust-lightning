@@ -198,7 +198,12 @@ pub struct HTLCUpdate {
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource
 }
-impl_writeable!(HTLCUpdate, 0, { payment_hash, payment_preimage, source });
+impl_writeable_tlv_based!(HTLCUpdate, {
+	(0, payment_hash),
+	(2, source),
+}, {
+	(4, payment_preimage)
+}, {});
 
 /// If an HTLC expires within this many blocks, don't try to claim it in a shared transaction,
 /// instead claiming it in its own individual transaction.
@@ -264,6 +269,17 @@ struct HolderSignedTx {
 	feerate_per_kw: u32,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 }
+impl_writeable_tlv_based!(HolderSignedTx, {
+	(0, txid),
+	(2, revocation_key),
+	(4, a_htlc_key),
+	(6, b_htlc_key),
+	(8, delayed_payment_key),
+	(10, per_commitment_point),
+	(12, feerate_per_kw),
+}, {}, {
+	(14, htlc_outputs)
+});
 
 /// We use this to track counterparty commitment transactions and htlcs outputs and
 /// use it to generate any justice or 2nd-stage preimage/timeout transactions.
@@ -359,6 +375,22 @@ enum OnchainEvent {
 	},
 }
 
+impl_writeable_tlv_based!(OnchainEventEntry, {
+	(0, txid),
+	(2, height),
+	(4, event),
+}, {}, {});
+
+impl_writeable_tlv_based_enum!(OnchainEvent,
+	(0, HTLCUpdate) => {
+		(0, source),
+		(2, payment_hash),
+	}, {}, {},
+	(1, MaturingOutput) => {
+		(0, descriptor),
+	}, {}, {},
+;);
+
 #[cfg_attr(any(test, feature = "fuzztarget", feature = "_test_utils"), derive(PartialEq))]
 #[derive(Clone)]
 pub(crate) enum ChannelMonitorUpdateStep {
@@ -388,98 +420,30 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	},
 }
 
-impl Writeable for ChannelMonitorUpdateStep {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { ref commitment_tx, ref htlc_outputs } => {
-				0u8.write(w)?;
-				commitment_tx.write(w)?;
-				(htlc_outputs.len() as u64).write(w)?;
-				for &(ref output, ref signature, ref source) in htlc_outputs.iter() {
-					output.write(w)?;
-					signature.write(w)?;
-					source.write(w)?;
-				}
-			}
-			&ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, ref htlc_outputs, ref commitment_number, ref their_revocation_point } => {
-				1u8.write(w)?;
-				commitment_txid.write(w)?;
-				commitment_number.write(w)?;
-				their_revocation_point.write(w)?;
-				(htlc_outputs.len() as u64).write(w)?;
-				for &(ref output, ref source) in htlc_outputs.iter() {
-					output.write(w)?;
-					source.as_ref().map(|b| b.as_ref()).write(w)?;
-				}
-			},
-			&ChannelMonitorUpdateStep::PaymentPreimage { ref payment_preimage } => {
-				2u8.write(w)?;
-				payment_preimage.write(w)?;
-			},
-			&ChannelMonitorUpdateStep::CommitmentSecret { ref idx, ref secret } => {
-				3u8.write(w)?;
-				idx.write(w)?;
-				secret.write(w)?;
-			},
-			&ChannelMonitorUpdateStep::ChannelForceClosed { ref should_broadcast } => {
-				4u8.write(w)?;
-				should_broadcast.write(w)?;
-			},
-		}
-		Ok(())
-	}
-}
-impl Readable for ChannelMonitorUpdateStep {
-	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		match Readable::read(r)? {
-			0u8 => {
-				Ok(ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-					commitment_tx: Readable::read(r)?,
-					htlc_outputs: {
-						let len: u64 = Readable::read(r)?;
-						let mut res = Vec::new();
-						for _ in 0..len {
-							res.push((Readable::read(r)?, Readable::read(r)?, Readable::read(r)?));
-						}
-						res
-					},
-				})
-			},
-			1u8 => {
-				Ok(ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
-					commitment_txid: Readable::read(r)?,
-					commitment_number: Readable::read(r)?,
-					their_revocation_point: Readable::read(r)?,
-					htlc_outputs: {
-						let len: u64 = Readable::read(r)?;
-						let mut res = Vec::new();
-						for _ in 0..len {
-							res.push((Readable::read(r)?, <Option<HTLCSource> as Readable>::read(r)?.map(|o| Box::new(o))));
-						}
-						res
-					},
-				})
-			},
-			2u8 => {
-				Ok(ChannelMonitorUpdateStep::PaymentPreimage {
-					payment_preimage: Readable::read(r)?,
-				})
-			},
-			3u8 => {
-				Ok(ChannelMonitorUpdateStep::CommitmentSecret {
-					idx: Readable::read(r)?,
-					secret: Readable::read(r)?,
-				})
-			},
-			4u8 => {
-				Ok(ChannelMonitorUpdateStep::ChannelForceClosed {
-					should_broadcast: Readable::read(r)?
-				})
-			},
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
+impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
+	(0, LatestHolderCommitmentTXInfo) => {
+		(0, commitment_tx),
+	}, {}, {
+		(2, htlc_outputs),
+	},
+	(1, LatestCounterpartyCommitmentTXInfo) => {
+		(0, commitment_txid),
+		(2, commitment_number),
+		(4, their_revocation_point),
+	}, {}, {
+		(6, htlc_outputs),
+	},
+	(2, PaymentPreimage) => {
+		(0, payment_preimage),
+	}, {}, {},
+	(3, CommitmentSecret) => {
+		(0, idx),
+		(2, secret),
+	}, {}, {},
+	(4, ChannelForceClosed) => {
+		(0, should_broadcast),
+	}, {}, {},
+;);
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
@@ -754,38 +718,14 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
-		macro_rules! serialize_holder_tx {
-			($holder_tx: expr) => {
-				$holder_tx.txid.write(writer)?;
-				writer.write_all(&$holder_tx.revocation_key.serialize())?;
-				writer.write_all(&$holder_tx.a_htlc_key.serialize())?;
-				writer.write_all(&$holder_tx.b_htlc_key.serialize())?;
-				writer.write_all(&$holder_tx.delayed_payment_key.serialize())?;
-				writer.write_all(&$holder_tx.per_commitment_point.serialize())?;
-
-				writer.write_all(&byte_utils::be32_to_array($holder_tx.feerate_per_kw))?;
-				writer.write_all(&byte_utils::be64_to_array($holder_tx.htlc_outputs.len() as u64))?;
-				for &(ref htlc_output, ref sig, ref htlc_source) in $holder_tx.htlc_outputs.iter() {
-					serialize_htlc_in_commitment!(htlc_output);
-					if let &Some(ref their_sig) = sig {
-						1u8.write(writer)?;
-						writer.write_all(&their_sig.serialize_compact())?;
-					} else {
-						0u8.write(writer)?;
-					}
-					htlc_source.write(writer)?;
-				}
-			}
-		}
-
 		if let Some(ref prev_holder_tx) = self.prev_holder_signed_commitment_tx {
 			writer.write_all(&[1; 1])?;
-			serialize_holder_tx!(prev_holder_tx);
+			prev_holder_tx.write(writer)?;
 		} else {
 			writer.write_all(&[0; 1])?;
 		}
 
-		serialize_holder_tx!(self.current_holder_commitment_tx);
+		self.current_holder_commitment_tx.write(writer)?;
 
 		writer.write_all(&byte_utils::be48_to_array(self.current_counterparty_commitment_number))?;
 		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
@@ -816,19 +756,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
-			entry.txid.write(writer)?;
-			writer.write_all(&byte_utils::be32_to_array(entry.height))?;
-			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, ref payment_hash } => {
-					0u8.write(writer)?;
-					source.write(writer)?;
-					payment_hash.write(writer)?;
-				},
-				OnchainEvent::MaturingOutput { ref descriptor } => {
-					1u8.write(writer)?;
-					descriptor.write(writer)?;
-				},
-			}
+			entry.write(writer)?;
 		}
 
 		(self.outputs_to_watch.len() as u64).write(writer)?;
@@ -2726,46 +2654,14 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			}
 		}
 
-		macro_rules! read_holder_tx {
-			() => {
-				{
-					let txid = Readable::read(reader)?;
-					let revocation_key = Readable::read(reader)?;
-					let a_htlc_key = Readable::read(reader)?;
-					let b_htlc_key = Readable::read(reader)?;
-					let delayed_payment_key = Readable::read(reader)?;
-					let per_commitment_point = Readable::read(reader)?;
-					let feerate_per_kw: u32 = Readable::read(reader)?;
-
-					let htlcs_len: u64 = Readable::read(reader)?;
-					let mut htlcs = Vec::with_capacity(cmp::min(htlcs_len as usize, MAX_ALLOC_SIZE / 128));
-					for _ in 0..htlcs_len {
-						let htlc = read_htlc_in_commitment!();
-						let sigs = match <u8 as Readable>::read(reader)? {
-							0 => None,
-							1 => Some(Readable::read(reader)?),
-							_ => return Err(DecodeError::InvalidValue),
-						};
-						htlcs.push((htlc, sigs, Readable::read(reader)?));
-					}
-
-					HolderSignedTx {
-						txid,
-						revocation_key, a_htlc_key, b_htlc_key, delayed_payment_key, per_commitment_point, feerate_per_kw,
-						htlc_outputs: htlcs
-					}
-				}
-			}
-		}
-
 		let prev_holder_signed_commitment_tx = match <u8 as Readable>::read(reader)? {
 			0 => None,
 			1 => {
-				Some(read_holder_tx!())
+				Some(Readable::read(reader)?)
 			},
 			_ => return Err(DecodeError::InvalidValue),
 		};
-		let current_holder_commitment_tx = read_holder_tx!();
+		let current_holder_commitment_tx = Readable::read(reader)?;
 
 		let current_counterparty_commitment_number = <U48 as Readable>::read(reader)?.0;
 		let current_holder_commitment_number = <U48 as Readable>::read(reader)?.0;
@@ -2804,26 +2700,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
-			let txid = Readable::read(reader)?;
-			let height = Readable::read(reader)?;
-			let event = match <u8 as Readable>::read(reader)? {
-				0 => {
-					let htlc_source = Readable::read(reader)?;
-					let hash = Readable::read(reader)?;
-					OnchainEvent::HTLCUpdate {
-						source: htlc_source,
-						payment_hash: hash,
-					}
-				},
-				1 => {
-					let descriptor = Readable::read(reader)?;
-					OnchainEvent::MaturingOutput {
-						descriptor
-					}
-				},
-				_ => return Err(DecodeError::InvalidValue),
-			};
-			onchain_events_awaiting_threshold_conf.push(OnchainEventEntry { txid, height, event });
+			onchain_events_awaiting_threshold_conf.push(Readable::read(reader)?);
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;

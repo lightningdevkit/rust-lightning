@@ -404,65 +404,14 @@ impl PackageSolvingData {
 	}
 }
 
-impl Writeable for PackageSolvingData {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			PackageSolvingData::RevokedOutput(ref revoked_outp) => {
-				0u8.write(writer)?;
-				revoked_outp.write(writer)?;
-			},
-			PackageSolvingData::RevokedHTLCOutput(ref revoked_outp) => {
-				1u8.write(writer)?;
-				revoked_outp.write(writer)?;
-			},
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref counterparty_outp) => {
-				2u8.write(writer)?;
-				counterparty_outp.write(writer)?;
-			},
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref counterparty_outp) => {
-				3u8.write(writer)?;
-				counterparty_outp.write(writer)?;
-			},
-			PackageSolvingData::HolderHTLCOutput(ref holder_outp) => {
-				4u8.write(writer)?;
-				holder_outp.write(writer)?;
-			},
-			PackageSolvingData::HolderFundingOutput(ref funding_outp) => {
-				5u8.write(writer)?;
-				funding_outp.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for PackageSolvingData {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let byte = <u8 as Readable>::read(reader)?;
-		let solving_data = match byte {
-			0 => {
-				PackageSolvingData::RevokedOutput(Readable::read(reader)?)
-			},
-			1 => {
-				PackageSolvingData::RevokedHTLCOutput(Readable::read(reader)?)
-			},
-			2 => {
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(Readable::read(reader)?)
-			},
-			3 => {
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(Readable::read(reader)?)
-			},
-			4 => {
-				PackageSolvingData::HolderHTLCOutput(Readable::read(reader)?)
-			},
-			5 => {
-				PackageSolvingData::HolderFundingOutput(Readable::read(reader)?)
-			}
-			_ => return Err(DecodeError::UnknownVersion)
-		};
-		Ok(solving_data)
-	}
-}
+impl_writeable_tlv_based_enum!(PackageSolvingData, ;
+	(0, RevokedOutput),
+	(1, RevokedHTLCOutput),
+	(2, CounterpartyOfferedHTLCOutput),
+	(3, CounterpartyReceivedHTLCOutput),
+	(4, HolderHTLCOutput),
+	(5, HolderFundingOutput),
+);
 
 /// A malleable package might be aggregated with other packages to save on fees.
 /// A untractable package has been counter-signed and aggregable will break cached counterparty
