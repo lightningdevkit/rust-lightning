@@ -17,7 +17,7 @@
 use ln::msgs;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use chain::keysinterface::SpendableOutputDescriptor;
-use util::ser::{Writeable, Writer, MaybeReadable, Readable};
+use util::ser::{Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 
 use bitcoin::blockdata::script::Script;
 
@@ -146,14 +146,20 @@ impl Writeable for Event {
 			},
 			&Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, ref amt, ref user_payment_id } => {
 				1u8.write(writer)?;
-				payment_hash.write(writer)?;
-				payment_preimage.write(writer)?;
-				payment_secret.write(writer)?;
-				amt.write(writer)?;
-				user_payment_id.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_hash),
+					(2, payment_secret),
+					(4, amt),
+					(6, user_payment_id),
+				}, {
+					(8, payment_preimage),
+				});
 			},
 			&Event::PaymentSent { ref payment_preimage } => {
 				2u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_preimage),
+				}, {});
 				payment_preimage.write(writer)?;
 			},
 			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
@@ -163,24 +169,26 @@ impl Writeable for Event {
 				ref error_data,
 			} => {
 				3u8.write(writer)?;
-				payment_hash.write(writer)?;
-				rejected_by_dest.write(writer)?;
 				#[cfg(test)]
 				error_code.write(writer)?;
 				#[cfg(test)]
 				error_data.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_hash),
+					(2, rejected_by_dest),
+				}, {});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
 				4u8.write(writer)?;
+				write_tlv_fields!(writer, {}, {});
 				// We don't write the time_fordwardable out at all, as we presume when the user
 				// deserializes us at least that much time has elapsed.
 			},
 			&Event::SpendableOutputs { ref outputs } => {
 				5u8.write(writer)?;
-				(outputs.len() as u64).write(writer)?;
-				for output in outputs.iter() {
-					output.write(writer)?;
-				}
+				write_tlv_fields!(writer, {
+					(0, VecWriteWrapper(outputs)),
+				}, {});
 			},
 		}
 		Ok(())
@@ -190,34 +198,84 @@ impl MaybeReadable for Event {
 	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
-			1u8 => Ok(Some(Event::PaymentReceived {
-					payment_hash: Readable::read(reader)?,
-					payment_preimage: Readable::read(reader)?,
-					payment_secret: Readable::read(reader)?,
-					amt: Readable::read(reader)?,
-					user_payment_id: Readable::read(reader)?,
-				})),
-			2u8 => Ok(Some(Event::PaymentSent {
-					payment_preimage: Readable::read(reader)?,
-				})),
-			3u8 => Ok(Some(Event::PaymentFailed {
-					payment_hash: Readable::read(reader)?,
-					rejected_by_dest: Readable::read(reader)?,
+			1u8 => {
+				let f = || {
+					let mut payment_hash = PaymentHash([0; 32]);
+					let mut payment_preimage = None;
+					let mut payment_secret = PaymentSecret([0; 32]);
+					let mut amt = 0;
+					let mut user_payment_id = 0;
+					read_tlv_fields!(reader, {
+						(0, payment_hash),
+						(2, payment_secret),
+						(4, amt),
+						(6, user_payment_id),
+					}, {
+						(8, payment_preimage),
+					});
+					Ok(Some(Event::PaymentReceived {
+						payment_hash,
+						payment_preimage,
+						payment_secret,
+						amt,
+						user_payment_id,
+					}))
+				};
+				f()
+			},
+			2u8 => {
+				let f = || {
+					let mut payment_preimage = PaymentPreimage([0; 32]);
+					read_tlv_fields!(reader, {
+						(0, payment_preimage),
+					}, {});
+					Ok(Some(Event::PaymentSent {
+						payment_preimage,
+					}))
+				};
+				f()
+			},
+			3u8 => {
+				let f = || {
 					#[cfg(test)]
-					error_code: Readable::read(reader)?,
+					let error_code = Readable::read(reader)?;
 					#[cfg(test)]
-					error_data: Readable::read(reader)?,
-				})),
-			4u8 => Ok(Some(Event::PendingHTLCsForwardable {
-					time_forwardable: Duration::from_secs(0)
-				})),
+					let error_data = Readable::read(reader)?;
+					let mut payment_hash = PaymentHash([0; 32]);
+					let mut rejected_by_dest = false;
+					read_tlv_fields!(reader, {
+						(0, payment_hash),
+						(2, rejected_by_dest),
+					}, {});
+					Ok(Some(Event::PaymentFailed {
+						payment_hash,
+						rejected_by_dest,
+						#[cfg(test)]
+						error_code,
+						#[cfg(test)]
+						error_data,
+					}))
+				};
+				f()
+			},
+			4u8 => {
+				let f = || {
+					read_tlv_fields!(reader, {}, {});
+					Ok(Some(Event::PendingHTLCsForwardable {
+						time_forwardable: Duration::from_secs(0)
+					}))
+				};
+				f()
+			},
 			5u8 => {
-				let outputs_len: u64 = Readable::read(reader)?;
-				let mut outputs = Vec::new();
-				for _ in 0..outputs_len {
-					outputs.push(Readable::read(reader)?);
-				}
-				Ok(Some(Event::SpendableOutputs { outputs }))
+				let f = || {
+					let mut outputs = VecReadWrapper(Vec::new());
+					read_tlv_fields!(reader, {
+						(0, outputs),
+					}, {});
+					Ok(Some(Event::SpendableOutputs { outputs: outputs.0 }))
+				};
+				f()
 			},
 			_ => Err(msgs::DecodeError::InvalidValue)
 		}
