@@ -325,26 +325,26 @@ macro_rules! read_tlv_fields {
 // `Self { ,,vecfield: vecfield }` which is obviously incorrect. Instead, we have to match here to
 // detect at least one empty field set and skip the potentially-extra comma.
 macro_rules! _init_tlv_based_struct {
-	($($objs: ident)::*, {}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok($($objs)::* {
+	($($type: ident)::*, {}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($field),*,
 			$($vecfield: $vecfield.unwrap().0),*
 		})
 	};
-	($($objs: ident)::*, {$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
-		Ok($($objs)::* {
+	($($type: ident)::*, {$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($vecfield: $vecfield.unwrap().0),*
 		})
 	};
-	($($objs: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
-		Ok($($objs)::* {
+	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($field),*
 		})
 	};
-	($($objs: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok($($objs)::* {
+	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
+		Ok($($type)::* {
 			$($reqfield: $reqfield.0.unwrap()),*,
 			$($field),*,
 			$($vecfield: $vecfield.unwrap().0),*
