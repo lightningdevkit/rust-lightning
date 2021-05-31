@@ -8,7 +8,7 @@ use std::convert::TryFrom;
 use std::fmt;
 #[cfg(not(feature = "tokio"))]
 use std::io::Write;
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 #[cfg(feature = "tokio")]
@@ -97,6 +97,7 @@ impl<'a> std::net::ToSocketAddrs for &'a HttpEndpoint {
 
 /// Client for making HTTP requests.
 pub(crate) struct HttpClient {
+	address: SocketAddr,
 	stream: TcpStream,
 }
 
@@ -119,7 +120,7 @@ impl HttpClient {
 			TcpStream::from_std(stream)?
 		};
 
-		Ok(Self { stream })
+		Ok(Self { address, stream })
 	}
 
 	/// Sends a `GET` request for a resource identified by `uri` at the `host`.
@@ -162,7 +163,6 @@ impl HttpClient {
 	/// Sends an HTTP request message and reads the response, returning its body. Attempts to
 	/// reconnect and retry if the connection has been closed.
 	async fn send_request_with_retry(&mut self, request: &str) -> std::io::Result<Vec<u8>> {
-		let endpoint = self.stream.peer_addr().unwrap();
 		match self.send_request(request).await {
 			Ok(bytes) => Ok(bytes),
 			Err(_) => {
@@ -176,7 +176,7 @@ impl HttpClient {
 				tokio::time::sleep(Duration::from_millis(100)).await;
 				#[cfg(not(feature = "tokio"))]
 				std::thread::sleep(Duration::from_millis(100));
-				*self = Self::connect(endpoint)?;
+				*self = Self::connect(self.address)?;
 				self.send_request(request).await
 			},
 		}
