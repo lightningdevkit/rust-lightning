@@ -443,8 +443,9 @@ macro_rules! impl_writeable_tlv_based {
 /// variants stored directly.
 /// The format is, for example
 /// impl_writeable_tlv_based_enum!(EnumName,
-///   (0, VariantName) => { (0, variant_field)}, {(1, variant_optional_field)}, {};
-///   (1, TupleVariant), (2, TupleVariantB),
+///   (0, StructVariantA) => {(0, variant_field)}, {(1, variant_optional_field)}, {},
+///   (1, StructVariantB) => {(0, variant_field_a), (1, variant_field_b)}, {}, {(2, variant_vec_field)};
+///   (2, TupleVariantA), (3, TupleVariantB),
 /// );
 /// The type is written as a single byte, followed by any variant data.
 /// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
