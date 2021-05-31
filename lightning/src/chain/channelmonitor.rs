@@ -47,7 +47,7 @@ use chain::onchaintx::OnchainTxHandler;
 use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use chain::Filter;
 use util::logger::Logger;
-use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48};
+use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48, OptionDeserWrapper};
 use util::byte_utils;
 use util::events::Event;
 
@@ -90,22 +90,26 @@ pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		write_ver_prefix!(w, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		self.update_id.write(w)?;
 		(self.updates.len() as u64).write(w)?;
 		for update_step in self.updates.iter() {
 			update_step.write(w)?;
 		}
+		write_tlv_fields!(w, {}, {});
 		Ok(())
 	}
 }
 impl Readable for ChannelMonitorUpdate {
 	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let _ver = read_ver_prefix!(r, SERIALIZATION_VERSION);
 		let update_id: u64 = Readable::read(r)?;
 		let len: u64 = Readable::read(r)?;
 		let mut updates = Vec::with_capacity(cmp::min(len as usize, MAX_ALLOC_SIZE / ::core::mem::size_of::<ChannelMonitorUpdateStep>()));
 		for _ in 0..len {
 			updates.push(Readable::read(r)?);
 		}
+		read_tlv_fields!(r, {}, {});
 		Ok(Self { update_id, updates })
 	}
 }
@@ -293,9 +297,6 @@ struct CounterpartyCommitmentTransaction {
 
 impl Writeable for CounterpartyCommitmentTransaction {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		self.counterparty_delayed_payment_base_key.write(w)?;
-		self.counterparty_htlc_base_key.write(w)?;
-		w.write_all(&byte_utils::be16_to_array(self.on_counterparty_tx_csv))?;
 		w.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
 		for (ref txid, ref htlcs) in self.per_htlc.iter() {
 			w.write_all(&txid[..])?;
@@ -304,15 +305,17 @@ impl Writeable for CounterpartyCommitmentTransaction {
 				htlc.write(w)?;
 			}
 		}
+		write_tlv_fields!(w, {
+			(0, self.counterparty_delayed_payment_base_key),
+			(2, self.counterparty_htlc_base_key),
+			(4, self.on_counterparty_tx_csv),
+		}, {});
 		Ok(())
 	}
 }
 impl Readable for CounterpartyCommitmentTransaction {
 	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let counterparty_commitment_transaction = {
-			let counterparty_delayed_payment_base_key = Readable::read(r)?;
-			let counterparty_htlc_base_key = Readable::read(r)?;
-			let on_counterparty_tx_csv: u16 = Readable::read(r)?;
 			let per_htlc_len: u64 = Readable::read(r)?;
 			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
 			for _  in 0..per_htlc_len {
@@ -327,9 +330,17 @@ impl Readable for CounterpartyCommitmentTransaction {
 					return Err(DecodeError::InvalidValue);
 				}
 			}
+			let mut counterparty_delayed_payment_base_key = OptionDeserWrapper(None);
+			let mut counterparty_htlc_base_key = OptionDeserWrapper(None);
+			let mut on_counterparty_tx_csv: u16 = 0;
+			read_tlv_fields!(r, {
+				(0, counterparty_delayed_payment_base_key),
+				(2, counterparty_htlc_base_key),
+				(4, on_counterparty_tx_csv),
+			}, {});
 			CounterpartyCommitmentTransaction {
-				counterparty_delayed_payment_base_key,
-				counterparty_htlc_base_key,
+				counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
+				counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 				on_counterparty_tx_csv,
 				per_htlc,
 			}
@@ -627,6 +638,7 @@ impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
 	}
 }
 
+// These are also used for ChannelMonitorUpdate, above.
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
