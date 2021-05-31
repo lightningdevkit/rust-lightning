@@ -4317,43 +4317,16 @@ impl PersistenceNotifier {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for PendingHTLCRouting {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match &self {
-			&PendingHTLCRouting::Forward { ref onion_packet, ref short_channel_id } => {
-				0u8.write(writer)?;
-				onion_packet.write(writer)?;
-				short_channel_id.write(writer)?;
-			},
-			&PendingHTLCRouting::Receive { ref payment_data, ref incoming_cltv_expiry } => {
-				1u8.write(writer)?;
-				payment_data.payment_secret.write(writer)?;
-				payment_data.total_msat.write(writer)?;
-				incoming_cltv_expiry.write(writer)?;
-			},
-		}
-		Ok(())
-	}
-}
-
-impl Readable for PendingHTLCRouting {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<PendingHTLCRouting, DecodeError> {
-		match Readable::read(reader)? {
-			0u8 => Ok(PendingHTLCRouting::Forward {
-				onion_packet: Readable::read(reader)?,
-				short_channel_id: Readable::read(reader)?,
-			}),
-			1u8 => Ok(PendingHTLCRouting::Receive {
-				payment_data: msgs::FinalOnionHopData {
-					payment_secret: Readable::read(reader)?,
-					total_msat: Readable::read(reader)?,
-				},
-				incoming_cltv_expiry: Readable::read(reader)?,
-			}),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
+impl_writeable_tlv_based_enum!(PendingHTLCRouting,
+	(0, Forward) => {
+		(0, onion_packet),
+		(2, short_channel_id),
+	}, {}, {},
+	(1, Receive) => {
+		(0, payment_data),
+		(2, incoming_cltv_expiry),
+	}, {}, {}
+;);
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(0, routing),
@@ -4363,57 +4336,14 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value)
 }, {}, {});
 
-impl Writeable for HTLCFailureMsg {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&HTLCFailureMsg::Relay(ref fail_msg) => {
-				0u8.write(writer)?;
-				fail_msg.write(writer)?;
-			},
-			&HTLCFailureMsg::Malformed(ref fail_msg) => {
-				1u8.write(writer)?;
-				fail_msg.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for HTLCFailureMsg {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<HTLCFailureMsg, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => Ok(HTLCFailureMsg::Relay(Readable::read(reader)?)),
-			1 => Ok(HTLCFailureMsg::Malformed(Readable::read(reader)?)),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
-
-impl Writeable for PendingHTLCStatus {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&PendingHTLCStatus::Forward(ref forward_info) => {
-				0u8.write(writer)?;
-				forward_info.write(writer)?;
-			},
-			&PendingHTLCStatus::Fail(ref fail_msg) => {
-				1u8.write(writer)?;
-				fail_msg.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for PendingHTLCStatus {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<PendingHTLCStatus, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => Ok(PendingHTLCStatus::Forward(Readable::read(reader)?)),
-			1 => Ok(PendingHTLCStatus::Fail(Readable::read(reader)?)),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
+impl_writeable_tlv_based_enum!(HTLCFailureMsg, ;
+	(0, Relay),
+	(1, Malformed),
+);
+impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
+	(0, Forward),
+	(1, Fail),
+);
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(0, short_channel_id),
@@ -4422,148 +4352,46 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(6, incoming_packet_shared_secret)
 }, {}, {});
 
-impl Writeable for ClaimableHTLC {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		write_tlv_fields!(writer, {
-			(0, self.prev_hop),
-			(2, self.value),
-			(4, self.payment_data.payment_secret),
-			(6, self.payment_data.total_msat),
-			(8, self.cltv_expiry)
-		}, {});
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(ClaimableHTLC, {
+	(0, prev_hop),
+	(2, value),
+	(4, payment_data),
+	(6, cltv_expiry),
+}, {}, {});
 
-impl Readable for ClaimableHTLC {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = HTLCPreviousHopData {
-			short_channel_id: 0, htlc_id: 0,
-			incoming_packet_shared_secret: [0; 32],
-			outpoint: OutPoint::null(),
-		};
-		let mut value = 0;
-		let mut payment_secret = PaymentSecret([0; 32]);
-		let mut total_msat = 0;
-		let mut cltv_expiry = 0;
-		read_tlv_fields!(reader, {
-			(0, prev_hop),
-			(2, value),
-			(4, payment_secret),
-			(6, total_msat),
-			(8, cltv_expiry)
-		}, {});
-		Ok(ClaimableHTLC {
-			prev_hop,
-			value,
-			payment_data: msgs::FinalOnionHopData {
-				payment_secret,
-				total_msat,
-			},
-			cltv_expiry,
-		})
-	}
-}
+impl_writeable_tlv_based_enum!(HTLCSource,
+	(0, OutboundRoute) => {
+		(0, session_priv),
+		(2, first_hop_htlc_msat),
+	}, {}, {
+		(4, path),
+	};
+	(1, PreviousHopData)
+);
 
-impl Writeable for HTLCSource {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&HTLCSource::PreviousHopData(ref hop_data) => {
-				0u8.write(writer)?;
-				hop_data.write(writer)?;
-			},
-			&HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } => {
-				1u8.write(writer)?;
-				path.write(writer)?;
-				session_priv.write(writer)?;
-				first_hop_htlc_msat.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
+impl_writeable_tlv_based_enum!(HTLCFailReason,
+	(0, LightningError) => {
+		(0, err),
+	}, {}, {},
+	(1, Reason) => {
+		(0, failure_code),
+	}, {}, {
+		(2, data),
+	},
+;);
 
-impl Readable for HTLCSource {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<HTLCSource, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
-			1 => Ok(HTLCSource::OutboundRoute {
-				path: Readable::read(reader)?,
-				session_priv: Readable::read(reader)?,
-				first_hop_htlc_msat: Readable::read(reader)?,
-			}),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
-
-impl Writeable for HTLCFailReason {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&HTLCFailReason::LightningError { ref err } => {
-				0u8.write(writer)?;
-				err.write(writer)?;
-			},
-			&HTLCFailReason::Reason { ref failure_code, ref data } => {
-				1u8.write(writer)?;
-				failure_code.write(writer)?;
-				data.write(writer)?;
-			}
-		}
-		Ok(())
-	}
-}
-
-impl Readable for HTLCFailReason {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<HTLCFailReason, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => Ok(HTLCFailReason::LightningError { err: Readable::read(reader)? }),
-			1 => Ok(HTLCFailReason::Reason {
-				failure_code: Readable::read(reader)?,
-				data: Readable::read(reader)?,
-			}),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
-
-impl Writeable for HTLCForwardInfo {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&HTLCForwardInfo::AddHTLC { ref prev_short_channel_id, ref prev_funding_outpoint, ref prev_htlc_id, ref forward_info } => {
-				0u8.write(writer)?;
-				prev_short_channel_id.write(writer)?;
-				prev_funding_outpoint.write(writer)?;
-				prev_htlc_id.write(writer)?;
-				forward_info.write(writer)?;
-			},
-			&HTLCForwardInfo::FailHTLC { ref htlc_id, ref err_packet } => {
-				1u8.write(writer)?;
-				htlc_id.write(writer)?;
-				err_packet.write(writer)?;
-			},
-		}
-		Ok(())
-	}
-}
-
-impl Readable for HTLCForwardInfo {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<HTLCForwardInfo, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => Ok(HTLCForwardInfo::AddHTLC {
-				prev_short_channel_id: Readable::read(reader)?,
-				prev_funding_outpoint: Readable::read(reader)?,
-				prev_htlc_id: Readable::read(reader)?,
-				forward_info: Readable::read(reader)?,
-			}),
-			1 => Ok(HTLCForwardInfo::FailHTLC {
-				htlc_id: Readable::read(reader)?,
-				err_packet: Readable::read(reader)?,
-			}),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
+impl_writeable_tlv_based_enum!(HTLCForwardInfo,
+	(0, AddHTLC) => {
+		(0, forward_info),
+		(2, prev_short_channel_id),
+		(4, prev_htlc_id),
+		(6, prev_funding_outpoint),
+	}, {}, {},
+	(1, FailHTLC) => {
+		(0, htlc_id),
+		(2, err_packet),
+	}, {}, {},
+;);
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret),
