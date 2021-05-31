@@ -12,6 +12,9 @@
 #[macro_use]
 pub(crate) mod fuzz_wrappers;
 
+#[macro_use]
+pub(crate) mod ser_macros;
+
 pub mod events;
 pub mod errors;
 pub mod ser;
@@ -28,9 +31,6 @@ pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod transaction_utils;
 pub(crate) mod scid_utils;
-
-#[macro_use]
-pub(crate) mod ser_macros;
 
 /// Logging macro utilities.
 #[macro_use]

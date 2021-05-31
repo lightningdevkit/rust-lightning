@@ -317,7 +317,7 @@ macro_rules! read_tlv_fields {
 		let tlv_len = ::util::ser::BigSize::read($stream)?;
 		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
 		decode_tlv!(&mut rd, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
-		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+		rd.eat_remaining().map_err(|_| ::ln::msgs::DecodeError::ShortRead)?;
 	} }
 }
 
