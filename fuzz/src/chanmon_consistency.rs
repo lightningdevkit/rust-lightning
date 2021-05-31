@@ -512,8 +512,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
+	let mut ab_events = Vec::new();
 	let mut ba_events = Vec::new();
 	let mut bc_events = Vec::new();
+	let mut cb_events = Vec::new();
 
 	let mut node_a_ser = VecWriter(Vec::new());
 	nodes[0].write(&mut node_a_ser).unwrap();
@@ -546,26 +548,87 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 
 	loop {
+		// Push any events from Node B onto ba_events and bc_events
+		macro_rules! push_excess_b_events {
+			($excess_events: expr, $expect_drop_node: expr) => { {
+				let a_id = nodes[0].get_our_node_id();
+				let expect_drop_node: Option<usize> = $expect_drop_node;
+				let expect_drop_id = if let Some(id) = expect_drop_node { Some(nodes[id].get_our_node_id()) } else { None };
+				for event in $excess_events {
+					let push_a = match event {
+						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						events::MessageSendEvent::SendFundingLocked { .. } => continue,
+						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
+						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => continue,
+						_ => panic!("Unhandled message event"),
+					};
+					if push_a { ba_events.push(event); } else { bc_events.push(event); }
+				}
+			} }
+		}
+
+		// While delivering messages, we select across three possible message selection processes
+		// to ensure we get as much coverage as possible. See the individual enum variants for more
+		// details.
+		#[derive(PartialEq)]
+		enum ProcessMessages {
+			/// Deliver all available messages, including fetching any new messages from
+			/// `get_and_clear_pending_msg_events()` (which may have side effects).
+			AllMessages,
+			/// Call `get_and_clear_pending_msg_events()` first, and then deliver up to one
+			/// message (which may already be queued).
+			OneMessage,
+			/// Deliver up to one already-queued message. This avoids any potential side-effects
+			/// of `get_and_clear_pending_msg_events()` (eg freeing the HTLC holding cell), which
+			/// provides potentially more coverage.
+			OnePendingMessage,
+		}
+
 		macro_rules! process_msg_events {
-			($node: expr, $corrupt_forward: expr) => { {
-				let events = if $node == 1 {
+			($node: expr, $corrupt_forward: expr, $limit_events: expr) => { {
+				let mut events = if $node == 1 {
 					let mut new_events = Vec::new();
 					mem::swap(&mut new_events, &mut ba_events);
 					new_events.extend_from_slice(&bc_events[..]);
 					bc_events.clear();
 					new_events
-				} else { Vec::new() };
+				} else if $node == 0 {
+					let mut new_events = Vec::new();
+					mem::swap(&mut new_events, &mut ab_events);
+					new_events
+				} else {
+					let mut new_events = Vec::new();
+					mem::swap(&mut new_events, &mut cb_events);
+					new_events
+				};
+				let mut new_events = Vec::new();
+				if $limit_events != ProcessMessages::OnePendingMessage {
+					new_events = nodes[$node].get_and_clear_pending_msg_events();
+				}
 				let mut had_events = false;
-				for event in events.iter().chain(nodes[$node].get_and_clear_pending_msg_events().iter()) {
+				let mut events_iter = events.drain(..).chain(new_events.drain(..));
+				let mut extra_ev = None;
+				for event in &mut events_iter {
 					had_events = true;
 					match event {
-						events::MessageSendEvent::UpdateHTLCs { ref node_id, updates: CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+						events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 							for dest in nodes.iter() {
-								if dest.get_our_node_id() == *node_id {
+								if dest.get_our_node_id() == node_id {
 									assert!(update_fee.is_none());
-									for update_add in update_add_htlcs {
+									for update_add in update_add_htlcs.iter() {
 										if !$corrupt_forward {
-											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &update_add);
+											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), update_add);
 										} else {
 											// Corrupt the update_add_htlc message so that its HMAC
 											// check will fail and we generate a
@@ -577,16 +640,31 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &new_msg);
 										}
 									}
-									for update_fulfill in update_fulfill_htlcs {
-										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), &update_fulfill);
+									for update_fulfill in update_fulfill_htlcs.iter() {
+										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), update_fulfill);
 									}
-									for update_fail in update_fail_htlcs {
-										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), &update_fail);
+									for update_fail in update_fail_htlcs.iter() {
+										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), update_fail);
 									}
-									for update_fail_malformed in update_fail_malformed_htlcs {
-										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), &update_fail_malformed);
+									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
+										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), update_fail_malformed);
+									}
+									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
+										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
+									if $limit_events != ProcessMessages::AllMessages && processed_change {
+										// If we only want to process some messages, don't deliver the CS until later.
+										extra_ev = Some(events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate {
+											update_add_htlcs: Vec::new(),
+											update_fail_htlcs: Vec::new(),
+											update_fulfill_htlcs: Vec::new(),
+											update_fail_malformed_htlcs: Vec::new(),
+											update_fee: None,
+											commitment_signed
+										} });
+										break;
 									}
 									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
+									break;
 								}
 							}
 						},
@@ -616,6 +694,18 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						},
 						_ => panic!("Unhandled message event"),
 					}
+					if $limit_events != ProcessMessages::AllMessages {
+						break;
+					}
+				}
+				if $node == 1 {
+					push_excess_b_events!(extra_ev.into_iter().chain(events_iter), None);
+				} else if $node == 0 {
+					if let Some(ev) = extra_ev { ab_events.push(ev); }
+					for event in events_iter { ab_events.push(event); }
+				} else {
+					if let Some(ev) = extra_ev { cb_events.push(ev); }
+					for event in events_iter { cb_events.push(event); }
 				}
 				had_events
 			} }
@@ -635,6 +725,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							_ => panic!("Unhandled message event"),
 						}
 					}
+					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(0));
+					ab_events.clear();
 					ba_events.clear();
 				} else {
 					for event in nodes[2].get_and_clear_pending_msg_events() {
@@ -648,28 +740,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							_ => panic!("Unhandled message event"),
 						}
 					}
+					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(2));
 					bc_events.clear();
-				}
-				let mut events = nodes[1].get_and_clear_pending_msg_events();
-				let drop_node_id = if $counterparty_id == 0 { nodes[0].get_our_node_id() } else { nodes[2].get_our_node_id() };
-				let msg_sink = if $counterparty_id == 0 { &mut bc_events } else { &mut ba_events };
-				for event in events.drain(..) {
-					let push = match event {
-						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-						},
-						events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-						},
-						events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
-							if *node_id != drop_node_id { true } else { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
-						},
-						events::MessageSendEvent::SendFundingLocked { .. } => false,
-						events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
-						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => false,
-						_ => panic!("Unhandled message event"),
-					};
-					if push { msg_sink.push(event); }
+					cb_events.clear();
 				}
 			} }
 		}
@@ -785,20 +858,37 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 			},
 
-			0x10 => { process_msg_events!(0, true); },
-			0x11 => { process_msg_events!(0, false); },
-			0x12 => { process_events!(0, true); },
-			0x13 => { process_events!(0, false); },
-			0x14 => { process_msg_events!(1, true); },
-			0x15 => { process_msg_events!(1, false); },
-			0x16 => { process_events!(1, true); },
-			0x17 => { process_events!(1, false); },
-			0x18 => { process_msg_events!(2, true); },
-			0x19 => { process_msg_events!(2, false); },
-			0x1a => { process_events!(2, true); },
-			0x1b => { process_events!(2, false); },
+			0x10 => { process_msg_events!(0, true, ProcessMessages::AllMessages); },
+			0x11 => { process_msg_events!(0, false, ProcessMessages::AllMessages); },
+			0x12 => { process_msg_events!(0, true, ProcessMessages::OneMessage); },
+			0x13 => { process_msg_events!(0, false, ProcessMessages::OneMessage); },
+			0x14 => { process_msg_events!(0, true, ProcessMessages::OnePendingMessage); },
+			0x15 => { process_msg_events!(0, false, ProcessMessages::OnePendingMessage); },
 
-			0x1c => {
+			0x16 => { process_events!(0, true); },
+			0x17 => { process_events!(0, false); },
+
+			0x18 => { process_msg_events!(1, true, ProcessMessages::AllMessages); },
+			0x19 => { process_msg_events!(1, false, ProcessMessages::AllMessages); },
+			0x1a => { process_msg_events!(1, true, ProcessMessages::OneMessage); },
+			0x1b => { process_msg_events!(1, false, ProcessMessages::OneMessage); },
+			0x1c => { process_msg_events!(1, true, ProcessMessages::OnePendingMessage); },
+			0x1d => { process_msg_events!(1, false, ProcessMessages::OnePendingMessage); },
+
+			0x1e => { process_events!(1, true); },
+			0x1f => { process_events!(1, false); },
+
+			0x20 => { process_msg_events!(2, true, ProcessMessages::AllMessages); },
+			0x21 => { process_msg_events!(2, false, ProcessMessages::AllMessages); },
+			0x22 => { process_msg_events!(2, true, ProcessMessages::OneMessage); },
+			0x23 => { process_msg_events!(2, false, ProcessMessages::OneMessage); },
+			0x24 => { process_msg_events!(2, true, ProcessMessages::OnePendingMessage); },
+			0x25 => { process_msg_events!(2, false, ProcessMessages::OnePendingMessage); },
+
+			0x26 => { process_events!(2, true); },
+			0x27 => { process_events!(2, false); },
+
+			0x2c => {
 				if !chan_a_disconnected {
 					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
 					chan_a_disconnected = true;
@@ -812,11 +902,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
-			0x1d => {
+			0x2d => {
 				if !chan_a_disconnected {
 					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
 					chan_a_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
+					ab_events.clear();
 					ba_events.clear();
 				}
 				if !chan_b_disconnected {
@@ -824,12 +915,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					chan_b_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
+					cb_events.clear();
 				}
 				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b, keys_manager_b);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
-			0x1e => {
+			0x2e => {
 				if !chan_b_disconnected {
 					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
 					chan_b_disconnected = true;
@@ -845,61 +937,61 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 
 			// 1/10th the channel size:
-			0x20 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id); },
-			0x21 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id); },
-			0x22 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id); },
-			0x23 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id); },
-			0x24 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id); },
-			0x25 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id); },
+			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id); },
+			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id); },
+			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id); },
+			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id); },
+			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id); },
+			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id); },
 
-			0x28 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id); },
-			0x29 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id); },
-			0x2a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id); },
-			0x2b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id); },
-			0x2c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id); },
-			0x2d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id); },
+			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id); },
+			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id); },
+			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id); },
+			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id); },
+			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id); },
+			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id); },
 
-			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id); },
-			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id); },
-			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id); },
-			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id); },
-			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id); },
-			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id); },
+			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id); },
+			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id); },
+			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id); },
+			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id); },
+			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id); },
+			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id); },
 
-			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id); },
-			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id); },
-			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id); },
-			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id); },
-			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id); },
-			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id); },
+			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id); },
+			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id); },
+			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id); },
+			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id); },
+			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id); },
+			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id); },
 
-			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id); },
-			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id); },
-			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id); },
-			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id); },
-			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id); },
-			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id); },
+			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id); },
+			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id); },
+			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id); },
+			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id); },
+			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id); },
+			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id); },
 
-			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id); },
-			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id); },
-			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id); },
-			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id); },
-			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id); },
-			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id); },
+			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id); },
+			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id); },
+			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id); },
+			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id); },
+			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id); },
+			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id); },
 
-			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id); },
-			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id); },
-			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id); },
-			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id); },
-			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id); },
-			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id); },
+			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id); },
+			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id); },
+			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id); },
+			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id); },
+			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id); },
+			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id); },
 
-			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id); },
-			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id); },
-			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id); },
-			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id); },
-			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
-			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
+			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id); },
+			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id); },
+			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id); },
+			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id); },
+			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
+			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
 
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
@@ -938,9 +1030,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				for i in 0..std::usize::MAX {
 					if i == 100 { panic!("It may take may iterations to settle the state, but it should not take forever"); }
 					// Then, make sure any current forwards make their way to their destination
-					if process_msg_events!(0, false) { continue; }
-					if process_msg_events!(1, false) { continue; }
-					if process_msg_events!(2, false) { continue; }
+					if process_msg_events!(0, false, ProcessMessages::AllMessages) { continue; }
+					if process_msg_events!(1, false, ProcessMessages::AllMessages) { continue; }
+					if process_msg_events!(2, false, ProcessMessages::AllMessages) { continue; }
 					// ...making sure any pending PendingHTLCsForwardable events are handled and
 					// payments claimed.
 					if process_events!(0, false) { continue; }

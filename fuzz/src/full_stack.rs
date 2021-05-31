@@ -39,6 +39,7 @@ use lightning::ln::msgs::DecodeError;
 use lightning::routing::router::get_route;
 use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::config::UserConfig;
+use lightning::util::errors::APIError;
 use lightning::util::events::Event;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
@@ -531,12 +532,18 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 							continue 'outer_loop;
 						}
 					};
-					channelmanager.funding_transaction_generated(&funding_generation.0, tx.clone()).unwrap();
+					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, tx.clone()) {
+						// It's possible the channel has been closed in the mean time, but any other
+						// failure may be a bug.
+						if let APIError::ChannelUnavailable { err } = e {
+							assert_eq!(err, "No such channel");
+						} else { panic!(); }
+					}
 					pending_funding_signatures.insert(funding_output, tx);
 				}
 			},
 			11 => {
-				let mut txn = broadcast.txn_broadcasted.lock().unwrap();
+				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
