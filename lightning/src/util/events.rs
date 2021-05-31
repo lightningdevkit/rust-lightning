@@ -271,7 +271,7 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut outputs = VecReadWrapper(Vec::new());
 					read_tlv_fields!(reader, {
-						(0,outputs),
+						(0, outputs),
 					}, {});
 					Ok(Some(Event::SpendableOutputs { outputs: outputs.0 }))
 				};
