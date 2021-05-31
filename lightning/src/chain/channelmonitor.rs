@@ -335,7 +335,15 @@ struct OnchainEventEntry {
 
 impl OnchainEventEntry {
 	fn confirmation_threshold(&self) -> u32 {
-		self.height + ANTI_REORG_DELAY - 1
+		let mut conf_threshold = self.height + ANTI_REORG_DELAY - 1;
+		if let OnchainEvent::MaturingOutput {
+			descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor)
+		} = self.event {
+			// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
+			// it's broadcastable when we see the previous block.
+			conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
+		}
+		conf_threshold
 	}
 
 	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {

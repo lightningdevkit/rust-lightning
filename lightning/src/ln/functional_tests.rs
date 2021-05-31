@@ -4875,11 +4875,13 @@ fn test_claim_sizeable_push_msat() {
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
+	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
+	assert_eq!(spend_txn[0].input[0].sequence, BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -5507,12 +5509,14 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	};
 
 	mine_transaction(&nodes[1], &node_tx);
-	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 1);
+	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_tx);
+	assert_eq!(spend_txn[0].input[0].sequence, BREAKDOWN_TIMEOUT as u32);
 }
 
 fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, announce_latest: bool) {
@@ -5802,15 +5806,20 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn[0]);
+	assert_eq!(spend_txn[1].input.len(), 1);
 	check_spends!(spend_txn[1], htlc_timeout);
+	assert_eq!(spend_txn[1].input[0].sequence, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn[0], htlc_timeout);
+	assert!(spend_txn[2].input[0].sequence == BREAKDOWN_TIMEOUT as u32 ||
+	        spend_txn[2].input[1].sequence == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -5877,7 +5886,7 @@ fn test_key_derivation_params() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5885,8 +5894,13 @@ fn test_key_derivation_params() {
 	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn_1[0]);
+	assert_eq!(spend_txn[1].input.len(), 1);
 	check_spends!(spend_txn[1], htlc_timeout);
+	assert_eq!(spend_txn[1].input[0].sequence, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn_1[0], htlc_timeout);
+	assert!(spend_txn[2].input[0].sequence == BREAKDOWN_TIMEOUT as u32 ||
+	        spend_txn[2].input[1].sequence == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]

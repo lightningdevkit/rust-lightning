@@ -126,7 +126,8 @@ pub enum Event {
 		/// now + 5*time_forwardable).
 		time_forwardable: Duration,
 	},
-	/// Used to indicate that an output was generated on-chain which you should know how to spend.
+	/// Used to indicate that an output which you should know how to spend was confirmed on chain
+	/// and is now spendable.
 	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
 	/// counterparty spending them due to some kind of timeout. Thus, you need to store them
 	/// somewhere and spend them when you create on-chain transactions.
