@@ -2321,7 +2321,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) fn test_process_background_events(&self) {
+	/// Process background events, for functional testing
+	pub fn test_process_background_events(&self) {
 		self.process_background_events();
 	}
 
