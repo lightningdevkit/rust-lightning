@@ -8,26 +8,6 @@
 // licenses.
 
 #[inline]
-pub fn slice_to_be16(v: &[u8]) -> u16 {
-	((v[0] as u16) << 8*1) |
-	((v[1] as u16) << 8*0)
-}
-#[inline]
-pub fn slice_to_be32(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*3) |
-	((v[1] as u32) << 8*2) |
-	((v[2] as u32) << 8*1) |
-	((v[3] as u32) << 8*0)
-}
-#[cfg(not(feature = "fuzztarget"))] // Used only by poly1305
-#[inline]
-pub fn slice_to_le32(v: &[u8]) -> u32 {
-	((v[0] as u32) << 8*0) |
-	((v[1] as u32) << 8*1) |
-	((v[2] as u32) << 8*2) |
-	((v[3] as u32) << 8*3)
-}
-#[inline]
 pub fn slice_to_be48(v: &[u8]) -> u64 {
 	((v[0] as u64) << 8*5) |
 	((v[1] as u64) << 8*4) |
@@ -62,16 +42,6 @@ pub fn be32_to_array(u: u32) -> [u8; 4] {
 	v[1] = ((u >> 8*2) & 0xff) as u8;
 	v[2] = ((u >> 8*1) & 0xff) as u8;
 	v[3] = ((u >> 8*0) & 0xff) as u8;
-	v
-}
-#[cfg(not(feature = "fuzztarget"))] // Used only by poly1305
-#[inline]
-pub fn le32_to_array(u: u32) -> [u8; 4] {
-	let mut v = [0; 4];
-	v[0] = ((u >> 8*0) & 0xff) as u8;
-	v[1] = ((u >> 8*1) & 0xff) as u8;
-	v[2] = ((u >> 8*2) & 0xff) as u8;
-	v[3] = ((u >> 8*3) & 0xff) as u8;
 	v
 }
 #[inline]
@@ -120,14 +90,10 @@ mod tests {
 	
 	#[test]
 	fn test_all() {
-		assert_eq!(slice_to_be16(&[0xde, 0xad]), 0xdead);
-		assert_eq!(slice_to_be32(&[0xde, 0xad, 0xbe, 0xef]), 0xdeadbeef);
-		assert_eq!(slice_to_le32(&[0xef, 0xbe, 0xad, 0xde]), 0xdeadbeef);
 		assert_eq!(slice_to_be48(&[0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad]), 0xdeadbeef1bad);
 		assert_eq!(slice_to_be64(&[0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad, 0x1d, 0xea]), 0xdeadbeef1bad1dea);
 		assert_eq!(be16_to_array(0xdead), [0xde, 0xad]);
 		assert_eq!(be32_to_array(0xdeadbeef), [0xde, 0xad, 0xbe, 0xef]);
-		assert_eq!(le32_to_array(0xdeadbeef), [0xef, 0xbe, 0xad, 0xde]);
 		assert_eq!(be48_to_array(0xdeadbeef1bad), [0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad]);
 		assert_eq!(be64_to_array(0xdeadbeef1bad1dea), [0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad, 0x1d, 0xea]);
 		assert_eq!(le64_to_array(0xdeadbeef1bad1dea), [0xea, 0x1d, 0xad, 0x1b, 0xef, 0xbe, 0xad, 0xde]);

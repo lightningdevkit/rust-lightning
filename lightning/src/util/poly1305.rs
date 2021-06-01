@@ -8,7 +8,7 @@
 // https://github.com/floodyberry/poly1305-donna
 
 use core::cmp::min;
-use util::byte_utils::{slice_to_le32, le32_to_array};
+use core::convert::TryInto;
 
 #[derive(Clone, Copy)]
 pub struct Poly1305 {
@@ -26,16 +26,16 @@ impl Poly1305 {
 		let mut poly = Poly1305{ r: [0u32; 5], h: [0u32; 5], pad: [0u32; 4], leftover: 0, buffer: [0u8; 16], finalized: false };
 
 		// r &= 0xffffffc0ffffffc0ffffffc0fffffff
-		poly.r[0] = (slice_to_le32(&key[0..4])       ) & 0x3ffffff;
-		poly.r[1] = (slice_to_le32(&key[3..7])   >> 2) & 0x3ffff03;
-		poly.r[2] = (slice_to_le32(&key[6..10])  >> 4) & 0x3ffc0ff;
-		poly.r[3] = (slice_to_le32(&key[9..13])  >> 6) & 0x3f03fff;
-		poly.r[4] = (slice_to_le32(&key[12..16]) >> 8) & 0x00fffff;
+		poly.r[0] = (u32::from_le_bytes(key[ 0.. 4].try_into().expect("len is 4"))     ) & 0x3ffffff;
+		poly.r[1] = (u32::from_le_bytes(key[ 3.. 7].try_into().expect("len is 4")) >> 2) & 0x3ffff03;
+		poly.r[2] = (u32::from_le_bytes(key[ 6..10].try_into().expect("len is 4")) >> 4) & 0x3ffc0ff;
+		poly.r[3] = (u32::from_le_bytes(key[ 9..13].try_into().expect("len is 4")) >> 6) & 0x3f03fff;
+		poly.r[4] = (u32::from_le_bytes(key[12..16].try_into().expect("len is 4")) >> 8) & 0x00fffff;
 
-		poly.pad[0] = slice_to_le32(&key[16..20]);
-		poly.pad[1] = slice_to_le32(&key[20..24]);
-		poly.pad[2] = slice_to_le32(&key[24..28]);
-		poly.pad[3] = slice_to_le32(&key[28..32]);
+		poly.pad[0] = u32::from_le_bytes(key[16..20].try_into().expect("len is 4"));
+		poly.pad[1] = u32::from_le_bytes(key[20..24].try_into().expect("len is 4"));
+		poly.pad[2] = u32::from_le_bytes(key[24..28].try_into().expect("len is 4"));
+		poly.pad[3] = u32::from_le_bytes(key[28..32].try_into().expect("len is 4"));
 
 		poly
 	}
@@ -61,11 +61,11 @@ impl Poly1305 {
 		let mut h4 = self.h[4];
 
 		// h += m
-		h0 += (slice_to_le32(&m[0..4])       ) & 0x3ffffff;
-		h1 += (slice_to_le32(&m[3..7])   >> 2) & 0x3ffffff;
-		h2 += (slice_to_le32(&m[6..10])  >> 4) & 0x3ffffff;
-		h3 += (slice_to_le32(&m[9..13])  >> 6) & 0x3ffffff;
-		h4 += (slice_to_le32(&m[12..16]) >> 8) | hibit;
+		h0 += (u32::from_le_bytes(m[ 0.. 4].try_into().expect("len is 4"))     ) & 0x3ffffff;
+		h1 += (u32::from_le_bytes(m[ 3.. 7].try_into().expect("len is 4")) >> 2) & 0x3ffffff;
+		h2 += (u32::from_le_bytes(m[ 6..10].try_into().expect("len is 4")) >> 4) & 0x3ffffff;
+		h3 += (u32::from_le_bytes(m[ 9..13].try_into().expect("len is 4")) >> 6) & 0x3ffffff;
+		h4 += (u32::from_le_bytes(m[12..16].try_into().expect("len is 4")) >> 8) | hibit;
 
 		// h *= r
 		let     d0 = (h0 as u64 * r0 as u64) + (h1 as u64 * s4 as u64) + (h2 as u64 * s3 as u64) + (h3 as u64 * s2 as u64) + (h4 as u64 * s1 as u64);
@@ -196,10 +196,10 @@ impl Poly1305 {
 		if !self.finalized{
 			self.finish();
 		}
-		output[0..4].copy_from_slice(&le32_to_array(self.h[0]));
-		output[4..8].copy_from_slice(&le32_to_array(self.h[1]));
-		output[8..12].copy_from_slice(&le32_to_array(self.h[2]));
-		output[12..16].copy_from_slice(&le32_to_array(self.h[3]));
+		output[0..4].copy_from_slice(&self.h[0].to_le_bytes());
+		output[4..8].copy_from_slice(&self.h[1].to_le_bytes());
+		output[8..12].copy_from_slice(&self.h[2].to_le_bytes());
+		output[12..16].copy_from_slice(&self.h[3].to_le_bytes());
 	}
 }
 

@@ -19,7 +19,7 @@ use core::cmp;
 
 use bitcoin::secp256k1::Signature;
 use bitcoin::secp256k1::key::{PublicKey, SecretKey};
-use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
+use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
@@ -29,9 +29,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use util::byte_utils;
 
-use util::byte_utils::{be64_to_array, be48_to_array, be32_to_array, be16_to_array, slice_to_be16, slice_to_be32, slice_to_be48, slice_to_be64};
+use util::byte_utils::{be48_to_array, slice_to_be48};
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -61,13 +60,16 @@ impl<W: Write> Writer for W {
 
 pub(crate) struct WriterWriteAdaptor<'a, W: Writer + 'a>(pub &'a mut W);
 impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
+	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.write_all(buf)
 	}
+	#[inline]
 	fn write(&mut self, buf: &[u8]) -> Result<usize, ::std::io::Error> {
 		self.0.write_all(buf)?;
 		Ok(buf.len())
 	}
+	#[inline]
 	fn flush(&mut self) -> Result<(), ::std::io::Error> {
 		Ok(())
 	}
@@ -75,10 +77,12 @@ impl<'a, W: Writer + 'a> Write for WriterWriteAdaptor<'a, W> {
 
 pub(crate) struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
+	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
+	#[inline]
 	fn size_hint(&mut self, size: usize) {
 		self.0.reserve_exact(size);
 	}
@@ -109,10 +113,12 @@ impl<R: Read> FixedLengthReader<R> {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
+	#[inline]
 	pub fn bytes_remain(&mut self) -> bool {
 		self.bytes_read != self.total_bytes
 	}
 
+	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
 		::std::io::copy(self, &mut ::std::io::sink()).unwrap();
 		if self.bytes_read != self.total_bytes {
@@ -123,6 +129,7 @@ impl<R: Read> FixedLengthReader<R> {
 	}
 }
 impl<R: Read> Read for FixedLengthReader<R> {
+	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
 		if self.total_bytes == self.bytes_read {
 			Ok(0)
@@ -151,6 +158,7 @@ impl<R: Read> ReadTrackingReader<R> {
 	}
 }
 impl<R: Read> Read for ReadTrackingReader<R> {
+	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, ::std::io::Error> {
 		match self.read.read(dest) {
 			Ok(0) => Ok(0),
@@ -183,8 +191,18 @@ pub trait Writeable {
 		0u16.write(&mut msg).unwrap();
 		self.write(&mut msg).unwrap();
 		let len = msg.0.len();
-		msg.0[..2].copy_from_slice(&byte_utils::be16_to_array(len as u16 - 2));
+		msg.0[..2].copy_from_slice(&(len as u16 - 2).to_be_bytes());
 		msg.0
+	}
+
+	/// Gets the length of this object after it has been serialized. This can be overridden to
+	/// optimize cases where we prepend an object with its length.
+	// Note that LLVM optimizes this away in most cases! Check that it isn't before you override!
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		let mut len_calc = LengthCalculatingWriter(0);
+		self.write(&mut len_calc).expect("No in-memory data may fail to serialize");
+		len_calc.0
 	}
 }
 
@@ -225,6 +243,7 @@ pub trait MaybeReadable
 
 pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
+	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self(Some(Readable::read(reader)?)))
 	}
@@ -234,6 +253,7 @@ const MAX_ALLOC_SIZE: u64 = 64*1024;
 
 pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
 impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
+	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 		(self.0.len() as u64).write(writer)?;
 		for ref v in self.0.iter() {
@@ -244,6 +264,7 @@ impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 }
 pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
 impl<T: Readable> Readable for VecReadWrapper<T> {
+	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let count: u64 = Readable::read(reader)?;
 		let mut values = Vec::with_capacity(cmp::min(count, MAX_ALLOC_SIZE / (core::mem::size_of::<T>() as u64)) as usize);
@@ -344,18 +365,18 @@ impl Readable for BigSize {
 pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
-	($val_type:ty, $meth_write:ident, $len: expr, $meth_read:ident) => {
+	($val_type:ty, $len: expr) => {
 		impl Writeable for $val_type {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-				writer.write_all(&$meth_write(*self))
+				writer.write_all(&self.to_be_bytes())
 			}
 		}
 		impl Writeable for HighZeroBytesDroppedVarInt<$val_type> {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 				// Skip any full leading 0 bytes when writing (in BE):
-				writer.write_all(&$meth_write(self.0)[(self.0.leading_zeros()/8) as usize..$len])
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros()/8) as usize..$len])
 			}
 		}
 		impl Readable for $val_type {
@@ -363,7 +384,7 @@ macro_rules! impl_writeable_primitive {
 			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
 				let mut buf = [0; $len];
 				reader.read_exact(&mut buf)?;
-				Ok($meth_read(&buf))
+				Ok(<$val_type>::from_be_bytes(buf))
 			}
 		}
 		impl Readable for HighZeroBytesDroppedVarInt<$val_type> {
@@ -382,7 +403,9 @@ macro_rules! impl_writeable_primitive {
 				}
 				if total_read_len == 0 || buf[$len] != 0 {
 					let first_byte = $len - ($len - total_read_len);
-					Ok(HighZeroBytesDroppedVarInt($meth_read(&buf[first_byte..first_byte + $len])))
+					let mut bytes = [0; $len];
+					bytes.copy_from_slice(&buf[first_byte..first_byte + $len]);
+					Ok(HighZeroBytesDroppedVarInt(<$val_type>::from_be_bytes(bytes)))
 				} else {
 					// If the encoding had extra zero bytes, return a failure even though we know
 					// what they meant (as the TLV test vectors require this)
@@ -393,9 +416,9 @@ macro_rules! impl_writeable_primitive {
 	}
 }
 
-impl_writeable_primitive!(u64, be64_to_array, 8, slice_to_be64);
-impl_writeable_primitive!(u32, be32_to_array, 4, slice_to_be32);
-impl_writeable_primitive!(u16, be16_to_array, 2, slice_to_be16);
+impl_writeable_primitive!(u64, 8);
+impl_writeable_primitive!(u32, 4);
+impl_writeable_primitive!(u16, 2);
 
 impl Writeable for u8 {
 	#[inline]
@@ -560,6 +583,10 @@ impl Writeable for PublicKey {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize().write(w)
 	}
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		PUBLIC_KEY_SIZE
+	}
 }
 
 impl Readable for PublicKey {
@@ -574,15 +601,19 @@ impl Readable for PublicKey {
 
 impl Writeable for SecretKey {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		let mut ser = [0; 32];
+		let mut ser = [0; SECRET_KEY_SIZE];
 		ser.copy_from_slice(&self[..]);
 		ser.write(w)
+	}
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		SECRET_KEY_SIZE
 	}
 }
 
 impl Readable for SecretKey {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let buf: [u8; 32] = Readable::read(r)?;
+		let buf: [u8; SECRET_KEY_SIZE] = Readable::read(r)?;
 		match SecretKey::from_slice(&buf) {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
@@ -608,6 +639,10 @@ impl Readable for Sha256dHash {
 impl Writeable for Signature {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.serialize_compact().write(w)
+	}
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		COMPACT_SIGNATURE_SIZE
 	}
 }
 
@@ -665,9 +700,7 @@ impl<T: Writeable> Writeable for Option<T> {
 		match *self {
 			None => 0u8.write(w)?,
 			Some(ref data) => {
-				let mut len_calc = LengthCalculatingWriter(0);
-				data.write(&mut len_calc).expect("No in-memory data may fail to serialize");
-				BigSize(len_calc.0 as u64 + 1).write(w)?;
+				BigSize(data.serialized_length() as u64 + 1).write(w)?;
 				data.write(w)?;
 			}
 		}

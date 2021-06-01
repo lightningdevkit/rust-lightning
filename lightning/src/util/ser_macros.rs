@@ -10,7 +10,7 @@
 macro_rules! encode_tlv {
 	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
 		#[allow(unused_imports)]
-		use util::ser::{BigSize, LengthCalculatingWriter};
+		use util::ser::BigSize;
 		// Fields must be serialized in order, so we have to potentially switch between optional
 		// fields and normal fields while serializing. Thus, we end up having to loop over the type
 		// counts.
@@ -30,9 +30,7 @@ macro_rules! encode_tlv {
 			$(
 				if i == $type {
 					BigSize($type).write($stream)?;
-					let mut len_calc = LengthCalculatingWriter(0);
-					$field.write(&mut len_calc)?;
-					BigSize(len_calc.0 as u64).write($stream)?;
+					BigSize($field.serialized_length() as u64).write($stream)?;
 					$field.write($stream)?;
 				}
 			)*
@@ -40,9 +38,7 @@ macro_rules! encode_tlv {
 				if i == $optional_type {
 					if let Some(ref field) = $optional_field {
 						BigSize($optional_type).write($stream)?;
-						let mut len_calc = LengthCalculatingWriter(0);
-						field.write(&mut len_calc)?;
-						BigSize(len_calc.0 as u64).write($stream)?;
+						BigSize(field.serialized_length() as u64).write($stream)?;
 						field.write($stream)?;
 					}
 				}
@@ -51,31 +47,36 @@ macro_rules! encode_tlv {
 	} }
 }
 
-macro_rules! encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
-		use util::ser::{BigSize, LengthCalculatingWriter};
+macro_rules! get_varint_length_prefixed_tlv_length {
+	({$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => { {
+		use util::ser::LengthCalculatingWriter;
 		#[allow(unused_mut)]
 		let mut len = LengthCalculatingWriter(0);
 		{
 			$(
-				BigSize($type).write(&mut len)?;
-				let mut field_len = LengthCalculatingWriter(0);
-				$field.write(&mut field_len)?;
-				BigSize(field_len.0 as u64).write(&mut len)?;
-				len.0 += field_len.0;
+				BigSize($type).write(&mut len).expect("No in-memory data may fail to serialize");
+				let field_len = $field.serialized_length();
+				BigSize(field_len as u64).write(&mut len).expect("No in-memory data may fail to serialize");
+				len.0 += field_len;
 			)*
 			$(
 				if let Some(ref field) = $optional_field {
-					BigSize($optional_type).write(&mut len)?;
-					let mut field_len = LengthCalculatingWriter(0);
-					field.write(&mut field_len)?;
-					BigSize(field_len.0 as u64).write(&mut len)?;
-					len.0 += field_len.0;
+					BigSize($optional_type).write(&mut len).expect("No in-memory data may fail to serialize");
+					let field_len = field.serialized_length();
+					BigSize(field_len as u64).write(&mut len).expect("No in-memory data may fail to serialize");
+					len.0 += field_len;
 				}
 			)*
 		}
+		len.0
+	} }
+}
 
-		BigSize(len.0 as u64).write($stream)?;
+macro_rules! encode_varint_length_prefixed_tlv {
+	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
+		use util::ser::BigSize;
+		let len = get_varint_length_prefixed_tlv_length!({ $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
+		BigSize(len as u64).write($stream)?;
 		encode_tlv!($stream, { $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
 	} }
 }
@@ -173,12 +174,28 @@ macro_rules! impl_writeable {
 					if $len != 0 {
 						use util::ser::LengthCalculatingWriter;
 						let mut len_calc = LengthCalculatingWriter(0);
-						$( self.$field.write(&mut len_calc)?; )*
+						$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
 						assert_eq!(len_calc.0, $len);
+						assert_eq!(self.serialized_length(), $len);
 					}
 				}
 				$( self.$field.write(w)?; )*
 				Ok(())
+			}
+
+			#[inline]
+			fn serialized_length(&self) -> usize {
+				if $len == 0 || cfg!(any(test, feature = "fuzztarget")) {
+					let mut len_calc = 0;
+					$( len_calc += self.$field.serialized_length(); )*
+					if $len != 0 {
+						// In tests, assert that the hard-coded length matches the actual one
+						assert_eq!(len_calc, $len);
+					} else {
+						return len_calc;
+					}
+				}
+				$len
 			}
 		}
 
@@ -192,7 +209,7 @@ macro_rules! impl_writeable {
 	}
 }
 macro_rules! impl_writeable_len_match {
-	($struct: ident, $cmp: tt, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+	($struct: ident, $cmp: tt, ($calc_len: expr), {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
 		impl Writeable for $struct {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 				let len = match *self {
@@ -204,11 +221,29 @@ macro_rules! impl_writeable_len_match {
 					// In tests, assert that the hard-coded length matches the actual one
 					use util::ser::LengthCalculatingWriter;
 					let mut len_calc = LengthCalculatingWriter(0);
-					$( self.$field.write(&mut len_calc)?; )*
+					$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
 					assert!(len_calc.0 $cmp len);
+					assert_eq!(len_calc.0, self.serialized_length());
 				}
 				$( self.$field.write(w)?; )*
 				Ok(())
+			}
+
+			#[inline]
+			fn serialized_length(&self) -> usize {
+				if $calc_len || cfg!(any(test, feature = "fuzztarget")) {
+					let mut len_calc = 0;
+					$( len_calc += self.$field.serialized_length(); )*
+					if !$calc_len {
+						assert_eq!(len_calc, match *self {
+							$($match => $length,)*
+						});
+					}
+					return len_calc
+				}
+				match *self {
+					$($match => $length,)*
+				}
 			}
 		}
 
@@ -220,8 +255,11 @@ macro_rules! impl_writeable_len_match {
 			}
 		}
 	};
+	($struct: ident, $cmp: tt, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
+		impl_writeable_len_match!($struct, $cmp, (true), { $({ $match, $length }),* }, { $($field),* });
+	};
 	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
-		impl_writeable_len_match!($struct, ==, { $({ $match, $length }),* }, { $($field),* });
+		impl_writeable_len_match!($struct, ==, (false), { $({ $match, $length }),* }, { $($field),* });
 	}
 }
 
@@ -325,6 +363,14 @@ macro_rules! _write_tlv_fields {
 		write_tlv_fields!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*, $(($optional_type_2, $optional_field_2)),*});
 	}
 }
+macro_rules! _get_tlv_len {
+	({$(($type: expr, $field: expr)),* $(,)*}, {}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
+		get_varint_length_prefixed_tlv_length!({$(($type, $field)),*} , {$(($optional_type, $optional_field)),*})
+	};
+	({$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}, {$(($optional_type_2: expr, $optional_field_2: expr)),* $(,)*}) => {
+		get_varint_length_prefixed_tlv_length!({$(($type, $field)),*} , {$(($optional_type, $optional_field)),*, $(($optional_type_2, $optional_field_2)),*})
+	}
+}
 macro_rules! _read_tlv_fields {
 	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {}, {$(($type: expr, $field: ident)),* $(,)*}) => {
 		read_tlv_fields!($stream, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
@@ -351,6 +397,21 @@ macro_rules! impl_writeable_tlv_based {
 					$(($vectype, Some(::util::ser::VecWriteWrapper(&self.$vecfield)))),*
 				});
 				Ok(())
+			}
+
+			#[inline]
+			fn serialized_length(&self) -> usize {
+				let len = _get_tlv_len!({
+					$(($reqtype, self.$reqfield)),*
+				}, {
+					$(($type, self.$field)),*
+				}, {
+					$(($vectype, Some(::util::ser::VecWriteWrapper(&self.$vecfield)))),*
+				});
+				use util::ser::{BigSize, LengthCalculatingWriter};
+				let mut len_calc = LengthCalculatingWriter(0);
+				BigSize(len as u64).write(&mut len_calc).expect("No in-memory data may fail to serialize");
+				len + len_calc.0
 			}
 		}
 

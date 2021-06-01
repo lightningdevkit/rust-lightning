@@ -21,7 +21,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use util::byte_utils;
 use bitcoin::hashes::hex::ToHex;
 
 /// Maximum Lightning message data length according to
@@ -141,7 +140,7 @@ impl PeerChannelEncryptor {
 	#[inline]
 	fn encrypt_with_ad(res: &mut[u8], n: u64, key: &[u8; 32], h: &[u8], plaintext: &[u8]) {
 		let mut nonce = [0; 12];
-		nonce[4..].copy_from_slice(&byte_utils::le64_to_array(n));
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
 		let mut tag = [0; 16];
@@ -152,7 +151,7 @@ impl PeerChannelEncryptor {
 	#[inline]
 	fn decrypt_with_ad(res: &mut[u8], n: u64, key: &[u8; 32], h: &[u8], cyphertext: &[u8]) -> Result<(), LightningError> {
 		let mut nonce = [0; 12];
-		nonce[4..].copy_from_slice(&byte_utils::le64_to_array(n));
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
 
 		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
 		if !chacha.decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]) {
@@ -406,7 +405,7 @@ impl PeerChannelEncryptor {
 					*sn = 0;
 				}
 
-				Self::encrypt_with_ad(&mut res[0..16+2], *sn, sk, &[0; 0], &byte_utils::be16_to_array(msg.len() as u16));
+				Self::encrypt_with_ad(&mut res[0..16+2], *sn, sk, &[0; 0], &(msg.len() as u16).to_be_bytes());
 				*sn += 1;
 
 				Self::encrypt_with_ad(&mut res[16+2..], *sn, sk, &[0; 0], msg);
@@ -435,7 +434,7 @@ impl PeerChannelEncryptor {
 				let mut res = [0; 2];
 				Self::decrypt_with_ad(&mut res, *rn, rk, &[0; 0], msg)?;
 				*rn += 1;
-				Ok(byte_utils::slice_to_be16(&res))
+				Ok(u16::from_be_bytes(res))
 			},
 			_ => panic!("Tried to decrypt a message prior to noise handshake completion"),
 		}
