@@ -3907,8 +3907,8 @@ pub(crate) mod test_utils {
 	use std::fs::File;
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
 	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
-		let res = File::open("net_graph-2021-05-27.bin") // By default we're run in RL/lightning
-			.or_else(|_| File::open("lightning/net_graph-2021-05-27.bin")) // We may be run manually in RL/
+		let res = File::open("net_graph-2021-05-31.bin") // By default we're run in RL/lightning
+			.or_else(|_| File::open("lightning/net_graph-2021-05-31.bin")) // We may be run manually in RL/
 			.or_else(|_| { // Fall back to guessing based on the binary location
 				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
 				let mut path = std::env::current_exe().unwrap();
@@ -3917,11 +3917,11 @@ pub(crate) mod test_utils {
 				path.pop(); // debug
 				path.pop(); // target
 				path.push("lightning");
-				path.push("net_graph-2021-05-27.bin");
+				path.push("net_graph-2021-05-31.bin");
 				eprintln!("{}", path.to_str().unwrap());
 				File::open(path)
 			})
-		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-45d86ead641d-2021-05-27.bin and place it at lightning/net_graph-2021-05-27.bin");
+		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.15-2021-05-31.bin and place it at lightning/net_graph-2021-05-31.bin");
 		#[cfg(require_route_graph_test)]
 		return Ok(res.unwrap());
 		#[cfg(not(require_route_graph_test))]
