@@ -4382,37 +4382,11 @@ fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for InboundHTLCRemovalReason {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&InboundHTLCRemovalReason::FailRelay(ref error_packet) => {
-				0u8.write(writer)?;
-				error_packet.write(writer)?;
-			},
-			&InboundHTLCRemovalReason::FailMalformed((ref onion_hash, ref err_code)) => {
-				1u8.write(writer)?;
-				onion_hash.write(writer)?;
-				err_code.write(writer)?;
-			},
-			&InboundHTLCRemovalReason::Fulfill(ref payment_preimage) => {
-				2u8.write(writer)?;
-				payment_preimage.write(writer)?;
-			},
-		}
-		Ok(())
-	}
-}
-
-impl Readable for InboundHTLCRemovalReason {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		Ok(match <u8 as Readable>::read(reader)? {
-			0 => InboundHTLCRemovalReason::FailRelay(Readable::read(reader)?),
-			1 => InboundHTLCRemovalReason::FailMalformed((Readable::read(reader)?, Readable::read(reader)?)),
-			2 => InboundHTLCRemovalReason::Fulfill(Readable::read(reader)?),
-			_ => return Err(DecodeError::InvalidValue),
-		})
-	}
-}
+impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
+	(0, FailRelay),
+	(1, FailMalformed),
+	(2, Fulfill),
+);
 
 impl Writeable for ChannelUpdateStatus {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {

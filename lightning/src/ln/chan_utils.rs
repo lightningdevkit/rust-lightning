@@ -22,7 +22,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 
 use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
-use util::ser::{Readable, Writeable, Writer, MAX_BUF_SIZE};
+use util::ser::{Readable, Writeable, Writer};
 use util::byte_utils;
 
 use bitcoin::hash_types::WPubkeyHash;
@@ -36,17 +36,10 @@ use core::cmp;
 use ln::chan_utils;
 use util::transaction_utils::sort_outputs;
 use ln::channel::INITIAL_COMMITMENT_NUMBER;
-use std::io::Read;
 use core::ops::Deref;
 use chain;
 
-// Maximum size of a serialized HTLCOutputInCommitment
-pub(crate) const HTLC_OUTPUT_IN_COMMITMENT_SIZE: usize = 1 + 8 + 4 + 32 + 5;
-
 pub(crate) const MAX_HTLCS: u16 = 483;
-
-// This checks that the buffer size is greater than the maximum possible size for serialized HTLCS
-const _EXCESS_BUFFER_SIZE: usize = MAX_BUF_SIZE - MAX_HTLCS as usize * HTLC_OUTPUT_IN_COMMITMENT_SIZE;
 
 pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
@@ -866,44 +859,16 @@ impl PartialEq for CommitmentTransaction {
 	}
 }
 
-/// (C-not exported) as users never need to call this directly
-impl Writeable for Vec<HTLCOutputInCommitment> {
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
-		(self.len() as u16).write(w)?;
-		for e in self.iter() {
-			e.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-/// (C-not exported) as users never need to call this directly
-impl Readable for Vec<HTLCOutputInCommitment> {
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let byte_size = (len as usize)
-			.checked_mul(HTLC_OUTPUT_IN_COMMITMENT_SIZE)
-			.ok_or(DecodeError::BadLengthDescriptor)?;
-		if byte_size > MAX_BUF_SIZE {
-			return Err(DecodeError::BadLengthDescriptor);
-		}
-		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(HTLCOutputInCommitment::read(r)?); }
-		Ok(ret)
-	}
-}
-
 impl_writeable_tlv_based!(CommitmentTransaction, {
 	(0, commitment_number),
 	(2, to_broadcaster_value_sat),
 	(4, to_countersignatory_value_sat),
 	(6, feerate_per_kw),
-	(8, htlcs),
-	(10, keys),
-	(12, built),
-}, {}, {});
+	(8, keys),
+	(10, built),
+}, {}, {
+	(12, htlcs),
+});
 
 impl CommitmentTransaction {
 	/// Construct an object of the class while assigning transaction output indices to HTLCs.

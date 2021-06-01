@@ -49,40 +49,14 @@ pub struct RouteHop {
 	pub cltv_expiry_delta: u32,
 }
 
-/// (C-not exported)
-impl Writeable for Vec<RouteHop> {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		(self.len() as u8).write(writer)?;
-		for hop in self.iter() {
-			hop.pubkey.write(writer)?;
-			hop.node_features.write(writer)?;
-			hop.short_channel_id.write(writer)?;
-			hop.channel_features.write(writer)?;
-			hop.fee_msat.write(writer)?;
-			hop.cltv_expiry_delta.write(writer)?;
-		}
-		Ok(())
-	}
-}
-
-/// (C-not exported)
-impl Readable for Vec<RouteHop> {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Vec<RouteHop>, DecodeError> {
-		let hops_count: u8 = Readable::read(reader)?;
-		let mut hops = Vec::with_capacity(hops_count as usize);
-		for _ in 0..hops_count {
-			hops.push(RouteHop {
-				pubkey: Readable::read(reader)?,
-				node_features: Readable::read(reader)?,
-				short_channel_id: Readable::read(reader)?,
-				channel_features: Readable::read(reader)?,
-				fee_msat: Readable::read(reader)?,
-				cltv_expiry_delta: Readable::read(reader)?,
-			});
-		}
-		Ok(hops)
-	}
-}
+impl_writeable_tlv_based!(RouteHop, {
+	(0, pubkey),
+	(2, node_features),
+	(4, short_channel_id),
+	(6, channel_features),
+	(8, fee_msat),
+	(10, cltv_expiry_delta),
+}, {}, {});
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
@@ -105,7 +79,10 @@ impl Writeable for Route {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		for hops in self.paths.iter() {
-			hops.write(writer)?;
+			(hops.len() as u8).write(writer)?;
+			for hop in hops.iter() {
+				hop.write(writer)?;
+			}
 		}
 		write_tlv_fields!(writer, {}, {});
 		Ok(())
@@ -118,7 +95,12 @@ impl Readable for Route {
 		let path_count: u64 = Readable::read(reader)?;
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
 		for _ in 0..path_count {
-			paths.push(Readable::read(reader)?);
+			let hop_count: u8 = Readable::read(reader)?;
+			let mut hops = Vec::with_capacity(hop_count as usize);
+			for _ in 0..hop_count {
+				hops.push(Readable::read(reader)?);
+			}
+			paths.push(hops);
 		}
 		read_tlv_fields!(reader, {}, {});
 		Ok(Route { paths })
@@ -3925,8 +3907,8 @@ pub(crate) mod test_utils {
 	use std::fs::File;
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
 	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
-		let res = File::open("net_graph-2021-05-27.bin") // By default we're run in RL/lightning
-			.or_else(|_| File::open("lightning/net_graph-2021-05-27.bin")) // We may be run manually in RL/
+		let res = File::open("net_graph-2021-05-31.bin") // By default we're run in RL/lightning
+			.or_else(|_| File::open("lightning/net_graph-2021-05-31.bin")) // We may be run manually in RL/
 			.or_else(|_| { // Fall back to guessing based on the binary location
 				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
 				let mut path = std::env::current_exe().unwrap();
@@ -3935,11 +3917,11 @@ pub(crate) mod test_utils {
 				path.pop(); // debug
 				path.pop(); // target
 				path.push("lightning");
-				path.push("net_graph-2021-05-27.bin");
+				path.push("net_graph-2021-05-31.bin");
 				eprintln!("{}", path.to_str().unwrap());
 				File::open(path)
 			})
-		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-45d86ead641d-2021-05-27.bin and place it at lightning/net_graph-2021-05-27.bin");
+		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.15-2021-05-31.bin and place it at lightning/net_graph-2021-05-31.bin");
 		#[cfg(require_route_graph_test)]
 		return Ok(res.unwrap());
 		#[cfg(not(require_route_graph_test))]

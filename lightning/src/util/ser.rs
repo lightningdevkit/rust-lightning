@@ -249,28 +249,31 @@ impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	}
 }
 
-const MAX_ALLOC_SIZE: u64 = 64*1024;
-
+/// Wrapper to write each element of a Vec with no length prefix
 pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
 impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		(self.0.len() as u64).write(writer)?;
 		for ref v in self.0.iter() {
 			v.write(writer)?;
 		}
 		Ok(())
 	}
 }
+
+/// Wrapper to read elements from a given stream until it reaches the end of the stream.
 pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
 impl<T: Readable> Readable for VecReadWrapper<T> {
 	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let count: u64 = Readable::read(reader)?;
-		let mut values = Vec::with_capacity(cmp::min(count, MAX_ALLOC_SIZE / (core::mem::size_of::<T>() as u64)) as usize);
-		for _ in 0..count {
-			match Readable::read(reader) {
+	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
+		let mut values = Vec::new();
+		loop {
+			let mut track_read = ReadTrackingReader::new(&mut reader);
+			match Readable::read(&mut track_read) {
 				Ok(v) => { values.push(v); },
+				// If we failed to read any bytes at all, we reached the end of our TLV
+				// stream and have simply exhausted all entries.
+				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
 				Err(e) => return Err(e),
 			}
 		}
@@ -695,6 +698,18 @@ impl Readable for PaymentSecret {
 	}
 }
 
+impl<T: Writeable> Writeable for Box<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		T::write(&**self, w)
+	}
+}
+
+impl<T: Readable> Readable for Box<T> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Box::new(Readable::read(r)?))
+	}
+}
+
 impl<T: Writeable> Writeable for Option<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		match *self {
@@ -819,5 +834,21 @@ impl<A: Writeable, B: Writeable> Writeable for (A, B) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
 		self.0.write(w)?;
 		self.1.write(w)
+	}
+}
+
+impl<A: Readable, B: Readable, C: Readable> Readable for (A, B, C) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		let c: C = Readable::read(r)?;
+		Ok((a, b, c))
+	}
+}
+impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)?;
+		self.2.write(w)
 	}
 }

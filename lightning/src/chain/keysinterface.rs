@@ -73,6 +73,16 @@ impl DelayedPaymentOutputDescriptor {
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH + 1;
 }
 
+impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
+	(0, outpoint),
+	(2, per_commitment_point),
+	(4, to_self_delay),
+	(6, output),
+	(8, revocation_pubkey),
+	(10, channel_keys_id),
+	(12, channel_value_satoshis),
+}, {}, {});
+
 /// Information about a spendable output to our "payment key". See
 /// SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +104,12 @@ impl StaticPaymentOutputDescriptor {
 	// redeemscript push length.
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 34;
 }
+impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
+	(0, outpoint),
+	(2, output),
+	(4, channel_keys_id),
+	(6, channel_value_satoshis),
+}, {}, {});
 
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
@@ -152,62 +168,15 @@ pub enum SpendableOutputDescriptor {
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
-impl Writeable for SpendableOutputDescriptor {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-		match self {
-			&SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output } => {
-				0u8.write(writer)?;
-				outpoint.write(writer)?;
-				output.write(writer)?;
-			},
-			&SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) => {
-				1u8.write(writer)?;
-				descriptor.outpoint.write(writer)?;
-				descriptor.per_commitment_point.write(writer)?;
-				descriptor.to_self_delay.write(writer)?;
-				descriptor.output.write(writer)?;
-				descriptor.revocation_pubkey.write(writer)?;
-				descriptor.channel_keys_id.write(writer)?;
-				descriptor.channel_value_satoshis.write(writer)?;
-			},
-			&SpendableOutputDescriptor::StaticPaymentOutput(ref descriptor) => {
-				2u8.write(writer)?;
-				descriptor.outpoint.write(writer)?;
-				descriptor.output.write(writer)?;
-				descriptor.channel_keys_id.write(writer)?;
-				descriptor.channel_value_satoshis.write(writer)?;
-			},
-		}
-		Ok(())
-	}
-}
-
-impl Readable for SpendableOutputDescriptor {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		match Readable::read(reader)? {
-			0u8 => Ok(SpendableOutputDescriptor::StaticOutput {
-				outpoint: Readable::read(reader)?,
-				output: Readable::read(reader)?,
-			}),
-			1u8 => Ok(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
-				outpoint: Readable::read(reader)?,
-				per_commitment_point: Readable::read(reader)?,
-				to_self_delay: Readable::read(reader)?,
-				output: Readable::read(reader)?,
-				revocation_pubkey: Readable::read(reader)?,
-				channel_keys_id: Readable::read(reader)?,
-				channel_value_satoshis: Readable::read(reader)?,
-			})),
-			2u8 => Ok(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
-				outpoint: Readable::read(reader)?,
-				output: Readable::read(reader)?,
-				channel_keys_id: Readable::read(reader)?,
-				channel_value_satoshis: Readable::read(reader)?,
-			})),
-			_ => Err(DecodeError::InvalidValue),
-		}
-	}
-}
+impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
+	(0, StaticOutput) => {
+		(0, outpoint),
+		(2, output),
+	}, {}, {},
+;
+	(1, DelayedPaymentOutput),
+	(2, StaticPaymentOutput),
+);
 
 /// A trait to sign lightning channel transactions as described in BOLT 3.
 ///
