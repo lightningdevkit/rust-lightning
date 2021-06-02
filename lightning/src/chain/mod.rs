@@ -239,6 +239,7 @@ pub trait Filter {
 ///
 /// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 /// [`ChannelMonitor::block_connected`]: channelmonitor::ChannelMonitor::block_connected
+#[derive(Clone, PartialEq, Hash)]
 pub struct WatchedOutput {
 	/// First block where the transaction output may have been spent.
 	pub block_hash: Option<BlockHash>,

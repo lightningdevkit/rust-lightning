@@ -498,6 +498,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 /// Typically, the block-specific parameters are derived from the best block hash for the network,
 /// as a newly constructed `ChannelManager` will not have created any channels yet. These parameters
 /// are not needed when deserializing a previously constructed `ChannelManager`.
+#[derive(Clone, Copy, PartialEq)]
 pub struct ChainParameters {
 	/// The network for determining the `chain_hash` in Lightning messages.
 	pub network: Network,
@@ -509,7 +510,7 @@ pub struct ChainParameters {
 }
 
 /// The best known block as identified by its hash and height.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct BestBlock {
 	block_hash: BlockHash,
 	height: u32,
