@@ -525,12 +525,18 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 	}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
 }
 
-/// panics if htlc.transaction_output_index.is_none()!
-pub fn build_htlc_transaction(prev_hash: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+/// Builds an unsigned HTLC-Success or HTLC-Timeout transaction from the given channel and HTLC
+/// parameters. This is used by [`TrustedCommitmentTransaction::get_htlc_sigs`] to fetch the
+/// transaction which needs signing, and can be used to construct an HTLC transaction which is
+/// broadcastable given a counterparty HTLC signature.
+///
+/// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
+/// commitment transaction).
+pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
-			txid: prev_hash.clone(),
+			txid: commitment_txid.clone(),
 			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
 		},
 		script_sig: Script::new(),
@@ -1177,7 +1183,12 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	}
 }
 
-/// Get the transaction number obscure factor
+/// Commitment transaction numbers which appear in the transactions themselves are XOR'd with a
+/// shared secret first. This prevents on-chain observers from discovering how many commitment
+/// transactions occurred in a channel before it was closed.
+///
+/// This function gets the shared secret from relevant channel public keys and can be used to
+/// "decrypt" the commitment transaction number given a commitment transaction on-chain.
 pub fn get_commitment_transaction_number_obscure_factor(
 	broadcaster_payment_basepoint: &PublicKey,
 	countersignatory_payment_basepoint: &PublicKey,
