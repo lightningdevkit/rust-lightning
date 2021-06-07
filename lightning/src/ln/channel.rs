@@ -1428,9 +1428,6 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.channel_value_satoshis)));
 		}
-		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("Bogus channel_reserve ({}) and dust_limit ({})", msg.channel_reserve_satoshis, msg.dust_limit_satoshis)));
-		}
 		if msg.channel_reserve_satoshis < self.holder_dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Peer never wants payout outputs? channel_reserve_satoshis was ({}). dust_limit is ({})", msg.channel_reserve_satoshis, self.holder_dust_limit_satoshis)));
 		}
