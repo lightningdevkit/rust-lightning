@@ -180,7 +180,7 @@ mod tests {
 	use lightning::chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
-	use lightning::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, SimpleArcChannelManager};
+	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, BestBlock, ChainParameters, ChannelManager, SimpleArcChannelManager};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
@@ -303,8 +303,8 @@ mod tests {
 		}}
 	}
 
-	fn confirm_transaction(node: &mut Node, tx: &Transaction) {
-		for i in 1..=ANTI_REORG_DELAY {
+	fn confirm_transaction_depth(node: &mut Node, tx: &Transaction, depth: u32) {
+		for i in 1..=depth {
 			let prev_blockhash = node.best_block.block_hash();
 			let height = node.best_block.height() + 1;
 			let header = BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: Default::default(), time: height, bits: 42, nonce: 42 };
@@ -315,13 +315,16 @@ mod tests {
 					node.node.transactions_confirmed(&header, &txdata, height);
 					node.chain_monitor.transactions_confirmed(&header, &txdata, height);
 				},
-				ANTI_REORG_DELAY => {
+				x if x == depth => {
 					node.node.best_block_updated(&header, height);
 					node.chain_monitor.best_block_updated(&header, height);
 				},
 				_ => {},
 			}
 		}
+	}
+	fn confirm_transaction(node: &mut Node, tx: &Transaction) {
+		confirm_transaction_depth(node, tx, ANTI_REORG_DELAY);
 	}
 
 	#[test]
@@ -454,7 +457,7 @@ mod tests {
 		// Force close the channel and check that the SpendableOutputs event was handled.
 		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
 		let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
-		confirm_transaction(&mut nodes[0], &commitment_tx);
+		confirm_transaction_depth(&mut nodes[0], &commitment_tx, BREAKDOWN_TIMEOUT as u32);
 		let event = receiver
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("SpendableOutputs not handled within deadline");
