@@ -328,8 +328,11 @@ pub enum Currency {
 	/// Bitcoin regtest
 	Regtest,
 
-	/// Bitcoin simnet/signet
+	/// Bitcoin simnet
 	Simnet,
+
+	/// Bitcoin signet
+	Signet,
 }
 
 /// Tagged field which may have an unknown tag

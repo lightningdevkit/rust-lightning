@@ -153,6 +153,7 @@ impl Display for Currency {
 			Currency::BitcoinTestnet => "tb",
 			Currency::Regtest => "bcrt",
 			Currency::Simnet => "sb",
+			Currency::Signet => "tbs",
 		};
 		write!(f, "{}", currency_code)
 	}
@@ -473,6 +474,7 @@ mod test {
 		assert_eq!("tb", Currency::BitcoinTestnet.to_string());
 		assert_eq!("bcrt", Currency::Regtest.to_string());
 		assert_eq!("sb", Currency::Simnet.to_string());
+		assert_eq!("tbs", Currency::Signet.to_string());
 	}
 
 	#[test]
