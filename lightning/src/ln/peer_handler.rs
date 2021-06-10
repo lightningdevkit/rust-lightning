@@ -658,6 +658,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		let pause_read = {
 			let mut peers_lock = self.peers.lock().unwrap();
 			let peers = &mut *peers_lock;
+			let mut msgs_to_forward = Vec::new();
+			let mut peer_node_id = None;
 			let pause_read = match peers.peers.get_mut(peer_descriptor) {
 				None => panic!("Descriptor for read_event is not already known to PeerManager"),
 				Some(peer) => {
@@ -793,13 +795,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 											}
 										};
 
-										if let Err(handling_error) = self.handle_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), message){
-											match handling_error {
+										match self.handle_message(&mut peers.peers_needing_send, peer, peer_descriptor.clone(), message) {
+											Err(handling_error) => match handling_error {
 												MessageHandlingError::PeerHandleError(e) => { return Err(e) },
 												MessageHandlingError::LightningError(e) => {
 													try_potential_handleerror!(Err(e));
 												},
-											}
+											},
+											Ok(Some(msg)) => {
+												peer_node_id = Some(peer.their_node_id.expect("After noise is complete, their_node_id is always set"));
+												msgs_to_forward.push(msg);
+											},
+											Ok(None) => {},
 										}
 									}
 								}
@@ -811,6 +818,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 			};
 
+			for msg in msgs_to_forward.drain(..) {
+				self.forward_broadcast_msg(peers, &msg, peer_node_id.as_ref());
+			}
+
 			pause_read
 		};
 
@@ -818,7 +829,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	}
 
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
-	fn handle_message(&self, peers_needing_send: &mut HashSet<Descriptor>, peer: &mut Peer, peer_descriptor: Descriptor, message: wire::Message) -> Result<(), MessageHandlingError> {
+	/// Returns the message back if it needs to be broadcasted to all other peers.
+	fn handle_message(&self, peers_needing_send: &mut HashSet<Descriptor>, peer: &mut Peer, peer_descriptor: Descriptor, message: wire::Message) -> Result<Option<wire::Message>, MessageHandlingError> {
 		log_trace!(self.logger, "Received message of type {} from {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
 
 		// Need an Init as first message
@@ -827,6 +839,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
 			return Err(PeerHandleError{ no_connection_possible: false }.into());
 		}
+
+		let mut should_forward = None;
 
 		match message {
 			// Setup and Control messages:
@@ -950,34 +964,28 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg);
 			},
 			wire::Message::ChannelAnnouncement(msg) => {
-				let should_forward = match self.message_handler.route_handler.handle_channel_announcement(&msg) {
+				if match self.message_handler.route_handler.handle_channel_announcement(&msg) {
 					Ok(v) => v,
 					Err(e) => { return Err(e.into()); },
-				};
-
-				if should_forward {
-					// TODO: forward msg along to all our other peers!
+				} {
+					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
 				}
 			},
 			wire::Message::NodeAnnouncement(msg) => {
-				let should_forward = match self.message_handler.route_handler.handle_node_announcement(&msg) {
+				if match self.message_handler.route_handler.handle_node_announcement(&msg) {
 					Ok(v) => v,
 					Err(e) => { return Err(e.into()); },
-				};
-
-				if should_forward {
-					// TODO: forward msg along to all our other peers!
+				} {
+					should_forward = Some(wire::Message::NodeAnnouncement(msg));
 				}
 			},
 			wire::Message::ChannelUpdate(msg) => {
 				self.message_handler.chan_handler.handle_channel_update(&peer.their_node_id.unwrap(), &msg);
-				let should_forward = match self.message_handler.route_handler.handle_channel_update(&msg) {
+				if match self.message_handler.route_handler.handle_channel_update(&msg) {
 					Ok(v) => v,
 					Err(e) => { return Err(e.into()); },
-				};
-
-				if should_forward {
-					// TODO: forward msg along to all our other peers!
+				} {
+					should_forward = Some(wire::Message::ChannelUpdate(msg));
 				}
 			},
 			wire::Message::QueryShortChannelIds(msg) => {
@@ -1006,7 +1014,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				log_trace!(self.logger, "Received unknown odd message of type {}, ignoring", msg_type);
 			}
 		};
-		Ok(())
+		Ok(should_forward)
 	}
 
 	fn forward_broadcast_msg(&self, peers: &mut PeerHolder<Descriptor>, msg: &wire::Message, except_node: Option<&PublicKey>) {
