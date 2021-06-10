@@ -747,7 +747,7 @@ impl SignedRawInvoice {
 /// Finds the first element of an enum stream of a given variant and extracts one member of the
 /// variant. If no element was found `None` gets returned.
 ///
-/// The following example would extract the first
+/// The following example would extract the first B.
 /// ```
 /// use Enum::*
 ///
@@ -761,11 +761,35 @@ impl SignedRawInvoice {
 /// assert_eq!(find_extract!(elements.iter(), Enum::B(ref x), x), Some(3u16))
 /// ```
 macro_rules! find_extract {
-    ($iter:expr, $enm:pat, $enm_var:ident) => {
+	($iter:expr, $enm:pat, $enm_var:ident) => {
+		find_all_extract!($iter, $enm, $enm_var).next()
+    };
+}
+
+/// Finds the all elements of an enum stream of a given variant and extracts one member of the
+/// variant through an iterator.
+///
+/// The following example would extract all A.
+/// ```
+/// use Enum::*
+///
+/// enum Enum {
+/// 	A(u8),
+/// 	B(u16)
+/// }
+///
+/// let elements = vec![A(1), A(2), B(3), A(4)]
+///
+/// assert_eq!(
+/// 	find_all_extract!(elements.iter(), Enum::A(ref x), x).collect::<Vec<u8>>(),
+/// 	vec![1u8, 2u8, 4u8])
+/// ```
+macro_rules! find_all_extract {
+	($iter:expr, $enm:pat, $enm_var:ident) => {
     	$iter.filter_map(|tf| match *tf {
 			$enm => Some($enm_var),
 			_ => None,
-		}).next()
+		})
     };
 }
 
@@ -886,17 +910,11 @@ impl RawInvoice {
 
 	/// (C-not exported) as we don't support Vec<&NonOpaqueType>
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
-		self.known_tagged_fields().filter_map(|tf| match tf {
-			&TaggedField::Fallback(ref f) => Some(f),
-			_ => None,
-		}).collect::<Vec<&Fallback>>()
+		find_all_extract!(self.known_tagged_fields(), TaggedField::Fallback(ref x), x).collect()
 	}
 
 	pub fn routes(&self) -> Vec<&RouteHint> {
-		self.known_tagged_fields().filter_map(|tf| match tf {
-			&TaggedField::Route(ref r) => Some(r),
-			_ => None,
-		}).collect::<Vec<&RouteHint>>()
+		find_all_extract!(self.known_tagged_fields(), TaggedField::Route(ref x), x).collect()
 	}
 
 	pub fn amount_pico_btc(&self) -> Option<u64> {
