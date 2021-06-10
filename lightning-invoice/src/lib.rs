@@ -1066,7 +1066,7 @@ impl Invoice {
 		Ok(())
 	}
 
-	/// Constructs an `Invoice` from a `SignedInvoice` by checking all its invariants.
+	/// Constructs an `Invoice` from a `SignedRawInvoice` by checking all its invariants.
 	/// ```
 	/// use lightning_invoice::*;
 	///
