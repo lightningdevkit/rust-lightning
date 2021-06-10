@@ -30,7 +30,7 @@ use lightning::ln::PaymentSecret;
 use lightning::ln::features::InvoiceFeatures;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::RouteHintHop;
+use lightning::routing::router::RouteHint;
 
 use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
@@ -362,7 +362,7 @@ pub enum TaggedField {
 	ExpiryTime(ExpiryTime),
 	MinFinalCltvExpiry(MinFinalCltvExpiry),
 	Fallback(Fallback),
-	Route(RouteHint),
+	PrivateRoute(PrivateRoute),
 	PaymentSecret(PaymentSecret),
 	Features(InvoiceFeatures),
 }
@@ -419,7 +419,7 @@ pub struct InvoiceSignature(pub RecoverableSignature);
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct RouteHint(Vec<RouteHintHop>);
+pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -431,7 +431,7 @@ pub mod constants {
 	pub const TAG_EXPIRY_TIME: u8 = 6;
 	pub const TAG_MIN_FINAL_CLTV_EXPIRY: u8 = 24;
 	pub const TAG_FALLBACK: u8 = 9;
-	pub const TAG_ROUTE: u8 = 3;
+	pub const TAG_PRIVATE_ROUTE: u8 = 3;
 	pub const TAG_PAYMENT_SECRET: u8 = 16;
 	pub const TAG_FEATURES: u8 = 5;
 }
@@ -509,9 +509,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 	}
 
 	/// Adds a private route.
-	pub fn route(mut self, route: Vec<RouteHintHop>) -> Self {
-		match RouteHint::new(route) {
-			Ok(r) => self.tagged_fields.push(TaggedField::Route(r)),
+	pub fn private_route(mut self, hint: RouteHint) -> Self {
+		match PrivateRoute::new(hint) {
+			Ok(r) => self.tagged_fields.push(TaggedField::PrivateRoute(r)),
 			Err(e) => self.error = Some(e),
 		}
 		self
@@ -913,8 +913,8 @@ impl RawInvoice {
 		find_all_extract!(self.known_tagged_fields(), TaggedField::Fallback(ref x), x).collect()
 	}
 
-	pub fn routes(&self) -> Vec<&RouteHint> {
-		find_all_extract!(self.known_tagged_fields(), TaggedField::Route(ref x), x).collect()
+	pub fn private_routes(&self) -> Vec<&PrivateRoute> {
+		find_all_extract!(self.known_tagged_fields(), TaggedField::PrivateRoute(ref x), x).collect()
 	}
 
 	pub fn amount_pico_btc(&self) -> Option<u64> {
@@ -1163,8 +1163,15 @@ impl Invoice {
 	}
 
 	/// Returns a list of all routes included in the invoice
-	pub fn routes(&self) -> Vec<&RouteHint> {
-		self.signed_invoice.routes()
+	pub fn private_routes(&self) -> Vec<&PrivateRoute> {
+		self.signed_invoice.private_routes()
+	}
+
+	/// Returns a list of all routes included in the invoice as the underlying hints
+	pub fn route_hints(&self) -> Vec<&RouteHint> {
+		find_all_extract!(
+			self.signed_invoice.known_tagged_fields(), TaggedField::PrivateRoute(ref x), x
+		).map(|route| &**route).collect()
 	}
 
 	/// Returns the currency for which the invoice was issued
@@ -1195,7 +1202,7 @@ impl TaggedField {
 			TaggedField::ExpiryTime(_) => constants::TAG_EXPIRY_TIME,
 			TaggedField::MinFinalCltvExpiry(_) => constants::TAG_MIN_FINAL_CLTV_EXPIRY,
 			TaggedField::Fallback(_) => constants::TAG_FALLBACK,
-			TaggedField::Route(_) => constants::TAG_ROUTE,
+			TaggedField::PrivateRoute(_) => constants::TAG_PRIVATE_ROUTE,
 			TaggedField::PaymentSecret(_) => constants::TAG_PAYMENT_SECRET,
 			TaggedField::Features(_) => constants::TAG_FEATURES,
 		};
@@ -1286,32 +1293,32 @@ impl ExpiryTime {
 	}
 }
 
-impl RouteHint {
-	/// Create a new (partial) route from a list of hops
-	pub fn new(hops: Vec<RouteHintHop>) -> Result<RouteHint, CreationError> {
-		if hops.len() <= 12 {
-			Ok(RouteHint(hops))
+impl PrivateRoute {
+	/// Creates a new (partial) route from a list of hops
+	pub fn new(hops: RouteHint) -> Result<PrivateRoute, CreationError> {
+		if hops.0.len() <= 12 {
+			Ok(PrivateRoute(hops))
 		} else {
 			Err(CreationError::RouteTooLong)
 		}
 	}
 
-	/// Returrn the underlying vector of hops
-	pub fn into_inner(self) -> Vec<RouteHintHop> {
+	/// Returns the underlying list of hops
+	pub fn into_inner(self) -> RouteHint {
 		self.0
 	}
 }
 
-impl Into<Vec<RouteHintHop>> for RouteHint {
-	fn into(self) -> Vec<RouteHintHop> {
+impl Into<RouteHint> for PrivateRoute {
+	fn into(self) -> RouteHint {
 		self.into_inner()
 	}
 }
 
-impl Deref for RouteHint {
-	type Target = Vec<RouteHintHop>;
+impl Deref for PrivateRoute {
+	type Target = RouteHint;
 
-	fn deref(&self) -> &Vec<RouteHintHop> {
+	fn deref(&self) -> &RouteHint {
 		&self.0
 	}
 }
@@ -1670,6 +1677,7 @@ mod test {
 	#[test]
 	fn test_builder_fail() {
 		use ::*;
+		use lightning::routing::router::RouteHintHop;
 		use std::iter::FromIterator;
 		use secp256k1::key::PublicKey;
 
@@ -1704,10 +1712,10 @@ mod test {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		};
-		let too_long_route = vec![route_hop; 13];
+		let too_long_route = RouteHint(vec![route_hop; 13]);
 		let long_route_res = builder.clone()
 			.description("Test".into())
-			.route(too_long_route)
+			.private_route(too_long_route)
 			.build_raw();
 		assert_eq!(long_route_res, Err(CreationError::RouteTooLong));
 
@@ -1722,6 +1730,7 @@ mod test {
 	#[test]
 	fn test_builder_ok() {
 		use ::*;
+		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::key::{SecretKey, PublicKey};
 		use std::time::{UNIX_EPOCH, Duration};
@@ -1737,7 +1746,7 @@ mod test {
 		).unwrap();
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
-		let route_1 = vec![
+		let route_1 = RouteHint(vec![
 			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
@@ -1760,9 +1769,9 @@ mod test {
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			}
-		];
+		]);
 
-		let route_2 = vec![
+		let route_2 = RouteHint(vec![
 			RouteHintHop {
 				src_node_id: public_key.clone(),
 				short_channel_id: 0,
@@ -1785,7 +1794,7 @@ mod test {
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			}
-		];
+		]);
 
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
 			.amount_pico_btc(123)
@@ -1794,8 +1803,8 @@ mod test {
 			.expiry_time(Duration::from_secs(54321))
 			.min_final_cltv_expiry(144)
 			.fallback(Fallback::PubKeyHash([0;20]))
-			.route(route_1.clone())
-			.route(route_2.clone())
+			.private_route(route_1.clone())
+			.private_route(route_2.clone())
 			.description_hash(sha256::Hash::from_slice(&[3;32][..]).unwrap())
 			.payment_hash(sha256::Hash::from_slice(&[21;32][..]).unwrap())
 			.payment_secret(PaymentSecret([42; 32]))
@@ -1818,7 +1827,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry(), 144);
 		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
-		assert_eq!(invoice.routes(), vec![&RouteHint(route_1), &RouteHint(route_2)]);
+		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(
 			invoice.description(),
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))

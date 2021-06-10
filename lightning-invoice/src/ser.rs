@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	RouteHint, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
+	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
 /// be applied. That means the results of writing two data blocks with one or two `BytesToBase32`
@@ -356,11 +356,11 @@ impl Base32Len for Fallback {
 	}
 }
 
-impl ToBase32 for RouteHint {
+impl ToBase32 for PrivateRoute {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		let mut converter = BytesToBase32::new(writer);
 
-		for hop in self.iter() {
+		for hop in (self.0).0.iter() {
 			converter.append(&hop.src_node_id.serialize()[..])?;
 			let short_channel_id = try_stretch(
 				encode_int_be_base256(hop.short_channel_id),
@@ -392,9 +392,9 @@ impl ToBase32 for RouteHint {
 	}
 }
 
-impl Base32Len for RouteHint {
+impl Base32Len for PrivateRoute {
 	fn base32_len(&self) -> usize {
-		bytes_size_to_base32_size(self.0.len() * 51)
+		bytes_size_to_base32_size((self.0).0.len() * 51)
 	}
 }
 
@@ -439,8 +439,8 @@ impl ToBase32 for TaggedField {
 			TaggedField::Fallback(ref fallback_address) => {
 				write_tagged_field(writer, constants::TAG_FALLBACK, fallback_address)
 			},
-			TaggedField::Route(ref route_hops) => {
-				write_tagged_field(writer, constants::TAG_ROUTE, route_hops)
+			TaggedField::PrivateRoute(ref route_hops) => {
+				write_tagged_field(writer, constants::TAG_PRIVATE_ROUTE, route_hops)
 			},
 			TaggedField::PaymentSecret(ref payment_secret) => {
 				  write_tagged_field(writer, constants::TAG_PAYMENT_SECRET, payment_secret)

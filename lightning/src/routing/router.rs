@@ -107,7 +107,11 @@ impl Readable for Route {
 	}
 }
 
-/// A channel descriptor which provides a last-hop route to get_route
+/// A list of hops along a payment path terminating with a channel to the recipient.
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct RouteHint(pub Vec<RouteHintHop>);
+
+/// A channel descriptor for a hop along a payment path.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct RouteHintHop {
 	/// The node_id of the non-target end of the route
@@ -329,8 +333,8 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// If the payee provided features in their invoice, they should be provided via payee_features.
 /// Without this, MPP will only be used if the payee's features are available in the network graph.
 ///
-/// Extra routing hops between known nodes and the target will be used if they are included in
-/// last_hops.
+/// Private routing paths between a public node and the target may be included in `last_hops`.
+/// Currently, only the last hop in each path is considered.
 ///
 /// If some channels aren't announced, it may be useful to fill in a first_hops with the
 /// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
@@ -344,7 +348,7 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// equal), however the enabled/disabled bit on such channels as well as the
 /// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
 pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee: &PublicKey, payee_features: Option<InvoiceFeatures>, first_hops: Option<&[&ChannelDetails]>,
-	last_hops: &[&RouteHintHop], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
+	last_hops: &[&RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
 	if *payee == *our_node_id {
@@ -359,7 +363,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	for last_hop in last_hops {
+	let last_hops = last_hops.iter().filter_map(|hops| hops.0.last()).collect::<Vec<_>>();
+	for last_hop in last_hops.iter() {
 		if last_hop.src_node_id == *payee {
 			return Err(LightningError{err: "Last hop cannot have a payee as a source.".to_owned(), action: ErrorAction::IgnoreError});
 		}
@@ -1154,7 +1159,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 #[cfg(test)]
 mod tests {
-	use routing::router::{get_route, RouteHintHop, RoutingFees};
+	use routing::router::{get_route, RouteHint, RouteHintHop, RoutingFees};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -2085,19 +2090,19 @@ mod tests {
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 	}
 
-	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHintHop> {
+	fn last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
 			proportional_millionths: 0,
 		};
-		vec!(RouteHintHop {
+		vec![RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[3].clone(),
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}, RouteHintHop {
+		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[4].clone(),
 			short_channel_id: 9,
 			fees: RoutingFees {
@@ -2107,14 +2112,14 @@ mod tests {
 			cltv_expiry_delta: (9 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}, RouteHintHop {
+		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[5].clone(),
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		})
+		}])]
 	}
 
 	#[test]
@@ -2124,8 +2129,8 @@ mod tests {
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
 
-		// First check that lst hop can't have its source as the payee.
-		let invalid_last_hop = RouteHintHop {
+		// First check that last hop can't have its source as the payee.
+		let invalid_last_hop = RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[6],
 			short_channel_id: 8,
 			fees: RoutingFees {
@@ -2135,7 +2140,7 @@ mod tests {
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		};
+		}]);
 
 		let mut invalid_last_hops = last_hops(&nodes);
 		invalid_last_hops.push(invalid_last_hop);
@@ -2224,7 +2229,7 @@ mod tests {
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
-		last_hops[0].fees.base_msat = 1000;
+		last_hops[0].0[0].fees.base_msat = 1000;
 
 		// Revert to via 6 as the fee on 8 goes up
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -2312,7 +2317,7 @@ mod tests {
 		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
 
 		// If we specify a channel to a middle hop, that overrides our local channel view and that gets used
-		let last_hops = vec![RouteHintHop {
+		let last_hops = RouteHint(vec![RouteHintHop {
 			src_node_id: middle_node_id,
 			short_channel_id: 8,
 			fees: RoutingFees {
@@ -2322,7 +2327,7 @@ mod tests {
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}];
+		}]);
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
@@ -2337,7 +2342,7 @@ mod tests {
 			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
-		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
+		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &vec![&last_hops], 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
 
 		assert_eq!(route.paths[0].len(), 2);
 
