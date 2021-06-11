@@ -780,7 +780,7 @@ macro_rules! convert_chan_err {
 					$short_to_id.remove(&short_id);
 				}
 				let shutdown_res = $channel.force_shutdown(true);
-				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update(&$channel).ok()))
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			},
 			ChannelError::CloseDelayBroadcast(msg) => {
 				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($channel_id[..]), msg);
@@ -788,7 +788,7 @@ macro_rules! convert_chan_err {
 					$short_to_id.remove(&short_id);
 				}
 				let shutdown_res = $channel.force_shutdown(false);
-				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update(&$channel).ok()))
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			}
 		}
 	}
@@ -844,7 +844,8 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.force_shutdown(true), $self.get_channel_update(&$chan).ok()));
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id,
+						$chan.force_shutdown(true), $self.get_channel_update_for_broadcast(&$chan).ok() ));
 				(res, true)
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -1224,9 +1225,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		let chan_update = if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
-				Some(update)
-			} else { None }
+			self.get_channel_update_for_broadcast(&chan).ok()
 		} else { None };
 
 		if let Some(update) = chan_update {
@@ -1275,7 +1274,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown(true));
-		if let Ok(update) = self.get_channel_update(&chan) {
+		if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 				msg: update
@@ -1535,23 +1534,23 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// hopefully an attacker trying to path-trace payments cannot make this occur
 					// on a small/per-node/per-channel scale.
 					if !chan.is_live() { // channel_disabled
-						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
-						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_holder_fee_base_msat(&self.fee_estimator) as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
-						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + chan.get_cltv_expiry_delta() as u64 { // incorrect_cltv_expiry
-						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					let cur_height = self.best_block.read().unwrap().height() + 1;
 					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now, but we want to be robust wrt to counterparty
 					// packet sanitization (see HTLC_FAIL_BACK_BUFFER rational)
 					if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
-						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
 						break Some(("CLTV expiry is too far in the future", 21, None));
@@ -1559,7 +1558,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// In theory, we would be safe against unitentional channel-closure, if we only required a margin of LATENCY_GRACE_PERIOD_BLOCKS.
 					// But, to be safe against policy reception, we use a longuer delay.
 					if (*outgoing_cltv_value) as u64 <= (cur_height + HTLC_FAIL_BACK_BUFFER) as u64 {
-						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update(chan).unwrap())));
+						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 
 					break None;
@@ -1587,9 +1586,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		(pending_forward_info, channel_state.unwrap())
 	}
 
-	/// only fails if the channel does not yet have an assigned short_id
+	/// Gets the current channel_update for the given channel. This first checks if the channel is
+	/// public, and thus should be called whenever the result is going to be passed out in a
+	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
+	///
 	/// May be called with channel_state already locked!
-	fn get_channel_update(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+		if !chan.should_announce() {
+			return Err(LightningError {
+				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
+				action: msgs::ErrorAction::IgnoreError
+			});
+		}
+		self.get_channel_update_for_unicast(chan)
+	}
+
+	/// Gets the current channel_update for the given channel. This does not check if the channel
+	/// is public (only returning an Err if the channel does not yet have an assigned short_id),
+	/// and thus MUST NOT be called unless the recipient of the resulting message has already
+	/// provided evidence that they know about the existence of the channel.
+	/// May be called with channel_state already locked!
+	fn get_channel_update_for_unicast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
@@ -1982,7 +1999,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			if let Some(msg) = chan.get_signed_channel_announcement(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone()) {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg,
-					update_msg: match self.get_channel_update(chan) {
+					update_msg: match self.get_channel_update_for_broadcast(chan) {
 						Ok(msg) => msg,
 						Err(_) => continue,
 					},
@@ -2074,7 +2091,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
-											let chan_update = self.get_channel_update(chan.get()).unwrap();
+											let chan_update = self.get_channel_update_for_unicast(chan.get()).unwrap();
 											failed_forwards.push((htlc_source, payment_hash,
 												HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.encode_with_len() }
 											));
@@ -2146,7 +2163,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											if let Some(short_id) = channel.get_short_channel_id() {
 												channel_state.short_to_id.remove(&short_id);
 											}
-											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update(&channel).ok()))
+											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
 										},
 										ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
@@ -2349,7 +2366,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
 					ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
 					ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
-						if let Ok(update) = self.get_channel_update(&chan) {
+						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
@@ -2358,7 +2375,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
 					},
 					ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
-						if let Ok(update) = self.get_channel_update(&chan) {
+						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
@@ -2408,7 +2425,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let (failure_code, onion_failure_data) =
 						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
 							hash_map::Entry::Occupied(chan_entry) => {
-								if let Ok(upd) = self.get_channel_update(&chan_entry.get()) {
+								if let Ok(upd) = self.get_channel_update_for_unicast(&chan_entry.get()) {
 									(0x1000|7, upd.encode_with_len())
 								} else {
 									(0x4000|10, Vec::new())
@@ -2991,7 +3008,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 		if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
+			if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 				let mut channel_state = self.channel_state.lock().unwrap();
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 					msg: update
@@ -3037,7 +3054,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.tx_broadcaster.broadcast_transaction(&broadcast_tx);
 		}
 		if let Some(chan) = chan_option {
-			if let Ok(update) = self.get_channel_update(&chan) {
+			if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 				let mut channel_state = self.channel_state.lock().unwrap();
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 					msg: update
@@ -3075,7 +3092,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					match pending_forward_info {
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-							let reason = if let Ok(upd) = self.get_channel_update(chan) {
+							let reason = if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
 								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
 									let mut res = Vec::with_capacity(8 + 128);
 									// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
@@ -3337,7 +3354,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone(), msg), channel_state, chan),
-					update_msg: self.get_channel_update(chan.get()).unwrap(), // can only fail if we're not in a ready state
+					// Note that announcement_signatures fails if the channel cannot be announced,
+					// so get_channel_update_for_broadcast will never fail by the time we get here.
+					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
 				});
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
@@ -3495,7 +3514,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							short_to_id.remove(&short_id);
 						}
 						failed_channels.push(chan.force_shutdown(false));
-						if let Ok(update) = self.get_channel_update(&chan) {
+						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
@@ -3934,7 +3953,7 @@ where
 				let res = f(channel);
 				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-						let chan_update = self.get_channel_update(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
+						let chan_update = self.get_channel_update_for_unicast(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 						timed_out_htlcs.push((source, payment_hash,  HTLCFailReason::Reason {
 							failure_code: 0x1000 | 14, // expiry_too_soon, or at least it is now
 							data: chan_update,
@@ -3963,7 +3982,7 @@ where
 					// It looks like our counterparty went on-chain or funding transaction was
 					// reorged out of the main chain. Close the channel.
 					failed_channels.push(channel.force_shutdown(true));
-					if let Ok(update) = self.get_channel_update(&channel) {
+					if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
 						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
 						});
@@ -4147,7 +4166,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 							short_to_id.remove(&short_id);
 						}
 						failed_channels.push(chan.force_shutdown(true));
-						if let Ok(update) = self.get_channel_update(&chan) {
+						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: update
 							});
