@@ -16,7 +16,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::ChannelDetails;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::routing::router::{get_route, RouteHintHop};
+use lightning::routing::router::{get_route, RouteHint, RouteHintHop};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
@@ -225,13 +225,13 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						Some(&first_hops_vec[..])
 					},
 				};
-				let mut last_hops_vec = Vec::new();
+				let mut last_hops = Vec::new();
 				{
 					let count = get_slice!(1)[0];
 					for _ in 0..count {
 						scid += 1;
 						let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
-						last_hops_vec.push(RouteHintHop {
+						last_hops.push(RouteHint(vec![RouteHintHop {
 							src_node_id: *rnid,
 							short_channel_id: scid,
 							fees: RoutingFees {
@@ -241,10 +241,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							cltv_expiry_delta: slice_to_be16(get_slice!(2)),
 							htlc_minimum_msat: Some(slice_to_be64(get_slice!(8))),
 							htlc_maximum_msat: None,
-						});
+						}]));
 					}
 				}
-				let last_hops = &last_hops_vec[..];
 				for target in node_pks.iter() {
 					let _ = get_route(&our_pubkey, &net_graph, target, None,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),

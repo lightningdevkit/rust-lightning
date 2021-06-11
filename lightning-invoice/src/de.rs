@@ -12,7 +12,7 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 use lightning::ln::PaymentSecret;
 use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::RouteHintHop;
+use lightning::routing::router::{RouteHint, RouteHintHop};
 
 use num_traits::{CheckedAdd, CheckedMul};
 
@@ -21,7 +21,7 @@ use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 use secp256k1::key::PublicKey;
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	SemanticError, RouteHint, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice, constants, SignedRawInvoice,
+	SemanticError, PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice, constants, SignedRawInvoice,
 	RawDataPart, CreationError, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
@@ -433,8 +433,8 @@ impl FromBase32 for TaggedField {
 				Ok(TaggedField::MinFinalCltvExpiry(MinFinalCltvExpiry::from_base32(field_data)?)),
 			constants::TAG_FALLBACK =>
 				Ok(TaggedField::Fallback(Fallback::from_base32(field_data)?)),
-			constants::TAG_ROUTE =>
-				Ok(TaggedField::Route(RouteHint::from_base32(field_data)?)),
+			constants::TAG_PRIVATE_ROUTE =>
+				Ok(TaggedField::PrivateRoute(PrivateRoute::from_base32(field_data)?)),
 			constants::TAG_PAYMENT_SECRET =>
 				Ok(TaggedField::PaymentSecret(PaymentSecret::from_base32(field_data)?)),
 			constants::TAG_FEATURES =>
@@ -558,10 +558,10 @@ impl FromBase32 for Fallback {
 	}
 }
 
-impl FromBase32 for RouteHint {
+impl FromBase32 for PrivateRoute {
 	type Err = ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<RouteHint, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<PrivateRoute, ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 
 		if bytes.len() % 51 != 0 {
@@ -593,7 +593,7 @@ impl FromBase32 for RouteHint {
 			route_hops.push(hop);
 		}
 
-		Ok(RouteHint(route_hops))
+		Ok(PrivateRoute(RouteHint(route_hops)))
 	}
 }
 
@@ -930,8 +930,8 @@ mod test {
 	#[test]
 	fn test_parse_route() {
 		use lightning::routing::network_graph::RoutingFees;
-		use lightning::routing::router::RouteHintHop;
-		use ::RouteHint;
+		use lightning::routing::router::{RouteHint, RouteHintHop};
+		use ::PrivateRoute;
 		use bech32::FromBase32;
 		use de::parse_int_be;
 
@@ -976,10 +976,10 @@ mod test {
 			htlc_maximum_msat: None
 		});
 
-		assert_eq!(RouteHint::from_base32(&input), Ok(RouteHint(expected)));
+		assert_eq!(PrivateRoute::from_base32(&input), Ok(PrivateRoute(RouteHint(expected))));
 
 		assert_eq!(
-			RouteHint::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
+			PrivateRoute::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
 			Err(ParseError::UnexpectedEndOfTaggedFields)
 		);
 	}

@@ -7,7 +7,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY};
 use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::RouteHintHop;
+use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning::util::logger::Logger;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -40,7 +40,7 @@ where
 			Some(info) => info,
 			None => continue,
 		};
-		route_hints.push(vec![RouteHintHop {
+		route_hints.push(RouteHint(vec![RouteHintHop {
 			src_node_id: channel.remote_network_id,
 			short_channel_id,
 			fees: RoutingFees {
@@ -50,7 +50,7 @@ where
 			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
-		}]);
+		}]));
 	}
 
 	let (payment_hash, payment_secret) = channelmanager.create_inbound_payment(
@@ -70,8 +70,8 @@ where
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_pico_btc(amt * 10);
 	}
-	for hint in route_hints.drain(..) {
-		invoice = invoice.route(hint);
+	for hint in route_hints {
+		invoice = invoice.private_route(hint);
 	}
 
 	let raw_invoice = match invoice.build_raw() {
@@ -112,14 +112,9 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
-		let mut route_hints = invoice.routes().clone();
-		let mut last_hops = Vec::new();
-		for hint in route_hints.drain(..) {
-			last_hops.push(hint[hint.len() - 1].clone());
-		}
 		let amt_msat = invoice.amount_pico_btc().unwrap() / 10;
-
 		let first_hops = nodes[0].node.list_usable_channels();
+		let last_hops = invoice.route_hints();
 		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
 		let logger = test_utils::TestLogger::new();
 		let route = router::get_route(
@@ -128,7 +123,7 @@ mod test {
 			&invoice.recover_payee_pub_key(),
 			Some(invoice.features().unwrap().clone()),
 			Some(&first_hops.iter().collect::<Vec<_>>()),
-			&last_hops.iter().collect::<Vec<_>>(),
+			&last_hops,
 			amt_msat,
 			invoice.min_final_cltv_expiry() as u32,
 			&logger,
