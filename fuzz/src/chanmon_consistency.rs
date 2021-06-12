@@ -571,7 +571,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						events::MessageSendEvent::SendFundingLocked { .. } => continue,
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
 						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => continue,
-						_ => panic!("Unhandled message event"),
+						events::MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
+							assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
+							*node_id == a_id
+						},
+						_ => panic!("Unhandled message event {:?}", event),
 					};
 					if push_a { ba_events.push(event); } else { bc_events.push(event); }
 				}
@@ -692,7 +697,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							// Can be generated due to a payment forward being rejected due to a
 							// channel having previously failed a monitor update
 						},
-						_ => panic!("Unhandled message event"),
+						events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+							// When we reconnect we will resend a channel_update to make sure our
+							// counterparty has the latest parameters for receiving payments
+							// through us. We do, however, check that the message does not include
+							// the "disabled" bit, as we should never ever have a channel which is
+							// disabled when we send such an update (or it may indicate channel
+							// force-close which we should detect as an error).
+							assert_eq!(msg.contents.flags & 2, 0);
+						},
+						_ => panic!("Unhandled message event {:?}", event),
 					}
 					if $limit_events != ProcessMessages::AllMessages {
 						break;
@@ -722,6 +736,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+							},
 							_ => panic!("Unhandled message event"),
 						}
 					}
@@ -737,6 +754,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
+							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
+								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+							},
 							_ => panic!("Unhandled message event"),
 						}
 					}

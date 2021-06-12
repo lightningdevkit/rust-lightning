@@ -1264,6 +1264,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None);
 						}
 					},
+					MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
+						log_trace!(self.logger, "Handling SendChannelUpdate event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id), msg.contents.short_channel_id);
+						let peer = get_peer_for_forwarding!(node_id);
+						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
+					},
 					MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
 						self.message_handler.route_handler.handle_htlc_fail_channel_update(update);
 					},

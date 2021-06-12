@@ -1598,6 +1598,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				action: msgs::ErrorAction::IgnoreError
 			});
 		}
+		log_trace!(self.logger, "Attempting to generate broadcast channel update for channel {}", log_bytes!(chan.channel_id()));
 		self.get_channel_update_for_unicast(chan)
 	}
 
@@ -1607,6 +1608,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// provided evidence that they know about the existence of the channel.
 	/// May be called with channel_state already locked!
 	fn get_channel_update_for_unicast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id() {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
@@ -2789,7 +2791,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let (mut pending_failures, chan_restoration_res) = {
+		let chan_restoration_res;
+		let mut pending_failures = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
@@ -2801,7 +2804,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			let (raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
-			(pending_failures, handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, None, pending_forwards, funding_broadcastable, funding_locked))
+			let channel_update = if funding_locked.is_some() && channel.get().is_usable() && !channel.get().should_announce() {
+				// We only send a channel_update in the case where we are just now sending a
+				// funding_locked and the channel is in a usable state. Further, we rely on the
+				// normal announcement_signatures process to send a channel_update for public
+				// channels, only generating a unicast channel_update if this is a private channel.
+				Some(events::MessageSendEvent::SendChannelUpdate {
+					node_id: channel.get().get_counterparty_node_id(),
+					msg: self.get_channel_update_for_unicast(channel.get()).unwrap(),
+				})
+			} else { None };
+			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, None, pending_forwards, funding_broadcastable, funding_locked);
+			if let Some(upd) = channel_update {
+				channel_state.pending_msg_events.push(upd);
+			}
+			pending_failures
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		for failure in pending_failures.drain(..) {
@@ -2963,6 +2980,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 						node_id: counterparty_node_id.clone(),
 						msg: announcement_sigs,
+					});
+				} else if chan.get().is_usable() {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: counterparty_node_id.clone(),
+						msg: self.get_channel_update_for_unicast(chan.get()).unwrap(),
 					});
 				}
 				Ok(())
@@ -3394,7 +3416,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let (htlcs_failed_forward, need_lnd_workaround, chan_restoration_res) = {
+		let chan_restoration_res;
+		let (htlcs_failed_forward, need_lnd_workaround) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
@@ -3409,15 +3432,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, htlcs_failed_forward, shutdown) =
 						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
+					let mut channel_update = None;
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
 							msg,
 						});
+					} else if chan.get().is_usable() {
+						// If the channel is in a usable state (ie the channel is not being shut
+						// down), send a unicast channel_update to our counterparty to make sure
+						// they have the latest channel parameters.
+						channel_update = Some(events::MessageSendEvent::SendChannelUpdate {
+							node_id: chan.get().get_counterparty_node_id(),
+							msg: self.get_channel_update_for_unicast(chan.get()).unwrap(),
+						});
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
-					(htlcs_failed_forward, need_lnd_workaround,
-						handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked))
+					chan_restoration_res = handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked);
+					if let Some(upd) = channel_update {
+						channel_state.pending_msg_events.push(upd);
+					}
+					(htlcs_failed_forward, need_lnd_workaround)
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
@@ -3970,6 +4005,12 @@ where
 								node_id: channel.get_counterparty_node_id(),
 								msg: announcement_sigs,
 							});
+						} else if channel.is_usable() {
+							log_trace!(self.logger, "Sending funding_locked WITHOUT announcement_signatures but with private channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
+							pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+								node_id: channel.get_counterparty_node_id(),
+								msg: self.get_channel_update_for_unicast(channel).unwrap(),
+							});
 						} else {
 							log_trace!(self.logger, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
 						}
@@ -4209,6 +4250,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
@@ -5042,7 +5084,19 @@ pub mod bench {
 		Listen::block_connected(&node_b, &block, 1);
 
 		node_a.handle_funding_locked(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingLocked, node_a.get_our_node_id()));
-		node_b.handle_funding_locked(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingLocked, node_b.get_our_node_id()));
+		let msg_events = node_a.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		match msg_events[0] {
+			MessageSendEvent::SendFundingLocked { ref msg, .. } => {
+				node_b.handle_funding_locked(&node_a.get_our_node_id(), msg);
+				get_event_msg!(node_b_holder, MessageSendEvent::SendChannelUpdate, node_a.get_our_node_id());
+			},
+			_ => panic!(),
+		}
+		match msg_events[1] {
+			MessageSendEvent::SendChannelUpdate { .. } => {},
+			_ => panic!(),
+		}
 
 		let dummy_graph = NetworkGraph::new(genesis_hash);
 

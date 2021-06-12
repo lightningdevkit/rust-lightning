@@ -1039,7 +1039,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_2nd_shutdown);
 		node_0_2nd_shutdown
 	} else {
-		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		let node_0_chan_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+		assert_eq!(node_0_chan_update.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_2nd_shutdown);
 		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
 	};
