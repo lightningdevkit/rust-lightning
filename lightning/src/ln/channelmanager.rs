@@ -1555,8 +1555,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
 						break Some(("CLTV expiry is too far in the future", 21, None));
 					}
-					// In theory, we would be safe against unitentional channel-closure, if we only required a margin of LATENCY_GRACE_PERIOD_BLOCKS.
-					// But, to be safe against policy reception, we use a longuer delay.
+					// In theory, we would be safe against unintentional channel-closure, if we only required a margin of LATENCY_GRACE_PERIOD_BLOCKS.
+					// But, to be safe against policy reception, we use a longer delay.
 					if (*outgoing_cltv_value) as u64 <= (cur_height + HTLC_FAIL_BACK_BUFFER) as u64 {
 						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
