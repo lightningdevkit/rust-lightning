@@ -807,8 +807,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						}
 					}
 
-					self.do_attempt_write_data(peer_descriptor, peer);
-
 					peer.pending_outbound_buffer.len() > 10 // pause_read
 				}
 			};
@@ -1467,7 +1465,9 @@ mod tests {
 		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone()).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
+		peer_a.process_events();
 		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		peer_b.process_events();
 		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		(fd_a.clone(), fd_b.clone())
 	}
@@ -1506,10 +1506,12 @@ mod tests {
 
 		// peers[0] awaiting_pong is set to true, but the Peer is still connected
 		peers[0].timer_tick_occurred();
+		peers[0].process_events();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
 		// Since timer_tick_occurred() is called again when awaiting_pong is true, all Peers are disconnected
 		peers[0].timer_tick_occurred();
+		peers[0].process_events();
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
 	}
 
@@ -1530,7 +1532,9 @@ mod tests {
 		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
 
 		// Make each peer to read the messages that the other peer just wrote to them.
+		peers[0].process_events();
 		peers[1].read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap();
+		peers[1].process_events();
 		peers[0].read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap();
 
 		// Check that each peer has received the expected number of channel updates and channel
