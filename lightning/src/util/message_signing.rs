@@ -12,13 +12,13 @@
 //! Note this is not part of the specs, but follows lnd's signing and verifying protocol, which can is defined as follows:
 //!
 //! signature = zbase32(SigRec(sha256d(("Lightning Signed Message:" + msg)))
-//! zbase32 from https://philzimmermann.com/docs/human-oriented-base-32-encoding.txt
+//! zbase32 from <https://philzimmermann.com/docs/human-oriented-base-32-encoding.txt>
 //! SigRec has first byte 31 + recovery id, followed by 64 byte sig.
 //!
 //! This implementation is compatible with both lnd's and c-lightning's
 //!
-//! https://lightning.readthedocs.io/lightning-signmessage.7.html
-//! https://api.lightning.community/#signmessage
+//! <https://lightning.readthedocs.io/lightning-signmessage.7.html>
+//! <https://api.lightning.community/#signmessage>
 
 use prelude::*;
 use crate::util::zbase32;
