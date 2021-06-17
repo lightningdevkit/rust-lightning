@@ -170,12 +170,12 @@ mod sealed {
 ///
 /// Other `Poll` implementations should be built using `ChainPoller` as it provides the simplest way
 /// of validating chain data and checking consistency.
-pub struct ChainPoller<B: DerefMut<Target=T> + Sized , T: BlockSource> {
+pub struct ChainPoller<B: DerefMut<Target=T> + Sized, T: BlockSource> {
 	block_source: B,
 	network: Network,
 }
 
-impl<B: DerefMut<Target=T> + Sized , T: BlockSource> ChainPoller<B, T> {
+impl<B: DerefMut<Target=T> + Sized, T: BlockSource> ChainPoller<B, T> {
 	/// Creates a new poller for the given block source.
 	///
 	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
