@@ -966,27 +966,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				self.message_handler.chan_handler.handle_announcement_signatures(&peer.their_node_id.unwrap(), &msg);
 			},
 			wire::Message::ChannelAnnouncement(msg) => {
-				if match self.message_handler.route_handler.handle_channel_announcement(&msg) {
-					Ok(v) => v,
-					Err(e) => { return Err(e.into()); },
-				} {
+				if self.message_handler.route_handler.handle_channel_announcement(&msg)
+						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
 				}
 			},
 			wire::Message::NodeAnnouncement(msg) => {
-				if match self.message_handler.route_handler.handle_node_announcement(&msg) {
-					Ok(v) => v,
-					Err(e) => { return Err(e.into()); },
-				} {
+				if self.message_handler.route_handler.handle_node_announcement(&msg)
+						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::NodeAnnouncement(msg));
 				}
 			},
 			wire::Message::ChannelUpdate(msg) => {
 				self.message_handler.chan_handler.handle_channel_update(&peer.their_node_id.unwrap(), &msg);
-				if match self.message_handler.route_handler.handle_channel_update(&msg) {
-					Ok(v) => v,
-					Err(e) => { return Err(e.into()); },
-				} {
+				if self.message_handler.route_handler.handle_channel_update(&msg)
+						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelUpdate(msg));
 				}
 			},
