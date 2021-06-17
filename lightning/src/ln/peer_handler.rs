@@ -194,11 +194,8 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// indicating that read events on this descriptor should resume. A resume_read of false does
 	/// *not* imply that further read events should be paused.
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize;
-	/// Disconnect the socket pointed to by this SocketDescriptor. Once this function returns, no
-	/// more calls to write_buffer_space_avail, read_event or socket_disconnected may be made with
-	/// this descriptor. No socket_disconnected call should be generated as a result of this call,
-	/// though races may occur whereby disconnect_socket is called after a call to
-	/// socket_disconnected but prior to socket_disconnected returning.
+	/// Disconnect the socket pointed to by this SocketDescriptor.
+	/// No [`PeerManager::socket_disconnected`] call need be generated as a result of this call.
 	fn disconnect_socket(&mut self);
 }
 
@@ -616,7 +613,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	pub fn write_buffer_space_avail(&self, descriptor: &mut Descriptor) -> Result<(), PeerHandleError> {
 		let mut peers = self.peers.lock().unwrap();
 		match peers.peers.get_mut(descriptor) {
-			None => panic!("Descriptor for write_event is not already known to PeerManager"),
+			None => {
+				// This is most likely a simple race condition where the user found that the socket
+				// was writeable, then we told the user to `disconnect_socket()`, then they called
+				// this method. Return an error to make sure we get disconnected.
+				return Err(PeerHandleError { no_connection_possible: false });
+			},
 			Some(peer) => {
 				peer.awaiting_write_event = false;
 				self.do_attempt_write_data(descriptor, peer);
@@ -636,7 +638,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	/// If Ok(true) is returned, further read_events should not be triggered until a send_data call
 	/// on this file descriptor has resume_read set (preventing DoS issues in the send buffer).
 	///
-	/// Panics if the descriptor was not previously registered in a new_*_connection event.
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
@@ -664,7 +665,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			let mut msgs_to_forward = Vec::new();
 			let mut peer_node_id = None;
 			let pause_read = match peers.peers.get_mut(peer_descriptor) {
-				None => panic!("Descriptor for read_event is not already known to PeerManager"),
+				None => {
+					// This is most likely a simple race condition where the user read some bytes
+					// from the socket, then we told the user to `disconnect_socket()`, then they
+					// called this method. Return an error to make sure we get disconnected.
+					return Err(PeerHandleError { no_connection_possible: false });
+				},
 				Some(peer) => {
 					assert!(peer.pending_read_buffer.len() > 0);
 					assert!(peer.pending_read_buffer.len() > peer.pending_read_buffer_pos);
@@ -1292,12 +1298,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 	/// Indicates that the given socket descriptor's connection is now closed.
 	///
-	/// This must only be called if the socket has been disconnected by the peer or your own
-	/// decision to disconnect it and must NOT be called in any case where other parts of this
-	/// library (eg PeerHandleError, explicit disconnect_socket calls) instruct you to disconnect
-	/// the peer.
-	///
-	/// Panics if the descriptor was not previously registered in a successful new_*_connection event.
+	/// This need only be called if the socket has been disconnected by the peer or your own
+	/// decision to disconnect it and may be skipped in any case where other parts of this library
+	/// (eg PeerHandleError, explicit disconnect_socket calls) instruct you to disconnect the peer.
 	pub fn socket_disconnected(&self, descriptor: &Descriptor) {
 		self.disconnect_event_internal(descriptor, false);
 	}
@@ -1306,7 +1309,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		let mut peers = self.peers.lock().unwrap();
 		let peer_option = peers.peers.remove(descriptor);
 		match peer_option {
-			None => panic!("Descriptor for disconnect_event is not already known to PeerManager"),
+			None => {
+				// This is most likely a simple race condition where the user found that the socket
+				// was disconnected, then we told the user to `disconnect_socket()`, then they
+				// called this method. Either way we're disconnected, return.
+			},
 			Some(peer) => {
 				match peer.their_node_id {
 					Some(node_id) => {
