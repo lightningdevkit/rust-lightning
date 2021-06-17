@@ -160,10 +160,15 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler {
 	/// A message handler which handles messages specific to channels. Usually this is just a
-	/// ChannelManager object or a ErroringMessageHandler.
+	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub chan_handler: CM,
 	/// A message handler which handles messages updating our knowledge of the network channel
-	/// graph. Usually this is just a NetGraphMsgHandlerMonitor object or an IgnoringMessageHandler.
+	/// graph. Usually this is just a [`NetGraphMsgHandler`] object or an
+	/// [`IgnoringMessageHandler`].
+	///
+	/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 	pub route_handler: RM,
 }
 
@@ -173,29 +178,35 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 ///
 /// For efficiency, Clone should be relatively cheap for this type.
 ///
-/// You probably want to just extend an int and put a file descriptor in a struct and implement
-/// send_data. Note that if you are using a higher-level net library that may call close() itself,
-/// be careful to ensure you don't have races whereby you might register a new connection with an
-/// fd which is the same as a previous one which has yet to be removed via
-/// PeerManager::socket_disconnected().
+/// Two descriptors may compare equal (by [`cmp::Eq`] and [`hash::Hash`]) as long as the original
+/// has been disconnected, the [`PeerManager`] has been informed of the disconnection (either by it
+/// having triggered the disconnection or a call to [`PeerManager::socket_disconnected`]), and no
+/// further calls to the [`PeerManager`] related to the original socket occur. This allows you to
+/// use a file descriptor for your SocketDescriptor directly, however for simplicity you may wish
+/// to simply use another value which is guaranteed to be globally unique instead.
 pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// Attempts to send some data from the given slice to the peer.
 	///
 	/// Returns the amount of data which was sent, possibly 0 if the socket has since disconnected.
-	/// Note that in the disconnected case, socket_disconnected must still fire and further write
-	/// attempts may occur until that time.
+	/// Note that in the disconnected case, [`PeerManager::socket_disconnected`] must still be
+	/// called and further write attempts may occur until that time.
 	///
-	/// If the returned size is smaller than data.len(), a write_available event must
-	/// trigger the next time more data can be written. Additionally, until the a send_data event
-	/// completes fully, no further read_events should trigger on the same peer!
+	/// If the returned size is smaller than `data.len()`, a
+	/// [`PeerManager::write_buffer_space_avail`] call must be made the next time more data can be
+	/// written. Additionally, until a `send_data` event completes fully, no further
+	/// [`PeerManager::read_event`] calls should be made for the same peer! Because this is to
+	/// prevent denial-of-service issues, you should not read or buffer any data from the socket
+	/// until then.
 	///
-	/// If a read_event on this descriptor had previously returned true (indicating that read
-	/// events should be paused to prevent DoS in the send buffer), resume_read may be set
-	/// indicating that read events on this descriptor should resume. A resume_read of false does
-	/// *not* imply that further read events should be paused.
+	/// If a [`PeerManager::read_event`] call on this descriptor had previously returned true
+	/// (indicating that read events should be paused to prevent DoS in the send buffer),
+	/// `resume_read` may be set indicating that read events on this descriptor should resume. A
+	/// `resume_read` of false carries no meaning, and should not cause any action.
 	fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize;
 	/// Disconnect the socket pointed to by this SocketDescriptor.
-	/// No [`PeerManager::socket_disconnected`] call need be generated as a result of this call.
+	///
+	/// You do *not* need to call [`PeerManager::socket_disconnected`] with this socket after this
+	/// call (doing so is a noop).
 	fn disconnect_socket(&mut self);
 }
 
@@ -309,14 +320,25 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// helps with issues such as long function definitions.
 pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g C, &'f L>, &'f L>;
 
-/// A PeerManager manages a set of peers, described by their SocketDescriptor and marshalls socket
-/// events into messages which it passes on to its MessageHandlers.
+/// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
+/// socket events into messages which it passes on to its [`MessageHandler`].
+///
+/// Locks are taken internally, so you must never assume that reentrancy from a
+/// [`SocketDescriptor`] call back into [`PeerManager`] methods will not deadlock.
+///
+/// Calls to [`read_event`] will decode relevant messages and pass them to the
+/// [`ChannelMessageHandler`], likely doing message processing in-line. Thus, the primary form of
+/// parallelism in Rust-Lightning is in calls to [`read_event`]. Note, however, that calls to any
+/// [`PeerManager`] functions related to the same connection must occur only in serial, making new
+/// calls only after previous ones have returned.
 ///
 /// Rather than using a plain PeerManager, it is preferable to use either a SimpleArcPeerManager
 /// a SimpleRefPeerManager, for conciseness. See their documentation for more details, but
 /// essentially you should default to using a SimpleRefPeerManager, and use a
 /// SimpleArcPeerManager when you require a PeerManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
+///
+/// [`read_event`]: PeerManager::read_event
 pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
@@ -397,8 +419,6 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	}
 }
 
-/// Manages and reacts to connection events. You probably want to use file descriptors as PeerIds.
-/// PeerIds may repeat, but only after socket_disconnected() has been called.
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<Descriptor, CM, RM, L> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
@@ -458,8 +478,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	///
 	/// Returns a small number of bytes to send to the remote node (currently always 50).
 	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet had a
-	/// socket_disconnected().
+	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
+	/// [`socket_disconnected()`].
+	///
+	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
 		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one().to_vec();
@@ -495,8 +517,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	/// call socket_disconnected for the new descriptor but must disconnect the connection
 	/// immediately.
 	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet had
-	/// socket_disconnected called.
+	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
+	/// [`socket_disconnected()`].
+	///
+	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
 		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
@@ -604,12 +628,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	///
 	/// May return an Err to indicate that the connection should be closed.
 	///
-	/// Will most likely call send_data on the descriptor passed in (or the descriptor handed into
-	/// new_*\_connection) before returning. Thus, be very careful with reentrancy issues! The
-	/// invariants around calling write_buffer_space_avail in case a write did not fully complete
-	/// must still hold - be ready to call write_buffer_space_avail again if a write call generated
-	/// here isn't sufficient! Panics if the descriptor was not previously registered in a
-	/// new_\*_connection event.
+	/// May call [`send_data`] on the descriptor passed in (or an equal descriptor) before
+	/// returning. Thus, be very careful with reentrancy issues! The invariants around calling
+	/// [`write_buffer_space_avail`] in case a write did not fully complete must still hold - be
+	/// ready to call `[write_buffer_space_avail`] again if a write call generated here isn't
+	/// sufficient!
+	///
+	/// [`send_data`]: SocketDescriptor::send_data
+	/// [`write_buffer_space_avail`]: PeerManager::write_buffer_space_avail
 	pub fn write_buffer_space_avail(&self, descriptor: &mut Descriptor) -> Result<(), PeerHandleError> {
 		let mut peers = self.peers.lock().unwrap();
 		match peers.peers.get_mut(descriptor) {
@@ -631,13 +657,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	///
 	/// May return an Err to indicate that the connection should be closed.
 	///
-	/// Will *not* call back into send_data on any descriptors to avoid reentrancy complexity.
-	/// Thus, however, you almost certainly want to call process_events() after any read_event to
-	/// generate send_data calls to handle responses.
+	/// Will *not* call back into [`send_data`] on any descriptors to avoid reentrancy complexity.
+	/// Thus, however, you should call [`process_events`] after any `read_event` to generate
+	/// [`send_data`] calls to handle responses.
 	///
-	/// If Ok(true) is returned, further read_events should not be triggered until a send_data call
-	/// on this file descriptor has resume_read set (preventing DoS issues in the send buffer).
+	/// If `Ok(true)` is returned, further read_events should not be triggered until a
+	/// [`send_data`] call on this descriptor has `resume_read` set (preventing DoS issues in the
+	/// send buffer).
 	///
+	/// [`send_data`]: SocketDescriptor::send_data
+	/// [`process_events`]: PeerManager::process_events
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
@@ -1085,7 +1114,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 	/// Checks for any events generated by our handlers and processes them. Includes sending most
 	/// response messages as well as messages generated by calls to handler functions directly (eg
-	/// functions like ChannelManager::process_pending_htlc_forward or send_payment).
+	/// functions like [`ChannelManager::process_pending_htlc_forwards`] or [`send_payment`]).
+	///
+	/// May call [`send_data`] on [`SocketDescriptor`]s. Thus, be very careful with reentrancy
+	/// issues!
+	///
+	/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
+	/// [`send_data`]: SocketDescriptor::send_data
 	pub fn process_events(&self) {
 		{
 			// TODO: There are some DoS attacks here where you can flood someone's outbound send
@@ -1297,10 +1333,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	}
 
 	/// Indicates that the given socket descriptor's connection is now closed.
-	///
-	/// This need only be called if the socket has been disconnected by the peer or your own
-	/// decision to disconnect it and may be skipped in any case where other parts of this library
-	/// (eg PeerHandleError, explicit disconnect_socket calls) instruct you to disconnect the peer.
 	pub fn socket_disconnected(&self, descriptor: &Descriptor) {
 		self.disconnect_event_internal(descriptor, false);
 	}
@@ -1328,11 +1360,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 	/// Disconnect a peer given its node id.
 	///
-	/// Set no_connection_possible to true to prevent any further connection with this peer,
+	/// Set `no_connection_possible` to true to prevent any further connection with this peer,
 	/// force-closing any channels we have with it.
 	///
-	/// If a peer is connected, this will call `disconnect_socket` on the descriptor for the peer,
-	/// so be careful about reentrancy issues.
+	/// If a peer is connected, this will call [`disconnect_socket`] on the descriptor for the
+	/// peer. Thus, be very careful about reentrancy issues.
+	///
+	/// [`disconnect_socket`]: SocketDescriptor::disconnect_socket
 	pub fn disconnect_by_node_id(&self, node_id: PublicKey, no_connection_possible: bool) {
 		let mut peers_lock = self.peers.lock().unwrap();
 		if let Some(mut descriptor) = peers_lock.node_id_to_descriptor.remove(&node_id) {
@@ -1344,9 +1378,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	}
 
 	/// This function should be called roughly once every 30 seconds.
-	/// It will send pings to each peer and disconnect those which did not respond to the last round of pings.
-
-	/// Will most likely call send_data on all of the registered descriptors, thus, be very careful with reentrancy issues!
+	/// It will send pings to each peer and disconnect those which did not respond to the last
+	/// round of pings.
+	///
+	/// May call [`send_data`] on all [`SocketDescriptor`]s. Thus, be very careful with reentrancy
+	/// issues!
+	///
+	/// [`send_data`]: SocketDescriptor::send_data
 	pub fn timer_tick_occurred(&self) {
 		let mut peers_lock = self.peers.lock().unwrap();
 		{
