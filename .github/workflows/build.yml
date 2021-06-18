@@ -165,7 +165,9 @@ jobs:
   check_commits:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      # rustc 1.53 regressed and panics when building our (perfectly fine) docs.
+      # See https://github.com/rust-lang/rust/issues/84738
+      TOOLCHAIN: 1.52.1
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2

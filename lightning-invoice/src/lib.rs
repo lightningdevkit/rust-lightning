@@ -60,12 +60,16 @@ const MAX_EXPIRY_TIME: u64 = 60 * 60 * 24 * 356;
 /// Default expiry time as defined by [BOLT 11].
 ///
 /// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
-const DEFAULT_EXPIRY_TIME: u64 = 3600;
+pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 
 /// Default minimum final CLTV expiry as defined by [BOLT 11].
 ///
+/// Note that this is *not* the same value as rust-lightning's minimum CLTV expiry, which is
+/// provided in [`MIN_FINAL_CLTV_EXPIRY`].
+///
 /// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
-const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
+/// [`MIN_FINAL_CLTV_EXPIRY`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY
+pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
 
 /// This function is used as a static assert for the size of `SystemTime`. If the crate fails to
 /// compile due to it this indicates that your system uses unexpected bounds for `SystemTime`. You
