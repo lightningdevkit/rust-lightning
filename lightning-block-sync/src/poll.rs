@@ -44,7 +44,9 @@ pub enum ChainTip {
 }
 
 /// The `Validate` trait defines behavior for validating chain data.
-pub(crate) trait Validate {
+///
+/// This trait is sealed and not meant to be implemented outside of this crate.
+pub trait Validate: sealed::Validate {
 	/// The validated data wrapper which can be dereferenced to obtain the validated data.
 	type T: std::ops::Deref<Target = Self>;
 
@@ -156,16 +158,24 @@ impl std::ops::Deref for ValidatedBlock {
 	}
 }
 
+mod sealed {
+	/// Used to prevent implementing [`super::Validate`] outside the crate but still allow its use.
+	pub trait Validate {}
+
+	impl Validate for crate::BlockHeaderData {}
+	impl Validate for bitcoin::blockdata::block::Block {}
+}
+
 /// The canonical `Poll` implementation used for a single `BlockSource`.
 ///
-/// Other `Poll` implementations must be built using `ChainPoller` as it provides the only means of
-/// validating chain data.
-pub struct ChainPoller<B: DerefMut<Target=T> + Sized , T: BlockSource> {
+/// Other `Poll` implementations should be built using `ChainPoller` as it provides the simplest way
+/// of validating chain data and checking consistency.
+pub struct ChainPoller<B: DerefMut<Target=T> + Sized, T: BlockSource> {
 	block_source: B,
 	network: Network,
 }
 
-impl<B: DerefMut<Target=T> + Sized , T: BlockSource> ChainPoller<B, T> {
+impl<B: DerefMut<Target=T> + Sized, T: BlockSource> ChainPoller<B, T> {
 	/// Creates a new poller for the given block source.
 	///
 	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
