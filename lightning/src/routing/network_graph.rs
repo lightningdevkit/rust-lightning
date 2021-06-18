@@ -169,12 +169,16 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
 		match update {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
+				let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}abled.", msg.contents.short_channel_id, if chan_enabled { "en" } else { "dis" });
 				let _ = self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx);
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, short_channel_id);
 				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, is_permanent);
 			},
 			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent } => {
+				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, node_id);
 				self.network_graph.write().unwrap().fail_node(node_id, is_permanent);
 			},
 		}
