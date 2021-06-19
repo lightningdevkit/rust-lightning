@@ -373,23 +373,39 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let batch_count = batches.len();
+		let mut prev_batch_endblock = msg.first_blocknum;
 		for (batch_index, batch) in batches.into_iter().enumerate() {
-			// Per spec, the initial first_blocknum needs to be <= the query's first_blocknum and subsequent
-			// must be >= the prior reply. We'll simplify this by using zero since its still spec compliant and
-			// sequence completion is now explicitly.
-			let first_blocknum = 0;
+			// Per spec, the initial `first_blocknum` needs to be <= the query's `first_blocknum`
+			// and subsequent `first_blocknum`s must be >= the prior reply's `first_blocknum`.
+			//
+			// Additionally, c-lightning versions < 0.10 require that the `first_blocknum` of each
+			// reply is >= the previous reply's `first_blocknum` and either exactly the previous
+			// reply's `first_blocknum + number_of_blocks` or exactly one greater. This is a
+			// significant diversion from the requirements set by the spec, and, in case of blocks
+			// with no channel opens (e.g. empty blocks), requires that we use the previous value
+			// and *not* derive the first_blocknum from the actual first block of the reply.
+			let first_blocknum = prev_batch_endblock;
 
-			// Per spec, the final end_blocknum needs to be >= the query's end_blocknum, so we'll use the
-			// query's value. Prior batches must use the number of blocks that fit into the message. We'll
-			// base this off the last SCID in the batch since we've somewhat abusing first_blocknum.
-			let number_of_blocks = if batch_index == batch_count-1 {
-				msg.end_blocknum()
-			} else {
-				block_from_scid(batch.last().unwrap()) + 1
+			// Each message carries the number of blocks (from the `first_blocknum`) its contents
+			// fit in. Though there is no requirement that we use exactly the number of blocks its
+			// contents are from, except for the bogus requirements c-lightning enforces, above.
+			//
+			// Per spec, the last end block (ie `first_blocknum + number_of_blocks`) needs to be
+			// >= the query's end block. Thus, for the last reply, we calculate the difference
+			// between the query's end block and the start of the reply.
+			//
+			// Overflow safe since end_blocknum=msg.first_block_num+msg.number_of_blocks and
+			// first_blocknum will be either msg.first_blocknum or a higher block height.
+			let (sync_complete, number_of_blocks) = if batch_index == batch_count-1 {
+				(true, msg.end_blocknum() - first_blocknum)
+			}
+			// Prior replies should use the number of blocks that fit into the reply. Overflow
+			// safe since first_blocknum is always <= last SCID's block.
+			else {
+				(false, block_from_scid(batch.last().unwrap()) - first_blocknum)
 			};
 
-			// Only true for the last message in a sequence
-			let sync_complete = batch_index == batch_count - 1;
+			prev_batch_endblock = first_blocknum + number_of_blocks;
 
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
@@ -2235,8 +2251,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 0x01000000,
+					first_blocknum: 0xffffff,
+					number_of_blocks: 1,
 					sync_complete: true,
 					short_channel_ids: vec![]
 				},
@@ -2256,8 +2272,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 2000,
+					first_blocknum: 1000,
+					number_of_blocks: 1000,
 					sync_complete: true,
 					short_channel_ids: vec![],
 				}
@@ -2277,8 +2293,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 0xffffffff,
+					first_blocknum: 0xfe0000,
+					number_of_blocks: 0xffffffff - 0xfe0000,
 					sync_complete: true,
 					short_channel_ids: vec![
 						0xfffffe_ffffff_ffff, // max
@@ -2300,8 +2316,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 108000,
+					first_blocknum: 100000,
+					number_of_blocks: 8000,
 					sync_complete: true,
 					short_channel_ids: (100000..=107999)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2323,8 +2339,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 108000,
+					first_blocknum: 100000,
+					number_of_blocks: 7999,
 					sync_complete: false,
 					short_channel_ids: (100000..=107999)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2332,8 +2348,8 @@ mod tests {
 				},
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 108001,
+					first_blocknum: 107999,
+					number_of_blocks: 2,
 					sync_complete: true,
 					short_channel_ids: vec![
 						scid_from_parts(108000, 0, 0).unwrap(),
@@ -2355,8 +2371,8 @@ mod tests {
 			vec![
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 108002,
+					first_blocknum: 100002,
+					number_of_blocks: 7999,
 					sync_complete: false,
 					short_channel_ids: (100002..=108001)
 						.map(|block| scid_from_parts(block, 0, 0).unwrap())
@@ -2364,8 +2380,8 @@ mod tests {
 				},
 				ReplyChannelRange {
 					chain_hash: chain_hash.clone(),
-					first_blocknum: 0,
-					number_of_blocks: 108002,
+					first_blocknum: 108001,
+					number_of_blocks: 1,
 					sync_complete: true,
 					short_channel_ids: vec![
 						scid_from_parts(108001, 1, 0).unwrap(),
@@ -2382,6 +2398,9 @@ mod tests {
 		expected_ok: bool,
 		expected_replies: Vec<ReplyChannelRange>
 	) {
+		let mut max_firstblocknum = msg.first_blocknum.saturating_sub(1);
+		let mut c_lightning_0_9_prev_end_blocknum = max_firstblocknum;
+		let query_end_blocknum = msg.end_blocknum();
 		let result = net_graph_msg_handler.handle_query_channel_range(test_node_id, msg);
 
 		if expected_ok {
@@ -2403,6 +2422,17 @@ mod tests {
 					assert_eq!(msg.number_of_blocks, expected_reply.number_of_blocks);
 					assert_eq!(msg.sync_complete, expected_reply.sync_complete);
 					assert_eq!(msg.short_channel_ids, expected_reply.short_channel_ids);
+
+					// Enforce exactly the sequencing requirements present on c-lightning v0.9.3
+					assert!(msg.first_blocknum == c_lightning_0_9_prev_end_blocknum || msg.first_blocknum == c_lightning_0_9_prev_end_blocknum.saturating_add(1));
+					assert!(msg.first_blocknum >= max_firstblocknum);
+					max_firstblocknum = msg.first_blocknum;
+					c_lightning_0_9_prev_end_blocknum = msg.first_blocknum.saturating_add(msg.number_of_blocks);
+
+					// Check that the last block count is >= the query's end_blocknum
+					if i == events.len() - 1 {
+						assert!(msg.first_blocknum.saturating_add(msg.number_of_blocks) >= query_end_blocknum);
+					}
 				},
 				_ => panic!("expected MessageSendEvent::SendReplyChannelRange"),
 			}
