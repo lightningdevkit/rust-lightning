@@ -64,7 +64,6 @@ use util::errors::APIError;
 use prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
-use std::collections::{HashMap, hash_map, HashSet};
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};

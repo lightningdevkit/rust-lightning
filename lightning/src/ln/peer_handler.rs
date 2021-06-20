@@ -32,7 +32,6 @@ use routing::network_graph::NetGraphMsgHandler;
 
 use prelude::*;
 use alloc::collections::LinkedList;
-use std::collections::{HashMap,hash_map,HashSet};
 use std::sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};

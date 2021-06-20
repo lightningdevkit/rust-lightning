@@ -44,7 +44,6 @@ use core::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use core::mem;
-use std::collections::HashMap;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 

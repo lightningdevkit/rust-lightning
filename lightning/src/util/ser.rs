@@ -12,7 +12,6 @@
 
 use prelude::*;
 use std::io::{Read, Write};
-use std::collections::HashMap;
 use core::hash::Hash;
 use std::sync::Mutex;
 use core::cmp;

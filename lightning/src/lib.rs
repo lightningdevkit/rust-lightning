@@ -44,5 +44,12 @@ pub mod ln;
 pub mod routing;
 
 mod prelude {
-	pub use alloc::{vec, vec::Vec, string::String};
+	#[cfg(feature = "hashbrown")]
+	extern crate hashbrown;
+
+	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque};
+	#[cfg(not(feature = "hashbrown"))]
+	pub use std::collections::{HashMap, HashSet, hash_map};
+	#[cfg(feature = "hashbrown")]
+	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 }
