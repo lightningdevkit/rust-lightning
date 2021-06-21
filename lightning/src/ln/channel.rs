@@ -4460,7 +4460,7 @@ fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script
 	return !script.is_p2pkh() && !script.is_p2sh() && !script.is_v0_p2wpkh() && !script.is_v0_p2wsh()
 }
 
-const SERIALIZATION_VERSION: u8 = 1;
+const SERIALIZATION_VERSION: u8 = 2;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -4502,7 +4502,13 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.user_id.write(writer)?;
-		self.config.write(writer)?;
+
+		// Write out the old serialization for the config object. This is read by version-1
+		// deserializers, but we will read the version in the TLV at the end instead.
+		self.config.fee_proportional_millionths.write(writer)?;
+		self.config.cltv_expiry_delta.write(writer)?;
+		self.config.announced_channel.write(writer)?;
+		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
 
 		self.channel_id.write(writer)?;
 		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;
@@ -4700,6 +4706,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			// override that.
 			(1, self.minimum_depth, option),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
+			(5, self.config, required),
 		});
 
 		Ok(())
@@ -4710,10 +4717,21 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		where K::Target: KeysInterface<Signer = Signer> {
 	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
-		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let user_id = Readable::read(reader)?;
-		let config: ChannelConfig = Readable::read(reader)?;
+
+		let mut config = Some(ChannelConfig::default());
+		if ver == 1 {
+			// Read the old serialization of the ChannelConfig from version 0.0.98.
+			config.as_mut().unwrap().fee_proportional_millionths = Readable::read(reader)?;
+			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
+			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
+			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
+		} else {
+			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
+			let mut _val: u64 = Readable::read(reader)?;
+		}
 
 		let channel_id = Readable::read(reader)?;
 		let channel_state = Readable::read(reader)?;
@@ -4887,6 +4905,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
+			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -4895,7 +4914,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		Ok(Channel {
 			user_id,
 
-			config,
+			config: config.unwrap(),
 			channel_id,
 			channel_state,
 			secp_ctx,

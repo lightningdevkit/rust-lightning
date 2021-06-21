@@ -204,12 +204,11 @@ impl Default for ChannelConfig {
 	}
 }
 
-//Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 4+2+1+1, {
-	fee_proportional_millionths,
-	cltv_expiry_delta,
-	announced_channel,
-	commit_upfront_shutdown_pubkey
+impl_writeable_tlv_based!(ChannelConfig, {
+	(0, fee_proportional_millionths, required),
+	(2, cltv_expiry_delta, required),
+	(4, announced_channel, required),
+	(6, commit_upfront_shutdown_pubkey, required),
 });
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
