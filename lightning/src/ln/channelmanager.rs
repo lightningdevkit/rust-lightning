@@ -4647,6 +4647,11 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						channel.get_cur_counterparty_commitment_transaction_number() < monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() > monitor.get_latest_update_id() {
 					// If the channel is ahead of the monitor, return InvalidValue:
+					log_error!(args.logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
+					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
+						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
+					log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+					log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 					return Err(DecodeError::InvalidValue);
 				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
@@ -4663,6 +4668,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					by_id.insert(channel.channel_id(), channel);
 				}
 			} else {
+				log_error!(args.logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", log_bytes!(channel.channel_id()));
+				log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+				log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 				return Err(DecodeError::InvalidValue);
 			}
 		}
