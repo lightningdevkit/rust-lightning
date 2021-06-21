@@ -1699,8 +1699,8 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	// sending any above-dust amount would result in a channel reserve violation.
 	// In this test we check that we would be prevented from sending an HTLC in
 	// this situation.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1721,8 +1721,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// to channel reserve violation. This close could also happen if the fee went
 	// up a more realistic amount, but many HTLCs were outstanding at the time of
 	// the update_add_htlc.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 6000 };
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1895,7 +1895,11 @@ fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64) -> u64 {
 fn test_channel_reserve_holding_cell_htlcs() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 239;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 190000, 1001, InitFeatures::known(), InitFeatures::known());
@@ -1916,7 +1920,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		}}
 	}
 
-	let feemsat = 239; // somehow we know?
+	let feemsat = 239; // set above
 	let total_fee_msat = (nodes.len() - 2) as u64 * feemsat;
 	let feerate = get_feerate!(nodes[0], chan_1.2);
 
@@ -4363,7 +4367,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
@@ -4578,7 +4582,7 @@ fn test_manager_serialize_deserialize_events() {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
 
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	logger = test_utils::TestLogger::new();
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
@@ -4666,7 +4670,7 @@ fn test_simple_manager_serialize_deserialize() {
 	nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
@@ -4746,7 +4750,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[0].keys_manager;
 	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
@@ -5344,7 +5348,12 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// we forward one of the payments onwards to D.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 196;
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
+		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
@@ -5531,7 +5540,12 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// And test where C fails back to A/B when D announces its latest commitment transaction
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 196;
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs,
+		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 	let logger = test_utils::TestLogger::new();
 
@@ -6381,7 +6395,11 @@ fn test_free_and_fail_holding_cell_htlcs() {
 fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 196;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let chan_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
@@ -7599,7 +7617,7 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7610,7 +7628,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7636,7 +7654,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: 253 }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7686,7 +7704,7 @@ fn test_data_loss_protect() {
 	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut ::std::io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
 	node_state_0 = {

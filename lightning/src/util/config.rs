@@ -140,12 +140,26 @@ impl Default for ChannelHandshakeLimits {
 /// with our counterparty.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelConfig {
-	/// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
+	/// over the channel.
 	/// This may be allowed to change at runtime in a later update, however doing so must result in
 	/// update messages sent to notify all nodes of our updated relay fee.
 	///
 	/// Default value: 0.
-	pub fee_proportional_millionths: u32,
+	pub forwarding_fee_proportional_millionths: u32,
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
+	/// excess of [`forwarding_fee_proportional_millionths`].
+	/// This may be allowed to change at runtime in a later update, however doing so must result in
+	/// update messages sent to notify all nodes of our updated relay fee.
+	///
+	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
+	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
+	/// this node.
+	///
+	/// Default value: 1000.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
+	pub forwarding_fee_base_msat: u32,
 	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
 	/// the channel this config applies to.
 	///
@@ -196,7 +210,8 @@ impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
 		ChannelConfig {
-			fee_proportional_millionths: 0,
+			forwarding_fee_proportional_millionths: 0,
+			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
@@ -205,10 +220,11 @@ impl Default for ChannelConfig {
 }
 
 impl_writeable_tlv_based!(ChannelConfig, {
-	(0, fee_proportional_millionths, required),
+	(0, forwarding_fee_proportional_millionths, required),
 	(2, cltv_expiry_delta, required),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),
+	(8, forwarding_fee_base_msat, required),
 });
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.

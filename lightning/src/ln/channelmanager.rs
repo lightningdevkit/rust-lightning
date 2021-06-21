@@ -1575,7 +1575,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
-					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_holder_fee_base_msat(&self.fee_estimator) as u64) });
+					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
+						.and_then(|prop_fee| { (prop_fee / 1000000)
+						.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
@@ -1660,7 +1662,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
-			fee_base_msat: chan.get_holder_fee_base_msat(&self.fee_estimator),
+			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -5107,7 +5109,7 @@ pub mod bench {
 		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let mut config: UserConfig = Default::default();
 		config.own_channel_config.minimum_depth = 1;

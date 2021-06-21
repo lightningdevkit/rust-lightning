@@ -269,7 +269,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
-			let feeest = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 			let mut deserialized_monitors = Vec::new();
 			{
 				let old_monitors = self.chain_monitor.chain_monitor.monitors.read().unwrap();
@@ -295,7 +295,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: *self.node.get_current_default_configuration(),
 					keys_manager: self.keys_manager,
-					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: 253 },
+					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &test_utils::TestBroadcaster {
 						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
@@ -1316,7 +1316,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 			txn_broadcasted: Mutex::new(Vec::new()),
 			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 0)])),
 		};
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let persister = test_utils::TestPersister::new();
@@ -1341,22 +1341,29 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	nodes
 }
 
+pub fn test_default_channel_config() -> UserConfig {
+	let mut default_config = UserConfig::default();
+	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
+	// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
+	default_config.channel_options.cltv_expiry_delta = 6*6;
+	default_config.channel_options.announced_channel = true;
+	default_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	// When most of our tests were written, the default HTLC minimum was fixed at 1000.
+	// It now defaults to 1, so we simply set it to the expected value here.
+	default_config.own_channel_config.our_htlc_minimum_msat = 1000;
+	default_config
+}
+
 pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>>, node_config: &[Option<UserConfig>]) -> Vec<ChannelManager<EnforcingSigner, &'a TestChainMonitor<'b>, &'b test_utils::TestBroadcaster, &'a test_utils::TestKeysInterface, &'b test_utils::TestFeeEstimator, &'b test_utils::TestLogger>> {
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
-		let mut default_config = UserConfig::default();
-		// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
-		// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
-		default_config.channel_options.cltv_expiry_delta = 6*6;
-		default_config.channel_options.announced_channel = true;
-		default_config.peer_channel_config_limits.force_announced_channel_preference = false;
-		default_config.own_channel_config.our_htlc_minimum_msat = 1000; // sanitization being done by the sender, to exerce receiver logic we need to lift of limit
 		let network = Network::Testnet;
 		let params = ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		};
-		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { default_config }, params);
+		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, cfgs[i].logger, cfgs[i].keys_manager,
+			if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params);
 		chanmgrs.push(node);
 	}
 

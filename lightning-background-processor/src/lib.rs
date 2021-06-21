@@ -238,7 +238,7 @@ mod tests {
 		let mut nodes = Vec::new();
 		for i in 0..num_nodes {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
-			let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: 253 });
+			let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) });
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));

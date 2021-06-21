@@ -13,12 +13,12 @@
 
 use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::HTLCForwardInfo;
+use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY};
 use ln::onion_utils;
 use routing::router::{Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, HTLCFailChannelUpdate, OptionalField};
+use ln::msgs::{ChannelMessageHandler, ChannelUpdate, HTLCFailChannelUpdate, OptionalField};
 use util::test_utils;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
@@ -29,6 +29,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 
+use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::SecretKey;
 
@@ -240,17 +241,58 @@ impl Writeable for BogusOnionHopData {
 	}
 }
 
+const BADONION: u16 = 0x8000;
+const PERM: u16 = 0x4000;
+const NODE: u16 = 0x2000;
+const UPDATE: u16 = 0x1000;
+
+#[test]
+fn test_fee_failures() {
+	// Tests that the fee required when forwarding remains consistent over time. This was
+	// previously broken, with forwarding fees floating based on the fee estimator at the time of
+	// forwarding.
+	//
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 196;
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
+	let logger = test_utils::TestLogger::new();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40_000, TEST_FINAL_CLTV, &logger).unwrap();
+
+	// positive case
+	let (payment_preimage_success, payment_hash_success, payment_secret_success) = get_payment_preimage_hash!(nodes[2]);
+	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 40_000, payment_hash_success, payment_secret_success);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_success);
+
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	run_onion_failure_test("fee_insufficient", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
+		msg.amount_msat -= 1;
+	}, || {}, true, Some(UPDATE|12), Some(msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id: channels[0].0.contents.short_channel_id, is_permanent: true}));
+
+	// In an earlier version, we spuriously failed to forward payments if the expected feerate
+	// changed between the channel open and the payment.
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 2;
+	}
+
+	let (payment_preimage_success, payment_hash_success, payment_secret_success) = get_payment_preimage_hash!(nodes[2]);
+	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 40_000, payment_hash_success, payment_secret_success);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_success);
+}
+
 #[test]
 fn test_onion_failure() {
-	use ln::msgs::ChannelUpdate;
-	use ln::channelmanager::CLTV_FAR_FAR_AWAY;
-	use bitcoin::secp256k1;
-
-	const BADONION: u16 = 0x8000;
-	const PERM: u16 = 0x4000;
-	const NODE: u16 = 0x2000;
-	const UPDATE: u16 = 0x1000;
-
 	// When we check for amount_below_minimum below, we want to test that we're using the *right*
 	// amount, thus we need different htlc_minimum_msat values. We set node[2]'s htlc_minimum_msat
 	// to 2000, which is above the default value of 1000 set in create_node_chanmgrs.
@@ -261,9 +303,14 @@ fn test_onion_failure() {
 	node_2_cfg.channel_options.announced_channel = true;
 	node_2_cfg.peer_channel_config_limits.force_announced_channel_preference = false;
 
+	// When this test was written, the default base fee floated based on the HTLC count.
+	// It is now fixed, so we simply set the fee to the expected value here.
+	let mut config = test_default_channel_config();
+	config.channel_options.forwarding_fee_base_msat = 196;
+
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(node_2_cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(node_2_cfg)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	for node in nodes.iter() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
