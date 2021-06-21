@@ -1094,20 +1094,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				macro_rules! get_peer_for_forwarding {
 					($node_id: expr) => {
 						{
-							let descriptor = match peers.node_id_to_descriptor.get($node_id) {
-								Some(descriptor) => descriptor.clone(),
+							match peers.node_id_to_descriptor.get($node_id) {
+								Some(descriptor) => match peers.peers.get_mut(&descriptor) {
+									Some(peer) => {
+										if peer.their_features.is_none() {
+											continue;
+										}
+										peer
+									},
+									None => panic!("Inconsistent peers set state!"),
+								},
 								None => {
 									continue;
 								},
-							};
-							match peers.peers.get_mut(&descriptor) {
-								Some(peer) => {
-									if peer.their_features.is_none() {
-										continue;
-									}
-									(descriptor, peer)
-								},
-								None => panic!("Inconsistent peers set state!"),
 							}
 						}
 					}
@@ -1117,14 +1116,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						log_trace!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendFundingCreated { ref node_id, ref msg } => {
@@ -1134,28 +1133,28 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								log_funding_channel_id!(msg.funding_txid, msg.funding_output_index));
 						// TODO: If the peer is gone we should generate a DiscardFunding event
 						// indicating to the wallet that they should just throw away this funding transaction
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendFundingSigned { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
@@ -1165,7 +1164,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								update_fulfill_htlcs.len(),
 								update_fail_htlcs.len(),
 								log_bytes!(commitment_signed.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						for msg in update_add_htlcs {
 							peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 						}
@@ -1187,28 +1186,28 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						log_trace!(self.logger, "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendShutdown { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling Shutdown event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 						log_trace!(self.logger, "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
@@ -1259,17 +1258,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 								log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id),
 										msg.data);
-								let (_, peer) = get_peer_for_forwarding!(node_id);
+								let peer = get_peer_for_forwarding!(node_id);
 								peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 							},
 						}
 					},
 					MessageSendEvent::SendChannelRangeQuery { ref node_id, ref msg } => {
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					},
 					MessageSendEvent::SendShortIdsQuery { ref node_id, ref msg } => {
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					}
 					MessageSendEvent::SendReplyChannelRange { ref node_id, ref msg } => {
@@ -1279,7 +1278,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 							msg.first_blocknum,
 							msg.number_of_blocks,
 							msg.sync_complete);
-						let (_, peer) = get_peer_for_forwarding!(node_id);
+						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
 					}
 				}
