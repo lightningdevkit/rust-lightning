@@ -3354,8 +3354,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		match channel_state.by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					// TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), chan_id));
+					if chan.get().should_announce() {
+						// If the announcement is about a channel of ours which is public, some
+						// other peer may simply be forwarding all its gossip to us. Don't provide
+						// a scary-looking error message and return Ok instead.
+						return Ok(());
+					}
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 				}
 				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
 			},
