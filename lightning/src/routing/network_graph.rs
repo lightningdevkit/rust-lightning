@@ -460,14 +460,14 @@ impl fmt::Display for DirectionalChannelInfo {
 }
 
 impl_writeable_tlv_based!(DirectionalChannelInfo, {
-	(0, last_update),
-	(2, enabled),
-	(4, cltv_expiry_delta),
-	(6, htlc_minimum_msat),
-	(8, htlc_maximum_msat),
-	(10, fees),
-	(12, last_update_message),
-}, {}, {});
+	(0, last_update, required),
+	(2, enabled, required),
+	(4, cltv_expiry_delta, required),
+	(6, htlc_minimum_msat, required),
+	(8, htlc_maximum_msat, required),
+	(10, fees, required),
+	(12, last_update_message, required),
+});
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a channel (both directions).
@@ -501,14 +501,14 @@ impl fmt::Display for ChannelInfo {
 }
 
 impl_writeable_tlv_based!(ChannelInfo, {
-	(0, features),
-	(2, node_one),
-	(4, one_to_two),
-	(6, node_two),
-	(8, two_to_one),
-	(10, capacity_sats),
-	(12, announcement_message),
-}, {}, {});
+	(0, features, required),
+	(2, node_one, required),
+	(4, one_to_two, required),
+	(6, node_two, required),
+	(8, two_to_one, required),
+	(10, capacity_sats, required),
+	(12, announcement_message, required),
+});
 
 
 /// Fees for routing via a given channel or a node
@@ -521,7 +521,10 @@ pub struct RoutingFees {
 	pub proportional_millionths: u32,
 }
 
-impl_writeable_tlv_based!(RoutingFees, {(0, base_msat), (2, proportional_millionths)}, {}, {});
+impl_writeable_tlv_based!(RoutingFees, {
+	(0, base_msat, required),
+	(2, proportional_millionths, required)
+});
 
 #[derive(Clone, Debug, PartialEq)]
 /// Information received in the latest node_announcement from this node.
@@ -547,14 +550,12 @@ pub struct NodeAnnouncementInfo {
 }
 
 impl_writeable_tlv_based!(NodeAnnouncementInfo, {
-	(0, features),
-	(2, last_update),
-	(4, rgb),
-	(6, alias),
-}, {
-	(8, announcement_message),
-}, {
-	(10, addresses),
+	(0, features, required),
+	(2, last_update, required),
+	(4, rgb, required),
+	(6, alias, required),
+	(8, announcement_message, option),
+	(10, addresses, vec_type),
 });
 
 #[derive(Clone, Debug, PartialEq)]
@@ -580,11 +581,10 @@ impl fmt::Display for NodeInfo {
 	}
 }
 
-impl_writeable_tlv_based!(NodeInfo, {}, {
-	(0, lowest_inbound_channel_fees),
-	(2, announcement_info),
-}, {
-	(4, channels),
+impl_writeable_tlv_based!(NodeInfo, {
+	(0, lowest_inbound_channel_fees, option),
+	(2, announcement_info, option),
+	(4, channels, vec_type),
 });
 
 const SERIALIZATION_VERSION: u8 = 1;
@@ -606,7 +606,7 @@ impl Writeable for NetworkGraph {
 			node_info.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 		Ok(())
 	}
 }
@@ -630,7 +630,7 @@ impl Readable for NetworkGraph {
 			let node_info = Readable::read(reader)?;
 			nodes.insert(node_id, node_info);
 		}
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 
 		Ok(NetworkGraph {
 			genesis_hash,

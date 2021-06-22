@@ -73,14 +73,14 @@ impl DelayedPaymentOutputDescriptor {
 }
 
 impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
-	(0, outpoint),
-	(2, per_commitment_point),
-	(4, to_self_delay),
-	(6, output),
-	(8, revocation_pubkey),
-	(10, channel_keys_id),
-	(12, channel_value_satoshis),
-}, {}, {});
+	(0, outpoint, required),
+	(2, per_commitment_point, required),
+	(4, to_self_delay, required),
+	(6, output, required),
+	(8, revocation_pubkey, required),
+	(10, channel_keys_id, required),
+	(12, channel_value_satoshis, required),
+});
 
 /// Information about a spendable output to our "payment key". See
 /// SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
@@ -104,11 +104,11 @@ impl StaticPaymentOutputDescriptor {
 	pub const MAX_WITNESS_LENGTH: usize = 1 + 73 + 34;
 }
 impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
-	(0, outpoint),
-	(2, output),
-	(4, channel_keys_id),
-	(6, channel_value_satoshis),
-}, {}, {});
+	(0, outpoint, required),
+	(2, output, required),
+	(4, channel_keys_id, required),
+	(6, channel_value_satoshis, required),
+});
 
 /// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
 /// claim at any point in the future) an event is generated which you must track and be able to
@@ -169,9 +169,9 @@ pub enum SpendableOutputDescriptor {
 
 impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 	(0, StaticOutput) => {
-		(0, outpoint),
-		(2, output),
-	}, {}, {},
+		(0, outpoint, required),
+		(2, output, required),
+	},
 ;
 	(1, DelayedPaymentOutput),
 	(2, StaticPaymentOutput),
@@ -692,7 +692,7 @@ impl Writeable for InMemorySigner {
 		self.channel_value_satoshis.write(writer)?;
 		self.channel_keys_id.write(writer)?;
 
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 
 		Ok(())
 	}
@@ -717,7 +717,7 @@ impl Readable for InMemorySigner {
 			                                     &htlc_base_key);
 		let keys_id = Readable::read(reader)?;
 
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 
 		Ok(InMemorySigner {
 			funding_key,

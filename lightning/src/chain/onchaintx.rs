@@ -79,18 +79,18 @@ enum OnchainEvent {
 }
 
 impl_writeable_tlv_based!(OnchainEventEntry, {
-	(0, txid),
-	(2, height),
-	(4, event),
-}, {}, {});
+	(0, txid, required),
+	(2, height, required),
+	(4, event, required),
+});
 
 impl_writeable_tlv_based_enum!(OnchainEvent,
 	(0, Claim) => {
-		(0, claim_request),
-	}, {}, {},
+		(0, claim_request, required),
+	},
 	(1, ContentiousOutpoint) => {
-		(0, package),
-	}, {}, {},
+		(0, package, required),
+	},
 ;);
 
 impl Readable for Option<Vec<Option<(usize, Signature)>>> {
@@ -236,7 +236,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			entry.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 		Ok(())
 	}
 }
@@ -298,7 +298,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			onchain_events_awaiting_threshold_conf.push(Readable::read(reader)?);
 		}
 
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());

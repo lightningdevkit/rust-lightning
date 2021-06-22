@@ -8,81 +8,132 @@
 // licenses.
 
 macro_rules! encode_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
+	($stream: expr, $type: expr, $field: expr, required) => {
+		BigSize($type).write($stream)?;
+		BigSize($field.serialized_length() as u64).write($stream)?;
+		$field.write($stream)?;
+	};
+	($stream: expr, $type: expr, $field: expr, vec_type) => {
+		encode_tlv!($stream, $type, ::util::ser::VecWriteWrapper(&$field), required);
+	};
+	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
+		if let Some(ref field) = $optional_field {
+			BigSize($optional_type).write($stream)?;
+			BigSize(field.serialized_length() as u64).write($stream)?;
+			field.write($stream)?;
+		}
+	};
+}
+
+macro_rules! encode_tlv_stream {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),*}) => { {
 		#[allow(unused_imports)]
-		use util::ser::BigSize;
-		// Fields must be serialized in order, so we have to potentially switch between optional
-		// fields and normal fields while serializing. Thus, we end up having to loop over the type
-		// counts.
-		// Sadly, while LLVM does appear smart enough to make `max_field` a constant, it appears to
-		// refuse to unroll the loop. If we have enough entries that this is slow we can revisit
-		// this design in the future.
-		#[allow(unused_mut)]
-		let mut max_field: u64 = 0;
+		use {
+			ln::msgs::DecodeError,
+			util::ser,
+			util::ser::BigSize,
+		};
+
 		$(
-			if $type >= max_field { max_field = $type + 1; }
+			encode_tlv!($stream, $type, $field, $fieldty);
 		)*
-		$(
-			if $optional_type >= max_field { max_field = $optional_type + 1; }
-		)*
-		#[allow(unused_variables)]
-		for i in 0..max_field {
+
+		#[allow(unused_mut, unused_variables, unused_assignments)]
+		#[cfg(debug_assertions)]
+		{
+			let mut last_seen: Option<u64> = None;
 			$(
-				if i == $type {
-					BigSize($type).write($stream)?;
-					BigSize($field.serialized_length() as u64).write($stream)?;
-					$field.write($stream)?;
+				if let Some(t) = last_seen {
+					debug_assert!(t <= $type);
 				}
-			)*
-			$(
-				if i == $optional_type {
-					if let Some(ref field) = $optional_field {
-						BigSize($optional_type).write($stream)?;
-						BigSize(field.serialized_length() as u64).write($stream)?;
-						field.write($stream)?;
-					}
-				}
+				last_seen = Some($type);
 			)*
 		}
 	} }
 }
 
 macro_rules! get_varint_length_prefixed_tlv_length {
-	({$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => { {
-		use util::ser::LengthCalculatingWriter;
-		#[allow(unused_mut)]
-		let mut len = LengthCalculatingWriter(0);
-		{
-			$(
-				BigSize($type).write(&mut len).expect("No in-memory data may fail to serialize");
-				let field_len = $field.serialized_length();
-				BigSize(field_len as u64).write(&mut len).expect("No in-memory data may fail to serialize");
-				len.0 += field_len;
-			)*
-			$(
-				if let Some(ref field) = $optional_field {
-					BigSize($optional_type).write(&mut len).expect("No in-memory data may fail to serialize");
-					let field_len = field.serialized_length();
-					BigSize(field_len as u64).write(&mut len).expect("No in-memory data may fail to serialize");
-					len.0 += field_len;
-				}
-			)*
+	($len: expr, $type: expr, $field: expr, required) => {
+		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
+		let field_len = $field.serialized_length();
+		BigSize(field_len as u64).write(&mut $len).expect("No in-memory data may fail to serialize");
+		$len.0 += field_len;
+	};
+	($len: expr, $type: expr, $field: expr, vec_type) => {
+		get_varint_length_prefixed_tlv_length!($len, $type, ::util::ser::VecWriteWrapper(&$field), required);
+	};
+	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
+		if let Some(ref field) = $optional_field {
+			BigSize($optional_type).write(&mut $len).expect("No in-memory data may fail to serialize");
+			let field_len = field.serialized_length();
+			BigSize(field_len as u64).write(&mut $len).expect("No in-memory data may fail to serialize");
+			$len.0 += field_len;
 		}
-		len.0
-	} }
+	};
 }
 
 macro_rules! encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr)),*}, {$(($optional_type: expr, $optional_field: expr)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),*}) => { {
 		use util::ser::BigSize;
-		let len = get_varint_length_prefixed_tlv_length!({ $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
+		let len = {
+			#[allow(unused_mut)]
+			let mut len = ::util::ser::LengthCalculatingWriter(0);
+			$(
+				get_varint_length_prefixed_tlv_length!(len, $type, $field, $fieldty);
+			)*
+			len.0
+		};
 		BigSize(len as u64).write($stream)?;
-		encode_tlv!($stream, { $(($type, $field)),* }, { $(($optional_type, $optional_field)),* });
+		encode_tlv_stream!($stream, { $(($type, $field, $fieldty)),* });
 	} }
 }
 
+macro_rules! check_tlv_order {
+	($last_seen_type: expr, $typ: expr, $type: expr, required) => {{
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
+		if invalid_order {
+			Err(DecodeError::InvalidValue)?
+		}
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, option) => {{
+		// no-op
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, vec_type) => {{
+		// no-op
+	}};
+}
+
+macro_rules! check_missing_tlv {
+	($last_seen_type: expr, $type: expr, required) => {{
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
+		if missing_req_type {
+			Err(DecodeError::InvalidValue)?
+		}
+	}};
+	($last_seen_type: expr, $type: expr, vec_type) => {{
+		// no-op
+	}};
+	($last_seen_type: expr, $type: expr, option) => {{
+		// no-op
+	}};
+}
+
 macro_rules! decode_tlv {
-	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),*}, {$(($type: expr, $field: ident)),*}) => { {
+	($reader: expr, $field: ident, required) => {{
+		$field = ser::Readable::read(&mut $reader)?;
+	}};
+	($reader: expr, $field: ident, vec_type) => {{
+		$field = Some(ser::Readable::read(&mut $reader)?);
+	}};
+	($reader: expr, $field: ident, option) => {{
+		$field = Some(ser::Readable::read(&mut $reader)?);
+	}};
+}
+
+macro_rules! decode_tlv_stream {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => { {
 		use ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		'tlv_read: loop {
@@ -117,11 +168,7 @@ macro_rules! decode_tlv {
 			}
 			// As we read types, make sure we hit every required type:
 			$({
-				#[allow(unused_comparisons)] // Note that $reqtype may be 0 making the second comparison always true
-				let invalid_order = (last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype) && typ.0 > $reqtype;
-				if invalid_order {
-					Err(DecodeError::InvalidValue)?
-				}
+				check_tlv_order!(last_seen_type, typ, $type, $fieldty);
 			})*
 			last_seen_type = Some(typ.0);
 
@@ -129,15 +176,8 @@ macro_rules! decode_tlv {
 			let length: ser::BigSize = Readable::read($stream)?;
 			let mut s = ser::FixedLengthReader::new($stream, length.0);
 			match typ.0 {
-				$($reqtype => {
-					$reqfield = ser::Readable::read(&mut s)?;
-					if s.bytes_remain() {
-						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
-						Err(DecodeError::InvalidValue)?
-					}
-				},)*
 				$($type => {
-					$field = Some(ser::Readable::read(&mut s)?);
+					decode_tlv!(s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 						Err(DecodeError::InvalidValue)?
@@ -152,11 +192,7 @@ macro_rules! decode_tlv {
 		}
 		// Make sure we got to each required type after we've read every TLV:
 		$({
-			#[allow(unused_comparisons)] // Note that $reqtype may be 0 making the second comparison always true
-			let missing_req_type = last_seen_type.is_none() || last_seen_type.unwrap() < $reqtype;
-			if missing_req_type {
-				Err(DecodeError::InvalidValue)?
-			}
+			check_missing_tlv!(last_seen_type, $type, $fieldty);
 		})*
 	} }
 }
@@ -172,8 +208,7 @@ macro_rules! impl_writeable {
 				{
 					// In tests, assert that the hard-coded length matches the actual one
 					if $len != 0 {
-						use util::ser::LengthCalculatingWriter;
-						let mut len_calc = LengthCalculatingWriter(0);
+						let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
 						$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
 						assert_eq!(len_calc.0, $len);
 						assert_eq!(self.serialized_length(), $len);
@@ -219,8 +254,7 @@ macro_rules! impl_writeable_len_match {
 				#[cfg(any(test, feature = "fuzztarget"))]
 				{
 					// In tests, assert that the hard-coded length matches the actual one
-					use util::ser::LengthCalculatingWriter;
-					let mut len_calc = LengthCalculatingWriter(0);
+					let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
 					$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
 					assert!(len_calc.0 $cmp len);
 					assert_eq!(len_calc.0, self.serialized_length());
@@ -292,8 +326,8 @@ macro_rules! write_ver_prefix {
 /// This is the preferred method of adding new fields that old nodes can ignore and still function
 /// correctly.
 macro_rules! write_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
-		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),* $(,)*}) => {
+		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*});
 	}
 }
 
@@ -313,103 +347,65 @@ macro_rules! read_ver_prefix {
 
 /// Reads a suffix added by write_tlv_fields.
 macro_rules! read_tlv_fields {
-	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => { {
 		let tlv_len = ::util::ser::BigSize::read($stream)?;
 		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
-		decode_tlv!(&mut rd, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
+		decode_tlv_stream!(&mut rd, {$(($type, $field, $fieldty)),*});
 		rd.eat_remaining().map_err(|_| ::ln::msgs::DecodeError::ShortRead)?;
 	} }
 }
 
-// If we naively create a struct in impl_writeable_tlv_based below, we may end up returning
-// `Self { ,,vecfield: vecfield }` which is obviously incorrect. Instead, we have to match here to
-// detect at least one empty field set and skip the potentially-extra comma.
-macro_rules! _init_tlv_based_struct {
-	($($type: ident)::*, {}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok($($type)::* {
-			$($field),*,
-			$($vecfield: $vecfield.unwrap().0),*
-		})
+macro_rules! init_tlv_based_struct_field {
+	($field: ident, option) => {
+		$field
 	};
-	($($type: ident)::*, {$($reqfield: ident),*}, {}, {$($vecfield: ident),*}) => {
-		Ok($($type)::* {
-			$($reqfield: $reqfield.0.unwrap()),*,
-			$($vecfield: $vecfield.unwrap().0),*
-		})
+	($field: ident, required) => {
+		$field.0.unwrap()
 	};
-	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {}) => {
-		Ok($($type)::* {
-			$($reqfield: $reqfield.0.unwrap()),*,
-			$($field),*
-		})
+	($field: ident, vec_type) => {
+		$field.unwrap().0
 	};
-	($($type: ident)::*, {$($reqfield: ident),*}, {$($field: ident),*}, {$($vecfield: ident),*}) => {
-		Ok($($type)::* {
-			$($reqfield: $reqfield.0.unwrap()),*,
-			$($field),*,
-			$($vecfield: $vecfield.unwrap().0),*
-		})
-	}
 }
 
-// If we don't have any optional types below, but do have some vec types, we end up calling
-// `write_tlv_field!($stream, {..}, {, (vec_ty, vec_val)})`, which is obviously broken.
-// Instead, for write and read we match the missing values and skip the extra comma.
-macro_rules! _write_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
-		write_tlv_fields!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*});
+macro_rules! init_tlv_field_var {
+	($field: ident, required) => {
+		let mut $field = ::util::ser::OptionDeserWrapper(None);
 	};
-	($stream: expr, {$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}, {$(($optional_type_2: expr, $optional_field_2: expr)),* $(,)*}) => {
-		write_tlv_fields!($stream, {$(($type, $field)),*} , {$(($optional_type, $optional_field)),*, $(($optional_type_2, $optional_field_2)),*});
-	}
-}
-macro_rules! _get_tlv_len {
-	({$(($type: expr, $field: expr)),* $(,)*}, {}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}) => {
-		get_varint_length_prefixed_tlv_length!({$(($type, $field)),*} , {$(($optional_type, $optional_field)),*})
+	($field: ident, vec_type) => {
+		let mut $field = Some(::util::ser::VecReadWrapper(Vec::new()));
 	};
-	({$(($type: expr, $field: expr)),* $(,)*}, {$(($optional_type: expr, $optional_field: expr)),* $(,)*}, {$(($optional_type_2: expr, $optional_field_2: expr)),* $(,)*}) => {
-		get_varint_length_prefixed_tlv_length!({$(($type, $field)),*} , {$(($optional_type, $optional_field)),*, $(($optional_type_2, $optional_field_2)),*})
-	}
-}
-macro_rules! _read_tlv_fields {
-	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {}, {$(($type: expr, $field: ident)),* $(,)*}) => {
-		read_tlv_fields!($stream, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*});
-	};
-	($stream: expr, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}, {$(($type_2: expr, $field_2: ident)),* $(,)*}) => {
-		read_tlv_fields!($stream, {$(($reqtype, $reqfield)),*}, {$(($type, $field)),*, $(($type_2, $field_2)),*});
+	($field: ident, option) => {
+		let mut $field = None;
 	}
 }
 
 /// Implements Readable/Writeable for a struct storing it as a set of TLVs
-/// First block includes all the required fields including a dummy value which is used during
-/// deserialization but which will never be exposed to other code.
-/// The second block includes optional fields.
-/// The third block includes any Vecs which need to have their individual elements serialized.
+/// If $fieldty is `required`, then $field is a required field that is not an Option nor a Vec.
+/// If $fieldty is `option`, then $field is optional field.
+/// if $fieldty is `vec_type`, then $field is a Vec, which needs to have its individual elements
+/// serialized.
 macro_rules! impl_writeable_tlv_based {
-	($st: ident, {$(($reqtype: expr, $reqfield: ident)),* $(,)*}, {$(($type: expr, $field: ident)),* $(,)*}, {$(($vectype: expr, $vecfield: ident)),* $(,)*}) => {
+	($st: ident, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => {
 		impl ::util::ser::Writeable for $st {
 			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
-				_write_tlv_fields!(writer, {
-					$(($reqtype, self.$reqfield)),*
-				}, {
-					$(($type, self.$field)),*
-				}, {
-					$(($vectype, Some(::util::ser::VecWriteWrapper(&self.$vecfield)))),*
+				write_tlv_fields!(writer, {
+					$(($type, self.$field, $fieldty)),*
 				});
 				Ok(())
 			}
 
 			#[inline]
 			fn serialized_length(&self) -> usize {
-				let len = _get_tlv_len!({
-					$(($reqtype, self.$reqfield)),*
-				}, {
-					$(($type, self.$field)),*
-				}, {
-					$(($vectype, Some(::util::ser::VecWriteWrapper(&self.$vecfield)))),*
-				});
-				use util::ser::{BigSize, LengthCalculatingWriter};
-				let mut len_calc = LengthCalculatingWriter(0);
+				use util::ser::BigSize;
+				let len = {
+					#[allow(unused_mut)]
+					let mut len = ::util::ser::LengthCalculatingWriter(0);
+					$(
+						get_varint_length_prefixed_tlv_length!(len, $type, self.$field, $fieldty);
+					)*
+					len.0
+				};
+				let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
 				BigSize(len as u64).write(&mut len_calc).expect("No in-memory data may fail to serialize");
 				len + len_calc.0
 			}
@@ -418,22 +414,16 @@ macro_rules! impl_writeable_tlv_based {
 		impl ::util::ser::Readable for $st {
 			fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				$(
-					let mut $reqfield = ::util::ser::OptionDeserWrapper(None);
+					init_tlv_field_var!($field, $fieldty);
 				)*
-				$(
-					let mut $field = None;
-				)*
-				$(
-					let mut $vecfield = Some(::util::ser::VecReadWrapper(Vec::new()));
-				)*
-				_read_tlv_fields!(reader, {
-					$(($reqtype, $reqfield)),*
-				}, {
-					$(($type, $field)),*
-				}, {
-					$(($vectype, $vecfield)),*
+				read_tlv_fields!(reader, {
+					$(($type, $field, $fieldty)),*
 				});
-				_init_tlv_based_struct!($st, {$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+				Ok(Self {
+					$(
+						$field: init_tlv_based_struct_field!($field, $fieldty)
+					),*
+				})
 			}
 		}
 	}
@@ -443,31 +433,25 @@ macro_rules! impl_writeable_tlv_based {
 /// variants stored directly.
 /// The format is, for example
 /// impl_writeable_tlv_based_enum!(EnumName,
-///   (0, StructVariantA) => {(0, variant_field)}, {(1, variant_optional_field)}, {},
-///   (1, StructVariantB) => {(0, variant_field_a), (1, variant_field_b)}, {}, {(2, variant_vec_field)};
+///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
+///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, vec_type)};
 ///   (2, TupleVariantA), (3, TupleVariantB),
 /// );
 /// The type is written as a single byte, followed by any variant data.
 /// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
 macro_rules! impl_writeable_tlv_based_enum {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
-		{$(($reqtype: expr, $reqfield: ident)),* $(,)*},
-		{$(($type: expr, $field: ident)),* $(,)*},
-		{$(($vectype: expr, $vecfield: ident)),* $(,)*}
+		{$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}
 	),* $(,)*;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
 		impl ::util::ser::Writeable for $st {
 			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
 				match self {
-					$($st::$variant_name { $(ref $reqfield),* $(ref $field),*, $(ref $vecfield),* } => {
+					$($st::$variant_name { $(ref $field),* } => {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
-						_write_tlv_fields!(writer, {
-							$(($reqtype, $reqfield)),*
-						}, {
-							$(($type, $field)),*
-						}, {
-							$(($vectype, Some(::util::ser::VecWriteWrapper(&$vecfield)))),*
+						write_tlv_fields!(writer, {
+							$(($type, $field, $fieldty)),*
 						});
 					}),*
 					$($st::$tuple_variant_name (ref field) => {
@@ -489,22 +473,16 @@ macro_rules! impl_writeable_tlv_based_enum {
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
 							$(
-								let mut $reqfield = ::util::ser::OptionDeserWrapper(None);
+								init_tlv_field_var!($field, $fieldty);
 							)*
-							$(
-								let mut $field = None;
-							)*
-							$(
-								let mut $vecfield = Some(::util::ser::VecReadWrapper(Vec::new()));
-							)*
-							_read_tlv_fields!(reader, {
-								$(($reqtype, $reqfield)),*
-							}, {
-								$(($type, $field)),*
-							}, {
-								$(($vectype, $vecfield)),*
+							read_tlv_fields!(reader, {
+								$(($type, $field, $fieldty)),*
 							});
-							_init_tlv_based_struct!($st::$variant_name, {$($reqfield),*}, {$($field),*}, {$($vecfield),*})
+							Ok($st::$variant_name {
+								$(
+									$field: init_tlv_based_struct_field!($field, $fieldty)
+								),*
+							})
 						};
 						f()
 					}),*
@@ -536,7 +514,7 @@ mod tests {
 		let mut a: u64 = 0;
 		let mut b: u32 = 0;
 		let mut c: Option<u32> = None;
-		decode_tlv!(&mut s, {(2, a), (3, b)}, {(4, c)});
+		decode_tlv_stream!(&mut s, {(2, a, required), (3, b, required), (4, c, option)});
 		Ok((a, b, c))
 	}
 
@@ -600,7 +578,7 @@ mod tests {
 		let mut tlv2: Option<u64> = None;
 		let mut tlv3: Option<(PublicKey, u64, u64)> = None;
 		let mut tlv4: Option<u16> = None;
-		decode_tlv!(&mut s, {}, {(1, tlv1), (2, tlv2), (3, tlv3), (254, tlv4)});
+		decode_tlv_stream!(&mut s, {(1, tlv1, option), (2, tlv2, option), (3, tlv3, option), (254, tlv4, option)});
 		Ok((tlv1, tlv2, tlv3, tlv4))
 	}
 
@@ -711,27 +689,27 @@ mod tests {
 		let mut stream = VecWriter(Vec::new());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (1, 1u8) }, { (42, None::<u64>) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(1, 1u8, required), (42, None::<u64>, option)});
 		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { }, { (1, Some(1u8)) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(1, Some(1u8), option)});
 		assert_eq!(stream.0, ::hex::decode("03010101").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (4, 0xabcdu16) }, { (42, None::<u64>) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(4, 0xabcdu16, required), (42, None::<u64>, option)});
 		assert_eq!(stream.0, ::hex::decode("040402abcd").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (0xff, 0xabcdu16) }, { (42, None::<u64>) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(42, None::<u64>, option), (0xff, 0xabcdu16, required)});
 		assert_eq!(stream.0, ::hex::decode("06fd00ff02abcd").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (0, 1u64), (0xff, HighZeroBytesDroppedVarInt(0u64)) }, { (42, None::<u64>) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(0, 1u64, required), (42, None::<u64>, option), (0xff, HighZeroBytesDroppedVarInt(0u64), required)});
 		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, { (0xff, HighZeroBytesDroppedVarInt(0u64)) }, { (0, Some(1u64)) });
+		encode_varint_length_prefixed_tlv!(&mut stream, {(0, Some(1u64), option), (0xff, HighZeroBytesDroppedVarInt(0u64), required)});
 		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
 
 		Ok(())
