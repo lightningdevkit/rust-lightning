@@ -28,7 +28,7 @@ use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalFie
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
-use util::logger::Logger;
+use util::logger::{Logger, Level};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
@@ -717,7 +717,7 @@ impl NetworkGraph {
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					if node_info.last_update  >= msg.timestamp {
-						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
+						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
 					}
 				}
 
@@ -838,7 +838,7 @@ impl NetworkGraph {
 					Self::remove_channel_in_nodes(&mut self.nodes, &entry.get(), msg.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreError})
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)})
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -940,7 +940,7 @@ impl NetworkGraph {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
 							if existing_chan_info.last_update >= msg.timestamp {
-								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
+								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
 						} else {

@@ -38,6 +38,7 @@ use core::fmt::Debug;
 use std::io::Read;
 
 use util::events::MessageSendEventsProvider;
+use util::logger;
 use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -688,7 +689,11 @@ pub enum ErrorAction {
 		msg: Option<ErrorMessage>
 	},
 	/// The peer did something harmless that we weren't able to process, just log and ignore
+	// New code should *not* use this. New code must use IgnoreAndLog, below!
 	IgnoreError,
+	/// The peer did something harmless that we weren't able to meaningfully process.
+	/// If the error is logged, log it at the given level.
+	IgnoreAndLog(logger::Level),
 	/// The peer did something incorrect. Tell them.
 	SendErrorMessage {
 		/// The message to send.

@@ -27,7 +27,7 @@ use ln::wire;
 use ln::wire::Encode;
 use util::byte_utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::logger::Logger;
+use util::logger::{Logger, Level};
 use routing::network_graph::NetGraphMsgHandler;
 
 use prelude::*;
@@ -717,15 +717,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 											match e.action {
 												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 													//TODO: Try to push msg
-													log_debug!(self.logger, "Got Err handling message, disconnecting peer with: {}", e.err);
+													log_debug!(self.logger, "Error handling message; disconnecting peer with: {}", e.err);
 													return Err(PeerHandleError{ no_connection_possible: false });
 												},
+												msgs::ErrorAction::IgnoreAndLog(level) => {
+													log_given_level!(self.logger, level, "Error handling message; ignoring: {}", e.err);
+													continue
+												},
 												msgs::ErrorAction::IgnoreError => {
-													log_debug!(self.logger, "Got ignored error handling message: {}", e.err);
+													log_debug!(self.logger, "Error handling message; ignoring: {}", e.err);
 													continue;
 												},
 												msgs::ErrorAction::SendErrorMessage { msg } => {
-													log_debug!(self.logger, "Got Err handling message, sending Error message with: {}", e.err);
+													log_debug!(self.logger, "Error handling message; sending error message with: {}", e.err);
 													self.enqueue_message(peer, &msg);
 													continue;
 												},
@@ -1284,7 +1288,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 									self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 								}
 							},
-							msgs::ErrorAction::IgnoreError => {},
+							msgs::ErrorAction::IgnoreAndLog(level) => {
+								log_given_level!(self.logger, level, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
+							},
+							msgs::ErrorAction::IgnoreError => {
+								log_debug!(self.logger, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
+							},
 							msgs::ErrorAction::SendErrorMessage { ref msg } => {
 								log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id),
