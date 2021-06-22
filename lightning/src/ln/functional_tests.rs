@@ -1694,7 +1694,8 @@ fn test_fee_spike_violation_fails_htlc() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	nodes[1].logger.assert_log("lightning::ln::channel".to_string(), "Attempting to fail HTLC due to fee spike buffer violation".to_string(), 1);
+	nodes[1].logger.assert_log("lightning::ln::channel".to_string(),
+		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", ::hex::encode(raa_msg.channel_id)), 1);
 
 	check_added_monitors!(nodes[1], 2);
 }
@@ -6234,8 +6235,9 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	// us to surface its failure to the user.
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 1 HTLC updates".to_string(), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", log_bytes!(our_payment_hash.0), chan_stat.channel_reserve_msat);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", hex::encode(chan.2)), 1);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
+		hex::encode(our_payment_hash.0), chan_stat.channel_reserve_msat, hex::encode(chan.2));
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the payment failed to be sent out.
@@ -6314,8 +6316,9 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	// to surface its failure to the user. The first payment should succeed.
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), "Freeing holding cell with 2 HTLC updates".to_string(), 1);
-	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", log_bytes!(payment_hash_2.0), chan_stat.channel_reserve_msat);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", hex::encode(chan.2)), 1);
+	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
+		hex::encode(payment_hash_2.0), chan_stat.channel_reserve_msat, hex::encode(chan.2));
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), failure_log.to_string(), 1);
 
 	// Check that the second payment failed to be sent out.
