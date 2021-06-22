@@ -32,6 +32,7 @@ use routing::network_graph::NetGraphMsgHandler;
 
 use prelude::*;
 use alloc::collections::LinkedList;
+use alloc::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
@@ -670,12 +671,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
-	fn enqueue_message<M: Encode + Writeable>(&self, peer: &mut Peer, message: &M) {
+	fn enqueue_message<M: Encode + Writeable + Debug>(&self, peer: &mut Peer, message: &M) {
 		let mut buffer = VecWriter(Vec::new());
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
 		let encoded_message = buffer.0;
 
-		log_trace!(self.logger, "Enqueueing message of type {} to {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+		log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
 		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
 	}
 
@@ -716,15 +717,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 											match e.action {
 												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 													//TODO: Try to push msg
-													log_trace!(self.logger, "Got Err handling message, disconnecting peer because {}", e.err);
+													log_debug!(self.logger, "Got Err handling message, disconnecting peer with: {}", e.err);
 													return Err(PeerHandleError{ no_connection_possible: false });
 												},
 												msgs::ErrorAction::IgnoreError => {
-													log_trace!(self.logger, "Got Err handling message, ignoring because {}", e.err);
+													log_debug!(self.logger, "Got ignored error handling message: {}", e.err);
 													continue;
 												},
 												msgs::ErrorAction::SendErrorMessage { msg } => {
-													log_trace!(self.logger, "Got Err handling message, sending Error message because {}", e.err);
+													log_debug!(self.logger, "Got Err handling message, sending Error message with: {}", e.err);
 													self.enqueue_message(peer, &msg);
 													continue;
 												},
@@ -743,7 +744,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 											return Err(PeerHandleError{ no_connection_possible: false })
 										},
 										hash_map::Entry::Vacant(entry) => {
-											log_trace!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
+											log_debug!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
 											entry.insert(peer_descriptor.clone())
 										},
 									};
@@ -804,7 +805,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 												match e {
 													msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::UnknownRequiredFeature => {
-														log_debug!(self.logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
+														log_trace!(self.logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
 														continue;
 													}
 													msgs::DecodeError::InvalidValue => {
@@ -818,7 +819,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::UnsupportedCompression => {
-														log_debug!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
+														log_trace!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
 														continue;
 													}
 												}
@@ -861,12 +862,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
 	/// Returns the message back if it needs to be broadcasted to all other peers.
 	fn handle_message(&self, peer: &mut Peer, message: wire::Message) -> Result<Option<wire::Message>, MessageHandlingError> {
-		log_trace!(self.logger, "Received message of type {} from {}", message.type_id(), log_pubkey!(peer.their_node_id.unwrap()));
+		log_trace!(self.logger, "Received message {:?} from {}", message, log_pubkey!(peer.their_node_id.unwrap()));
 
 		// Need an Init as first message
 		if let wire::Message::Init(_) = message {
 		} else if peer.their_features.is_none() {
-			log_trace!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
+			log_debug!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(peer.their_node_id.unwrap()));
 			return Err(PeerHandleError{ no_connection_possible: false }.into());
 		}
 
@@ -876,7 +877,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			// Setup and Control messages:
 			wire::Message::Init(msg) => {
 				if msg.features.requires_unknown_bits() {
-					log_info!(self.logger, "Peer features required unknown version bits");
+					log_debug!(self.logger, "Peer features required unknown version bits");
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
 				if peer.their_features.is_some() {
@@ -1043,6 +1044,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 	fn forward_broadcast_msg(&self, peers: &mut PeerHolder<Descriptor>, msg: &wire::Message, except_node: Option<&PublicKey>) {
 		match msg {
 			wire::Message::ChannelAnnouncement(ref msg) => {
+				log_trace!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1051,6 +1053,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						continue
 					}
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP {
+						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id_1) ||
@@ -1064,6 +1067,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
+				log_trace!(self.logger, "Sending message to all peers except {:?} or the announced node: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1072,6 +1076,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						continue
 					}
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP {
+						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id) {
@@ -1084,6 +1089,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
+				log_trace!(self.logger, "Sending message to all peers except {:?}: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1092,6 +1098,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						continue
 					}
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP {
+						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
@@ -1147,19 +1154,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 				}
 				match event {
 					MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendFundingCreated { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendFundingCreated event in peer_handler for node {} for channel {} (which becomes {})",
+						log_debug!(self.logger, "Handling SendFundingCreated event in peer_handler for node {} for channel {} (which becomes {})",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id),
 								log_funding_channel_id!(msg.funding_txid, msg.funding_output_index));
@@ -1168,25 +1175,25 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendFundingSigned { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendFundingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
+						log_debug!(self.logger, "Handling SendAnnouncementSignatures event in peer_handler for node {} for channel {})",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-						log_trace!(self.logger, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
+						log_debug!(self.logger, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),
 								update_fulfill_htlcs.len(),
@@ -1211,44 +1218,44 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 						self.enqueue_message(peer, commitment_signed);
 					},
 					MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendRevokeAndACK event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendClosingSigned event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendShutdown { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling Shutdown event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling Shutdown event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
+						log_debug!(self.logger, "Handling SendChannelReestablish event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
-						log_trace!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
+						log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_announcement(&msg).is_ok() && self.message_handler.route_handler.handle_channel_update(&update_msg).is_ok() {
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None);
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None);
 						}
 					},
 					MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
-						log_trace!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
+						log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
 						if self.message_handler.route_handler.handle_node_announcement(&msg).is_ok() {
 							self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None);
 						}
 					},
 					MessageSendEvent::BroadcastChannelUpdate { msg } => {
-						log_trace!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
+						log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						if self.message_handler.route_handler.handle_channel_update(&msg).is_ok() {
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None);
 						}

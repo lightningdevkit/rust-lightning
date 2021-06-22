@@ -24,6 +24,7 @@ use util::ser::{Readable, Writeable, Writer};
 /// A Lightning message returned by [`read()`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
+#[derive(Debug)]
 pub enum Message {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
@@ -58,10 +59,11 @@ pub enum Message {
 }
 
 /// A number identifying a message to determine how it is encoded on the wire.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MessageType(u16);
 
 impl Message {
+	#[allow(dead_code)] // This method is only used in tests
 	/// Returns the type that was used to decode the message payload.
 	pub fn type_id(&self) -> MessageType {
 		match self {
