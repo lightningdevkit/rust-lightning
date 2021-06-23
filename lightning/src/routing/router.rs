@@ -168,7 +168,7 @@ struct DummyDirectionalChannelInfo {
 /// so that we can choose cheaper paths (as per Dijkstra's algorithm).
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PathBuildingHop<'a> {
 	// The RouteHintHop fields which will eventually be used if this hop is used in a final Route.
 	// Note that node_features is calculated separately after our initial graph walk.
@@ -505,6 +505,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	//   it's available liquidity is too small comparing to how much more we need to collect;
 	// - when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
+
+	log_trace!(logger, "Building path from {} (payee) to {} (us/payer) for value {} msat.", payee, our_node_id, final_value_msat);
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id
@@ -891,6 +893,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			}
 		}
 
+		log_trace!(logger, "Starting main path collection loop with {} nodes pre-filled from first/last hops.", targets.len());
+
 		// At this point, targets are filled with the data from first and
 		// last hops communicated by the caller, and the payment receiver.
 		let mut found_new_path = false;
@@ -954,6 +958,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				ordered_hops.last_mut().unwrap().0.hop_use_fee_msat = 0;
 				ordered_hops.last_mut().unwrap().0.cltv_expiry_delta = final_cltv;
 
+				log_trace!(logger, "Found a path back to us from the target with {} hops contributing up to {} msat: {:?}",
+					ordered_hops.len(), value_contribution_msat, ordered_hops);
+
 				let mut payment_path = PaymentPath {hops: ordered_hops};
 
 				// We could have possibly constructed a slightly inconsistent path: since we reduce
@@ -989,8 +996,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
-					let victim_liquidity = bookkeeped_channels_liquidity_available_msat.get_mut(
-						&payment_path.hops[(payment_path.hops.len() - 1) / 2].0.short_channel_id).unwrap();
+					let victim_scid = payment_path.hops[(payment_path.hops.len() - 1) / 2].0.short_channel_id;
+					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
+					let victim_liquidity = bookkeeped_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
 					*victim_liquidity = 0;
 				}
 
@@ -1032,6 +1040,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// In the latter case, making another path finding attempt won't help,
 		// because we deterministically terminated the search due to low liquidity.
 		if already_collected_value_msat >= recommended_value_msat || !found_new_path {
+			log_trace!(logger, "Have now collected {} msat (seeking {} msat) in paths. Last path loop {} a new path.",
+				already_collected_value_msat, recommended_value_msat, if found_new_path { "found" } else { "did not find" });
 			break 'paths_collection;
 		} else if found_new_path && already_collected_value_msat == final_value_msat && payment_paths.len() == 1 {
 			// Further, if this was our first walk of the graph, and we weren't limited by an
@@ -1040,8 +1050,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// potentially allowing us to pay fees to meet the htlc_minimum on the new path while
 			// still keeping a lower total fee than this path.
 			if !hit_minimum_limit {
+				log_trace!(logger, "Collected exactly our payment amount on the first pass, without hitting an htlc_minimum_msat limit, exiting.");
 				break 'paths_collection;
 			}
+			log_trace!(logger, "Collected our payment amount on the first pass, but running again to collect extra paths with a potentially higher limit.");
 			path_value_msat = recommended_value_msat;
 		}
 	}
@@ -1152,7 +1164,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	}
 
 	let route = Route { paths: selected_paths };
-	log_trace!(logger, "Got route: {}", log_route!(route));
+	log_info!(logger, "Got route to {}: {}", payee, log_route!(route));
 	Ok(route)
 }
 
