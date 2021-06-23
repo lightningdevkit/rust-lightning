@@ -1585,7 +1585,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &Some(payment_secret), cur_height).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &Some(payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1746,7 +1746,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &Some(payment_secret), cur_height).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &Some(payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1872,7 +1872,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -3421,7 +3421,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let current_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 		let net_graph_msg_handler = &nodes[1].net_graph_msg_handler;
 		let route = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 50_000, TEST_FINAL_CLTV, &logger).unwrap();
-		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &Some(payment_secret), current_height).unwrap();
+		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &Some(payment_secret), current_height, &None).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 
@@ -4191,7 +4191,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, cur_height).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, cur_height, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -6817,7 +6817,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &Some(our_payment_secret), cur_height).unwrap();
+	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &Some(our_payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 
 	let mut msg = msgs::UpdateAddHTLC {
@@ -9594,8 +9594,35 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		expect_payment_failure_chan_update!(nodes[0], chan_announce.contents.short_channel_id, true);
 	}
 }
+
 #[test]
 fn test_tx_confirmed_skipping_blocks_immediate_broadcast() {
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(false);
 	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(true);
+}
+
+#[test]
+fn test_keysend_payments_to_public_node() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+	let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+	let payer_pubkey = nodes[0].node.get_our_node_id();
+	let payee_pubkey = nodes[1].node.get_our_node_id();
+	let route = get_route(&payer_pubkey, &network_graph, &payee_pubkey, None,
+                        None, &vec![], 10000, 40,
+                        nodes[0].logger).unwrap();
+
+	let test_preimage = PaymentPreimage([42; 32]);
+	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let event = events.pop().unwrap();
+	let path = vec![&nodes[1]];
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, PaymentSecret([0; 32]), event, true, Some(test_preimage));
+	claim_payment(&nodes[0], &path, test_preimage);
 }
