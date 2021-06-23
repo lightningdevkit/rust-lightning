@@ -382,7 +382,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		log_trace!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
+		log_debug!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;
 
@@ -391,20 +391,20 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		for req in requests {
 			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
 			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) {
-				log_trace!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout);
+				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout);
 			} else {
 				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
 					.find(|locked_package| locked_package.outpoints() == req.outpoints());
 				if let Some(package) = timelocked_equivalent_package {
-					log_trace!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
+					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
 						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_timelock());
 					continue;
 				}
 
 				if req.package_timelock() > height + 1 {
-					log_debug!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), height);
+					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), height);
 					for outpoint in req.outpoints() {
-						log_debug!(logger, "  Outpoint {}", outpoint);
+						log_info!(logger, "  Outpoint {}", outpoint);
 					}
 					self.locktimed_packages.entry(req.package_timelock()).or_insert(Vec::new()).push(req);
 					continue;
@@ -441,11 +441,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				req.set_feerate(new_feerate);
 				let txid = tx.txid();
 				for k in req.outpoints() {
-					log_trace!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
+					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (txid, height));
 				}
 				self.pending_claim_requests.insert(txid, req);
-				log_trace!(logger, "Broadcasting onchain {}", log_tx!(tx));
+				log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(&tx);
 			}
 		}
@@ -562,7 +562,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, request) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger) {
-				log_trace!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
+				log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
 					request.set_timer(new_timer);

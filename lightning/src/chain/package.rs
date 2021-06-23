@@ -603,18 +603,18 @@ impl PackageTemplate {
 					});
 				}
 				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
-					log_trace!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+					log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
 					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
 				}
-				log_trace!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
+				log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
 				return Some(bumped_tx);
 			},
 			PackageMalleability::Untractable => {
 				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
 				if let Some((outpoint, outp)) = self.inputs.first() {
 					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
-						log_trace!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-						log_trace!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
+						log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+						log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
 						return Some(final_tx);
 					}
 					return None;
@@ -794,13 +794,13 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 			// ...else just increase the previous feerate by 25% (because that's a nice number)
 			let new_fee = previous_feerate * (predicted_weight as u64) / 750;
 			if input_amounts <= new_fee {
-				log_trace!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
+				log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
 				return None;
 			}
 			new_fee
 		}
 	} else {
-		log_trace!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);
+		log_warn!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);
 		return None;
 	};
 

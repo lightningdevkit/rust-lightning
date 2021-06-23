@@ -2667,7 +2667,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 					}
 					if let Some((msg, commitment_signed)) = msgs {
-						log_debug!(self.logger, "Caliming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
+						log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
 							log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: chan.get().get_counterparty_node_id(),

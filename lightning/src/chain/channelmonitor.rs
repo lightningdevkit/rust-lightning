@@ -1543,7 +1543,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// Last, track onchain revoked commitment transaction and fail backward outgoing HTLCs as payment path is broken
 			if !claimable_outpoints.is_empty() || per_commitment_option.is_some() { // ie we're confident this is actually ours
 				// We're definitely a counterparty commitment transaction!
-				log_trace!(logger, "Got broadcast of revoked counterparty commitment transaction, going to generate general spend tx with {} inputs", claimable_outpoints.len());
+				log_error!(logger, "Got broadcast of revoked counterparty commitment transaction, going to generate general spend tx with {} inputs", claimable_outpoints.len());
 				for (idx, outp) in tx.output.iter().enumerate() {
 					watch_outputs.push((idx as u32, outp.clone()));
 				}
@@ -1599,7 +1599,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 			self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
-			log_trace!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
+			log_info!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
 
 			macro_rules! check_htlc_fails {
 				($txid: expr, $commitment_tx: expr, $id: tt) => {
@@ -1717,7 +1717,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 
-		log_trace!(logger, "Counterparty HTLC broadcast {}:{}", htlc_txid, 0);
+		log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, 0);
 		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_tx_cache.on_counterparty_tx_csv);
 		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
 		let claimable_outpoints = vec!(justice_package);
@@ -1808,14 +1808,14 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		if self.current_holder_commitment_tx.txid == commitment_txid {
 			is_holder_tx = true;
-			log_trace!(logger, "Got latest holder commitment tx broadcast, searching for available HTLCs to claim");
+			log_info!(logger, "Got broadcast of latest holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
 			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
 			append_onchain_update!(res, to_watch);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
 			if holder_tx.txid == commitment_txid {
 				is_holder_tx = true;
-				log_trace!(logger, "Got previous holder commitment tx broadcast, searching for available HTLCs to claim");
+				log_info!(logger, "Got broadcast of previous holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
 				let res = self.get_broadcasted_holder_claims(holder_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
 				append_onchain_update!(res, to_watch);
@@ -1845,7 +1845,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
-		log_trace!(logger, "Getting signed latest holder commitment transaction!");
+		log_debug!(logger, "Getting signed latest holder commitment transaction!");
 		self.holder_tx_signed = true;
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
@@ -1879,7 +1879,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	/// Note that this includes possibly-locktimed-in-the-future transactions!
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
-		log_trace!(logger, "Getting signed copy of latest holder commitment transaction!");
+		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
@@ -2086,7 +2086,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						matured_htlcs.push(source.clone());
 					}
 
-					log_trace!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!(payment_hash.0));
+					log_debug!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!(payment_hash.0));
 					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash: payment_hash,
 						payment_preimage: None,
@@ -2094,7 +2094,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					}));
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
-					log_trace!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
+					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor]
 					});
@@ -2398,7 +2398,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						height,
 						event: OnchainEvent::HTLCUpdate { source: source, payment_hash: payment_hash },
 					};
-					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height{})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
+					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height {})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
 					self.onchain_events_awaiting_threshold_conf.push(entry);
 				}
 			}
@@ -2463,7 +2463,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				height: height,
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
-			log_trace!(logger, "Maturing {} until {}", log_spendable!(spendable_output), entry.confirmation_threshold());
+			log_info!(logger, "Received spendable output {}, spendable at height {}", log_spendable!(spendable_output), entry.confirmation_threshold());
 			self.onchain_events_awaiting_threshold_conf.push(entry);
 		}
 	}
