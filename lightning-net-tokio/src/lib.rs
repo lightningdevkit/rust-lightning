@@ -83,7 +83,7 @@ use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::util::logger::Logger;
 
-use std::{task, thread};
+use std::task;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::sync::{Arc, Mutex};
@@ -114,11 +114,6 @@ struct Connection {
 	// socket. To wake it up (without otherwise changing its state, we can push a value into this
 	// Sender.
 	read_waker: mpsc::Sender<()>,
-	// When we are told by rust-lightning to disconnect, we can't return to rust-lightning until we
-	// are sure we won't call any more read/write PeerManager functions with the same connection.
-	// This is set to true if we're in such a condition (with disconnect checked before with the
-	// top-level mutex held) and false when we can return.
-	block_disconnect_socket: bool,
 	read_paused: bool,
 	rl_requested_disconnect: bool,
 	id: u64,
@@ -153,31 +148,24 @@ impl Connection {
 				} }
 			}
 
-			macro_rules! prepare_read_write_call {
-				() => { {
-					let mut us_lock = us.lock().unwrap();
-					if us_lock.rl_requested_disconnect {
-						shutdown_socket!("disconnect_socket() call from RL", Disconnect::CloseConnection);
-					}
-					us_lock.block_disconnect_socket = true;
-				} }
-			}
-
-			let read_paused = us.lock().unwrap().read_paused;
+			let read_paused = {
+				let us_lock = us.lock().unwrap();
+				if us_lock.rl_requested_disconnect {
+					shutdown_socket!("disconnect_socket() call from RL", Disconnect::CloseConnection);
+				}
+				us_lock.read_paused
+			};
 			tokio::select! {
 				v = write_avail_receiver.recv() => {
 					assert!(v.is_some()); // We can't have dropped the sending end, its in the us Arc!
-					prepare_read_write_call!();
 					if let Err(e) = peer_manager.write_buffer_space_avail(&mut our_descriptor) {
 						shutdown_socket!(e, Disconnect::CloseConnection);
 					}
-					us.lock().unwrap().block_disconnect_socket = false;
 				},
 				_ = read_wake_receiver.recv() => {},
 				read = reader.read(&mut buf), if !read_paused => match read {
 					Ok(0) => shutdown_socket!("Connection closed", Disconnect::PeerDisconnected),
 					Ok(len) => {
-						prepare_read_write_call!();
 						let read_res = peer_manager.read_event(&mut our_descriptor, &buf[0..len]);
 						let mut us_lock = us.lock().unwrap();
 						match read_res {
@@ -188,7 +176,6 @@ impl Connection {
 							},
 							Err(e) => shutdown_socket!(e, Disconnect::CloseConnection),
 						}
-						us_lock.block_disconnect_socket = false;
 					},
 					Err(e) => shutdown_socket!(e, Disconnect::PeerDisconnected),
 				},
@@ -223,7 +210,7 @@ impl Connection {
 		(reader, write_receiver, read_receiver,
 		Arc::new(Mutex::new(Self {
 			writer: Some(writer), write_avail, read_waker, read_paused: false,
-			block_disconnect_socket: false, rl_requested_disconnect: false,
+			rl_requested_disconnect: false,
 			id: ID_COUNTER.fetch_add(1, Ordering::AcqRel)
 		})))
 	}
@@ -450,18 +437,10 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 	}
 
 	fn disconnect_socket(&mut self) {
-		{
-			let mut us = self.conn.lock().unwrap();
-			us.rl_requested_disconnect = true;
-			us.read_paused = true;
-			// Wake up the sending thread, assuming it is still alive
-			let _ = us.write_avail.try_send(());
-			// Happy-path return:
-			if !us.block_disconnect_socket { return; }
-		}
-		while self.conn.lock().unwrap().block_disconnect_socket {
-			thread::yield_now();
-		}
+		let mut us = self.conn.lock().unwrap();
+		us.rl_requested_disconnect = true;
+		// Wake up the sending thread, assuming it is still alive
+		let _ = us.write_avail.try_send(());
 	}
 }
 impl Clone for SocketDescriptor {
