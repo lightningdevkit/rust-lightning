@@ -3365,7 +3365,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let (htlcs_failed_forward, chan_restoration_res) = {
+		let (htlcs_failed_forward, need_lnd_workaround, chan_restoration_res) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
@@ -3386,13 +3386,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							msg,
 						});
 					}
-					(htlcs_failed_forward, handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked))
+					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
+					(htlcs_failed_forward, need_lnd_workaround,
+						handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked))
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id);
+
+		if let Some(funding_locked_msg) = need_lnd_workaround {
+			self.internal_funding_locked(counterparty_node_id, &funding_locked_msg)?;
+		}
 		Ok(())
 	}
 

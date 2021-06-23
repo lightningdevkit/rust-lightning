@@ -434,6 +434,15 @@ pub(super) struct Channel<Signer: Sign> {
 	next_local_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
 	#[cfg(any(test, feature = "fuzztarget"))]
 	next_remote_commitment_tx_fee_info_cached: Mutex<Option<CommitmentTxInfoCached>>,
+
+	/// lnd has a long-standing bug where, upon reconnection, if the channel is not yet confirmed
+	/// they will not send a channel_reestablish until the channel locks in. Then, they will send a
+	/// funding_locked *before* sending the channel_reestablish (which is clearly a violation of
+	/// the BOLT specs). We copy c-lightning's workaround here and simply store the funding_locked
+	/// message until we receive a channel_reestablish.
+	///
+	/// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
+	pub workaround_lnd_bug_4006: Option<msgs::FundingLocked>,
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -633,6 +642,8 @@ impl<Signer: Sign> Channel<Signer> {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: None,
 		})
 	}
 
@@ -876,6 +887,8 @@ impl<Signer: Sign> Channel<Signer> {
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: None,
 		};
 
 		Ok(chan)
@@ -1691,7 +1704,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn funding_locked(&mut self, msg: &msgs::FundingLocked) -> Result<(), ChannelError> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
-			return Err(ChannelError::Close("Peer sent funding_locked when we needed a channel_reestablish".to_owned()));
+			self.workaround_lnd_bug_4006 = Some(msg.clone());
+			return Err(ChannelError::Ignore("Peer sent funding_locked when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
@@ -4863,6 +4877,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
 			#[cfg(any(test, feature = "fuzztarget"))]
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: None,
 		})
 	}
 }
