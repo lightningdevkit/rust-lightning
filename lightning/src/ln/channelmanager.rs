@@ -4320,22 +4320,22 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
-		(0, onion_packet),
-		(2, short_channel_id),
-	}, {}, {},
+		(0, onion_packet, required),
+		(2, short_channel_id, required),
+	},
 	(1, Receive) => {
-		(0, payment_data),
-		(2, incoming_cltv_expiry),
-	}, {}, {}
+		(0, payment_data, required),
+		(2, incoming_cltv_expiry, required),
+	}
 ;);
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
-	(0, routing),
-	(2, incoming_shared_secret),
-	(4, payment_hash),
-	(6, amt_to_forward),
-	(8, outgoing_cltv_value)
-}, {}, {});
+	(0, routing, required),
+	(2, incoming_shared_secret, required),
+	(4, payment_hash, required),
+	(6, amt_to_forward, required),
+	(8, outgoing_cltv_value, required)
+});
 
 impl_writeable_tlv_based_enum!(HTLCFailureMsg, ;
 	(0, Relay),
@@ -4347,60 +4347,58 @@ impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
 );
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {
-	(0, short_channel_id),
-	(2, outpoint),
-	(4, htlc_id),
-	(6, incoming_packet_shared_secret)
-}, {}, {});
+	(0, short_channel_id, required),
+	(2, outpoint, required),
+	(4, htlc_id, required),
+	(6, incoming_packet_shared_secret, required)
+});
 
 impl_writeable_tlv_based!(ClaimableHTLC, {
-	(0, prev_hop),
-	(2, value),
-	(4, payment_data),
-	(6, cltv_expiry),
-}, {}, {});
+	(0, prev_hop, required),
+	(2, value, required),
+	(4, payment_data, required),
+	(6, cltv_expiry, required),
+});
 
 impl_writeable_tlv_based_enum!(HTLCSource,
 	(0, OutboundRoute) => {
-		(0, session_priv),
-		(2, first_hop_htlc_msat),
-	}, {}, {
-		(4, path),
-	};
+		(0, session_priv, required),
+		(2, first_hop_htlc_msat, required),
+		(4, path, vec_type),
+	}, ;
 	(1, PreviousHopData)
 );
 
 impl_writeable_tlv_based_enum!(HTLCFailReason,
 	(0, LightningError) => {
-		(0, err),
-	}, {}, {},
+		(0, err, required),
+	},
 	(1, Reason) => {
-		(0, failure_code),
-	}, {}, {
-		(2, data),
+		(0, failure_code, required),
+		(2, data, vec_type),
 	},
 ;);
 
 impl_writeable_tlv_based_enum!(HTLCForwardInfo,
 	(0, AddHTLC) => {
-		(0, forward_info),
-		(2, prev_short_channel_id),
-		(4, prev_htlc_id),
-		(6, prev_funding_outpoint),
-	}, {}, {},
+		(0, forward_info, required),
+		(2, prev_short_channel_id, required),
+		(4, prev_htlc_id, required),
+		(6, prev_funding_outpoint, required),
+	},
 	(1, FailHTLC) => {
-		(0, htlc_id),
-		(2, err_packet),
-	}, {}, {},
+		(0, htlc_id, required),
+		(2, err_packet, required),
+	},
 ;);
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
-	(0, payment_secret),
-	(2, expiry_time),
-	(4, user_payment_id),
-	(6, payment_preimage),
-	(8, min_value_msat),
-}, {}, {});
+	(0, payment_secret, required),
+	(2, expiry_time, required),
+	(4, user_payment_id, required),
+	(6, payment_preimage, required),
+	(8, min_value_msat, required),
+});
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
@@ -4495,7 +4493,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			session_priv.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 
 		Ok(())
 	}
@@ -4740,7 +4738,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());

@@ -49,13 +49,13 @@ pub struct RouteHop {
 }
 
 impl_writeable_tlv_based!(RouteHop, {
-	(0, pubkey),
-	(2, node_features),
-	(4, short_channel_id),
-	(6, channel_features),
-	(8, fee_msat),
-	(10, cltv_expiry_delta),
-}, {}, {});
+	(0, pubkey, required),
+	(2, node_features, required),
+	(4, short_channel_id, required),
+	(6, channel_features, required),
+	(8, fee_msat, required),
+	(10, cltv_expiry_delta, required),
+});
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
@@ -83,7 +83,7 @@ impl Writeable for Route {
 				hop.write(writer)?;
 			}
 		}
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 		Ok(())
 	}
 }
@@ -101,7 +101,7 @@ impl Readable for Route {
 			}
 			paths.push(hops);
 		}
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 		Ok(Route { paths })
 	}
 }

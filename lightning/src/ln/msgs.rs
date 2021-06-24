@@ -1295,20 +1295,19 @@ impl Writeable for OnionHopData {
 			},
 			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
 				encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
-					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value)),
-					(6, short_channel_id)
-				}, { });
+					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+					(6, short_channel_id, required)
+				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data } => {
 				if let Some(final_data) = payment_data {
 					if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 				}
 				encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward)),
-					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value))
-				}, {
-					(8, payment_data)
+					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+					(8, payment_data, option)
 				});
 			},
 		}
@@ -1331,12 +1330,11 @@ impl Readable for OnionHopData {
 			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
-			decode_tlv!(&mut rd, {
-				(2, amt),
-				(4, cltv_value)
-			}, {
-				(6, short_id),
-				(8, payment_data)
+			decode_tlv_stream!(&mut rd, {
+				(2, amt, required),
+				(4, cltv_value, required),
+				(6, short_id, option),
+				(8, payment_data, option),
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {

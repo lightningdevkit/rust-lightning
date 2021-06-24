@@ -95,7 +95,7 @@ impl Writeable for ChannelMonitorUpdate {
 		for update_step in self.updates.iter() {
 			update_step.write(w)?;
 		}
-		write_tlv_fields!(w, {}, {});
+		write_tlv_fields!(w, {});
 		Ok(())
 	}
 }
@@ -108,7 +108,7 @@ impl Readable for ChannelMonitorUpdate {
 		for _ in 0..len {
 			updates.push(Readable::read(r)?);
 		}
-		read_tlv_fields!(r, {}, {});
+		read_tlv_fields!(r, {});
 		Ok(Self { update_id, updates })
 	}
 }
@@ -202,11 +202,10 @@ pub struct HTLCUpdate {
 	pub(crate) source: HTLCSource
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
-	(0, payment_hash),
-	(2, source),
-}, {
-	(4, payment_preimage)
-}, {});
+	(0, payment_hash, required),
+	(2, source, required),
+	(4, payment_preimage, option),
+});
 
 /// If an HTLC expires within this many blocks, don't try to claim it in a shared transaction,
 /// instead claiming it in its own individual transaction.
@@ -273,15 +272,14 @@ struct HolderSignedTx {
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
 }
 impl_writeable_tlv_based!(HolderSignedTx, {
-	(0, txid),
-	(2, revocation_key),
-	(4, a_htlc_key),
-	(6, b_htlc_key),
-	(8, delayed_payment_key),
-	(10, per_commitment_point),
-	(12, feerate_per_kw),
-}, {}, {
-	(14, htlc_outputs)
+	(0, txid, required),
+	(2, revocation_key, required),
+	(4, a_htlc_key, required),
+	(6, b_htlc_key, required),
+	(8, delayed_payment_key, required),
+	(10, per_commitment_point, required),
+	(12, feerate_per_kw, required),
+	(14, htlc_outputs, vec_type)
 });
 
 /// We use this to track counterparty commitment transactions and htlcs outputs and
@@ -305,10 +303,10 @@ impl Writeable for CounterpartyCommitmentTransaction {
 			}
 		}
 		write_tlv_fields!(w, {
-			(0, self.counterparty_delayed_payment_base_key),
-			(2, self.counterparty_htlc_base_key),
-			(4, self.on_counterparty_tx_csv),
-		}, {});
+			(0, self.counterparty_delayed_payment_base_key, required),
+			(2, self.counterparty_htlc_base_key, required),
+			(4, self.on_counterparty_tx_csv, required),
+		});
 		Ok(())
 	}
 }
@@ -333,10 +331,10 @@ impl Readable for CounterpartyCommitmentTransaction {
 			let mut counterparty_htlc_base_key = OptionDeserWrapper(None);
 			let mut on_counterparty_tx_csv: u16 = 0;
 			read_tlv_fields!(r, {
-				(0, counterparty_delayed_payment_base_key),
-				(2, counterparty_htlc_base_key),
-				(4, on_counterparty_tx_csv),
-			}, {});
+				(0, counterparty_delayed_payment_base_key, required),
+				(2, counterparty_htlc_base_key, required),
+				(4, on_counterparty_tx_csv, required),
+			});
 			CounterpartyCommitmentTransaction {
 				counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
 				counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
@@ -394,19 +392,19 @@ enum OnchainEvent {
 }
 
 impl_writeable_tlv_based!(OnchainEventEntry, {
-	(0, txid),
-	(2, height),
-	(4, event),
-}, {}, {});
+	(0, txid, required),
+	(2, height, required),
+	(4, event, required),
+});
 
 impl_writeable_tlv_based_enum!(OnchainEvent,
 	(0, HTLCUpdate) => {
-		(0, source),
-		(2, payment_hash),
-	}, {}, {},
+		(0, source, required),
+		(2, payment_hash, required),
+	},
 	(1, MaturingOutput) => {
-		(0, descriptor),
-	}, {}, {},
+		(0, descriptor, required),
+	},
 ;);
 
 #[cfg_attr(any(test, feature = "fuzztarget", feature = "_test_utils"), derive(PartialEq))]
@@ -440,27 +438,25 @@ pub(crate) enum ChannelMonitorUpdateStep {
 
 impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
 	(0, LatestHolderCommitmentTXInfo) => {
-		(0, commitment_tx),
-	}, {}, {
-		(2, htlc_outputs),
+		(0, commitment_tx, required),
+		(2, htlc_outputs, vec_type),
 	},
 	(1, LatestCounterpartyCommitmentTXInfo) => {
-		(0, commitment_txid),
-		(2, commitment_number),
-		(4, their_revocation_point),
-	}, {}, {
-		(6, htlc_outputs),
+		(0, commitment_txid, required),
+		(2, commitment_number, required),
+		(4, their_revocation_point, required),
+		(6, htlc_outputs, vec_type),
 	},
 	(2, PaymentPreimage) => {
-		(0, payment_preimage),
-	}, {}, {},
+		(0, payment_preimage, required),
+	},
 	(3, CommitmentSecret) => {
-		(0, idx),
-		(2, secret),
-	}, {}, {},
+		(0, idx, required),
+		(2, secret, required),
+	},
 	(4, ChannelForceClosed) => {
-		(0, should_broadcast),
-	}, {}, {},
+		(0, should_broadcast, required),
+	},
 ;);
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
@@ -792,7 +788,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
 
-		write_tlv_fields!(writer, {}, {});
+		write_tlv_fields!(writer, {});
 
 		Ok(())
 	}
@@ -2740,7 +2736,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
 
-		read_tlv_fields!(reader, {}, {});
+		read_tlv_fields!(reader, {});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());

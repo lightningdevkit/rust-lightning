@@ -4606,7 +4606,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.channel_update_status.write(writer)?;
 
-		write_tlv_fields!(writer, {}, {(0, self.announcement_sigs)});
+		write_tlv_fields!(writer, {(0, self.announcement_sigs, option)});
 
 		Ok(())
 	}
@@ -4779,7 +4779,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let channel_update_status = Readable::read(reader)?;
 
 		let mut announcement_sigs = None;
-		read_tlv_fields!(reader, {}, {(0, announcement_sigs)});
+		read_tlv_fields!(reader, {(0, announcement_sigs, option)});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());

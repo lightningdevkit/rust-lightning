@@ -87,14 +87,14 @@ impl RevokedOutput {
 }
 
 impl_writeable_tlv_based!(RevokedOutput, {
-	(0, per_commitment_point),
-	(2, counterparty_delayed_payment_base_key),
-	(4, counterparty_htlc_base_key),
-	(6, per_commitment_key),
-	(8, weight),
-	(10, amount),
-	(12, on_counterparty_tx_csv),
-}, {}, {});
+	(0, per_commitment_point, required),
+	(2, counterparty_delayed_payment_base_key, required),
+	(4, counterparty_htlc_base_key, required),
+	(6, per_commitment_key, required),
+	(8, weight, required),
+	(10, amount, required),
+	(12, on_counterparty_tx_csv, required),
+});
 
 /// A struct to describe a revoked offered output and corresponding information to generate a
 /// solving witness.
@@ -131,14 +131,14 @@ impl RevokedHTLCOutput {
 }
 
 impl_writeable_tlv_based!(RevokedHTLCOutput, {
-	(0, per_commitment_point),
-	(2, counterparty_delayed_payment_base_key),
-	(4, counterparty_htlc_base_key),
-	(6, per_commitment_key),
-	(8, weight),
-	(10, amount),
-	(12, htlc),
-}, {}, {});
+	(0, per_commitment_point, required),
+	(2, counterparty_delayed_payment_base_key, required),
+	(4, counterparty_htlc_base_key, required),
+	(6, per_commitment_key, required),
+	(8, weight, required),
+	(10, amount, required),
+	(12, htlc, required),
+});
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
 ///
@@ -168,12 +168,12 @@ impl CounterpartyOfferedHTLCOutput {
 }
 
 impl_writeable_tlv_based!(CounterpartyOfferedHTLCOutput, {
-	(0, per_commitment_point),
-	(2, counterparty_delayed_payment_base_key),
-	(4, counterparty_htlc_base_key),
-	(6, preimage),
-	(8, htlc),
-}, {}, {});
+	(0, per_commitment_point, required),
+	(2, counterparty_delayed_payment_base_key, required),
+	(4, counterparty_htlc_base_key, required),
+	(6, preimage, required),
+	(8, htlc, required),
+});
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
 ///
@@ -199,11 +199,11 @@ impl CounterpartyReceivedHTLCOutput {
 }
 
 impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
-	(0, per_commitment_point),
-	(2, counterparty_delayed_payment_base_key),
-	(4, counterparty_htlc_base_key),
-	(6, htlc),
-}, {}, {});
+	(0, per_commitment_point, required),
+	(2, counterparty_delayed_payment_base_key, required),
+	(4, counterparty_htlc_base_key, required),
+	(6, htlc, required),
+});
 
 /// A struct to describe a HTLC output on holder commitment transaction.
 ///
@@ -236,11 +236,10 @@ impl HolderHTLCOutput {
 }
 
 impl_writeable_tlv_based!(HolderHTLCOutput, {
-	(0, amount),
-	(2, cltv_expiry),
-}, {
-	(4, preimage),
-}, {});
+	(0, amount, required),
+	(2, cltv_expiry, required),
+	(4, preimage, option)
+});
 
 /// A struct to describe the channel output on the funding transaction.
 ///
@@ -259,8 +258,8 @@ impl HolderFundingOutput {
 }
 
 impl_writeable_tlv_based!(HolderFundingOutput, {
-	(0, funding_redeemscript),
-}, {}, {});
+	(0, funding_redeemscript, required),
+});
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
 ///
@@ -690,10 +689,11 @@ impl Writeable for PackageTemplate {
 			rev_outp.write(writer)?;
 		}
 		write_tlv_fields!(writer, {
-			(0, self.soonest_conf_deadline),
-			(2, self.feerate_previous),
-			(4, self.height_original),
-		}, { (6, self.height_timer) });
+			(0, self.soonest_conf_deadline, required),
+			(2, self.feerate_previous, required),
+			(4, self.height_original, required),
+			(6, self.height_timer, option)
+		});
 		Ok(())
 	}
 }
@@ -722,10 +722,11 @@ impl Readable for PackageTemplate {
 		let mut height_timer = None;
 		let mut height_original = 0;
 		read_tlv_fields!(reader, {
-			(0, soonest_conf_deadline),
-			(2, feerate_previous),
-			(4, height_original)
-		}, { (6, height_timer) });
+			(0, soonest_conf_deadline, required),
+			(2, feerate_previous, required),
+			(4, height_original, required),
+			(6, height_timer, option),
+		});
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
