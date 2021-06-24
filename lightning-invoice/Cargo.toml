@@ -17,7 +17,3 @@ bitcoin_hashes = "0.9.4"
 
 [dev-dependencies]
 lightning = { version = "0.0.98", path = "../lightning", features = ["_test_utils"] }
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
