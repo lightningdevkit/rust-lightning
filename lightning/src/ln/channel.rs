@@ -114,8 +114,8 @@ enum InboundHTLCState {
 	/// commitment transaction without it as otherwise we'll have to force-close the channel to
 	/// claim it before the timeout (obviously doesn't apply to revoked HTLCs that we can't claim
 	/// anyway). That said, ChannelMonitor does this for us (see
-	/// ChannelMonitor::would_broadcast_at_height) so we actually remove the HTLC from our own
-	/// local state before then, once we're sure that the next commitment_signed and
+	/// ChannelMonitor::should_broadcast_holder_commitment_txn) so we actually remove the HTLC from
+	/// our own local state before then, once we're sure that the next commitment_signed and
 	/// ChannelMonitor::provide_latest_local_commitment_tx will not include this HTLC.
 	LocalRemoved(InboundHTLCRemovalReason),
 }

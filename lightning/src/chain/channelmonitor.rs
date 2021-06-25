@@ -370,8 +370,8 @@ impl OnchainEventEntry {
 		conf_threshold
 	}
 
-	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {
-		height >= self.confirmation_threshold()
+	fn has_reached_confirmation_threshold(&self, best_block: &BestBlock) -> bool {
+		best_block.height() >= self.confirmation_threshold()
 	}
 }
 
@@ -1856,7 +1856,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				} else if htlc.0.cltv_expiry > self.best_block.height() + 1 {
 					// Don't broadcast HTLC-Timeout transactions immediately as they don't meet the
 					// current locktime requirements on-chain. We will broadcast them in
-					// `block_confirmed` when `would_broadcast_at_height` returns true.
+					// `block_confirmed` when `should_broadcast_holder_commitment_txn` returns true.
 					// Note that we add + 1 as transactions are broadcastable when they can be
 					// confirmed in the next block.
 					continue;
@@ -2035,7 +2035,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	{
 		debug_assert!(self.best_block.height() >= conf_height);
 
-		let should_broadcast = self.would_broadcast_at_height(self.best_block.height(), logger);
+		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
@@ -2056,7 +2056,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		let mut onchain_events_reaching_threshold_conf = Vec::new();
 		for entry in onchain_events_awaiting_threshold_conf {
-			if entry.has_reached_confirmation_threshold(self.best_block.height()) {
+			if entry.has_reached_confirmation_threshold(&self.best_block) {
 				onchain_events_reaching_threshold_conf.push(entry);
 			} else {
 				self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -2213,7 +2213,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		false
 	}
 
-	fn would_broadcast_at_height<L: Deref>(&self, height: u32, logger: &L) -> bool where L::Target: Logger {
+	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, logger: &L) -> bool where L::Target: Logger {
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
@@ -2224,6 +2224,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
+		let height = self.best_block.height();
 		macro_rules! scan_commitment {
 			($htlcs: expr, $holder_tx: expr) => {
 				for ref htlc in $htlcs {
