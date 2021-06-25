@@ -326,6 +326,10 @@ pub fn create_chan_between_nodes<'a, 'b, 'c, 'd>(node_a: &'a Node<'b, 'c, 'd>, n
 }
 
 pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> (msgs::ChannelAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {
+	let node_a_pubkey = node_a.node.get_our_node_id();
+	let node_b_pubkey = node_b.node.get_our_node_id();
+	node_a.node.peer_connected(&node_b_pubkey, &msgs::Init { features: b_flags.clone() });
+	node_b.node.peer_connected(&node_a_pubkey, &msgs::Init { features: a_flags.clone() });
 	let (funding_locked, channel_id, tx) = create_chan_between_nodes_with_value_a(node_a, node_b, channel_value, push_msat, a_flags, b_flags);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(node_a, node_b, &funding_locked);
 	(announcement, as_update, bs_update, channel_id, tx)
