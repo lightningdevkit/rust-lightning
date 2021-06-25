@@ -221,6 +221,9 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_info(&self) -> (BlockHash, u32) {
 		self.blocks.lock().unwrap().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
 	}
+	pub fn get_block_header(&self, height: u32) -> BlockHeader {
+		self.blocks.lock().unwrap()[height as usize].0
+	}
 }
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
