@@ -1927,12 +1927,12 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
 			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger)
-		} else {
+		} else if block_hash != self.best_block.block_hash() {
 			self.best_block = BestBlock::new(block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
 			Vec::new()
-		}
+		} else { Vec::new() }
 	}
 
 	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
