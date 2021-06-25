@@ -1360,15 +1360,7 @@ fn holding_cell_htlc_counting() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_updates.commitment_signed, false, true);
 
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
-			assert_eq!(msg.contents.short_channel_id, chan_2.0.contents.short_channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
-
+	expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
 	expect_payment_failed!(nodes[0], payment_hash_2, false);
 
 	// Now forward all the pending HTLCs and claim them back
@@ -3095,13 +3087,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
-
-			let events = nodes[0].node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-				_ => panic!("Unexpected event"),
-			}
+			expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
 			expect_payment_failed!(nodes[0], payment_hash, false);
 		},
 		_ => panic!("Unexpected event"),
@@ -4204,7 +4190,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Make sure all nodes are at the same starting height
 	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
@@ -4260,14 +4246,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			_ => unreachable!(),
 		}
 		expect_payment_failed!(nodes[0], second_payment_hash, false);
-		if let &MessageSendEvent::PaymentFailureNetworkUpdate { ref update } = &nodes[0].node.get_and_clear_pending_msg_events()[0] {
-			match update {
-				&HTLCFailChannelUpdate::ChannelUpdateMessage { .. } => {},
-				_ => panic!("Unexpected event"),
-			}
-		} else {
-			panic!("Unexpected event");
-		}
+		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
 	} else {
 		expect_payment_failed!(nodes[1], second_payment_hash, true);
 	}
@@ -5452,13 +5431,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	{
 		commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelClosed { .. }  } => {
-			},
-			_ => { panic!("Unexpected event"); }
-		}
+		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
 	}
 	expect_payment_failed!(nodes[0], duplicate_payment_hash, false);
 
@@ -6517,20 +6490,8 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
-	let fail_msg_event = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(fail_msg_event.len(), 1);
-	match &fail_msg_event[0] {
-		&MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	let failure_event = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(failure_event.len(), 1);
-	match &failure_event[0] {
-		&Event::PaymentFailed { rejected_by_dest, .. } => {
-			assert!(!rejected_by_dest);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_failure_chan_update!(nodes[0], chan_1_2.0.contents.short_channel_id, false);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 	check_added_monitors!(nodes[0], 1);
 }
 

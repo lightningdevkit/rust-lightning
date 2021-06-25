@@ -998,6 +998,30 @@ macro_rules! expect_payment_sent {
 }
 
 #[cfg(test)]
+macro_rules! expect_payment_failure_chan_update {
+	($node: expr, $scid: expr, $chan_closed: expr) => {
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
+				match update {
+					&HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } if !$chan_closed => {
+						assert_eq!(msg.contents.short_channel_id, $scid);
+						assert_eq!(msg.contents.flags & 2, 0);
+					},
+					&HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } if $chan_closed => {
+						assert_eq!(short_channel_id, $scid);
+						assert!(is_permanent);
+					},
+					_ => panic!("Unexpected update type"),
+				}
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[cfg(test)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		let events = $node.node.get_and_clear_pending_events();
