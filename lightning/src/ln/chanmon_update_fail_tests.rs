@@ -2039,7 +2039,7 @@ fn test_path_paused_mpp() {
 	// Pass the first HTLC of the payment along to nodes[3].
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 0, payment_hash.clone(), payment_secret, events.pop().unwrap(), false);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 0, payment_hash.clone(), payment_secret, events.pop().unwrap(), false, None);
 
 	// And check that, after we successfully update the monitor for chan_2 we can pass the second
 	// HTLC along to nodes[3] and claim the whole payment back to nodes[0].
@@ -2047,7 +2047,7 @@ fn test_path_paused_mpp() {
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), payment_secret, events.pop().unwrap(), true);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash.clone(), payment_secret, events.pop().unwrap(), true, None);
 
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
 }

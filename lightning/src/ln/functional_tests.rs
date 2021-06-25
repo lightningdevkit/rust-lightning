@@ -4197,7 +4197,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		assert_eq!(events.len(), 1);
 		// Now do the relevant commitment_signed/RAA dances along the path, noting that the final
 		// hop should *not* yet generate any PaymentReceived event(s).
-		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), false);
+		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), false, None);
 		our_payment_hash
 	} else {
 		route_payment(&nodes[0], &[&nodes[1]], 100000).1
