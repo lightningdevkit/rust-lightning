@@ -400,6 +400,18 @@ impl InvoiceFeatures {
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
+
+	/// Getting a route for a keysend payment to a private node requires providing the payee's
+	/// features (since they were not announced in a node announcement). However, keysend payments
+	/// don't have an invoice to pull the payee's features from, so this method is provided for use in
+	/// [`get_keysend_route`], thus omitting the need for payers to manually construct an
+	/// `InvoiceFeatures` for [`get_route`].
+	///
+	/// [`get_keysend_route`]: crate::routing::router::get_keysend_route
+	/// [`get_route`]: crate::routing::router::get_route
+	pub(crate) fn for_keysend() -> InvoiceFeatures {
+		InvoiceFeatures::empty().set_variable_length_onion_optional()
+	}
 }
 
 impl ToBase32 for InvoiceFeatures {
