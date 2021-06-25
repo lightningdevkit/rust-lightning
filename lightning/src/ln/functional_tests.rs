@@ -4847,7 +4847,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 }
 
 macro_rules! check_spendable_outputs {
-	($node: expr, $der_idx: expr, $keysinterface: expr, $chan_value: expr) => {
+	($node: expr, $keysinterface: expr) => {
 		{
 			let mut events = $node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 			let mut txn = Vec::new();
@@ -4894,7 +4894,7 @@ fn test_claim_sizeable_push_msat() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
@@ -4925,7 +4925,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	check_added_monitors!(nodes[1], 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -4955,7 +4955,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // to_remote output on revoked remote commitment_tx
 	check_spends!(spend_txn[1], node_txn[0]);
@@ -5004,7 +5004,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -5049,7 +5049,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
 	check_spends!(spend_txn[0], commitment_tx[0]);
 	check_spends!(spend_txn[1], node_txn[1]);
@@ -5085,7 +5085,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -5152,7 +5152,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[1]);
@@ -5227,7 +5227,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	// didn't try to generate any new transactions.
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
@@ -5529,7 +5529,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_tx);
@@ -5827,7 +5827,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
@@ -5908,7 +5908,7 @@ fn test_key_derivation_params() {
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], new_keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn_1[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
@@ -5935,14 +5935,14 @@ fn test_static_output_closing_tx() {
 	mine_transaction(&nodes[0], &closing_tx);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[0], 2, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 
 	mine_transaction(&nodes[1], &closing_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 2, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 }
@@ -7786,7 +7786,7 @@ fn test_data_loss_protect() {
 	assert_eq!(node_txn[0].output.len(), 2);
 	mine_transaction(&nodes[0], &node_txn[0]);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 1000000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
