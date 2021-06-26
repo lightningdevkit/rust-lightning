@@ -1555,14 +1555,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
-				let forwarding_id = match id_option {
-					None => { // unknown_next_peer
-						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
-					},
-					Some(id) => id.clone(),
-				};
 				if let Some((err, code, chan_update)) = loop {
+					let forwarding_id = match id_option {
+						None => { // unknown_next_peer
+							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+						},
+						Some(id) => id.clone(),
+					};
+
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+
+					if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
+						// Note that the behavior here should be identical to the above block - we
+						// should NOT reveal the existence or non-existence of a private channel if
+						// we don't allow forwards outbound over them.
+						break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+					}
 
 					// Note that we could technically not return an error yet here and just hope
 					// that the connection is reestablished or monitor updated by the time we get

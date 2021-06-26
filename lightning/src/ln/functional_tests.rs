@@ -22,7 +22,8 @@ use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
-use routing::router::{Route, RouteHop, get_route};
+use routing::router::{Route, RouteHop, RouteHint, RouteHintHop, get_route};
+use routing::network_graph::RoutingFees;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
@@ -7913,6 +7914,168 @@ fn test_announce_disable_channels() {
 			_ => panic!("Unexpected event"),
 		}
 	}
+}
+
+#[test]
+fn test_priv_forwarding_rejection() {
+	// If we have a private channel with outbound liquidity, and
+	// UserConfig::accept_forwards_to_priv_channels is set to false, we should reject any attempts
+	// to forward through that channel.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut no_announce_cfg = test_default_channel_config();
+	no_announce_cfg.channel_options.announced_channel = false;
+	no_announce_cfg.accept_forwards_to_priv_channels = false;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_1_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+
+	// Note that the create_*_chan functions in utils requires announcement_signatures, which we do
+	// not send for private channels.
+	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+	let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[1], 1_000_000, 42);
+	nodes[1].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[2].node.handle_funding_created(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[2].node.get_our_node_id()));
+	check_added_monitors!(nodes[2], 1);
+
+	nodes[1].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id()));
+	check_added_monitors!(nodes[1], 1);
+
+	let conf_height = core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[2].best_block_info().1 + 1);
+	confirm_transaction_at(&nodes[1], &tx, conf_height);
+	connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
+	confirm_transaction_at(&nodes[2], &tx, conf_height);
+	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
+	let as_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[2].node.get_our_node_id());
+	nodes[1].node.handle_funding_locked(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
+	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	assert!(nodes[0].node.list_usable_channels()[0].is_public);
+	assert_eq!(nodes[1].node.list_usable_channels().len(), 2);
+	assert!(!nodes[2].node.list_usable_channels()[0].is_public);
+
+	// We should always be able to forward through nodes[1] as long as its out through a public
+	// channel:
+	send_payment(&nodes[2], &[&nodes[1], &nodes[0]], 10_000);
+
+	// ... however, if we send to nodes[2], we will have to pass the private channel from nodes[1]
+	// to nodes[2], which should be rejected:
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let route = get_route(&nodes[0].node.get_our_node_id(),
+		&nodes[0].net_graph_msg_handler.network_graph.read().unwrap(),
+		&nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None,
+		&[&RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[1].node.get_our_node_id(),
+			short_channel_id: nodes[2].node.list_channels()[0].short_channel_id.unwrap(),
+			fees: RoutingFees { base_msat: 1000, proportional_millionths: 0 },
+			cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])], 10_000, TEST_FINAL_CLTV, nodes[0].logger).unwrap();
+
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
+
+	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(htlc_fail_updates.update_add_htlcs.is_empty());
+	assert_eq!(htlc_fail_updates.update_fail_htlcs.len(), 1);
+	assert!(htlc_fail_updates.update_fail_malformed_htlcs.is_empty());
+	assert!(htlc_fail_updates.update_fee.is_none());
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, true, true);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
+	expect_payment_failure_chan_update!(nodes[0], nodes[2].node.list_channels()[0].short_channel_id.unwrap(), true);
+
+	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
+	// to true. Sadly there is currently no way to change it at runtime.
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+	let nodes_1_serialized = nodes[1].node.encode();
+	let mut monitor_a_serialized = test_utils::TestVecWriter(Vec::new());
+	let mut monitor_b_serialized = test_utils::TestVecWriter(Vec::new());
+	{
+		let mons = nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap();
+		let mut mon_iter = mons.iter();
+		mon_iter.next().unwrap().1.write(&mut monitor_a_serialized).unwrap();
+		mon_iter.next().unwrap().1.write(&mut monitor_b_serialized).unwrap();
+	}
+
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[1].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
+	nodes[1].chain_monitor = &new_chain_monitor;
+
+	let mut monitor_a_read = &monitor_a_serialized.0[..];
+	let mut monitor_b_read = &monitor_b_serialized.0[..];
+	let (_, mut monitor_a) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut monitor_a_read, keys_manager).unwrap();
+	let (_, mut monitor_b) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut monitor_b_read, keys_manager).unwrap();
+	assert!(monitor_a_read.is_empty());
+	assert!(monitor_b_read.is_empty());
+
+	no_announce_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut nodes_1_read = &nodes_1_serialized[..];
+	let (_, nodes_1_deserialized_tmp) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(monitor_a.get_funding_txo().0, &mut monitor_a);
+		channel_monitors.insert(monitor_b.get_funding_txo().0, &mut monitor_b);
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_1_read, ChannelManagerReadArgs {
+			default_config: no_announce_cfg,
+			keys_manager,
+			fee_estimator: node_cfgs[1].fee_estimator,
+			chain_monitor: nodes[1].chain_monitor,
+			tx_broadcaster: nodes[1].tx_broadcaster.clone(),
+			logger: nodes[1].logger,
+			channel_monitors,
+		}).unwrap()
+	};
+	assert!(nodes_1_read.is_empty());
+	nodes_1_deserialized = nodes_1_deserialized_tmp;
+
+	assert!(nodes[1].chain_monitor.watch_channel(monitor_a.get_funding_txo().0, monitor_a).is_ok());
+	assert!(nodes[1].chain_monitor.watch_channel(monitor_b.get_funding_txo().0, monitor_b).is_ok());
+	check_added_monitors!(nodes[1], 2);
+	nodes[1].node = &nodes_1_deserialized;
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+	let as_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
+	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.peer_connected(&nodes[2].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+	nodes[2].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[2].node.get_our_node_id());
+	let cs_reestablish = get_event_msg!(nodes[2], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	nodes[2].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
+	nodes[1].node.handle_channel_reestablish(&nodes[2].node.get_our_node_id(), &cs_reestablish);
+	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
+	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 10_000, our_payment_hash, our_payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], our_payment_preimage);
 }
 
 #[test]
