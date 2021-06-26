@@ -1137,6 +1137,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
+	///
+	/// Note that we do not check if you are currently connected to the given peer. If no
+	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
+	/// the channel eventually being silently forgotten.
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
