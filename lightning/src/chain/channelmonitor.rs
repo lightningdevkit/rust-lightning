@@ -1353,10 +1353,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// *we* sign a holder commitment transaction, not when e.g. a watchtower broadcasts one of our
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
-			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
+			// Assume that the broadcasted commitment transaction confirmed in the current best
+			// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
+			// transactions.
+			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
 			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, self.best_block.height());
 				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
@@ -1724,7 +1727,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	// Returns (1) `PackageTemplate`s that can be given to the OnChainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -1743,7 +1746,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						};
 						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
 					};
-				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
+				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), htlc.cltv_expiry, false, conf_height);
 				claim_requests.push(htlc_package);
 			}
 		}
@@ -2043,6 +2046,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
+			// Because we're broadcasting a commitment transaction, we should construct the package
+			// assuming it gets confirmed in the next block. Sadly, we have code which considers
+			// "not yet confirmed" things as discardable, so we cannot do that here.
 			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
 			if !new_outputs.is_empty() {
