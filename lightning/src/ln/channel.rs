@@ -2568,10 +2568,8 @@ impl<Signer: Sign> Channel<Signer> {
 			});
 			for htlc in pending_inbound_htlcs.iter_mut() {
 				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
-					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to Committed", log_bytes!(htlc.payment_hash.0));
 					true
 				} else if let &InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) = &htlc.state {
-					log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", log_bytes!(htlc.payment_hash.0));
 					true
 				} else { false };
 				if swap {
@@ -2579,11 +2577,13 @@ impl<Signer: Sign> Channel<Signer> {
 					mem::swap(&mut state, &mut htlc.state);
 
 					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
+						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
 						require_commitment = true;
 					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
 						match forward_info {
 							PendingHTLCStatus::Fail(fail_msg) => {
+								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", log_bytes!(htlc.payment_hash.0));
 								require_commitment = true;
 								match fail_msg {
 									HTLCFailureMsg::Relay(msg) => {
@@ -2597,6 +2597,7 @@ impl<Signer: Sign> Channel<Signer> {
 								}
 							},
 							PendingHTLCStatus::Forward(forward_info) => {
+								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", log_bytes!(htlc.payment_hash.0));
 								to_forward_infos.push((forward_info, htlc.htlc_id));
 								htlc.state = InboundHTLCState::Committed;
 							}
