@@ -536,11 +536,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						// been aggregated in a single tx and claimed so atomically
 						if let Some(request) = self.pending_claim_requests.remove(&claim_request) {
 							for outpoint in request.outpoints() {
+								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim tx {}.", outpoint, claim_request);
 								self.claimable_outpoints.remove(&outpoint);
 							}
 						}
 					},
 					OnchainEvent::ContentiousOutpoint { package } => {
+						log_debug!(logger, "Removing claim tracking due to maturation of claim tx for outpoints:");
+						log_debug!(logger, " {:?}", package.outpoints());
 						self.claimable_outpoints.remove(&package.outpoints()[0]);
 					}
 				}
