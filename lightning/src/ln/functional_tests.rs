@@ -130,9 +130,8 @@ fn test_async_inbound_update_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
-	let channel_id = chan.2;
 
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
@@ -155,7 +154,11 @@ fn test_async_inbound_update_fee() {
 	// (6) RAA is delivered                  ->
 
 	// First nodes[0] generates an update_fee
-	nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0], channel_id) + 20).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -245,15 +248,18 @@ fn test_update_fee_unordered_raa() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let channel_id = chan.2;
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
 	// First nodes[0] generates an update_fee
-	nodes[0].node.update_fee(channel_id, get_feerate!(nodes[0], channel_id) + 20).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -300,8 +306,7 @@ fn test_multi_flight_update_fee() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let channel_id = chan.2;
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// A                                        B
 	// update_fee/commitment_signed          ->
@@ -323,8 +328,13 @@ fn test_multi_flight_update_fee() {
 	// revoke_and_ack                        ->
 
 	// First nodes[0] generates an update_fee
-	let initial_feerate = get_feerate!(nodes[0], channel_id);
-	nodes[0].node.update_fee(channel_id, initial_feerate + 20).unwrap();
+	let initial_feerate;
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		initial_feerate = *feerate_lock;
+		*feerate_lock = initial_feerate + 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -344,7 +354,11 @@ fn test_multi_flight_update_fee() {
 
 	// nodes[0] is awaiting a revoke from nodes[1] before it will create a new commitment
 	// transaction:
-	nodes[0].node.update_fee(channel_id, initial_feerate + 40).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = initial_feerate + 40;
+	}
+	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -536,11 +550,13 @@ fn test_update_fee_vanilla() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let channel_id = chan.2;
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let feerate = get_feerate!(nodes[0], channel_id);
-	nodes[0].node.update_fee(channel_id, feerate+25).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 25;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -582,7 +598,11 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let channel_id = chan.2;
 
 	let feerate = 260;
-	nodes[0].node.update_fee(channel_id, feerate).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = feerate;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 	let update_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
@@ -605,7 +625,11 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
 	//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
-	nodes[0].node.update_fee(channel_id, feerate+2).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = feerate + 2;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let update2_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -628,14 +652,16 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let channel_id = chan.2;
 	let logger = test_utils::TestLogger::new();
 
 	// balancing
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 
-	let feerate = get_feerate!(nodes[0], channel_id);
-	nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -743,8 +769,13 @@ fn test_update_fee() {
 	// revoke_and_ack                        ->
 
 	// Create and deliver (1)...
-	let feerate = get_feerate!(nodes[0], channel_id);
-	nodes[0].node.update_fee(channel_id, feerate+20).unwrap();
+	let feerate;
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		feerate = *feerate_lock;
+		*feerate_lock = feerate + 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
@@ -768,7 +799,11 @@ fn test_update_fee() {
 	check_added_monitors!(nodes[0], 1);
 
 	// Create and deliver (4)...
-	nodes[0].node.update_fee(channel_id, feerate+30).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = feerate + 30;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
@@ -6256,7 +6291,11 @@ fn test_fail_holding_cell_htlc_upon_free() {
 
 	// First nodes[0] generates an update_fee, setting the channel's
 	// pending_update_fee.
-	nodes[0].node.update_fee(chan.2, get_feerate!(nodes[0], chan.2) + 20).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6330,7 +6369,11 @@ fn test_free_and_fail_holding_cell_htlcs() {
 
 	// First nodes[0] generates an update_fee, setting the channel's
 	// pending_update_fee.
-	nodes[0].node.update_fee(chan.2, get_feerate!(nodes[0], chan.2) + 200).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 200;
+	}
+	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6458,7 +6501,11 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 
 	// First nodes[1] generates an update_fee, setting the channel's
 	// pending_update_fee.
-	nodes[1].node.update_fee(chan_1_2.2, get_feerate!(nodes[1], chan_1_2.2) + 20).unwrap();
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[1].node.timer_tick_occurred();
 	check_added_monitors!(nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();

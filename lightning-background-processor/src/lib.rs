@@ -140,6 +140,9 @@ impl BackgroundProcessor {
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
+			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
+			channel_manager.timer_tick_occurred();
+
 			let mut last_freshness_call = Instant::now();
 			let mut last_ping_call = Instant::now();
 			loop {
