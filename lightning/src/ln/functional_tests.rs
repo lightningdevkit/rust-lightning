@@ -3001,10 +3001,16 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	{
-		// B will rebroadcast its own holder commitment transaction here...just because
+		// B may rebroadcast its own holder commitment transaction here, as a safeguard against
+		// some incredibly unlikely partial-eclipse-attack scenarios. That said, because the
+		// original commitment_tx[0] (also spending chan_2.3) has reached ANTI_REORG_DELAY B really
+		// shouldn't broadcast anything here, and in some connect style scenarios we do not.
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_txn.len(), 1);
-		check_spends!(node_txn[0], chan_2.3);
+		if node_txn.len() == 1 {
+			check_spends!(node_txn[0], chan_2.3);
+		} else {
+			assert_eq!(node_txn.len(), 0);
+		}
 	}
 
 	expect_pending_htlcs_forwardable!(nodes[1]);

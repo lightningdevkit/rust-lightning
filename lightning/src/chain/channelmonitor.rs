@@ -2004,6 +2004,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.is_paying_spendable_output(&tx, height, &logger);
 		}
 
+		if height > self.best_block.height() {
+			self.best_block = BestBlock::new(block_hash, height);
+		}
+
 		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, broadcaster, fee_estimator, logger)
 	}
 
