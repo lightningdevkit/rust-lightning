@@ -164,33 +164,53 @@ macro_rules! log_internal {
 	);
 }
 
+/// Logs an entry at the given level.
+#[macro_export]
+macro_rules! log_given_level {
+	($logger: expr, $lvl:expr, $($arg:tt)+) => (
+		match $lvl {
+			#[cfg(not(any(feature = "max_level_off")))]
+			$crate::util::logger::Level::Error => log_internal!($logger, $lvl, $($arg)*),
+			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error")))]
+			$crate::util::logger::Level::Warn => log_internal!($logger, $lvl, $($arg)*),
+			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn")))]
+			$crate::util::logger::Level::Info => log_internal!($logger, $lvl, $($arg)*),
+			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info")))]
+			$crate::util::logger::Level::Debug => log_internal!($logger, $lvl, $($arg)*),
+			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]
+			$crate::util::logger::Level::Trace => log_internal!($logger, $lvl, $($arg)*),
+
+			#[cfg(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug"))]
+			_ => {
+				// The level is disabled at compile-time
+			},
+		}
+	);
+}
+
 /// Log an error.
 #[macro_export]
 macro_rules! log_error {
 	($logger: expr, $($arg:tt)*) => (
-		#[cfg(not(any(feature = "max_level_off")))]
-		log_internal!($logger, $crate::util::logger::Level::Error, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Error, $($arg)*);
 	)
 }
 
 macro_rules! log_warn {
 	($logger: expr, $($arg:tt)*) => (
-		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error")))]
-		log_internal!($logger, $crate::util::logger::Level::Warn, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Warn, $($arg)*);
 	)
 }
 
 macro_rules! log_info {
 	($logger: expr, $($arg:tt)*) => (
-		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn")))]
-		log_internal!($logger, $crate::util::logger::Level::Info, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Info, $($arg)*);
 	)
 }
 
 macro_rules! log_debug {
 	($logger: expr, $($arg:tt)*) => (
-		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info")))]
-		log_internal!($logger, $crate::util::logger::Level::Debug, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Debug, $($arg)*);
 	)
 }
 
@@ -198,7 +218,6 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_trace {
 	($logger: expr, $($arg:tt)*) => (
-		#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]
-		log_internal!($logger, $crate::util::logger::Level::Trace, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*);
 	)
 }

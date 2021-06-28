@@ -17,23 +17,21 @@
 use core::cmp;
 use core::fmt;
 
-static LOG_LEVEL_NAMES: [&'static str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+static LOG_LEVEL_NAMES: [&'static str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
 /// An enum representing the available verbosity levels of the logger.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum Level {
-	///Designates logger being silent
-	Off,
-	/// Designates very serious errors
-	Error,
-	/// Designates hazardous situations
-	Warn,
-	/// Designates useful information
-	Info,
-	/// Designates lower priority information
-	Debug,
 	/// Designates very low priority, often extremely verbose, information
 	Trace,
+	/// Designates lower priority information
+	Debug,
+	/// Designates useful information
+	Info,
+	/// Designates hazardous situations
+	Warn,
+	/// Designates very serious errors
+	Error,
 }
 
 impl PartialOrd for Level {
@@ -162,5 +160,36 @@ mod tests {
 		let logger : Arc<Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
+	}
+
+	#[test]
+	fn test_log_ordering() {
+		assert!(Level::Error > Level::Warn);
+		assert!(Level::Error >= Level::Warn);
+		assert!(Level::Error >= Level::Error);
+		assert!(Level::Warn > Level::Info);
+		assert!(Level::Warn >= Level::Info);
+		assert!(Level::Warn >= Level::Warn);
+		assert!(Level::Info > Level::Debug);
+		assert!(Level::Info >= Level::Debug);
+		assert!(Level::Info >= Level::Info);
+		assert!(Level::Debug > Level::Trace);
+		assert!(Level::Debug >= Level::Trace);
+		assert!(Level::Debug >= Level::Debug);
+		assert!(Level::Trace >= Level::Trace);
+
+		assert!(Level::Error <= Level::Error);
+		assert!(Level::Warn < Level::Error);
+		assert!(Level::Warn <= Level::Error);
+		assert!(Level::Warn <= Level::Warn);
+		assert!(Level::Info < Level::Warn);
+		assert!(Level::Info <= Level::Warn);
+		assert!(Level::Info <= Level::Info);
+		assert!(Level::Debug < Level::Info);
+		assert!(Level::Debug <= Level::Info);
+		assert!(Level::Debug <= Level::Debug);
+		assert!(Level::Trace < Level::Debug);
+		assert!(Level::Trace <= Level::Debug);
+		assert!(Level::Trace <= Level::Trace);
 	}
 }
