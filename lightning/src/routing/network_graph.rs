@@ -28,7 +28,7 @@ use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalFie
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
-use util::logger::Logger;
+use util::logger::{Logger, Level};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
@@ -169,12 +169,16 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
 		match update {
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
+				let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}abled.", msg.contents.short_channel_id, if chan_enabled { "en" } else { "dis" });
 				let _ = self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx);
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, short_channel_id);
 				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, is_permanent);
 			},
 			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent } => {
+				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, node_id);
 				self.network_graph.write().unwrap().fail_node(node_id, is_permanent);
 			},
 		}
@@ -713,7 +717,7 @@ impl NetworkGraph {
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					if node_info.last_update  >= msg.timestamp {
-						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
+						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
 					}
 				}
 
@@ -834,7 +838,7 @@ impl NetworkGraph {
 					Self::remove_channel_in_nodes(&mut self.nodes, &entry.get(), msg.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreError})
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)})
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -936,7 +940,7 @@ impl NetworkGraph {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
 							if existing_chan_info.last_update >= msg.timestamp {
-								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreError});
+								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
 						} else {

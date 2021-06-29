@@ -776,7 +776,7 @@ macro_rules! convert_chan_err {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
 			},
 			ChannelError::Close(msg) => {
-				log_trace!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
+				log_error!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
 				if let Some(short_id) = $channel.get_short_channel_id() {
 					$short_to_id.remove(&short_id);
 				}
@@ -1243,7 +1243,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	#[inline]
 	fn finish_force_close_channel(&self, shutdown_res: ShutdownResult) {
 		let (monitor_update_option, mut failed_htlcs) = shutdown_res;
-		log_trace!(self.logger, "Finishing force-closure of channel {} HTLCs to fail", failed_htlcs.len());
+		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
@@ -1274,7 +1274,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
 		};
-		log_trace!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
+		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown(true));
 		if let Ok(update) = self.get_channel_update(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
@@ -1671,6 +1671,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							return Err(APIError::MonitorUpdateFailed);
 						}
 
+						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan.get().channel_id()));
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: path.first().unwrap().pubkey,
 							updates: msgs::CommitmentUpdate {
@@ -2060,7 +2061,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											onion_packet, ..
 										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
 										prev_funding_outpoint } => {
-									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", log_bytes!(payment_hash.0), prev_short_channel_id, short_chan_id);
+									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
 									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										outpoint: prev_funding_outpoint,
@@ -2100,11 +2101,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									panic!("short_channel_id != 0 should imply any pending_forward entries are of type Forward");
 								},
 								HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
-									log_trace!(self.logger, "Failing HTLC back to channel with short id {} after delay", short_chan_id);
+									log_trace!(self.logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
 									match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet, &self.logger) {
 										Err(e) => {
 											if let ChannelError::Ignore(msg) = e {
-												log_trace!(self.logger, "Failed to fail backwards to short_id {}: {}", short_chan_id, msg);
+												log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
 											} else {
 												panic!("Stated return value requirements in get_update_fail_htlc() were not met");
 											}
@@ -2158,6 +2159,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
+							log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
+								add_htlc_msgs.len(), fail_htlc_msgs.len(), log_bytes!(chan.get().channel_id()));
 							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
@@ -2664,6 +2667,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 					}
 					if let Some((msg, commitment_signed)) = msgs {
+						log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
+							log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: chan.get().get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
@@ -2927,7 +2932,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().funding_locked(&msg), channel_state, chan);
+				try_chan_entry!(self, chan.get_mut().funding_locked(&msg, &self.logger), channel_state, chan);
 				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
 					log_trace!(self.logger, "Sending announcement_signatures for {} in response to funding_locked", log_bytes!(chan.get().channel_id()));
 					// If we see locking block before receiving remote funding_locked, we broadcast our
@@ -3354,8 +3359,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		match channel_state.by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					// TODO: see issue #153, need a consistent behavior on obnoxious behavior from random node
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), chan_id));
+					if chan.get().should_announce() {
+						// If the announcement is about a channel of ours which is public, some
+						// other peer may simply be forwarding all its gossip to us. Don't provide
+						// a scary-looking error message and return Ok instead.
+						return Ok(());
+					}
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 				}
 				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
 			},
@@ -3434,6 +3444,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Err(_e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							unimplemented!();
 						}
+						log_debug!(self.logger, "Updating fee resulted in a commitment_signed for channel {}", log_bytes!(chan.get().channel_id()));
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: chan.get().get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
@@ -3810,7 +3821,7 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time));
+		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, &self.logger));
 	}
 }
 
@@ -3846,7 +3857,7 @@ where
 
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time));
+		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, &self.logger));
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -3888,7 +3899,7 @@ where
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.get_funding_txo() {
 				if funding_txo.txid == *txid {
-					channel.funding_transaction_unconfirmed().map(|_| (None, Vec::new()))
+					channel.funding_transaction_unconfirmed(&self.logger).map(|_| (None, Vec::new()))
 				} else { Ok((None, Vec::new())) }
 			} else { Ok((None, Vec::new())) }
 		});
@@ -4646,6 +4657,11 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						channel.get_cur_counterparty_commitment_transaction_number() < monitor.get_cur_counterparty_commitment_number() ||
 						channel.get_latest_monitor_update_id() > monitor.get_latest_update_id() {
 					// If the channel is ahead of the monitor, return InvalidValue:
+					log_error!(args.logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
+					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
+						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
+					log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+					log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 					return Err(DecodeError::InvalidValue);
 				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
@@ -4662,6 +4678,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					by_id.insert(channel.channel_id(), channel);
 				}
 			} else {
+				log_error!(args.logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", log_bytes!(channel.channel_id()));
+				log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
+				log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 				return Err(DecodeError::InvalidValue);
 			}
 		}
