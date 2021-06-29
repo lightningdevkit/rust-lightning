@@ -3605,15 +3605,20 @@ fn test_simple_peer_disconnect() {
 	fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_hash_6);
 }
 
-fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
+fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken_lnd: bool) {
 	// Test that we can reconnect when in-flight HTLC updates get dropped
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let mut as_funding_locked = None;
 	if messages_delivered == 0 {
-		create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let (funding_locked, _, _) = create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		as_funding_locked = Some(funding_locked);
 		// nodes[1] doesn't receive the funding_locked message (it'll be re-sent on reconnect)
+		// Note that we store it so that if we're running with `simulate_broken_lnd` we can deliver
+		// it before the channel_reestablish message.
 	} else {
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	}
@@ -3668,6 +3673,17 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	if messages_delivered < 3 {
+		if simulate_broken_lnd {
+			// lnd has a long-standing bug where they send a funding_locked prior to a
+			// channel_reestablish if you reconnect prior to funding_locked time.
+			//
+			// Here we simulate that behavior, delivering a funding_locked immediately on
+			// reconnect. Note that we don't bother skipping the now-duplicate funding_locked sent
+			// in `reconnect_nodes` but we currently don't fail based on that.
+			//
+			// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
+			nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked.as_ref().unwrap().0);
+		}
 		// Even if the funding_locked messages get exchanged, as long as nothing further was
 		// received on either side, both sides will need to resend them.
 		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 1), (0, 0), (0, 0), (0, 0), (false, false));
@@ -3811,17 +3827,18 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8) {
 
 #[test]
 fn test_drop_messages_peer_disconnect_a() {
-	do_test_drop_messages_peer_disconnect(0);
-	do_test_drop_messages_peer_disconnect(1);
-	do_test_drop_messages_peer_disconnect(2);
-	do_test_drop_messages_peer_disconnect(3);
+	do_test_drop_messages_peer_disconnect(0, true);
+	do_test_drop_messages_peer_disconnect(0, false);
+	do_test_drop_messages_peer_disconnect(1, false);
+	do_test_drop_messages_peer_disconnect(2, false);
 }
 
 #[test]
 fn test_drop_messages_peer_disconnect_b() {
-	do_test_drop_messages_peer_disconnect(4);
-	do_test_drop_messages_peer_disconnect(5);
-	do_test_drop_messages_peer_disconnect(6);
+	do_test_drop_messages_peer_disconnect(3, false);
+	do_test_drop_messages_peer_disconnect(4, false);
+	do_test_drop_messages_peer_disconnect(5, false);
+	do_test_drop_messages_peer_disconnect(6, false);
 }
 
 #[test]
