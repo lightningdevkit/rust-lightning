@@ -27,7 +27,7 @@ use ln::wire;
 use ln::wire::Encode;
 use util::byte_utils;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
-use util::logger::{Logger, Level};
+use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
 use prelude::*;
