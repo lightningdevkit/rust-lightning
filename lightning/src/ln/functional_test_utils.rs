@@ -23,7 +23,7 @@ use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 use util::test_utils::TestChainMonitor;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
@@ -976,11 +976,16 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+			Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
-				assert!(payment_preimage.is_none());
-				assert_eq!($expected_payment_secret, *payment_secret);
 				assert_eq!($expected_recv_value, amt);
+				match purpose {
+					PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+						assert!(payment_preimage.is_none());
+						assert_eq!($expected_payment_secret, *payment_secret);
+					},
+					_ => {},
+				}
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1069,10 +1074,15 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+					Event::PaymentReceived { ref payment_hash, ref purpose, amt} => {
 						assert_eq!(our_payment_hash, *payment_hash);
-						assert!(payment_preimage.is_none());
-						assert_eq!(our_payment_secret, *payment_secret);
+						match &purpose {
+							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+								assert!(payment_preimage.is_none());
+								assert_eq!(our_payment_secret, *payment_secret);
+							},
+							_ => {},
+						}
 						assert_eq!(amt, recv_value);
 					},
 					_ => panic!("Unexpected event"),

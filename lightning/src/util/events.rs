@@ -27,6 +27,45 @@ use prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
 
+/// Some information provided on receipt of payment depends on whether the payment received is a
+/// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
+#[derive(Clone, Debug)]
+pub enum PaymentPurpose {
+	/// Information for receiving a payment that we generated an invoice for.
+	InvoicePayment {
+		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
+		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
+		/// [`ChannelManager::claim_funds`].
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
+		/// The "payment secret". This authenticates the sender to the recipient, preventing a
+		/// number of deanonymization attacks during the routing process.
+		/// It is provided here for your reference, however its accuracy is enforced directly by
+		/// [`ChannelManager`] using the values you previously provided to
+		/// [`ChannelManager::create_inbound_payment`] or
+		/// [`ChannelManager::create_inbound_payment_for_hash`].
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		payment_secret: PaymentSecret,
+		/// This is the `user_payment_id` which was provided to
+		/// [`ChannelManager::create_inbound_payment_for_hash`] or
+		/// [`ChannelManager::create_inbound_payment`]. It has no meaning inside of LDK and is
+		/// simply copied here. It may be used to correlate PaymentReceived events with invoice
+		/// metadata stored elsewhere.
+		///
+		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+		user_payment_id: u64,
+	},
+	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
+	/// (the payee) providing a preimage.
+	SpontaneousPayment(PaymentPreimage),
+}
+
 /// An Event which you should probably take some action in response to.
 ///
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
@@ -63,37 +102,13 @@ pub enum Event {
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
-		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
-		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
-		///
-		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
-		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-		payment_preimage: Option<PaymentPreimage>,
-		/// The "payment secret". This authenticates the sender to the recipient, preventing a
-		/// number of deanonymization attacks during the routing process.
-		/// It is provided here for your reference, however its accuracy is enforced directly by
-		/// [`ChannelManager`] using the values you previously provided to
-		/// [`ChannelManager::create_inbound_payment`] or
-		/// [`ChannelManager::create_inbound_payment_for_hash`].
-		///
-		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
-		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-		payment_secret: PaymentSecret,
 		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
 		/// compare this to the expected value before accepting the payment (as otherwise you are
 		/// providing proof-of-payment for less than the value you expected!).
 		amt: u64,
-		/// This is the `user_payment_id` which was provided to
-		/// [`ChannelManager::create_inbound_payment_for_hash`] or
-		/// [`ChannelManager::create_inbound_payment`]. It has no meaning inside of LDK and is
-		/// simply copied here. It may be used to correlate PaymentReceived events with invoice
-		/// metadata stored elsewhere.
-		///
-		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
-		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-		user_payment_id: u64,
+		/// Information for claiming this received payment, based on whether the purpose of the
+		/// payment is to pay an invoice or to send a spontaneous payment.
+		purpose: PaymentPurpose,
 	},
 	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -145,13 +160,26 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, ref amt, ref user_payment_id } => {
+			&Event::PaymentReceived { ref payment_hash, ref amt, ref purpose } => {
 				1u8.write(writer)?;
+				let mut payment_secret = None;
+				let mut user_payment_id = None;
+				let payment_preimage;
+				match &purpose {
+					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret, user_payment_id: id } => {
+						payment_secret = Some(secret);
+						payment_preimage = *preimage;
+						user_payment_id = Some(id);
+					},
+					PaymentPurpose::SpontaneousPayment(preimage) => {
+						payment_preimage = Some(*preimage);
+					}
+				}
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
-					(2, payment_secret, required),
+					(2, payment_secret, option),
 					(4, amt, required),
-					(6, user_payment_id, required),
+					(6, user_payment_id, option),
 					(8, payment_preimage, option),
 				});
 			},
@@ -201,22 +229,31 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_preimage = None;
-					let mut payment_secret = PaymentSecret([0; 32]);
+					let mut payment_secret = None;
 					let mut amt = 0;
-					let mut user_payment_id = 0;
+					let mut user_payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
-						(2, payment_secret, required),
+						(2, payment_secret, option),
 						(4, amt, required),
-						(6, user_payment_id, required),
+						(6, user_payment_id, option),
 						(8, payment_preimage, option),
 					});
+					let purpose = match payment_secret {
+						Some(secret) => PaymentPurpose::InvoicePayment {
+							payment_preimage,
+							payment_secret: secret,
+							user_payment_id: if let Some(id) = user_payment_id {
+								id
+							} else { return Err(msgs::DecodeError::InvalidValue) }
+						},
+						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
+						None => return Err(msgs::DecodeError::InvalidValue),
+					};
 					Ok(Some(Event::PaymentReceived {
 						payment_hash,
-						payment_preimage,
-						payment_secret,
 						amt,
-						user_payment_id,
+						purpose,
 					}))
 				};
 				f()

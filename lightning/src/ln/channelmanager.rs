@@ -2327,10 +2327,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else if total_value == payment_data.total_msat {
 												new_events.push(events::Event::PaymentReceived {
 													payment_hash,
-													payment_preimage: inbound_payment.get().payment_preimage,
-													payment_secret: payment_data.payment_secret,
+													purpose: events::PaymentPurpose::InvoicePayment {
+														payment_preimage: inbound_payment.get().payment_preimage,
+														payment_secret: payment_data.payment_secret,
+														user_payment_id: inbound_payment.get().user_payment_id,
+													},
 													amt: total_value,
-													user_payment_id: inbound_payment.get().user_payment_id,
 												});
 												// Only ever generate at most one PaymentReceived
 												// per registered payment_hash, even if it isn't
@@ -3778,7 +3780,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
 	/// method may return an Err if another payment with the same payment_hash is still pending.
 	///
-	/// `user_payment_id` will be provided back in [`PaymentReceived::user_payment_id`] events to
+	/// `user_payment_id` will be provided back in [`PaymentPurpose::InvoicePayment::user_payment_id`] events to
 	/// allow tracking of which events correspond with which calls to this and
 	/// [`create_inbound_payment`]. `user_payment_id` has no meaning inside of LDK, it is simply
 	/// copied to events and otherwise ignored. It may be used to correlate PaymentReceived events
@@ -3812,7 +3814,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
-	/// [`PaymentReceived::user_payment_id`]: events::Event::PaymentReceived::user_payment_id
+	/// [`PaymentPurpose::InvoicePayment::user_payment_id`]: events::PaymentPurpose::InvoicePayment::user_payment_id
 	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 	}
@@ -5098,7 +5100,7 @@ pub mod bench {
 	use routing::router::get_route;
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;

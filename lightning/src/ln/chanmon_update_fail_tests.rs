@@ -28,7 +28,7 @@ use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 use util::test_utils::TestBroadcaster;
@@ -220,11 +220,16 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret_1, *payment_secret);
 			assert_eq!(amt, 1000000);
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(payment_secret_1, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::InvoicePayment")
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -589,11 +594,16 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret_2, *payment_secret);
 			assert_eq!(amt, 1000000);
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(payment_secret_2, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::InvoicePayment")
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -704,11 +714,16 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, payment_preimage, payment_secret, amt, user_payment_id: _ } => {
+		Event::PaymentReceived { payment_hash, ref purpose, amt } => {
 			assert_eq!(payment_hash, our_payment_hash);
-			assert!(payment_preimage.is_none());
-			assert_eq!(our_payment_secret, payment_secret);
 			assert_eq!(amt, 1000000);
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(our_payment_secret, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::InvoicePayment")
+			}
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1712,20 +1727,30 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 			assert_eq!(payment_hash_2, *payment_hash);
-			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret_2, *payment_secret);
 			assert_eq!(1_000_000, amt);
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(payment_secret_2, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::InvoicePayment")
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 			assert_eq!(payment_hash_3, *payment_hash);
-			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret_3, *payment_secret);
 			assert_eq!(1_000_000, amt);
+			match &purpose {
+				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(payment_secret_3, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::InvoicePayment")
+			}
 		},
 		_ => panic!("Unexpected event"),
 	}
