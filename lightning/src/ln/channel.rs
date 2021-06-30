@@ -750,7 +750,12 @@ impl<Signer: Sign> Channel<Signer> {
 		if feerate_per_kw < lower_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
 		}
-		let upper_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64  * 2;
+		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
+		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
+		// We generally don't care too much if they set the feerate to something very high, but it
+		// could result in the channel being useless due to everything being dust.
+		let upper_limit = cmp::max(250 * 25,
+			fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
 		if feerate_per_kw as u64 > upper_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
 		}
@@ -3111,8 +3116,27 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate();
+
 		self.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.update_time_counter += 1;
+		// If the feerate has increased over the previous dust buffer (note that
+		// `get_dust_buffer_feerate` considers the `pending_update_fee` status), check that we
+		// won't be pushed over our dust exposure limit by the feerate increase.
+		if feerate_over_dust_buffer {
+			let inbound_stats = self.get_inbound_pending_htlc_stats();
+			let outbound_stats = self.get_outbound_pending_htlc_stats();
+			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+			if holder_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+					msg.feerate_per_kw, holder_tx_dust_exposure)));
+			}
+			if counterparty_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+					msg.feerate_per_kw, counterparty_tx_dust_exposure)));
+			}
+		}
 		Ok(())
 	}
 
@@ -3684,7 +3708,11 @@ impl<Signer: Sign> Channel<Signer> {
 		// whichever is higher. This ensures that we aren't suddenly exposed to significantly
 		// more dust balance if the feerate increases when we have several HTLCs pending
 		// which are near the dust limit.
-		cmp::max(2530, self.feerate_per_kw * 1250 / 1000)
+		let mut feerate_per_kw = self.feerate_per_kw;
+		if let Some((feerate, _)) = self.pending_update_fee {
+			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
+		}
+		cmp::max(2530, feerate_per_kw * 1250 / 1000)
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
