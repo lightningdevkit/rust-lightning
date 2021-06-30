@@ -3408,7 +3408,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 				}
-				try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
+				let were_node_one = self.get_our_node_id().serialize()[..] < chan.get().get_counterparty_node_id().serialize()[..];
+				let msg_from_node_one = msg.contents.flags & 1 == 0;
+				if were_node_one == msg_from_node_one {
+					return Ok(NotifyOption::SkipPersist);
+				} else {
+					try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
+				}
 			},
 			hash_map::Entry::Vacant(_) => unreachable!()
 		}
@@ -4984,6 +4990,31 @@ mod tests {
 		// At this point the channel info given by peers should still be the same.
 		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_eq!(nodes[1].node.list_channels()[0], node_b_chan_info);
+
+		// An earlier version of handle_channel_update didn't check the directionality of the
+		// update message and would always update the local fee info, even if our peer was
+		// (spuriously) forwarding us our own channel_update.
+		let as_node_one = nodes[0].node.get_our_node_id().serialize()[..] < nodes[1].node.get_our_node_id().serialize()[..];
+		let as_update = if as_node_one == (chan.0.contents.flags & 1 == 0 /* chan.0 is from node one */) { &chan.0 } else { &chan.1 };
+		let bs_update = if as_node_one == (chan.0.contents.flags & 1 == 0 /* chan.0 is from node one */) { &chan.1 } else { &chan.0 };
+
+		// First deliver each peers' own message, checking that the node doesn't need to be
+		// persisted and that its channel info remains the same.
+		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &as_update);
+		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &bs_update);
+		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
+		assert_eq!(nodes[1].node.list_channels()[0], node_b_chan_info);
+
+		// Finally, deliver the other peers' message, ensuring each node needs to be persisted and
+		// the channel info has updated.
+		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_update);
+		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_update);
+		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert_ne!(nodes[0].node.list_channels()[0], node_a_chan_info);
+		assert_ne!(nodes[1].node.list_channels()[0], node_b_chan_info);
 	}
 }
 
