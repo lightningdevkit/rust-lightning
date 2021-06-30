@@ -2054,6 +2054,98 @@ fn test_path_paused_mpp() {
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
 }
 
+fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
+	// In early versions we did not handle resending of update_fee on reconnect correctly. The
+	// chanmon_consistency fuzz target, of course, immediately found it, but we test a few cases
+	// explicitly here.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	send_payment(&nodes[0], &[&nodes[1]], 1000);
+
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(nodes[0], 1);
+	let update_msgs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	assert!(update_msgs.update_fee.is_some());
+	if deliver_update {
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msgs.update_fee.as_ref().unwrap());
+	}
+
+	if parallel_updates {
+		{
+			let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+			*feerate_lock += 20;
+		}
+		nodes[0].node.timer_tick_occurred();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	}
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+	let as_connect_msg = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+	let bs_connect_msg = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_connect_msg);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_connect_msg);
+	let update_msgs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	assert!(update_msgs.update_fee.is_some());
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msgs.update_fee.as_ref().unwrap());
+	if parallel_updates {
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &update_msgs.commitment_signed);
+		check_added_monitors!(nodes[1], 1);
+		let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+		check_added_monitors!(nodes[0], 1);
+		let as_second_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_cs);
+		check_added_monitors!(nodes[0], 1);
+		let as_first_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), as_second_update.update_fee.as_ref().unwrap());
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_update.commitment_signed);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+		let bs_second_cs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		check_added_monitors!(nodes[1], 1);
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_cs.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+		check_added_monitors!(nodes[1], 1);
+	} else {
+		commitment_signed_dance!(nodes[1], nodes[0], update_msgs.commitment_signed, false);
+	}
+
+	send_payment(&nodes[0], &[&nodes[1]], 1000);
+}
+#[test]
+fn update_fee_resend_test() {
+	do_update_fee_resend_test(false, false);
+	do_update_fee_resend_test(true, false);
+	do_update_fee_resend_test(false, true);
+	do_update_fee_resend_test(true, true);
+}
+
 fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	// Tests that, when we serialize a channel with AddHTLC entries in the holding cell, we
 	// properly free them on reconnect. We previously failed such HTLCs upon serialization, but

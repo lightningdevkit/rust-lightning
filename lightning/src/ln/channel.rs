@@ -3145,11 +3145,18 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		log_trace!(logger, "Regenerated latest commitment update in channel {} with {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				log_bytes!(self.channel_id()), update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
+		let update_fee = if self.is_outbound() && self.pending_update_fee.is_some() {
+			Some(msgs::UpdateFee {
+				channel_id: self.channel_id(),
+				feerate_per_kw: self.pending_update_fee.unwrap(),
+			})
+		} else { None };
+
+		log_trace!(logger, "Regenerated latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+				log_bytes!(self.channel_id()), if update_fee.is_some() { " update_fee," } else { "" },
+				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
-			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
-			update_fee: None,
+			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
 			commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 		}
 	}
