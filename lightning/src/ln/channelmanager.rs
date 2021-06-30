@@ -2612,6 +2612,37 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		(retain_channel, NotifyOption::DoPersist, ret_err)
 	}
 
+	#[cfg(fuzzing)]
+	/// In chanmon_consistency we want to sometimes do the channel fee updates done in
+	/// timer_tick_occurred, but we can't generate the disabled channel updates as it considers
+	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
+	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
+	pub fn maybe_update_chan_fees(&self) {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			let mut should_persist = NotifyOption::SkipPersist;
+
+			let new_feerate = self.fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+
+			let mut handle_errors = Vec::new();
+			{
+				let mut channel_state_lock = self.channel_state.lock().unwrap();
+				let channel_state = &mut *channel_state_lock;
+				let pending_msg_events = &mut channel_state.pending_msg_events;
+				let short_to_id = &mut channel_state.short_to_id;
+				channel_state.by_id.retain(|chan_id, chan| {
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+					if err.is_err() {
+						handle_errors.push(err);
+					}
+					retain_channel
+				});
+			}
+
+			should_persist
+		});
+	}
+
 	/// Performs actions which should happen on startup and roughly once per minute thereafter.
 	///
 	/// This currently includes:

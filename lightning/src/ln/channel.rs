@@ -341,6 +341,22 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// If the majority of the channels funds are to the fundee and the initiator holds only just
+/// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
+/// initiator controls the feerate, if they then go to increase the channel fee, they may have no
+/// balance but the fundee is unable to send a payment as the increase in fee more than drains
+/// their reserve value. Thus, neither side can send a new HTLC and the channel becomes useless.
+/// Thus, before sending an HTLC when we are the initiator, we check that the feerate can increase
+/// by this multiple without hitting this case, before sending.
+/// This multiple is effectively the maximum feerate "jump" we expect until more HTLCs flow over
+/// the channel. Sadly, there isn't really a good number for this - if we expect to have no new
+/// HTLCs for days we may need this to suffice for feerate increases across days, but that may
+/// leave the channel less usable as we hold a bigger reserve.
+#[cfg(fuzzing)]
+pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
+#[cfg(not(fuzzing))]
+const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -4326,7 +4342,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// `2 *` and extra HTLC are for the fee spike buffer.
 		let commit_tx_fee_msat = if self.is_outbound() {
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
-			2 * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
+			FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
 		} else { 0 };
 		if pending_value_to_self_msat - amount_msat < commit_tx_fee_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", pending_value_to_self_msat, commit_tx_fee_msat)));
