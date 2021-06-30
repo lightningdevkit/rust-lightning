@@ -99,6 +99,10 @@ enum PendingHTLCRouting {
 		payment_data: msgs::FinalOnionHopData,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
+	ReceiveKeysend {
+		payment_preimage: PaymentPreimage,
+		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+	},
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -3318,6 +3322,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					match channel_state.forward_htlcs.entry(match forward_info.routing {
 							PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 							PendingHTLCRouting::Receive { .. } => 0,
+							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
@@ -4471,7 +4476,11 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(1, Receive) => {
 		(0, payment_data, required),
 		(2, incoming_cltv_expiry, required),
-	}
+	},
+	(2, ReceiveKeysend) => {
+		(0, payment_preimage, required),
+		(2, incoming_cltv_expiry, required),
+	},
 ;);
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
