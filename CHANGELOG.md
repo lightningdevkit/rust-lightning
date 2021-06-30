@@ -1,3 +1,13 @@
+# 0.0.99 - WIP
+
+## Serialization Compatibility
+
+ * Due to a bug discovered in 0.0.98, if a `ChannelManager` is serialized on
+   version 0.0.98 while an `Event::PaymentSent` is pending processing, the
+   `ChannelManager` will fail to deserialize both on version 0.0.98 and later
+   versions. If you have such a `ChannelManager` available, a simple patch will
+   allow it to deserialize, please file an issue if you need assistance.
+
 # 0.0.98 - 2021-06-11
 
 0.0.98 should be considered a release candidate to the first alpha release of

@@ -160,7 +160,6 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 				});
-				payment_preimage.write(writer)?;
 			},
 			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
 				#[cfg(test)]
