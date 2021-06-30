@@ -288,7 +288,7 @@ impl HTLCCandidate {
 }
 
 /// Information needed for constructing an invoice route hint for this channel.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CounterpartyForwardingInfo {
 	/// Base routing fee in millisatoshis.
 	pub fee_base_msat: u32,

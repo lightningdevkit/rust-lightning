@@ -632,7 +632,7 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRA
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
 /// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
 	/// thereafter this is the txid of the funding transaction xor the funding transaction output).
@@ -3346,14 +3346,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
-	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<(), MsgHandleErrInternal> {
+	/// Returns ShouldPersist if anything changed, otherwise either SkipPersist or an Err.
+	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		let chan_id = match channel_state.short_to_id.get(&msg.contents.short_channel_id) {
 			Some(chan_id) => chan_id.clone(),
 			None => {
 				// It's not a local channel
-				return Ok(())
+				return Ok(NotifyOption::SkipPersist)
 			}
 		};
 		match channel_state.by_id.entry(chan_id) {
@@ -3363,7 +3364,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// If the announcement is about a channel of ours which is public, some
 						// other peer may simply be forwarding all its gossip to us. Don't provide
 						// a scary-looking error message and return Ok instead.
-						return Ok(());
+						return Ok(NotifyOption::SkipPersist);
 					}
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 				}
@@ -3371,7 +3372,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 			hash_map::Entry::Vacant(_) => unreachable!()
 		}
-		Ok(())
+		Ok(NotifyOption::DoPersist)
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
@@ -4116,8 +4117,13 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	}
 
 	fn handle_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let _ = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id);
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			if let Ok(persist) = handle_error!(self, self.internal_channel_update(counterparty_node_id, msg), *counterparty_node_id) {
+				persist
+			} else {
+				NotifyOption::SkipPersist
+			}
+		});
 	}
 
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
@@ -4823,6 +4829,9 @@ mod tests {
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use std::thread;
 	use core::time::Duration;
+	use ln::functional_test_utils::*;
+	use ln::features::InitFeatures;
+	use ln::msgs::ChannelMessageHandler;
 
 	#[test]
 	fn test_wait_timeout() {
@@ -4864,6 +4873,53 @@ mod tests {
 				break
 			}
 		}
+	}
+
+	#[test]
+	fn test_notify_limits() {
+		// Check that a few cases which don't require the persistence of a new ChannelManager,
+		// indeed, do not cause the persistence of a new ChannelManager.
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		// We check that the channel info nodes have doesn't change too early, even though we try
+		// to connect messages with new values
+		chan.0.contents.fee_base_msat *= 2;
+		chan.1.contents.fee_base_msat *= 2;
+		let node_a_chan_info = nodes[0].node.list_channels()[0].clone();
+		let node_b_chan_info = nodes[1].node.list_channels()[0].clone();
+
+		// The first two nodes (which opened a channel) should now require fresh persistence
+		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		// ... but the last node should not.
+		assert!(!nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		// After persisting the first two nodes they should no longer need fresh persistence.
+		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+
+		// Node 3, unrelated to the only channel, shouldn't care if it receives a channel_update
+		// about the channel.
+		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.0);
+		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.1);
+		assert!(!nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+
+		// The nodes which are a party to the channel should also ignore messages from unrelated
+		// parties.
+		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.0);
+		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
+		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.0);
+		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
+		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+
+		// At this point the channel info given by peers should still be the same.
+		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
+		assert_eq!(nodes[1].node.list_channels()[0], node_b_chan_info);
 	}
 }
 
