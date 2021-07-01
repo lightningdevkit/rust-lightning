@@ -4667,6 +4667,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
 					log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
 					log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
+					log_error!(args.logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
+					log_error!(args.logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/rust-bitcoin/rust-lightning");
 					return Err(DecodeError::InvalidValue);
 				} else if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
@@ -4686,6 +4688,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				log_error!(args.logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", log_bytes!(channel.channel_id()));
 				log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");
 				log_error!(args.logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
+				log_error!(args.logger, " Without the ChannelMonitor we cannot continue without risking funds.");
+				log_error!(args.logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/rust-bitcoin/rust-lightning");
 				return Err(DecodeError::InvalidValue);
 			}
 		}

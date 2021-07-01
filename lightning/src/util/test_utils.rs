@@ -439,7 +439,7 @@ impl TestLogger {
 impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
 		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
-		if self.level >= record.level {
+		if record.level >= self.level {
 			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
 		}
 	}
