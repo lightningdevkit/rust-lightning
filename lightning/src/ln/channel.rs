@@ -3513,7 +3513,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// is_usable() and considers things like the channel being temporarily disabled.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_live(&self) -> bool {
-		self.is_usable() && (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) == 0)
+		self.is_usable() && (self.channel_state & (ChannelState::PeerDisconnected as u32) == 0)
 	}
 
 	/// Returns true if this channel has been marked as awaiting a monitor update to move forward.
@@ -4030,10 +4030,18 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Adds a pending outbound HTLC to this channel, note that you probably want
 	/// send_htlc_and_commit instead cause you'll want both messages at once.
-	/// This returns an option instead of a pure UpdateAddHTLC as we may be in a state where we are
-	/// waiting on the remote peer to send us a revoke_and_ack during which time we cannot add new
-	/// HTLCs on the wire or we wouldn't be able to determine what they actually ACK'ed.
-	/// You MUST call send_commitment prior to any other calls on this Channel
+	///
+	/// This returns an optional UpdateAddHTLC as we may be in a state where we cannot add HTLCs on
+	/// the wire:
+	/// * In cases where we're waiting on the remote peer to send us a revoke_and_ack, we
+	///   wouldn't be able to determine what they actually ACK'ed if we have two sets of updates
+	///   awaiting ACK.
+	/// * In cases where we're marked MonitorUpdateFailed, we cannot commit to a new state as we
+	///   may not yet have sent the previous commitment update messages and will need to regenerate
+	///   them.
+	///
+	/// You MUST call send_commitment prior to calling any other methods on this Channel!
+	///
 	/// If an Err is returned, it's a ChannelError::Ignore!
 	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
@@ -4052,14 +4060,14 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send less than their minimum HTLC value ({})", self.counterparty_htlc_minimum_msat)));
 		}
 
-		if (self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) != 0 {
 			// Note that this should never really happen, if we're !is_live() on receipt of an
 			// incoming HTLC for relay will result in us rejecting the HTLC and we won't allow
 			// the user to send directly into a !is_live() channel. However, if we
 			// disconnected during the time the previous hop was doing the commitment dance we may
 			// end up getting here after the forwarding delay. In any case, returning an
 			// IgnoreError will get ChannelManager to do the right thing and fail backwards now.
-			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected/frozen for channel monitor update".to_owned()));
+			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
 		let (outbound_htlc_count, htlc_outbound_value_msat) = self.get_outbound_pending_htlc_stats();
@@ -4104,7 +4112,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat,
 				payment_hash,

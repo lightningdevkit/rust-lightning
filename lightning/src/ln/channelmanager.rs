@@ -677,8 +677,7 @@ pub struct ChannelDetails {
 	/// point after the funding transaction received enough confirmations).
 	pub is_funding_locked: bool,
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
-	/// the peer is connected, (c) no monitor update failure is pending resolution, and (d) the
-	/// channel is not currently negotiating a shutdown.
+	/// the peer is connected, and (c) the channel is not currently negotiating a shutdown.
 	///
 	/// This is a strict superset of `is_funding_locked`.
 	pub is_usable: bool,
