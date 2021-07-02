@@ -12,8 +12,7 @@
 //! claim outputs on-chain.
 
 use chain;
-use chain::Listen;
-use chain::Watch;
+use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
@@ -1360,15 +1359,7 @@ fn holding_cell_htlc_counting() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_fail_updates.commitment_signed, false, true);
 
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
-			assert_eq!(msg.contents.short_channel_id, chan_2.0.contents.short_channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
-
+	expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
 	expect_payment_failed!(nodes[0], payment_hash_2, false);
 
 	// Now forward all the pending HTLCs and claim them back
@@ -3009,10 +3000,16 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	{
-		// B will rebroadcast its own holder commitment transaction here...just because
+		// B may rebroadcast its own holder commitment transaction here, as a safeguard against
+		// some incredibly unlikely partial-eclipse-attack scenarios. That said, because the
+		// original commitment_tx[0] (also spending chan_2.3) has reached ANTI_REORG_DELAY B really
+		// shouldn't broadcast anything here, and in some connect style scenarios we do not.
 		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_txn.len(), 1);
-		check_spends!(node_txn[0], chan_2.3);
+		if node_txn.len() == 1 {
+			check_spends!(node_txn[0], chan_2.3);
+		} else {
+			assert_eq!(node_txn.len(), 0);
+		}
 	}
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
@@ -3095,13 +3092,7 @@ fn test_simple_commitment_revoked_fail_backward() {
 
 			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
-
-			let events = nodes[0].node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-				_ => panic!("Unexpected event"),
-			}
+			expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
 			expect_payment_failed!(nodes[0], payment_hash, false);
 		},
 		_ => panic!("Unexpected event"),
@@ -4204,7 +4195,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Make sure all nodes are at the same starting height
 	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
@@ -4260,14 +4251,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 			_ => unreachable!(),
 		}
 		expect_payment_failed!(nodes[0], second_payment_hash, false);
-		if let &MessageSendEvent::PaymentFailureNetworkUpdate { ref update } = &nodes[0].node.get_and_clear_pending_msg_events()[0] {
-			match update {
-				&HTLCFailChannelUpdate::ChannelUpdateMessage { .. } => {},
-				_ => panic!("Unexpected event"),
-			}
-		} else {
-			panic!("Unexpected event");
-		}
+		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, false);
 	} else {
 		expect_payment_failed!(nodes[1], second_payment_hash, true);
 	}
@@ -4847,7 +4831,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 }
 
 macro_rules! check_spendable_outputs {
-	($node: expr, $der_idx: expr, $keysinterface: expr, $chan_value: expr) => {
+	($node: expr, $keysinterface: expr) => {
 		{
 			let mut events = $node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 			let mut txn = Vec::new();
@@ -4894,7 +4878,7 @@ fn test_claim_sizeable_push_msat() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
@@ -4925,7 +4909,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	check_added_monitors!(nodes[1], 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -4955,7 +4939,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // to_remote output on revoked remote commitment_tx
 	check_spends!(spend_txn[1], node_txn[0]);
@@ -5004,7 +4988,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -5049,7 +5033,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[1], our_payment_hash, true);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
 	check_spends!(spend_txn[0], commitment_tx[0]);
 	check_spends!(spend_txn[1], node_txn[1]);
@@ -5085,7 +5069,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -5152,7 +5136,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	// Check B's ChannelMonitor was able to generate the right spendable output descriptor
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[1]);
@@ -5227,7 +5211,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	// didn't try to generate any new transactions.
 
 	// Check A's ChannelMonitor was able to generate the right spendable output descriptor
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], revoked_local_txn[0]); // spending to_remote output from revoked local tx
@@ -5452,13 +5436,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	{
 		commitment_signed_dance!(nodes[0], nodes[1], &htlc_updates.commitment_signed, false, true);
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelClosed { .. }  } => {
-			},
-			_ => { panic!("Unexpected event"); }
-		}
+		expect_payment_failure_chan_update!(nodes[0], chan_2.0.contents.short_channel_id, true);
 	}
 	expect_payment_failed!(nodes[0], duplicate_payment_hash, false);
 
@@ -5529,7 +5507,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
-	let spend_txn = check_spendable_outputs!(nodes[1], 1, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_tx);
@@ -5827,7 +5805,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
@@ -5908,7 +5886,7 @@ fn test_key_derivation_params() {
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, new_keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], new_keys_manager);
 	assert_eq!(spend_txn.len(), 3);
 	check_spends!(spend_txn[0], local_txn_1[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
@@ -5935,14 +5913,14 @@ fn test_static_output_closing_tx() {
 	mine_transaction(&nodes[0], &closing_tx);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[0], 2, node_cfgs[0].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 
 	mine_transaction(&nodes[1], &closing_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let spend_txn = check_spendable_outputs!(nodes[1], 2, node_cfgs[1].keys_manager, 100000);
+	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], closing_tx);
 }
@@ -6517,20 +6495,8 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
-	let fail_msg_event = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(fail_msg_event.len(), 1);
-	match &fail_msg_event[0] {
-		&MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	let failure_event = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(failure_event.len(), 1);
-	match &failure_event[0] {
-		&Event::PaymentFailed { rejected_by_dest, .. } => {
-			assert!(!rejected_by_dest);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_failure_chan_update!(nodes[0], chan_1_2.0.contents.short_channel_id, false);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 	check_added_monitors!(nodes[0], 1);
 }
 
@@ -7786,7 +7752,7 @@ fn test_data_loss_protect() {
 	assert_eq!(node_txn[0].output.len(), 2);
 	mine_transaction(&nodes[0], &node_txn[0]);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	let spend_txn = check_spendable_outputs!(nodes[0], 1, node_cfgs[0].keys_manager, 1000000);
+	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
 }
@@ -9317,4 +9283,87 @@ fn test_invalid_funding_tx() {
 		} else { panic!(); }
 	} else { panic!(); }
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
+
+fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_timelock: bool) {
+	// In the first version of the chain::Confirm interface, after a refactor was made to not
+	// broadcast CSV-locked transactions until their CSV lock is up, we wouldn't reliably broadcast
+	// transactions after a `transactions_confirmed` call. Specifically, if the chain, provided via
+	// `best_block_updated` is at height N, and a transaction output which we wish to spend at
+	// height N-1 (due to a CSV to height N-1) is provided at height N, we will not broadcast the
+	// spending transaction until height N+1 (or greater). This was due to the way
+	// `ChannelMonitor::transactions_confirmed` worked, only checking if we should broadcast a
+	// spending transaction at the height the input transaction was confirmed at, not whether we
+	// should broadcast a spending transaction at the current height.
+	// A second, similar, issue involved failing HTLCs backwards - because we only provided the
+	// height at which transactions were confirmed to `OnchainTx::update_claims_view`, it wasn't
+	// aware that the anti-reorg-delay had, in fact, already expired, waiting to fail-backwards
+	// until we learned about an additional block.
+	//
+	// As an additional check, if `test_height_before_timelock` is set, we instead test that we
+	// aren't broadcasting transactions too early (ie not broadcasting them at all).
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = ConnectStyle::BestBlockFirstSkippingBlocks;
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let (chan_announce, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+	nodes[1].node.force_close_channel(&channel_id).unwrap();
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 1);
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(node_txn.len(), 1);
+
+	let conf_height = nodes[1].best_block_info().1;
+	if !test_height_before_timelock {
+		connect_blocks(&nodes[1], 24 * 6);
+	}
+	nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
+		&nodes[1].get_block_header(conf_height), &[(0, &node_txn[0])], conf_height);
+	if test_height_before_timelock {
+		// If we confirmed the close transaction, but timelocks have not yet expired, we should not
+		// generate any events or broadcast any transactions
+		assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+		assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	} else {
+		// We should broadcast an HTLC transaction spending our funding transaction first
+		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(spending_txn.len(), 2);
+		assert_eq!(spending_txn[0], node_txn[0]);
+		check_spends!(spending_txn[1], node_txn[0]);
+		// We should also generate a SpendableOutputs event with the to_self output (as its
+		// timelock is up).
+		let descriptor_spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
+		assert_eq!(descriptor_spend_txn.len(), 1);
+
+		// If we also discover that the HTLC-Timeout transaction was confirmed some time ago, we
+		// should immediately fail-backwards the HTLC to the previous hop, without waiting for an
+		// additional block built on top of the current chain.
+		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
+			&nodes[1].get_block_header(conf_height + 1), &[(0, &spending_txn[1])], conf_height + 1);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, false);
+		expect_payment_failure_chan_update!(nodes[0], chan_announce.contents.short_channel_id, true);
+	}
+}
+#[test]
+fn test_tx_confirmed_skipping_blocks_immediate_broadcast() {
+	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(false);
+	do_test_tx_confirmed_skipping_blocks_immediate_broadcast(true);
 }

@@ -343,7 +343,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -351,7 +351,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Some(cached_request.get_height_timer(height));
+		let new_timer = Some(cached_request.get_height_timer(cur_height));
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script);
 			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(predicted_weight, fee_estimator, logger) {
@@ -377,12 +377,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
 	/// if we receive a preimage after force-close.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
+	/// `conf_height` represents the height at which the transactions in `txn_matched` were
+	/// confirmed. This does not need to equal the current blockchain tip height, which should be
+	/// provided via `cur_height`, however it must never be higher than `cur_height`.
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		log_debug!(logger, "Updating claims view at height {} with {} matched transactions and {} claim requests", height, txn_matched.len(), requests.len());
+		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {} and {} claim requests", cur_height, txn_matched.len(), conf_height, requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;
 
@@ -401,8 +404,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					continue;
 				}
 
-				if req.package_timelock() > height + 1 {
-					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), height);
+				if req.package_timelock() > cur_height + 1 {
+					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), cur_height);
 					for outpoint in req.outpoints() {
 						log_info!(logger, "  Outpoint {}", outpoint);
 					}
@@ -410,8 +413,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					continue;
 				}
 
-				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.timelock(), height + CLTV_SHARED_CLAIM_BUFFER);
-				if req.timelock() <= height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
+				log_trace!(logger, "Test if outpoint can be aggregated with expiration {} against {}", req.timelock(), cur_height + CLTV_SHARED_CLAIM_BUFFER);
+				if req.timelock() <= cur_height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
 					// Don't aggregate if outpoint package timelock is soon or marked as non-aggregable
 					preprocessed_requests.push(req);
 				} else if aggregated_request.is_none() {
@@ -425,8 +428,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			preprocessed_requests.push(req);
 		}
 
-		// Claim everything up to and including height + 1
-		let remaining_locked_packages = self.locktimed_packages.split_off(&(height + 2));
+		// Claim everything up to and including cur_height + 1
+		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 2));
 		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
 			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
 			preprocessed_requests.append(&mut entry);
@@ -436,13 +439,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(height, &req, &*fee_estimator, &*logger) {
+			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
 				let txid = tx.txid();
 				for k in req.outpoints() {
 					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-					self.claimable_outpoints.insert(k.clone(), (txid, height));
+					self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
 				}
 				self.pending_claim_requests.insert(txid, req);
 				log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
@@ -476,7 +479,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 							() => {
 								let entry = OnchainEventEntry {
 									txid: tx.txid(),
-									height,
+									height: conf_height,
 									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
 								};
 								if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
@@ -516,7 +519,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			for package in claimed_outputs_material.drain(..) {
 				let entry = OnchainEventEntry {
 					txid: tx.txid(),
-					height,
+					height: conf_height,
 					event: OnchainEvent::ContentiousOutpoint { package },
 				};
 				if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
@@ -529,7 +532,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		let onchain_events_awaiting_threshold_conf =
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		for entry in onchain_events_awaiting_threshold_conf {
-			if entry.has_reached_confirmation_threshold(height) {
+			if entry.has_reached_confirmation_threshold(cur_height) {
 				match entry.event {
 					OnchainEvent::Claim { claim_request } => {
 						// We may remove a whole set of claim outpoints here, as these one may have
@@ -555,7 +558,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Check if any pending claim request must be rescheduled
 		for (first_claim_txid, ref request) in self.pending_claim_requests.iter() {
 			if let Some(h) = request.timer() {
-				if height >= h {
+				if cur_height >= h {
 					bump_candidates.insert(*first_claim_txid, (*request).clone());
 				}
 			}
@@ -564,7 +567,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
 		for (first_claim_txid, request) in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &*fee_estimator, &*logger) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(cur_height, &request, &*fee_estimator, &*logger) {
 				log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
 				broadcaster.broadcast_transaction(&bump_tx);
 				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {

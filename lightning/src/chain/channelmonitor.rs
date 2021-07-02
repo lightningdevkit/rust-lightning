@@ -370,8 +370,8 @@ impl OnchainEventEntry {
 		conf_threshold
 	}
 
-	fn has_reached_confirmation_threshold(&self, height: u32) -> bool {
-		height >= self.confirmation_threshold()
+	fn has_reached_confirmation_threshold(&self, best_block: &BestBlock) -> bool {
+		best_block.height() >= self.confirmation_threshold()
 	}
 }
 
@@ -1331,7 +1331,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -1353,11 +1353,14 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// *we* sign a holder commitment transaction, not when e.g. a watchtower broadcasts one of our
 		// holder commitment transactions.
 		if self.broadcasted_holder_revokable_script.is_some() {
-			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, 0);
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+			// Assume that the broadcasted commitment transaction confirmed in the current best
+			// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
+			// transactions.
+			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
+			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, 0);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), broadcaster, fee_estimator, logger);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, self.best_block.height());
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 	}
@@ -1724,7 +1727,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	// Returns (1) `PackageTemplate`s that can be given to the OnChainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -1743,7 +1746,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						};
 						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
 					};
-				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), height, false, height);
+				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), htlc.cltv_expiry, false, conf_height);
 				claim_requests.push(htlc_package);
 			}
 		}
@@ -1856,7 +1859,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				} else if htlc.0.cltv_expiry > self.best_block.height() + 1 {
 					// Don't broadcast HTLC-Timeout transactions immediately as they don't meet the
 					// current locktime requirements on-chain. We will broadcast them in
-					// `block_confirmed` when `would_broadcast_at_height` returns true.
+					// `block_confirmed` when `should_broadcast_holder_commitment_txn` returns true.
 					// Note that we add + 1 as transactions are broadcastable when they can be
 					// confirmed in the next block.
 					continue;
@@ -1926,13 +1929,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
-			self.block_confirmed(height, vec![], vec![], vec![], broadcaster, fee_estimator, logger)
-		} else {
+			self.block_confirmed(height, vec![], vec![], vec![], &broadcaster, &fee_estimator, &logger)
+		} else if block_hash != self.best_block.block_hash() {
 			self.best_block = BestBlock::new(block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
 			self.onchain_tx_handler.block_disconnected(height + 1, broadcaster, fee_estimator, logger);
 			Vec::new()
-		}
+		} else { Vec::new() }
 	}
 
 	fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
@@ -2004,33 +2007,49 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.is_paying_spendable_output(&tx, height, &logger);
 		}
 
-		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, broadcaster, fee_estimator, logger)
+		if height > self.best_block.height() {
+			self.best_block = BestBlock::new(block_hash, height);
+		}
+
+		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, &logger)
 	}
 
+	/// Update state for new block(s)/transaction(s) confirmed. Note that the caller must update
+	/// `self.best_block` before calling if a new best blockchain tip is available. More
+	/// concretely, `self.best_block` must never be at a lower height than `conf_height`, avoiding
+	/// complexity especially in `OnchainTx::update_claims_view`.
+	///
+	/// `conf_height` should be set to the height at which any new transaction(s)/block(s) were
+	/// confirmed at, even if it is not the current best height.
 	fn block_confirmed<B: Deref, F: Deref, L: Deref>(
 		&mut self,
-		height: u32,
+		conf_height: u32,
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<PackageTemplate>,
-		broadcaster: B,
-		fee_estimator: F,
-		logger: L,
+		broadcaster: &B,
+		fee_estimator: &F,
+		logger: &L,
 	) -> Vec<TransactionOutputs>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let should_broadcast = self.would_broadcast_at_height(height, &logger);
+		debug_assert!(self.best_block.height() >= conf_height);
+
+		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
-			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), height, false, height);
+			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
-			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
+			// Because we're broadcasting a commitment transaction, we should construct the package
+			// assuming it gets confirmed in the next block. Sadly, we have code which considers
+			// "not yet confirmed" things as discardable, so we cannot do that here.
+			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
 			if !new_outputs.is_empty() {
 				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
@@ -2043,7 +2062,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		let mut onchain_events_reaching_threshold_conf = Vec::new();
 		for entry in onchain_events_awaiting_threshold_conf {
-			if entry.has_reached_confirmation_threshold(height) {
+			if entry.has_reached_confirmation_threshold(&self.best_block) {
 				onchain_events_reaching_threshold_conf.push(entry);
 			} else {
 				self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -2098,7 +2117,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, height, &&*broadcaster, &&*fee_estimator, &&*logger);
+		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -2200,7 +2219,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		false
 	}
 
-	fn would_broadcast_at_height<L: Deref>(&self, height: u32, logger: &L) -> bool where L::Target: Logger {
+	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, logger: &L) -> bool where L::Target: Logger {
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
@@ -2211,6 +2230,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
+		let height = self.best_block.height();
 		macro_rules! scan_commitment {
 			($htlcs: expr, $holder_tx: expr) => {
 				for ref htlc in $htlcs {

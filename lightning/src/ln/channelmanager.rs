@@ -626,7 +626,7 @@ pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER + 3;
 const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - CLTV_CLAIM_BUFFER - ANTI_REORG_DELAY - LATENCY_GRACE_PERIOD_BLOCKS;
 
 // Check for ability of an attacker to make us fail on-chain by delaying an HTLC claim. See
-// ChannelMontior::would_broadcast_at_height for a description of why this is needed.
+// ChannelMonitor::should_broadcast_holder_commitment_txn for a description of why this is needed.
 #[deny(const_err)]
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
