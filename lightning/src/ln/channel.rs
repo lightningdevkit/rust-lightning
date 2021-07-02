@@ -1784,8 +1784,22 @@ impl<Signer: Sign> Channel<Signer> {
 	/// corner case properly.
 	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
 		// Note that we have to handle overflow due to the above case.
-		(cmp::max(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
-		cmp::max(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
+		(
+			cmp::max(self.channel_value_satoshis as i64 * 1000
+				- self.value_to_self_msat as i64
+				- self.get_inbound_pending_htlc_stats().1 as i64
+				- Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64 * 1000,
+			0) as u64,
+			cmp::max(self.value_to_self_msat as i64
+				- self.get_outbound_pending_htlc_stats().1 as i64
+				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
+			0) as u64
+		)
+	}
+
+	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
+		(Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
+		self.counterparty_selected_channel_reserve_satoshis)
 	}
 
 	// Get the fee cost of a commitment tx with a given number of HTLC outputs.
@@ -3338,6 +3352,10 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_id
 	}
 
+	pub fn minimum_depth(&self) -> Option<u32> {
+		self.minimum_depth
+	}
+
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
 	pub fn get_user_id(&self) -> u64 {
@@ -3365,7 +3383,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.channel_transaction_parameters.holder_pubkeys
 	}
 
-	fn get_counterparty_selected_contest_delay(&self) -> Option<u16> {
+	pub fn get_counterparty_selected_contest_delay(&self) -> Option<u16> {
 		self.channel_transaction_parameters.counterparty_parameters
 			.as_ref().map(|params| params.selected_contest_delay)
 	}

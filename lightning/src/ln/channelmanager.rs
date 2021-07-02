@@ -656,25 +656,74 @@ pub struct ChannelDetails {
 	pub counterparty_features: InitFeatures,
 	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
+	/// The value, in satoshis, that must always be held in the channel for us. This value ensures
+	/// that if we broadcast a revoked state, our counterparty can punish us by claiming at least
+	/// this value on chain.
+	///
+	/// This value is not included in [`outbound_capacity_msat`] as it can never be spent.
+	///
+	/// This value will be `None` for outbound channels until the counterparty accepts the channel.
+	///
+	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
+	pub to_self_reserve_satoshis: Option<u64>,
+	/// The value, in satoshis, that must always be held in the channel for our counterparty. This
+	/// value ensures that if our counterparty broadcasts a revoked state, we can punish them by
+	/// claiming at least this value on chain.
+	///
+	/// This value is not included in [`inbound_capacity_msat`] as it can never be spent.
+	///
+	/// [`inbound_capacity_msat`]: ChannelDetails::inbound_capacity_msat
+	pub to_remote_reserve_satoshis: u64,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
 	/// any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
 	/// outgoing HTLCs which are awaiting some other resolution to be sent.
+	///
+	/// This value is not exact. Due to various in-flight changes, feerate changes, and our
+	/// conflict-avoidance policy, exactly this amount is not likely to be spendable. However, we
+	/// should be able to spend nearly this amount.
 	pub outbound_capacity_msat: u64,
 	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
 	/// include any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
 	/// available for inclusion in new inbound HTLCs).
 	/// Note that there are some corner cases not fully handled here, so the actual available
 	/// inbound capacity may be slightly higher than this.
+	///
+	/// This value is not exact. Due to various in-flight changes, feerate changes, and our
+	/// counterparty's conflict-avoidance policy, exactly this amount is not likely to be spendable.
+	/// However, our counterparty should be able to spend nearly this amount.
 	pub inbound_capacity_msat: u64,
+	/// The number of required confirmations on the funding transaction before the funding will be
+	/// considered "locked". This number is selected by the channel fundee (i.e. us if
+	/// [`is_outbound`] is *not* set), and can be selected for inbound channels with
+	/// [`ChannelHandshakeConfig::minimum_depth`] or limited for outbound channels with
+	/// [`ChannelHandshakeLimits::max_minimum_depth`].
+	///
+	/// This value will be `None` for outbound channels until the counterparty accepts the channel.
+	///
+	/// [`is_outbound`]: ChannelDetails::is_outbound
+	/// [`ChannelHandshakeConfig::minimum_depth`]: crate::util::config::ChannelHandshakeConfig::minimum_depth
+	/// [`ChannelHandshakeLimits::max_minimum_depth`]: crate::util::config::ChannelHandshakeLimits::max_minimum_depth
+	pub confirmations_required: Option<u32>,
+	/// The number of blocks (after our commitment transaction confirms) that we will need to wait
+	/// until we can claim our funds after we force-close the channel. During this time our
+	/// counterparty is allowed to punish us if we broadcasted a stale state. If our counterparty
+	/// force-closes the channel and broadcasts a commitment transaction we do not have to wait any
+	/// time to claim our non-HTLC-encumbered funds.
+	///
+	/// This value will be `None` for outbound channels until the counterparty accepts the channel.
+	pub spend_csv_on_our_commitment_funds: Option<u16>,
 	/// True if the channel was initiated (and thus funded) by us.
 	pub is_outbound: bool,
 	/// True if the channel is confirmed, funding_locked messages have been exchanged, and the
 	/// channel is not currently being shut down. `funding_locked` message exchange implies the
 	/// required confirmation count has been reached (and we were connected to the peer at some
-	/// point after the funding transaction received enough confirmations).
+	/// point after the funding transaction received enough confirmations). The required
+	/// confirmation count is provided in [`confirmations_required`].
+	///
+	/// [`confirmations_required`]: ChannelDetails::confirmations_required
 	pub is_funding_locked: bool,
 	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
 	/// the peer is connected, and (c) the channel is not currently negotiating a shutdown.
@@ -1146,6 +1195,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
 				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
+				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
+					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
 					funding_txo: channel.get_funding_txo(),
@@ -1153,9 +1204,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					remote_network_id: channel.get_counterparty_node_id(),
 					counterparty_features: InitFeatures::empty(),
 					channel_value_satoshis: channel.get_value_satoshis(),
+					to_self_reserve_satoshis,
+					to_remote_reserve_satoshis,
 					inbound_capacity_msat,
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
+					confirmations_required: channel.minimum_depth(),
+					spend_csv_on_our_commitment_funds: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
 					is_funding_locked: channel.is_usable(),
 					is_usable: channel.is_live(),
