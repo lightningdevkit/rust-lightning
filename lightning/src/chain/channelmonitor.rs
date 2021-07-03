@@ -37,9 +37,9 @@ use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use ln::chan_utils;
 use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
-use ln::channelmanager::{BestBlock, HTLCSource};
+use ln::channelmanager::HTLCSource;
 use chain;
-use chain::WatchedOutput;
+use chain::{BestBlock, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
@@ -1188,6 +1188,12 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		txids.sort_unstable();
 		txids.dedup();
 		txids
+	}
+
+	/// Gets the latest best block which was connected either via the [`chain::Listen`] or
+	/// [`chain::Confirm`] interfaces.
+	pub fn current_best_block(&self) -> BestBlock {
+		self.inner.lock().unwrap().best_block.clone()
 	}
 }
 
@@ -2827,11 +2833,11 @@ mod tests {
 	use bitcoin::hash_types::Txid;
 	use bitcoin::network::constants::Network;
 	use hex;
+	use chain::BestBlock;
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::package::{WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC, WEIGHT_REVOKED_OUTPUT};
 	use chain::transaction::OutPoint;
 	use ln::{PaymentPreimage, PaymentHash};
-	use ln::channelmanager::BestBlock;
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};

@@ -36,8 +36,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use chain;
-use chain::Confirm;
-use chain::Watch;
+use chain::{Confirm, Watch, BestBlock};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
@@ -506,34 +505,6 @@ pub struct ChainParameters {
 	///
 	/// Used to track on-chain channel funding outputs and send payments with reliable timelocks.
 	pub best_block: BestBlock,
-}
-
-/// The best known block as identified by its hash and height.
-#[derive(Clone, Copy, PartialEq)]
-pub struct BestBlock {
-	block_hash: BlockHash,
-	height: u32,
-}
-
-impl BestBlock {
-	/// Returns the best block from the genesis of the given network.
-	pub fn from_genesis(network: Network) -> Self {
-		BestBlock {
-			block_hash: genesis_block(network).header.block_hash(),
-			height: 0,
-		}
-	}
-
-	/// Returns the best block as identified by the given block hash and height.
-	pub fn new(block_hash: BlockHash, height: u32) -> Self {
-		BestBlock { block_hash, height }
-	}
-
-	/// Returns the best block hash.
-	pub fn block_hash(&self) -> BlockHash { self.block_hash }
-
-	/// Returns the best block height.
-	pub fn height(&self) -> u32 { self.height }
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -4084,6 +4055,12 @@ where
 		let &(ref mtx, _) = mutcond;
 		let guard = mtx.lock().unwrap();
 		*guard
+	}
+
+	/// Gets the latest best block which was connected either via the [`chain::Listen`] or
+	/// [`chain::Confirm`] interfaces.
+	pub fn current_best_block(&self) -> BestBlock {
+		self.best_block.read().unwrap().clone()
 	}
 }
 
