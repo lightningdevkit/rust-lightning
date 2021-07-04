@@ -1216,18 +1216,6 @@ impl<Signer: Sign> Channel<Signer> {
 		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
 	}
 
-	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
-	/// @local is used only to convert relevant internal structures which refer to remote vs local
-	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw,
-			if local {
-				self.get_counterparty_selected_contest_delay().unwrap()
-			} else {
-				self.get_holder_selected_contest_delay()
-			}, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key)
-	}
-
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
 	/// In such cases we debug_assert!(false) and return a ChannelError::Ignore. Thus, will always
 	/// return Ok(_) if debug assertions are turned on or preconditions are met.
@@ -2247,7 +2235,10 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
 		for (idx, (htlc, source)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = self.build_htlc_transaction(&commitment_txid, &htlc, true, &keys, feerate_per_kw);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw,
+					self.get_counterparty_selected_contest_delay().unwrap(), &htlc,
+					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
@@ -5420,7 +5411,9 @@ mod tests {
 					let remote_signature = Signature::from_der(&hex::decode($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
-					let htlc_tx = chan.build_htlc_transaction(&unsigned_tx.txid, &htlc, true, &keys, chan.feerate_per_kw);
+					let htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.feerate_per_kw,
+						chan.get_counterparty_selected_contest_delay().unwrap(),
+						&htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]).unwrap();
 					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).unwrap();
