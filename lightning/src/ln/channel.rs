@@ -1488,6 +1488,12 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));
 		}
+		if msg.minimum_depth == 0 {
+			// Note that if this changes we should update the serialization minimum version to
+			// indicate to older clients that they don't understand some features of the current
+			// channel.
+			return Err(ChannelError::Close("Minimum confirmation depth must be at least 1".to_owned()));
+		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
