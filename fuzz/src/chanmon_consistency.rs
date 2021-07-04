@@ -241,6 +241,7 @@ fn check_api_err(api_err: APIError) {
 				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
 				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
 				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
+				_ if err.starts_with("Cannot send value that would put counterparty balance under holder-announced channel reserve value") => {},
 				_ if err.starts_with("Cannot send value that would overdraw remaining funds.") => {},
 				_ if err.starts_with("Cannot send value that would not leave enough to pay for fees.") => {},
 				_ => panic!("{}", err),

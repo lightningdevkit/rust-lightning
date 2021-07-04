@@ -22,6 +22,7 @@ use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
+use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::router::{Route, RouteHop, RouteHint, RouteHintHop, get_route};
 use routing::network_graph::RoutingFees;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -1700,14 +1701,24 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	// sending any above-dust amount would result in a channel reserve violation.
 	// In this test we check that we would be prevented from sending an HTLC in
 	// this situation.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	let feerate_per_kw = 253;
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 4843000);
+	let mut push_amt = 100_000_000;
+	push_amt -= feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000 * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+
+	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt, InitFeatures::known(), InitFeatures::known());
+
+	// Sending exactly enough to hit the reserve amount should be accepted
+	let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+
+	// However one more HTLC should be significantly over the reserve amount and fail.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1759,7 +1770,11 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Test that if we receive many dust HTLCs over an outbound channel, they don't count when
 	// calculating our commitment transaction fee (this was previously broken).
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let feerate_per_kw = 253;
+	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
+	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
+
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -1767,13 +1782,22 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
 	// channel reserve violation (so their balance is channel reserve (1000 sats) + commitment
 	// transaction fee with 0 HTLCs (183 sats)).
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 98817000, InitFeatures::known(), InitFeatures::known());
+	let mut push_amt = 100_000_000;
+	push_amt -= feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT) / 1000 * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt, InitFeatures::known(), InitFeatures::known());
 
-	let dust_amt = 329000; // Dust amount
+	let dust_amt = crate::ln::channel::MIN_DUST_LIMIT_SATOSHIS * 1000
+		+ feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000 * 1000 - 1;
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
 	// commitment transaction fee.
 	let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], dust_amt);
+
+	// One more than the dust amt should fail, however.
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt + 1);
+	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
+		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
 }
 
 #[test]
