@@ -23,6 +23,7 @@ pub trait BroadcasterInterface {
 
 /// An enum that represents the speed at which we want a transaction to confirm used for feerate
 /// estimation.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationTarget {
 	/// We are happy with this transaction confirming slowly when feerate drops some.
 	Background,
