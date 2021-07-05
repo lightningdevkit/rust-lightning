@@ -3384,6 +3384,7 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			fee_satoshis: total_fee_satoshis,
 			signature: sig.unwrap(),
+			fee_range: None,
 		})
 	}
 
@@ -3567,6 +3568,7 @@ impl<Signer: Sign> Channel<Signer> {
 					channel_id: self.channel_id,
 					fee_satoshis: used_total_fee,
 					signature: sig,
+					fee_range: None,
 				}), None))
 			}
 		}
@@ -3608,6 +3610,7 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			fee_satoshis: msg.fee_satoshis,
 			signature: sig,
+			fee_range: None,
 		}), Some(closing_tx)))
 	}
 

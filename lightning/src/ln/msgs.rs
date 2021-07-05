@@ -226,6 +226,19 @@ pub struct Shutdown {
 	pub scriptpubkey: Script,
 }
 
+/// The minimum and maximum fees which the sender is willing to place on the closing transaction.
+/// This is provided in [`ClosingSigned`] by both sides to indicate the fee range they are willing
+/// to use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClosingSignedFeeRange {
+	/// The minimum absolute fee, in satoshis, which the sender is willing to place on the closing
+	/// transaction.
+	pub min_fee_satoshis: u64,
+	/// The maximum absolute fee, in satoshis, which the sender is willing to place on the closing
+	/// transaction.
+	pub max_fee_satoshis: u64,
+}
+
 /// A closing_signed message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClosingSigned {
@@ -235,6 +248,9 @@ pub struct ClosingSigned {
 	pub fee_satoshis: u64,
 	/// A signature on the closing transaction
 	pub signature: Signature,
+	/// The minimum and maximum fees which the sender is willing to accept, provided only by new
+	/// nodes.
+	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
 /// An update_add_htlc message to be sent or received from a peer
@@ -1103,10 +1119,35 @@ impl Readable for ChannelReestablish{
 	}
 }
 
-impl_writeable!(ClosingSigned, 32+8+64, {
-	channel_id,
-	fee_satoshis,
-	signature
+impl Writeable for ClosingSigned {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.size_hint(32 + 8 + 64 + if self.fee_range.is_some() { 1+1+ 2*8 } else { 0 });
+		self.channel_id.write(w)?;
+		self.fee_satoshis.write(w)?;
+		self.signature.write(w)?;
+		encode_tlv_stream!(w, {
+			(1, self.fee_range, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ClosingSigned {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let channel_id = Readable::read(r)?;
+		let fee_satoshis = Readable::read(r)?;
+		let signature = Readable::read(r)?;
+		let mut fee_range = None;
+		decode_tlv_stream!(r, {
+			(1, fee_range, option),
+		});
+		Ok(Self { channel_id, fee_satoshis, signature, fee_range })
+	}
+}
+
+impl_writeable!(ClosingSignedFeeRange, 2*8, {
+	min_fee_satoshis,
+	max_fee_satoshis
 });
 
 impl_writeable_len_match!(CommitmentSigned, {
@@ -2323,10 +2364,27 @@ mod tests {
 			channel_id: [2; 32],
 			fee_satoshis: 2316138423780173,
 			signature: sig_1,
+			fee_range: None,
 		};
 		let encoded_value = closing_signed.encode();
 		let target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
+		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
+
+		let closing_signed_with_range = msgs::ClosingSigned {
+			channel_id: [2; 32],
+			fee_satoshis: 2316138423780173,
+			signature: sig_1,
+			fee_range: Some(msgs::ClosingSignedFeeRange {
+				min_fee_satoshis: 0xdeadbeef,
+				max_fee_satoshis: 0x1badcafe01234567,
+			}),
+		};
+		let encoded_value_with_range = closing_signed_with_range.encode();
+		let target_value_with_range = hex::decode("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
+		assert_eq!(encoded_value_with_range, target_value_with_range);
+		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
+			closing_signed_with_range);
 	}
 
 	#[test]
