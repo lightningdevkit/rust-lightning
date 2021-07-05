@@ -514,8 +514,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// $directional_info.
 		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
 		// since that value has to be transferred over this channel.
+		// Returns whether this channel caused an update to `targets`.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr,
-		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => {
+		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => { {
+			// We "return" whether we updated the path at the end, via this:
+			let mut did_add_update_path_to_src_node = false;
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
 			// practice these cases should be caught earlier:
 			// - for regular channels at channel announcement (TODO)
@@ -727,6 +730,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								{
 									old_entry.value_contribution_msat = value_contribution_msat;
 								}
+								did_add_update_path_to_src_node = true;
 							} else if old_entry.was_processed && new_cost < old_cost {
 								#[cfg(any(test, feature = "fuzztarget"))]
 								{
@@ -757,7 +761,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					}
 				}
 			}
-		};
+			did_add_update_path_to_src_node
+		} }
 	}
 
 	let empty_node_features = NodeFeatures::empty();
@@ -860,22 +865,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// it matters only if the fees are exactly the same.
 		for hop in last_hops.iter() {
 			let have_hop_src_in_graph =
-				if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
-					// If this hop connects to a node with which we have a direct channel, ignore
-					// the network graph and add both the hop and our direct channel to
-					// the candidate set.
-					//
-					// Currently there are no channel-context features defined, so we are a
-					// bit lazy here. In the future, we should pull them out via our
-					// ChannelManager, but there's no reason to waste the space until we
-					// need them.
-					add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
-					true
-				} else {
-					// In any other case, only add the hop if the source is in the regular network
-					// graph:
-					network.get_nodes().get(&hop.src_node_id).is_some()
-				};
+				// Only add the last hop to our candidate set if either we have a direct channel or
+				// they are in the regular network graph.
+				first_hop_targets.get(&hop.src_node_id).is_some() ||
+				network.get_nodes().get(&hop.src_node_id).is_some();
 			if have_hop_src_in_graph {
 				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
 				// really sucks, cause we're gonna need that eventually.
@@ -889,7 +882,18 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					htlc_maximum_msat: hop.htlc_maximum_msat,
 					fees: hop.fees,
 				};
-				add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, None::<u64>, &empty_channel_features, 0, path_value_msat, 0);
+				if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, None::<u64>, &empty_channel_features, 0, path_value_msat, 0) {
+					// If this hop connects to a node with which we have a direct channel,
+					// ignore the network graph and, if the last hop was added, add our
+					// direct channel to the candidate set.
+					//
+					// Note that we *must* check if the last hop was added as `add_entry`
+					// always assumes that the third argument is a node to which we have a
+					// path.
+					if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
+						add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
+					}
+				}
 			}
 		}
 
@@ -1170,7 +1174,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 #[cfg(test)]
 mod tests {
-	use routing::router::{get_route, RouteHint, RouteHintHop, RoutingFees};
+	use routing::router::{get_route, Route, RouteHint, RouteHintHop, RoutingFees};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -2318,11 +2322,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
-	#[test]
-	fn unannounced_path_test() {
-		// We should be able to send a payment to a destination without any help of a routing graph
-		// if we have a channel with a common counterparty that appears in the first and last hop
-		// hints.
+	fn do_unannounced_path_test(last_hop_htlc_max: Option<u64>, last_hop_fee_prop: u32, outbound_capacity_msat: u64, route_val: u64) -> Result<Route, LightningError> {
 		let source_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 41).repeat(32)).unwrap()[..]).unwrap());
 		let middle_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
 		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
@@ -2333,11 +2333,11 @@ mod tests {
 			short_channel_id: 8,
 			fees: RoutingFees {
 				base_msat: 1000,
-				proportional_millionths: 0,
+				proportional_millionths: last_hop_fee_prop,
 			},
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,
+			htlc_maximum_msat: last_hop_htlc_max,
 		}]);
 		let our_chans = vec![channelmanager::ChannelDetails {
 			channel_id: [0; 32],
@@ -2347,29 +2347,57 @@ mod tests {
 			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
 			channel_value_satoshis: 100000,
 			user_id: 0,
-			outbound_capacity_msat: 100000,
+			outbound_capacity_msat: outbound_capacity_msat,
 			inbound_capacity_msat: 100000,
 			is_outbound: true, is_funding_locked: true,
 			is_usable: true, is_public: true,
 			counterparty_forwarding_info: None,
 		}];
-		let route = get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &vec![&last_hops], 100, 42, Arc::new(test_utils::TestLogger::new())).unwrap();
+		get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &vec![&last_hops], route_val, 42, Arc::new(test_utils::TestLogger::new()))
+	}
 
+	#[test]
+	fn unannounced_path_test() {
+		// We should be able to send a payment to a destination without any help of a routing graph
+		// if we have a channel with a common counterparty that appears in the first and last hop
+		// hints.
+		let route = do_unannounced_path_test(None, 1, 2000000, 1000000).unwrap();
+
+		let middle_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
+		let target_node_id = PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
 		assert_eq!(route.paths[0].len(), 2);
 
 		assert_eq!(route.paths[0][0].pubkey, middle_node_id);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
-		assert_eq!(route.paths[0][0].fee_msat, 1000);
+		assert_eq!(route.paths[0][0].fee_msat, 1001);
 		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 8) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &[0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 
 		assert_eq!(route.paths[0][1].pubkey, target_node_id);
 		assert_eq!(route.paths[0][1].short_channel_id, 8);
-		assert_eq!(route.paths[0][1].fee_msat, 100);
+		assert_eq!(route.paths[0][1].fee_msat, 1000000);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &[0; 0]); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
+	}
+
+	#[test]
+	fn overflow_unannounced_path_test_liquidity_underflow() {
+		// Previously, when we had a last-hop hint connected directly to a first-hop channel, where
+		// the last-hop had a fee which overflowed a u64, we'd panic.
+		// This was due to us adding the first-hop from us unconditionally, causing us to think
+		// we'd built a path (as our node is in the "best candidate" set), when we had not.
+		// In this test, we previously hit a subtraction underflow due to having less available
+		// liquidity at the last hop than 0.
+		assert!(do_unannounced_path_test(Some(21_000_000_0000_0000_000), 0, 21_000_000_0000_0000_000, 21_000_000_0000_0000_000).is_err());
+	}
+
+	#[test]
+	fn overflow_unannounced_path_test_feerate_overflow() {
+		// This tests for the same case as above, except instead of hitting a subtraction
+		// underflow, we hit a case where the fee charged at a hop overflowed.
+		assert!(do_unannounced_path_test(Some(21_000_000_0000_0000_000), 50000, 21_000_000_0000_0000_000, 21_000_000_0000_0000_000).is_err());
 	}
 
 	#[test]
