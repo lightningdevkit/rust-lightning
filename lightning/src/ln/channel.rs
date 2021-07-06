@@ -3816,6 +3816,16 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_state >= ChannelState::FundingSent as u32
 	}
 
+	/// Returns true if our peer has either initiated or agreed to shut down the channel.
+	pub fn received_shutdown(&self) -> bool {
+		(self.channel_state & ChannelState::RemoteShutdownSent as u32) != 0
+	}
+
+	/// Returns true if we either initiated or agreed to shut down the channel.
+	pub fn sent_shutdown(&self) -> bool {
+		(self.channel_state & ChannelState::LocalShutdownSent as u32) != 0
+	}
+
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.

@@ -3366,6 +3366,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 
+					if !chan_entry.get().received_shutdown() {
+						log_info!(self.logger, "Received a shutdown message from our couterparty for channel {}{}.",
+							log_bytes!(msg.channel_id),
+							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
+					}
+
 					let (shutdown, closing_signed, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.fee_estimator, &self.keys_manager, &their_features, &msg), channel_state, chan_entry);
 					dropped_htlcs = htlcs;
 
