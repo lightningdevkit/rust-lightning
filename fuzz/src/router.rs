@@ -13,7 +13,7 @@ use bitcoin::hash_types::BlockHash;
 
 use lightning::chain;
 use lightning::chain::transaction::OutPoint;
-use lightning::ln::channelmanager::ChannelDetails;
+use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
 use lightning::routing::router::{get_route, RouteHint, RouteHintHop};
@@ -207,20 +207,22 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
 							first_hops_vec.push(ChannelDetails {
 								channel_id: [0; 32],
+								counterparty: ChannelCounterparty {
+									node_id: *rnid,
+									features: InitFeatures::known(),
+									unspendable_punishment_reserve: 0,
+									forwarding_info: None,
+								},
 								funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 								short_channel_id: Some(scid),
-								remote_network_id: *rnid,
-								counterparty_features: InitFeatures::known(),
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),
 								user_id: 0, inbound_capacity_msat: 0,
-								to_self_reserve_satoshis: None,
-								to_remote_reserve_satoshis: 0,
+								unspendable_punishment_reserve: None,
 								confirmations_required: None,
-								spend_csv_on_our_commitment_funds: None,
+								force_close_spend_delay: None,
 								is_outbound: true, is_funding_locked: true,
 								is_usable: true, is_public: true,
 								outbound_capacity_msat: 0,
-								counterparty_forwarding_info: None,
 							});
 						}
 						Some(&first_hops_vec[..])
