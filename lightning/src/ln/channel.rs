@@ -4650,10 +4650,15 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.counterparty_dust_limit_satoshis.write(writer)?;
 		self.holder_dust_limit_satoshis.write(writer)?;
 		self.counterparty_max_htlc_value_in_flight_msat.write(writer)?;
+
+		// Note that this field is ignored by 0.0.99+ as the TLV Optional variant is used instead.
 		self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0).write(writer)?;
+
 		self.counterparty_htlc_minimum_msat.write(writer)?;
 		self.holder_htlc_minimum_msat.write(writer)?;
 		self.counterparty_max_accepted_htlcs.write(writer)?;
+
+		// Note that this field is ignored by 0.0.99+ as the TLV Optional variant is used instead.
 		self.minimum_depth.unwrap_or(0).write(writer)?;
 
 		match &self.counterparty_forwarding_info {
@@ -4844,20 +4849,25 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
 		let counterparty_max_htlc_value_in_flight_msat = Readable::read(reader)?;
-		let mut counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
-		if counterparty_selected_channel_reserve_satoshis == Some(0) {
-			// Versions up to 0.0.98 had counterparty_selected_channel_reserve_satoshis as a
-			// non-option, writing 0 for what we now consider None.
-			counterparty_selected_channel_reserve_satoshis = None;
+		let mut counterparty_selected_channel_reserve_satoshis = None;
+		if ver == 1 {
+			// Read the old serialization from version 0.0.98.
+			counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
+		} else {
+			// Read the 8 bytes of backwards-compatibility data.
+			let _dummy: u64 = Readable::read(reader)?;
 		}
 		let counterparty_htlc_minimum_msat = Readable::read(reader)?;
 		let holder_htlc_minimum_msat = Readable::read(reader)?;
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
-		let mut minimum_depth = Some(Readable::read(reader)?);
-		if minimum_depth == Some(0) {
-			// Versions up to 0.0.98 had minimum_depth as a non-option, writing 0 for what we now
-			// consider None.
-			minimum_depth = None;
+
+		let mut minimum_depth = None;
+		if ver == 1 {
+			// Read the old serialization from version 0.0.98.
+			minimum_depth = Some(Readable::read(reader)?);
+		} else {
+			// Read the 4 bytes of backwards-compatibility data.
+			let _dummy: u32 = Readable::read(reader)?;
 		}
 
 		let counterparty_forwarding_info = match <u8 as Readable>::read(reader)? {
