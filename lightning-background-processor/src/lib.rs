@@ -174,13 +174,12 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
-	use lightning::chain::Confirm;
-	use lightning::chain::chainmonitor;
+	use lightning::chain::{BestBlock, Confirm, chainmonitor};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
-	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, BestBlock, ChainParameters, ChannelManager, SimpleArcChannelManager};
+	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};

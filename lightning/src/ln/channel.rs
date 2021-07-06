@@ -26,9 +26,10 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::channelmanager::{BestBlock, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
 use ln::chan_utils;
+use chain::BestBlock;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use chain::transaction::{OutPoint, TransactionData};
@@ -396,7 +397,7 @@ pub(super) struct Channel<Signer: Sign> {
 	counterparty_max_htlc_value_in_flight_msat: u64,
 	//get_holder_max_htlc_value_in_flight_msat(): u64,
 	/// minimum channel reserve for self to maintain - set by them.
-	counterparty_selected_channel_reserve_satoshis: u64,
+	counterparty_selected_channel_reserve_satoshis: Option<u64>,
 	// get_holder_selected_channel_reserve_satoshis(channel_value_sats: u64): u64
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
@@ -405,7 +406,7 @@ pub(super) struct Channel<Signer: Sign> {
 	#[cfg(not(test))]
 	counterparty_max_accepted_htlcs: u16,
 	//implied by OUR_MAX_HTLCS: max_accepted_htlcs: u16,
-	minimum_depth: u32,
+	minimum_depth: Option<u32>,
 
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 
@@ -609,11 +610,11 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: 0,
 			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
-			counterparty_selected_channel_reserve_satoshis: 0,
+			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			counterparty_htlc_minimum_msat: 0,
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
-			minimum_depth: 0, // Filled in in accept_channel
+			minimum_depth: None, // Filled in in accept_channel
 
 			counterparty_forwarding_info: None,
 
@@ -851,11 +852,11 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
 			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
-			counterparty_selected_channel_reserve_satoshis: msg.channel_reserve_satoshis,
+			counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
-			minimum_depth: config.own_channel_config.minimum_depth,
+			minimum_depth: Some(config.own_channel_config.minimum_depth),
 
 			counterparty_forwarding_info: None,
 
@@ -1036,7 +1037,7 @@ impl<Signer: Sign> Channel<Signer> {
 			} else {
 				self.counterparty_max_commitment_tx_output.lock().unwrap()
 			};
-			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.counterparty_selected_channel_reserve_satoshis as i64);
+			debug_assert!(broadcaster_max_commitment_tx_output.0 <= value_to_self_msat as u64 || value_to_self_msat / 1000 >= self.counterparty_selected_channel_reserve_satoshis.unwrap() as i64);
 			broadcaster_max_commitment_tx_output.0 = cmp::max(broadcaster_max_commitment_tx_output.0, value_to_self_msat as u64);
 			debug_assert!(broadcaster_max_commitment_tx_output.1 <= value_to_remote_msat as u64 || value_to_remote_msat / 1000 >= Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64);
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
@@ -1214,13 +1215,6 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Panics if called before accept_channel/new_from_req
 	pub fn get_funding_redeemscript(&self) -> Script {
 		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
-	}
-
-	/// Builds the htlc-success or htlc-timeout transaction which spends a given HTLC output
-	/// @local is used only to convert relevant internal structures which refer to remote vs local
-	/// to decide value of outputs and direction of HTLCs.
-	fn build_htlc_transaction(&self, prev_hash: &Txid, htlc: &HTLCOutputInCommitment, local: bool, keys: &TxCreationKeys, feerate_per_kw: u32) -> Transaction {
-		chan_utils::build_htlc_transaction(prev_hash, feerate_per_kw, if local { self.get_counterparty_selected_contest_delay() } else { self.get_holder_selected_contest_delay() }, htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key)
 	}
 
 	/// Per HTLC, only one get_update_fail_htlc or get_update_fulfill_htlc call may be made.
@@ -1488,6 +1482,12 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));
 		}
+		if msg.minimum_depth == 0 {
+			// Note that if this changes we should update the serialization minimum version to
+			// indicate to older clients that they don't understand some features of the current
+			// channel.
+			return Err(ChannelError::Close("Minimum confirmation depth must be at least 1".to_owned()));
+		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
@@ -1511,10 +1511,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.counterparty_dust_limit_satoshis = msg.dust_limit_satoshis;
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
-		self.counterparty_selected_channel_reserve_satoshis = msg.channel_reserve_satoshis;
+		self.counterparty_selected_channel_reserve_satoshis = Some(msg.channel_reserve_satoshis);
 		self.counterparty_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.counterparty_max_accepted_htlcs = msg.max_accepted_htlcs;
-		self.minimum_depth = msg.minimum_depth;
+		self.minimum_depth = Some(msg.minimum_depth);
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -1785,8 +1785,22 @@ impl<Signer: Sign> Channel<Signer> {
 	/// corner case properly.
 	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
 		// Note that we have to handle overflow due to the above case.
-		(cmp::max(self.channel_value_satoshis as i64 * 1000 - self.value_to_self_msat as i64 - self.get_inbound_pending_htlc_stats().1 as i64, 0) as u64,
-		cmp::max(self.value_to_self_msat as i64 - self.get_outbound_pending_htlc_stats().1 as i64, 0) as u64)
+		(
+			cmp::max(self.channel_value_satoshis as i64 * 1000
+				- self.value_to_self_msat as i64
+				- self.get_inbound_pending_htlc_stats().1 as i64
+				- Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64 * 1000,
+			0) as u64,
+			cmp::max(self.value_to_self_msat as i64
+				- self.get_outbound_pending_htlc_stats().1 as i64
+				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
+			0) as u64
+		)
+	}
+
+	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
+		(Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
+		self.counterparty_selected_channel_reserve_satoshis)
 	}
 
 	// Get the fee cost of a commitment tx with a given number of HTLC outputs.
@@ -2064,7 +2078,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.next_local_commit_tx_fee_msat(htlc_candidate, None);
-			if self.value_to_self_msat < self.counterparty_selected_channel_reserve_satoshis * 1000 + local_commit_tx_fee_msat {
+			if self.value_to_self_msat < self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat {
 				return Err(ChannelError::Close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
@@ -2236,7 +2250,10 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut htlcs_and_sigs = Vec::with_capacity(htlcs_cloned.len());
 		for (idx, (htlc, source)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
-				let htlc_tx = self.build_htlc_transaction(&commitment_txid, &htlc, true, &keys, feerate_per_kw);
+				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, feerate_per_kw,
+					self.get_counterparty_selected_contest_delay().unwrap(), &htlc,
+					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
@@ -3336,6 +3353,10 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_id
 	}
 
+	pub fn minimum_depth(&self) -> Option<u32> {
+		self.minimum_depth
+	}
+
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
 	pub fn get_user_id(&self) -> u64 {
@@ -3363,8 +3384,9 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.channel_transaction_parameters.holder_pubkeys
 	}
 
-	fn get_counterparty_selected_contest_delay(&self) -> u16 {
-		self.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().selected_contest_delay
+	pub fn get_counterparty_selected_contest_delay(&self) -> Option<u16> {
+		self.channel_transaction_parameters.counterparty_parameters
+			.as_ref().map(|params| params.selected_contest_delay)
 	}
 
 	fn get_counterparty_pubkeys(&self) -> &ChannelPublicKeys {
@@ -3438,7 +3460,7 @@ impl<Signer: Sign> Channel<Signer> {
 		ChannelValueStat {
 			value_to_self_msat: self.value_to_self_msat,
 			channel_value_msat: self.channel_value_satoshis * 1000,
-			channel_reserve_msat: self.counterparty_selected_channel_reserve_satoshis * 1000,
+			channel_reserve_msat: self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000,
 			pending_outbound_htlcs_amount_msat: self.pending_outbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			pending_inbound_htlcs_amount_msat: self.pending_inbound_htlcs.iter().map(|ref h| h.amount_msat).sum::<u64>(),
 			holding_cell_outbound_amount_msat: {
@@ -3555,7 +3577,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.funding_tx_confirmation_height = 0;
 		}
 
-		if funding_tx_confirmations < self.minimum_depth as i64 {
+		if funding_tx_confirmations < self.minimum_depth.unwrap_or(0) as i64 {
 			return None;
 		}
 
@@ -3710,10 +3732,10 @@ impl<Signer: Sign> Channel<Signer> {
 			// the funding transaction's confirmation count has dipped below minimum_depth / 2,
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
-			if funding_tx_confirmations < self.minimum_depth as i64 / 2 {
+			if funding_tx_confirmations < self.minimum_depth.unwrap() as i64 / 2 {
 				return Err(msgs::ErrorMessage {
 					channel_id: self.channel_id(),
-					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth, funding_tx_confirmations),
+					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth.unwrap(), funding_tx_confirmations),
 				});
 			}
 		}
@@ -3808,7 +3830,7 @@ impl<Signer: Sign> Channel<Signer> {
 			max_htlc_value_in_flight_msat: Channel::<Signer>::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis),
 			channel_reserve_satoshis: Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis),
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
-			minimum_depth: self.minimum_depth,
+			minimum_depth: self.minimum_depth.unwrap(),
 			to_self_delay: self.get_holder_selected_contest_delay(),
 			max_accepted_htlcs: OUR_MAX_HTLCS,
 			funding_pubkey: keys.funding_pubkey,
@@ -4106,7 +4128,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Check self.counterparty_selected_channel_reserve_satoshis (the amount we must keep as
 		// reserve for the remote to have something to claim if we misbehave)
-		let chan_reserve_msat = self.counterparty_selected_channel_reserve_satoshis * 1000;
+		let chan_reserve_msat = self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000;
 		if pending_value_to_self_msat - amount_msat - commit_tx_fee_msat < chan_reserve_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
@@ -4311,8 +4333,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn channel_update(&mut self, msg: &msgs::ChannelUpdate) -> Result<(), ChannelError> {
-		let usable_channel_value_msat = (self.channel_value_satoshis - self.counterparty_selected_channel_reserve_satoshis) * 1000;
-		if msg.contents.htlc_minimum_msat >= usable_channel_value_msat {
+		if msg.contents.htlc_minimum_msat >= self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Close("Minimum htlc value is greater than channel value".to_string()));
 		}
 		self.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
@@ -4640,11 +4661,11 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.counterparty_dust_limit_satoshis.write(writer)?;
 		self.holder_dust_limit_satoshis.write(writer)?;
 		self.counterparty_max_htlc_value_in_flight_msat.write(writer)?;
-		self.counterparty_selected_channel_reserve_satoshis.write(writer)?;
+		self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0).write(writer)?;
 		self.counterparty_htlc_minimum_msat.write(writer)?;
 		self.holder_htlc_minimum_msat.write(writer)?;
 		self.counterparty_max_accepted_htlcs.write(writer)?;
-		self.minimum_depth.write(writer)?;
+		self.minimum_depth.unwrap_or(0).write(writer)?;
 
 		match &self.counterparty_forwarding_info {
 			Some(info) => {
@@ -4669,7 +4690,17 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.channel_update_status.write(writer)?;
 
-		write_tlv_fields!(writer, {(0, self.announcement_sigs, option)});
+		write_tlv_fields!(writer, {
+			(0, self.announcement_sigs, option),
+			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
+			// default value instead of being Option<>al. Thus, to maintain compatibility we write
+			// them twice, once with their original default values above, and once as an option
+			// here. On the read side, old versions will simply ignore the odd-type entries here,
+			// and new versions map the default values to None and allow the TLV entries here to
+			// override that.
+			(1, self.minimum_depth, option),
+			(3, self.counterparty_selected_channel_reserve_satoshis, option),
+		});
 
 		Ok(())
 	}
@@ -4812,11 +4843,21 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
 		let counterparty_max_htlc_value_in_flight_msat = Readable::read(reader)?;
-		let counterparty_selected_channel_reserve_satoshis = Readable::read(reader)?;
+		let mut counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
+		if counterparty_selected_channel_reserve_satoshis == Some(0) {
+			// Versions up to 0.0.98 had counterparty_selected_channel_reserve_satoshis as a
+			// non-option, writing 0 for what we now consider None.
+			counterparty_selected_channel_reserve_satoshis = None;
+		}
 		let counterparty_htlc_minimum_msat = Readable::read(reader)?;
 		let holder_htlc_minimum_msat = Readable::read(reader)?;
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
-		let minimum_depth = Readable::read(reader)?;
+		let mut minimum_depth = Some(Readable::read(reader)?);
+		if minimum_depth == Some(0) {
+			// Versions up to 0.0.98 had minimum_depth as a non-option, writing 0 for what we now
+			// consider None.
+			minimum_depth = None;
+		}
 
 		let counterparty_forwarding_info = match <u8 as Readable>::read(reader)? {
 			0 => None,
@@ -4842,7 +4883,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let channel_update_status = Readable::read(reader)?;
 
 		let mut announcement_sigs = None;
-		read_tlv_fields!(reader, {(0, announcement_sigs, option)});
+		read_tlv_fields!(reader, {
+			(0, announcement_sigs, option),
+			(1, minimum_depth, option),
+			(3, counterparty_selected_channel_reserve_satoshis, option),
+		});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
@@ -4944,13 +4989,14 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use hex;
 	use ln::{PaymentPreimage, PaymentHash};
-	use ln::channelmanager::{BestBlock, HTLCSource};
+	use ln::channelmanager::HTLCSource;
 	use ln::channel::{Channel,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
+	use chain::BestBlock;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 	use chain::keysinterface::{InMemorySigner, KeysInterface, BaseSign};
 	use chain::transaction::OutPoint;
@@ -5297,6 +5343,7 @@ mod tests {
 		config.channel_options.announced_channel = false;
 		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
+		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
 		let funding_info = OutPoint{ txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
@@ -5384,7 +5431,9 @@ mod tests {
 					let remote_signature = Signature::from_der(&hex::decode($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
-					let htlc_tx = chan.build_htlc_transaction(&unsigned_tx.txid, &htlc, true, &keys, chan.feerate_per_kw);
+					let htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.feerate_per_kw,
+						chan.get_counterparty_selected_contest_delay().unwrap(),
+						&htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
 					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]).unwrap();
 					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).unwrap();

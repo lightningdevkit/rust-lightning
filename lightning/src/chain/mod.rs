@@ -10,9 +10,11 @@
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::network::constants::Network;
 
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent};
 use chain::keysinterface::Sign;
@@ -27,6 +29,35 @@ pub mod transaction;
 pub mod keysinterface;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
+
+/// The best known block as identified by its hash and height.
+#[derive(Clone, Copy, PartialEq)]
+pub struct BestBlock {
+	block_hash: BlockHash,
+	height: u32,
+}
+
+impl BestBlock {
+	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
+	/// network.
+	pub fn from_genesis(network: Network) -> Self {
+		BestBlock {
+			block_hash: genesis_block(network).header.block_hash(),
+			height: 0,
+		}
+	}
+
+	/// Returns a `BestBlock` as identified by the given block hash and height.
+	pub fn new(block_hash: BlockHash, height: u32) -> Self {
+		BestBlock { block_hash, height }
+	}
+
+	/// Returns the best block hash.
+	pub fn block_hash(&self) -> BlockHash { self.block_hash }
+
+	/// Returns the best block height.
+	pub fn height(&self) -> u32 { self.height }
+}
 
 /// An error when accessing the chain via [`Access`].
 #[derive(Clone)]

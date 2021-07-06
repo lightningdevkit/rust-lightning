@@ -1878,11 +1878,12 @@ fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels0.len(), 1);
 	assert_eq!(channels1.len(), 1);
 
-	assert_eq!(channels0[0].inbound_capacity_msat, 95000000);
-	assert_eq!(channels1[0].outbound_capacity_msat, 95000000);
+	let reserve = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100000);
+	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve*1000);
+	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve*1000);
 
-	assert_eq!(channels0[0].outbound_capacity_msat, 100000 * 1000 - 95000000);
-	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000);
+	assert_eq!(channels0[0].outbound_capacity_msat, 100000 * 1000 - 95000000 - reserve*1000);
+	assert_eq!(channels1[0].inbound_capacity_msat, 100000 * 1000 - 95000000 - reserve*1000);
 }
 
 fn commit_tx_fee_msat(feerate: u32, num_htlcs: u64) -> u64 {
