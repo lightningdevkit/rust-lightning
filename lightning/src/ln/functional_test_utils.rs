@@ -1583,18 +1583,20 @@ macro_rules! handle_chan_reestablish_msgs {
 			let mut revoke_and_ack = None;
 			let mut commitment_update = None;
 			let order = if let Some(ev) = msg_events.get(idx) {
-				idx += 1;
 				match ev {
 					&MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						revoke_and_ack = Some(msg.clone());
+						idx += 1;
 						RAACommitmentOrder::RevokeAndACKFirst
 					},
 					&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						commitment_update = Some(updates.clone());
+						idx += 1;
 						RAACommitmentOrder::CommitmentFirst
 					},
+					&MessageSendEvent::SendChannelUpdate { .. } => RAACommitmentOrder::CommitmentFirst,
 					_ => panic!("Unexpected event"),
 				}
 			} else {
@@ -1607,14 +1609,22 @@ macro_rules! handle_chan_reestablish_msgs {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						assert!(revoke_and_ack.is_none());
 						revoke_and_ack = Some(msg.clone());
+						idx += 1;
 					},
 					&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						assert!(commitment_update.is_none());
 						commitment_update = Some(updates.clone());
+						idx += 1;
 					},
+					&MessageSendEvent::SendChannelUpdate { .. } => {},
 					_ => panic!("Unexpected event"),
 				}
+			}
+
+			if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, ref msg }) = msg_events.get(idx) {
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				assert_eq!(msg.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
 			}
 
 			(funding_locked, revoke_and_ack, commitment_update, order)

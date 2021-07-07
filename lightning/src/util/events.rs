@@ -389,6 +389,15 @@ pub enum MessageSendEvent {
 		/// The channel_update which should be sent.
 		msg: msgs::ChannelUpdate,
 	},
+	/// Used to indicate that a channel_update should be sent to a single peer.
+	/// In contrast to [`Self::BroadcastChannelUpdate`], this is used when the channel is a
+	/// private channel and we shouldn't be informing all of our peers of channel parameters.
+	SendChannelUpdate {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The channel_update which should be sent.
+		msg: msgs::ChannelUpdate,
+	},
 	/// Broadcast an error downstream to be handled
 	HandleError {
 		/// The node_id of the node which should receive this message
