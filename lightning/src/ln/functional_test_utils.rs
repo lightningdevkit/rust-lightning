@@ -1056,7 +1056,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
 }
 
-pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
+pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 
@@ -1079,9 +1079,12 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
-								assert_eq!(our_payment_secret, *payment_secret);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
 							},
-							_ => {},
+							PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+								assert_eq!(expected_preimage.unwrap(), *payment_preimage);
+								assert!(our_payment_secret.is_none());
+							},
 						}
 						assert_eq!(amt, recv_value);
 					},
@@ -1109,7 +1112,7 @@ pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		// Once we've gotten through all the HTLCs, the last one should result in a
 		// PaymentReceived (but each previous one should not!), .
 		let expect_payment = path_idx == expected_route.len() - 1;
-		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), our_payment_secret, ev, expect_payment, None);
+		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), Some(our_payment_secret), ev, expect_payment, None);
 	}
 }
 

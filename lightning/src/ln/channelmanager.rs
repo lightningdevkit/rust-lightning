@@ -5108,14 +5108,21 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 #[cfg(test)]
 mod tests {
-	use ln::channelmanager::PersistenceNotifier;
-	use sync::Arc;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::sync::atomic::{AtomicBool, Ordering};
-	use std::thread;
 	use core::time::Duration;
+	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use ln::channelmanager::PersistenceNotifier;
+	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
-	use ln::features::InitFeatures;
+	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
+	use routing::router::{get_keysend_route, get_route};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::test_utils;
+	use std::sync::Arc;
+	use std::thread;
 
 	#[cfg(feature = "std")]
 	#[test]
@@ -5230,6 +5237,265 @@ mod tests {
 		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
 		assert_ne!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_ne!(nodes[1].node.list_channels()[0], node_b_chan_info);
+	}
+
+	#[test]
+	fn test_keysend_dup_hash_partial_mpp() {
+		// Test that a keysend payment with a duplicate hash to an existing partial MPP payment fails as
+		// expected.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		let logger = test_utils::TestLogger::new();
+
+		// First, send a partial MPP payment.
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+		// Use the utility function send_payment_along_path to send the payment with MPP data which
+		// indicates there are more HTLCs coming.
+		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+
+		// Next, send a keysend payment with the same payment_hash and make sure it fails.
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], our_payment_hash, true);
+
+		// Send the second half of the original MPP payment.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
+
+		// Claim the full MPP payment. Note that we can't use a test utility like
+		// claim_funds_along_route because the ordering of the messages causes the second half of the
+		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
+		// lightning messages manually.
+		assert!(nodes[1].node.claim_funds(payment_preimage));
+		check_added_monitors!(nodes[1], 2);
+		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_first_cs);
+		check_added_monitors!(nodes[1], 1);
+		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+		let as_second_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		check_added_monitors!(nodes[0], 1);
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
+		check_added_monitors!(nodes[1], 1);
+		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
+		check_added_monitors!(nodes[0], 1);
+
+		// There's an existing bug that generates a PaymentSent event for each MPP path, so handle that here.
+		let events = nodes[0].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::PaymentSent { payment_preimage: ref preimage } => {
+				assert_eq!(payment_preimage, *preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentSent { payment_preimage: ref preimage } => {
+				assert_eq!(payment_preimage, *preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	#[test]
+	fn test_keysend_dup_payment_hash() {
+		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
+		//      outbound regular payment fails as expected.
+		// (2): Test that a regular payment with a duplicate payment hash to an existing keysend payment
+		//      fails as expected.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		let logger = test_utils::TestLogger::new();
+
+		// To start (1), send a regular payment but don't claim it.
+		let expected_route = [&nodes[1]];
+		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
+
+		// Next, attempt a keysend payment and make sure it fails.
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, claim the original payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
+
+		// To start (2), send a keysend payment but don't claim it.
+		let payment_preimage = PaymentPreimage([42; 32]);
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let event = events.pop().unwrap();
+		let path = vec![&nodes[1]];
+		pass_along_path(&nodes[0], &path, 100_000, payment_hash, None, event, true, Some(payment_preimage));
+
+		// Next, attempt a regular payment and make sure it fails.
+		let payment_secret = PaymentSecret([43; 32]);
+		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, succeed the keysend payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
+	}
+
+	#[test]
+	fn test_keysend_hash_mismatch() {
+		// Test that if we receive a keysend `update_add_htlc` msg, we fail as expected if the keysend
+		// preimage doesn't match the msg's payment hash.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let payer_pubkey = nodes[0].node.get_our_node_id();
+		let payee_pubkey = nodes[1].node.get_our_node_id();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let first_hops = nodes[0].node.list_usable_channels();
+		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
+                                  nodes[0].logger).unwrap();
+
+		let test_preimage = PaymentPreimage([42; 32]);
+		let mismatch_payment_hash = PaymentHash([43; 32]);
+		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, Some(test_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert_eq!(updates.update_add_htlcs.len(), 1);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Payment preimage didn't match payment hash".to_string(), 1);
+	}
+
+	#[test]
+	fn test_keysend_msg_with_secret_err() {
+		// Test that we error as expected if we receive a keysend payment that includes a payment secret.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let payer_pubkey = nodes[0].node.get_our_node_id();
+		let payee_pubkey = nodes[1].node.get_our_node_id();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let first_hops = nodes[0].node.list_usable_channels();
+		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
+                                  nodes[0].logger).unwrap();
+
+		let test_preimage = PaymentPreimage([42; 32]);
+		let test_secret = PaymentSecret([43; 32]);
+		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).into_inner());
+		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), Some(test_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert_eq!(updates.update_add_htlcs.len(), 1);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "We don't support MPP keysend payments".to_string(), 1);
 	}
 }
 

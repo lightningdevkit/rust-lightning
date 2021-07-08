@@ -4197,7 +4197,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		assert_eq!(events.len(), 1);
 		// Now do the relevant commitment_signed/RAA dances along the path, noting that the final
 		// hop should *not* yet generate any PaymentReceived event(s).
-		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, payment_secret, events.drain(..).next().unwrap(), false, None);
+		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 		our_payment_hash
 	} else {
 		route_payment(&nodes[0], &[&nodes[1]], 100000).1
@@ -9623,7 +9623,7 @@ fn test_keysend_payments_to_public_node() {
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
 	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, PaymentSecret([0; 32]), event, true, Some(test_preimage));
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
 	claim_payment(&nodes[0], &path, test_preimage);
 }
 
@@ -9653,6 +9653,6 @@ fn test_keysend_payments_to_private_node() {
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
 	let path = vec![&nodes[1]];
-	pass_along_path(&nodes[0], &path, 10000, payment_hash, PaymentSecret([0; 32]), event, true, Some(test_preimage));
+	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
 	claim_payment(&nodes[0], &path, test_preimage);
 }
