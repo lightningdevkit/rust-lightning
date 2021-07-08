@@ -36,12 +36,12 @@ where
 			Some(id) => id,
 			None => continue,
 		};
-		let forwarding_info = match channel.counterparty_forwarding_info {
+		let forwarding_info = match channel.counterparty.forwarding_info {
 			Some(info) => info,
 			None => continue,
 		};
 		route_hints.push(RouteHint(vec![RouteHintHop {
-			src_node_id: channel.remote_network_id,
+			src_node_id: channel.counterparty.node_id,
 			short_channel_id,
 			fees: RoutingFees {
 				base_msat: forwarding_info.fee_base_msat,

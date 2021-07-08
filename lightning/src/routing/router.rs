@@ -459,10 +459,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	if let Some(hops) = first_hops {
 		for chan in hops {
 			let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
-			if chan.remote_network_id == *our_node_id {
+			if chan.counterparty.node_id == *our_node_id {
 				return Err(LightningError{err: "First hop cannot have our_node_id as a destination.".to_owned(), action: ErrorAction::IgnoreError});
 			}
-			first_hop_targets.insert(chan.remote_network_id, (short_channel_id, chan.counterparty_features.to_context(), chan.outbound_capacity_msat, chan.counterparty_features.to_context()));
+			first_hop_targets.insert(chan.counterparty.node_id, (short_channel_id, chan.counterparty.features.to_context(), chan.outbound_capacity_msat, chan.counterparty.features.to_context()));
 		}
 		if first_hop_targets.is_empty() {
 			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
@@ -1200,6 +1200,30 @@ mod tests {
 	use prelude::*;
 	use std::sync::Arc;
 
+	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
+			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
+		channelmanager::ChannelDetails {
+			channel_id: [0; 32],
+			counterparty: channelmanager::ChannelCounterparty {
+				features,
+				node_id,
+				unspendable_punishment_reserve: 0,
+				forwarding_info: None,
+			},
+			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+			short_channel_id,
+			channel_value_satoshis: 0,
+			user_id: 0,
+			outbound_capacity_msat,
+			inbound_capacity_msat: 42,
+			unspendable_punishment_reserve: None,
+			confirmations_required: None,
+			force_close_spend_delay: None,
+			is_outbound: true, is_funding_locked: true,
+			is_usable: true, is_public: true,
+		}
+	}
+
 	// Using the same keys for LN and BTC ids
 	fn add_channel(net_graph_msg_handler: &NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>, secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey,
 	   node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64) {
@@ -1636,24 +1660,7 @@ mod tests {
 
 		// Simple route to 2 via 1
 
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(2),
-			remote_network_id: our_id,
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 100000,
-			user_id: 0,
-			outbound_capacity_msat: 100000,
-			inbound_capacity_msat: 100000,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(2), our_id, InitFeatures::from_le_bytes(vec![0b11]), 100000)];
 
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)) {
 			assert_eq!(err, "First hop cannot have our_node_id as a destination.");
@@ -1960,24 +1967,7 @@ mod tests {
 		} else { panic!(); }
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: nodes[7].clone(),
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 0,
-			user_id: 0,
-			outbound_capacity_msat: 250_000_000,
-			inbound_capacity_msat: 0,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()),  &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
@@ -2014,24 +2004,7 @@ mod tests {
 		} else { panic!(); }
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: nodes[7].clone(),
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 0,
-			user_id: 0,
-			outbound_capacity_msat: 250_000_000,
-			inbound_capacity_msat: 0,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
@@ -2085,24 +2058,7 @@ mod tests {
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(3));
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: nodes[7].clone(),
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 0,
-			user_id: 0,
-			outbound_capacity_msat: 250_000_000,
-			inbound_capacity_msat: 0,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
@@ -2228,24 +2184,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: nodes[3].clone(),
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 0,
-			user_id: 0,
-			outbound_capacity_msat: 250_000_000,
-			inbound_capacity_msat: 0,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let mut last_hops = last_hops(&nodes);
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, Some(&our_chans.iter().collect::<Vec<_>>()), &last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
@@ -2359,24 +2298,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: last_hop_htlc_max,
 		}]);
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: middle_node_id,
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 100000,
-			user_id: 0,
-			outbound_capacity_msat: outbound_capacity_msat,
-			inbound_capacity_msat: 100000,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
 		get_route(&source_node_id, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), &target_node_id, None, Some(&our_chans.iter().collect::<Vec<_>>()), &vec![&last_hops], route_val, 42, Arc::new(test_utils::TestLogger::new()))
 	}
 
@@ -2525,24 +2447,7 @@ mod tests {
 		});
 
 		// Now, limit the first_hop by the outbound_capacity_msat of 200_000 sats.
-		let our_chans = vec![channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			short_channel_id: Some(42),
-			remote_network_id: nodes[0].clone(),
-			counterparty_features: InitFeatures::from_le_bytes(vec![0b11]),
-			channel_value_satoshis: 0,
-			user_id: 0,
-			outbound_capacity_msat: 200_000_000,
-			inbound_capacity_msat: 0,
-			to_self_reserve_satoshis: None,
-			to_remote_reserve_satoshis: 0,
-			confirmations_required: None,
-			spend_csv_on_our_commitment_funds: None,
-			is_outbound: true, is_funding_locked: true,
-			is_usable: true, is_public: true,
-			counterparty_forwarding_info: None,
-		}];
+		let our_chans = vec![get_channel_details(Some(42), nodes[0].clone(), InitFeatures::from_le_bytes(vec![0b11]), 200_000_000)];
 
 		{
 			// Attempt to route more than available results in a failure.

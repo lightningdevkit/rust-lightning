@@ -602,6 +602,29 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRA
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
+/// Channel parameters which apply to our counterparty. These are split out from [`ChannelDetails`]
+/// to better separate parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelCounterparty {
+	/// The node_id of our counterparty
+	pub node_id: PublicKey,
+	/// The Features the channel counterparty provided upon last connection.
+	/// Useful for routing as it is the most up-to-date copy of the counterparty's features and
+	/// many routing-relevant features are present in the init context.
+	pub features: InitFeatures,
+	/// The value, in satoshis, that must always be held in the channel for our counterparty. This
+	/// value ensures that if our counterparty broadcasts a revoked state, we can punish them by
+	/// claiming at least this value on chain.
+	///
+	/// This value is not included in [`inbound_capacity_msat`] as it can never be spent.
+	///
+	/// [`inbound_capacity_msat`]: ChannelDetails::inbound_capacity_msat
+	pub unspendable_punishment_reserve: u64,
+	/// Information on the fees and requirements that the counterparty requires when forwarding
+	/// payments to us through this channel.
+	pub forwarding_info: Option<CounterpartyForwardingInfo>,
+}
+
 /// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
@@ -610,6 +633,8 @@ pub struct ChannelDetails {
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
 	pub channel_id: [u8; 32],
+	/// Parameters which apply to our counterparty. See individual fields for more information.
+	pub counterparty: ChannelCounterparty,
 	/// The Channel's funding transaction output, if we've negotiated the funding transaction with
 	/// our counterparty already.
 	///
@@ -619,12 +644,6 @@ pub struct ChannelDetails {
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	pub short_channel_id: Option<u64>,
-	/// The node_id of our counterparty
-	pub remote_network_id: PublicKey,
-	/// The Features the channel counterparty provided upon last connection.
-	/// Useful for routing as it is the most up-to-date copy of the counterparty's features and
-	/// many routing-relevant features are present in the init context.
-	pub counterparty_features: InitFeatures,
 	/// The value, in satoshis, of this channel as appears in the funding output
 	pub channel_value_satoshis: u64,
 	/// The value, in satoshis, that must always be held in the channel for us. This value ensures
@@ -636,15 +655,7 @@ pub struct ChannelDetails {
 	/// This value will be `None` for outbound channels until the counterparty accepts the channel.
 	///
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
-	pub to_self_reserve_satoshis: Option<u64>,
-	/// The value, in satoshis, that must always be held in the channel for our counterparty. This
-	/// value ensures that if our counterparty broadcasts a revoked state, we can punish them by
-	/// claiming at least this value on chain.
-	///
-	/// This value is not included in [`inbound_capacity_msat`] as it can never be spent.
-	///
-	/// [`inbound_capacity_msat`]: ChannelDetails::inbound_capacity_msat
-	pub to_remote_reserve_satoshis: u64,
+	pub unspendable_punishment_reserve: Option<u64>,
 	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
 	pub user_id: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
@@ -685,7 +696,7 @@ pub struct ChannelDetails {
 	/// time to claim our non-HTLC-encumbered funds.
 	///
 	/// This value will be `None` for outbound channels until the counterparty accepts the channel.
-	pub spend_csv_on_our_commitment_funds: Option<u16>,
+	pub force_close_spend_delay: Option<u16>,
 	/// True if the channel was initiated (and thus funded) by us.
 	pub is_outbound: bool,
 	/// True if the channel is confirmed, funding_locked messages have been exchanged, and the
@@ -703,9 +714,6 @@ pub struct ChannelDetails {
 	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
-	/// Information on the fees and requirements that the counterparty requires when forwarding
-	/// payments to us through this channel.
-	pub counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
@@ -1171,30 +1179,32 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
+					counterparty: ChannelCounterparty {
+						node_id: channel.get_counterparty_node_id(),
+						features: InitFeatures::empty(),
+						unspendable_punishment_reserve: to_remote_reserve_satoshis,
+						forwarding_info: channel.counterparty_forwarding_info(),
+					},
 					funding_txo: channel.get_funding_txo(),
 					short_channel_id: channel.get_short_channel_id(),
-					remote_network_id: channel.get_counterparty_node_id(),
-					counterparty_features: InitFeatures::empty(),
 					channel_value_satoshis: channel.get_value_satoshis(),
-					to_self_reserve_satoshis,
-					to_remote_reserve_satoshis,
+					unspendable_punishment_reserve: to_self_reserve_satoshis,
 					inbound_capacity_msat,
 					outbound_capacity_msat,
 					user_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
-					spend_csv_on_our_commitment_funds: channel.get_counterparty_selected_contest_delay(),
+					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
 					is_funding_locked: channel.is_usable(),
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
-					counterparty_forwarding_info: channel.counterparty_forwarding_info(),
 				});
 			}
 		}
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for chan in res.iter_mut() {
-			if let Some(peer_state) = per_peer_state.get(&chan.remote_network_id) {
-				chan.counterparty_features = peer_state.lock().unwrap().latest_features.clone();
+			if let Some(peer_state) = per_peer_state.get(&chan.counterparty.node_id) {
+				chan.counterparty.features = peer_state.lock().unwrap().latest_features.clone();
 			}
 		}
 		res
@@ -4353,7 +4363,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 
 		if msg.channel_id == [0; 32] {
 			for chan in self.list_channels() {
-				if chan.remote_network_id == *counterparty_node_id {
+				if chan.counterparty.node_id == *counterparty_node_id {
 					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
 					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id));
 				}
