@@ -105,11 +105,14 @@ pub struct ChannelHandshakeLimits {
 	///
 	/// Default value: 144, or roughly one day and only applies to outbound channels.
 	pub max_minimum_depth: u32,
-	/// Set to force the incoming channel to match our announced channel preference in
-	/// ChannelConfig.
+	/// Set to force an incoming channel to match our announced channel preference in
+	/// [`ChannelConfig::announced_channel`].
 	///
-	/// Default value: true, to make the default that no announced channels are possible (which is
-	/// appropriate for any nodes which are not online very reliably).
+	/// For a node which is not online reliably, this should be set to true and
+	/// [`ChannelConfig::announced_channel`] set to false, ensuring that no announced (aka public)
+	/// channels will ever be opened.
+	///
+	/// Default value: true.
 	pub force_announced_channel_preference: bool,
 	/// Set to the amount of time we're willing to wait to claim money back to us.
 	///
@@ -140,12 +143,26 @@ impl Default for ChannelHandshakeLimits {
 /// with our counterparty.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelConfig {
-	/// Amount (in millionths of a satoshi) the channel will charge per transferred satoshi.
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
+	/// over the channel.
 	/// This may be allowed to change at runtime in a later update, however doing so must result in
 	/// update messages sent to notify all nodes of our updated relay fee.
 	///
 	/// Default value: 0.
-	pub fee_proportional_millionths: u32,
+	pub forwarding_fee_proportional_millionths: u32,
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
+	/// excess of [`forwarding_fee_proportional_millionths`].
+	/// This may be allowed to change at runtime in a later update, however doing so must result in
+	/// update messages sent to notify all nodes of our updated relay fee.
+	///
+	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
+	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
+	/// this node.
+	///
+	/// Default value: 1000.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
+	pub forwarding_fee_base_msat: u32,
 	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
 	/// the channel this config applies to.
 	///
@@ -172,7 +189,7 @@ pub struct ChannelConfig {
 	/// This should only be set to true for nodes which expect to be online reliably.
 	///
 	/// As the node which funds a channel picks this value this will only apply for new outbound
-	/// channels unless ChannelHandshakeLimits::force_announced_channel_preferences is set.
+	/// channels unless [`ChannelHandshakeLimits::force_announced_channel_preference`] is set.
 	///
 	/// This cannot be changed after the initial channel handshake.
 	///
@@ -196,7 +213,8 @@ impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
 		ChannelConfig {
-			fee_proportional_millionths: 0,
+			forwarding_fee_proportional_millionths: 0,
+			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
@@ -204,12 +222,12 @@ impl Default for ChannelConfig {
 	}
 }
 
-//Add write and readable traits to channelconfig
-impl_writeable!(ChannelConfig, 4+2+1+1, {
-	fee_proportional_millionths,
-	cltv_expiry_delta,
-	announced_channel,
-	commit_upfront_shutdown_pubkey
+impl_writeable_tlv_based!(ChannelConfig, {
+	(0, forwarding_fee_proportional_millionths, required),
+	(2, cltv_expiry_delta, required),
+	(4, announced_channel, required),
+	(6, commit_upfront_shutdown_pubkey, required),
+	(8, forwarding_fee_base_msat, required),
 });
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
@@ -224,6 +242,23 @@ pub struct UserConfig {
 	pub peer_channel_config_limits: ChannelHandshakeLimits,
 	/// Channel config which affects behavior during channel lifetime.
 	pub channel_options: ChannelConfig,
+	/// If this is set to false, we will reject any HTLCs which were to be forwarded over private
+	/// channels. This prevents us from taking on HTLC-forwarding risk when we intend to run as a
+	/// node which is not online reliably.
+	///
+	/// For nodes which are not online reliably, you should set all channels to *not* be announced
+	/// (using [`ChannelConfig::announced_channel`] and
+	/// [`ChannelHandshakeLimits::force_announced_channel_preference`]) and set this to false to
+	/// ensure you are not exposed to any forwarding risk.
+	///
+	/// Note that because you cannot change a channel's announced state after creation, there is no
+	/// way to disable forwarding on public channels retroactively. Thus, in order to change a node
+	/// from a publicly-announced forwarding node to a private non-forwarding node you must close
+	/// all your channels and open new ones. For privacy, you should also change your node_id
+	/// (swapping all private and public key material for new ones) at that time.
+	///
+	/// Default value: false.
+	pub accept_forwards_to_priv_channels: bool,
 }
 
 impl Default for UserConfig {
@@ -232,6 +267,7 @@ impl Default for UserConfig {
 			own_channel_config: ChannelHandshakeConfig::default(),
 			peer_channel_config_limits: ChannelHandshakeLimits::default(),
 			channel_options: ChannelConfig::default(),
+			accept_forwards_to_priv_channels: false,
 		}
 	}
 }

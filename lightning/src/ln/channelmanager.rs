@@ -1137,6 +1137,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
 	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
+	///
+	/// Note that we do not check if you are currently connected to the given peer. If no
+	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
+	/// the channel eventually being silently forgotten.
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
@@ -1555,14 +1559,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
-				let forwarding_id = match id_option {
-					None => { // unknown_next_peer
-						return_err!("Don't have available channel for forwarding as requested.", 0x4000 | 10, &[0;0]);
-					},
-					Some(id) => id.clone(),
-				};
 				if let Some((err, code, chan_update)) = loop {
+					let forwarding_id = match id_option {
+						None => { // unknown_next_peer
+							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+						},
+						Some(id) => id.clone(),
+					};
+
 					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+
+					if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
+						// Note that the behavior here should be identical to the above block - we
+						// should NOT reveal the existence or non-existence of a private channel if
+						// we don't allow forwards outbound over them.
+						break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+					}
 
 					// Note that we could technically not return an error yet here and just hope
 					// that the connection is reestablished or monitor updated by the time we get
@@ -1575,7 +1587,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
-					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan.get_holder_fee_base_msat(&self.fee_estimator) as u64) });
+					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
+						.and_then(|prop_fee| { (prop_fee / 1000000)
+						.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
 					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
 						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
@@ -1660,7 +1674,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
-			fee_base_msat: chan.get_holder_fee_base_msat(&self.fee_estimator),
+			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
@@ -5107,7 +5121,7 @@ pub mod bench {
 		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: 253 };
+		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let mut config: UserConfig = Default::default();
 		config.own_channel_config.minimum_depth = 1;

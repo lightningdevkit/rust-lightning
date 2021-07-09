@@ -173,7 +173,7 @@ macro_rules! decode_tlv_stream {
 			last_seen_type = Some(typ.0);
 
 			// Finally, read the length and value itself:
-			let length: ser::BigSize = Readable::read($stream)?;
+			let length: ser::BigSize = ser::Readable::read($stream)?;
 			let mut s = ser::FixedLengthReader::new($stream, length.0);
 			match typ.0 {
 				$($type => {
@@ -503,7 +503,7 @@ mod tests {
 	use prelude::*;
 	use std::io::Cursor;
 	use ln::msgs::DecodeError;
-	use util::ser::{Readable, Writeable, HighZeroBytesDroppedVarInt, VecWriter};
+	use util::ser::{Writeable, HighZeroBytesDroppedVarInt, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since

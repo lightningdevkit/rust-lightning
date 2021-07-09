@@ -2852,7 +2852,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
 		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
-		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: 253 });
+		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: Mutex::new(253) });
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };

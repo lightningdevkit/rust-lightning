@@ -456,7 +456,6 @@ struct CommitmentTxInfoCached {
 }
 
 pub const OUR_MAX_HTLCS: u16 = 50; //TODO
-const SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT: u64 = 79; // prevout: 36, nSequence: 4, script len: 1, witness lengths: (3+1)/4, sig: 73/4, if-selector: 1, redeemScript: (6 ops + 2*33 pubkeys + 1*2 delay)/4
 
 #[cfg(not(test))]
 const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
@@ -3426,7 +3425,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
-		self.config.fee_proportional_millionths
+		self.config.forwarding_fee_proportional_millionths
 	}
 
 	pub fn get_cltv_expiry_delta(&self) -> u16 {
@@ -3499,24 +3498,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
-	pub fn get_holder_fee_base_msat<F: Deref>(&self, fee_estimator: &F) -> u32
-		where F::Target: FeeEstimator
-	{
-		// For lack of a better metric, we calculate what it would cost to consolidate the new HTLC
-		// output value back into a transaction with the regular channel output:
-
-		// the fee cost of the HTLC-Success/HTLC-Timeout transaction:
-		let mut res = self.feerate_per_kw as u64 * cmp::max(HTLC_TIMEOUT_TX_WEIGHT, HTLC_SUCCESS_TX_WEIGHT) / 1000;
-
-		if self.is_outbound() {
-			// + the marginal fee increase cost to us in the commitment transaction:
-			res += self.feerate_per_kw as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC / 1000;
-		}
-
-		// + the marginal cost of an input which spends the HTLC-Success/HTLC-Timeout output:
-		res += fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) as u64 * SPENDING_INPUT_FOR_A_OUTPUT_WEIGHT / 1000;
-
-		res as u32
+	pub fn get_outbound_forwarding_fee_base_msat(&self) -> u32 {
+		self.config.forwarding_fee_base_msat
 	}
 
 	/// Returns true if we've ever received a message from the remote end for this Channel
@@ -4460,7 +4443,7 @@ fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script
 	return !script.is_p2pkh() && !script.is_p2sh() && !script.is_v0_p2wpkh() && !script.is_v0_p2wsh()
 }
 
-const SERIALIZATION_VERSION: u8 = 1;
+const SERIALIZATION_VERSION: u8 = 2;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -4502,7 +4485,13 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.user_id.write(writer)?;
-		self.config.write(writer)?;
+
+		// Write out the old serialization for the config object. This is read by version-1
+		// deserializers, but we will read the version in the TLV at the end instead.
+		self.config.forwarding_fee_proportional_millionths.write(writer)?;
+		self.config.cltv_expiry_delta.write(writer)?;
+		self.config.announced_channel.write(writer)?;
+		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
 
 		self.channel_id.write(writer)?;
 		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;
@@ -4661,10 +4650,15 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.counterparty_dust_limit_satoshis.write(writer)?;
 		self.holder_dust_limit_satoshis.write(writer)?;
 		self.counterparty_max_htlc_value_in_flight_msat.write(writer)?;
+
+		// Note that this field is ignored by 0.0.99+ as the TLV Optional variant is used instead.
 		self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0).write(writer)?;
+
 		self.counterparty_htlc_minimum_msat.write(writer)?;
 		self.holder_htlc_minimum_msat.write(writer)?;
 		self.counterparty_max_accepted_htlcs.write(writer)?;
+
+		// Note that this field is ignored by 0.0.99+ as the TLV Optional variant is used instead.
 		self.minimum_depth.unwrap_or(0).write(writer)?;
 
 		match &self.counterparty_forwarding_info {
@@ -4700,6 +4694,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			// override that.
 			(1, self.minimum_depth, option),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
+			(5, self.config, required),
 		});
 
 		Ok(())
@@ -4710,10 +4705,21 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		where K::Target: KeysInterface<Signer = Signer> {
 	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
-		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let user_id = Readable::read(reader)?;
-		let config: ChannelConfig = Readable::read(reader)?;
+
+		let mut config = Some(ChannelConfig::default());
+		if ver == 1 {
+			// Read the old serialization of the ChannelConfig from version 0.0.98.
+			config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
+			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
+			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
+			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
+		} else {
+			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
+			let mut _val: u64 = Readable::read(reader)?;
+		}
 
 		let channel_id = Readable::read(reader)?;
 		let channel_state = Readable::read(reader)?;
@@ -4843,20 +4849,25 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let counterparty_dust_limit_satoshis = Readable::read(reader)?;
 		let holder_dust_limit_satoshis = Readable::read(reader)?;
 		let counterparty_max_htlc_value_in_flight_msat = Readable::read(reader)?;
-		let mut counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
-		if counterparty_selected_channel_reserve_satoshis == Some(0) {
-			// Versions up to 0.0.98 had counterparty_selected_channel_reserve_satoshis as a
-			// non-option, writing 0 for what we now consider None.
-			counterparty_selected_channel_reserve_satoshis = None;
+		let mut counterparty_selected_channel_reserve_satoshis = None;
+		if ver == 1 {
+			// Read the old serialization from version 0.0.98.
+			counterparty_selected_channel_reserve_satoshis = Some(Readable::read(reader)?);
+		} else {
+			// Read the 8 bytes of backwards-compatibility data.
+			let _dummy: u64 = Readable::read(reader)?;
 		}
 		let counterparty_htlc_minimum_msat = Readable::read(reader)?;
 		let holder_htlc_minimum_msat = Readable::read(reader)?;
 		let counterparty_max_accepted_htlcs = Readable::read(reader)?;
-		let mut minimum_depth = Some(Readable::read(reader)?);
-		if minimum_depth == Some(0) {
-			// Versions up to 0.0.98 had minimum_depth as a non-option, writing 0 for what we now
-			// consider None.
-			minimum_depth = None;
+
+		let mut minimum_depth = None;
+		if ver == 1 {
+			// Read the old serialization from version 0.0.98.
+			minimum_depth = Some(Readable::read(reader)?);
+		} else {
+			// Read the 4 bytes of backwards-compatibility data.
+			let _dummy: u32 = Readable::read(reader)?;
 		}
 
 		let counterparty_forwarding_info = match <u8 as Readable>::read(reader)? {
@@ -4887,6 +4898,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
+			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -4895,7 +4907,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		Ok(Channel {
 			user_id,
 
-			config,
+			config: config.unwrap(),
 			channel_id,
 			channel_state,
 			secp_ctx,
