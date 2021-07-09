@@ -236,6 +236,14 @@ impl error::Error for PeerHandleError {
 	}
 }
 
+/// Trait for subscribing to changes of a peer manager's peer set
+pub trait PeerConnectivityUpdater {
+	/// Called when a new peer connects (once the handshake is finished)
+	fn peer_connected(&self, their_node_id: &PublicKey);
+	/// Called when a peer disconnects (for any reason) or is disconnected (watch out for reëntrancy bugs)
+	fn peer_disconnected(&self, their_node_id: &PublicKey);
+}
+
 enum InitSyncTracker{
 	NoSyncRequested,
 	ChannelsSyncing(u64),
@@ -354,7 +362,11 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	peer_counter_low: AtomicUsize,
 	peer_counter_high: AtomicUsize,
 
+	// Optional, if the user wishes to be notified about changes to the peer set
+	peer_connectivity_updater: Option<Box<dyn PeerConnectivityUpdater>>,
+
 	logger: L,
+
 }
 
 enum MessageHandlingError {
@@ -441,8 +453,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			ephemeral_key_midstate,
 			peer_counter_low: AtomicUsize::new(0),
 			peer_counter_high: AtomicUsize::new(0),
+			peer_connectivity_updater: None,
 			logger,
 		}
+	}
+
+	/// Set or unset the listener for changes to the peer manager's peer set
+	pub fn set_peer_connectivity_updater(&mut self, peer_connectivity_updater: Box<PeerConnectivityUpdater>) {
+		self.peer_connectivity_updater = Some(peer_connectivity_updater);
 	}
 
 	/// Get the list of node ids for peers which have completed the initial handshake.
@@ -910,6 +928,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 
 				self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 				peer.their_features = Some(msg.features);
+
+				if let Some(updater) = &self.peer_connectivity_updater {
+					updater.peer_connected(&peer.their_node_id.unwrap())
+				}
 			},
 			wire::Message::Error(msg) => {
 				let mut data_is_printable = true;
@@ -1292,6 +1314,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 									}
 									descriptor.disconnect_socket();
 									self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+
+									if let Some(updater) = &self.peer_connectivity_updater {
+										updater.peer_disconnected(&node_id)
+									}
 								}
 							},
 							msgs::ErrorAction::IgnoreAndLog(level) => {
@@ -1351,6 +1377,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					Some(node_id) => {
 						peers.node_id_to_descriptor.remove(&node_id);
 						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+
+						if let Some(updater) = &self.peer_connectivity_updater {
+							updater.peer_disconnected(&node_id)
+						}
 					},
 					None => {}
 				}
@@ -1373,6 +1403,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			log_trace!(self.logger, "Disconnecting peer with id {} due to client request", node_id);
 			peers_lock.peers.remove(&descriptor);
 			self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+			if let Some(updater) = &self.peer_connectivity_updater {
+				updater.peer_disconnected(&node_id)
+			}
 			descriptor.disconnect_socket();
 		}
 	}
@@ -1401,6 +1434,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
 							node_id_to_descriptor.remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+							if let Some(updater) = &self.peer_connectivity_updater {
+								updater.peer_disconnected(&node_id)
+							}
 						}
 						None => {
 							// This can't actually happen as we should have hit
