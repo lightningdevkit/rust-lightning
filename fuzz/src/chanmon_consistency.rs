@@ -655,9 +655,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					had_events = true;
 					match event {
 						events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
+										out.locked_write(format!("Delivering update_add_htlc to node {}.\n", idx).as_bytes());
 										if !$corrupt_forward {
 											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), update_add);
 										} else {
@@ -672,15 +673,19 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fulfill_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), update_fulfill);
 									}
 									for update_fail in update_fail_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fail_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), update_fail_malformed);
 									}
 									if let Some(msg) = update_fee {
+										out.locked_write(format!("Delivering update_fee to node {}.\n", idx).as_bytes());
 										dest.handle_update_fee(&nodes[$node].get_our_node_id(), &msg);
 									}
 									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
@@ -697,21 +702,24 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 										} });
 										break;
 									}
+									out.locked_write(format!("Delivering commitment_signed to node {}.\n", idx).as_bytes());
 									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
 							}
 						},
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering revoke_and_ack to node {}.\n", idx).as_bytes());
 									dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering channel_reestablish to node {}.\n", idx).as_bytes());
 									dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -844,7 +852,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			} }
 		}
 
-		match get_slice!(1)[0] {
+		let v = get_slice!(1)[0];
+		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
+		match v {
 			// In general, we keep related message groups close together in binary form, allowing
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
