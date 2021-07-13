@@ -4462,6 +4462,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 	/// Only fails in case of bad keys
 	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
@@ -4470,6 +4471,7 @@ impl<Signer: Sign> Channel<Signer> {
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
 			} else { None };
 			if let Some(state) = new_state {
+				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 				htlc.state = state;
 			}
 		}
@@ -4477,12 +4479,14 @@ impl<Signer: Sign> Channel<Signer> {
 			if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
 				Some(fail_reason.take())
 			} else { None } {
+				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
 			}
 		}
 		if let Some((feerate, update_state)) = self.pending_update_fee {
 			if update_state == FeeUpdateState::AwaitingRemoteRevokeToAnnounce {
 				debug_assert!(!self.is_outbound());
+				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
 				self.feerate_per_kw = feerate;
 				self.pending_update_fee = None;
 			}
