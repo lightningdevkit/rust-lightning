@@ -824,6 +824,7 @@ macro_rules! handle_error {
 					// In testing, ensure there are no deadlocks where the lock is already held upon
 					// entering the macro.
 					assert!($self.channel_state.try_lock().is_ok());
+					assert!($self.pending_events.try_lock().is_ok());
 				}
 
 				let mut msg_events = Vec::with_capacity(2);
