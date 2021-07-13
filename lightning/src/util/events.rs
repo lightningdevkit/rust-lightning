@@ -16,6 +16,7 @@
 
 use chain::keysinterface::SpendableOutputDescriptor;
 use ln::msgs;
+use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
 use util::ser::{Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
@@ -67,6 +68,60 @@ pub enum PaymentPurpose {
 	/// (the payee) providing a preimage.
 	SpontaneousPayment(PaymentPreimage),
 }
+
+#[derive(Clone, Debug, PartialEq)]
+/// The reason the channel was closed. See individual variants more details.
+pub enum ClosureReason {
+	/// Closure generated from receiving a peer error message.
+	///
+	/// Our counterparty may have broadcasted their latest commitment state, and we have
+	/// as well.
+	CounterpartyForceClosed {
+		/// The error which the peer sent us.
+		///
+		/// The string should be sanitized before it is used (e.g emitted to logs
+		/// or printed to stdout). Otherwise, a well crafted error message may exploit
+		/// a security vulnerability in the terminal emulator or the logging subsystem.
+		peer_msg: String,
+	},
+	/// Closure generated from [`ChannelManager::force_close_channel`], called by the user.
+	///
+	/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel.
+	HolderForceClosed,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
+	//TODO: split between CounterpartyInitiated/LocallyInitiated
+	CooperativeClosure,
+	/// A commitment transaction was confirmed on chain, closing the channel. Most likely this
+	/// commitment transaction came from our counterparty, but it may also have come from
+	/// a copy of our own `ChannelMonitor`.
+	CommitmentTxConfirmed,
+	/// Closure generated from processing an event, likely a HTLC forward/relay/reception.
+	ProcessingError {
+		/// A developer-readable error message which we generated.
+		err: String,
+	},
+	/// The `PeerManager` informed us that we've disconnected from the peer. We close channels
+	/// if the `PeerManager` informed us that it is unlikely we'll be able to connect to the
+	/// peer again in the future or if the peer disconnected before we finished negotiating
+	/// the channel open. The first case may be caused by incompatible features which our
+	/// counterparty, or we, require.
+	//TODO: split between PeerUnconnectable/PeerDisconnected ?
+	DisconnectedPeer,
+	/// Closure generated from `ChannelManager::read` if the ChannelMonitor is newer than
+	/// the ChannelManager deserialized.
+	OutdatedChannelManager
+}
+
+impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
+	(0, CounterpartyForceClosed) => { (1, peer_msg, required) },
+	(2, HolderForceClosed) => {},
+	(6, CommitmentTxConfirmed) => {},
+	(4, CooperativeClosure) => {},
+	(8, ProcessingError) => { (1, err, required) },
+	(10, DisconnectedPeer) => {},
+	(12, OutdatedChannelManager) => {},
+);
 
 /// An Event which you should probably take some action in response to.
 ///
@@ -189,6 +244,14 @@ pub enum Event {
 		/// transaction.
 		claim_from_onchain_tx: bool,
 	},
+	/// Used to indicate that a channel with the given `channel_id` is in the process of closure.
+	ChannelClosed  {
+		/// The channel_id of the channel which has been closed. Note that on-chain transactions
+		/// resolving the channel are likely still awaiting confirmation.
+		channel_id: [u8; 32],
+		/// The reason the channel was closed.
+		reason: ClosureReason
+	}
 }
 
 impl Writeable for Event {
@@ -263,6 +326,13 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, fee_earned_msat, option),
 					(2, claim_from_onchain_tx, required),
+				});
+			},
+			&Event::ChannelClosed { ref channel_id, ref reason } => {
+				9u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, reason, required)
 				});
 			},
 		}
@@ -377,6 +447,16 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx }))
 				};
 				f()
+			},
+			9u8 => {
+				let mut channel_id = [0; 32];
+				let mut reason = None;
+				read_tlv_fields!(reader, {
+					(0, channel_id, required),
+					(2, reason, ignorable),
+				});
+				if reason.is_none() { return Ok(None); }
+				Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			x if x % 2 == 1 => Ok(None),
