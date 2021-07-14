@@ -301,7 +301,7 @@ mod sealed {
 		set_shutdown_any_segwit_required);
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext],
+	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required);
 }
@@ -772,6 +772,16 @@ mod tests {
 		assert!(!features.initial_routing_sync());
 		assert!(!features.supports_upfront_shutdown_script());
 		assert!(!init_features.supports_gossip_queries());
+	}
+
+	#[test]
+	fn convert_to_context_with_unknown_flags() {
+		// Ensure the `from` context has fewer known feature bytes than the `to` context.
+		assert!(InvoiceFeatures::known().byte_count() < NodeFeatures::known().byte_count());
+		let invoice_features = InvoiceFeatures::known().set_unknown_feature_optional();
+		assert!(invoice_features.supports_unknown_bits());
+		let node_features: NodeFeatures = invoice_features.to_context();
+		assert!(!node_features.supports_unknown_bits());
 	}
 
 	#[test]
