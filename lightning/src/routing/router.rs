@@ -1992,8 +1992,7 @@ mod tests {
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
-		let mut unknown_features = NodeFeatures::known();
-		unknown_features.set_required_unknown_bits();
+		let unknown_features = NodeFeatures::known().set_unknown_feature_required();
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[0], unknown_features.clone(), 1);
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], unknown_features.clone(), 1);
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[7], unknown_features.clone(), 1);

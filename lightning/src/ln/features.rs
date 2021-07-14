@@ -301,27 +301,7 @@ mod sealed {
 		set_shutdown_any_segwit_required);
 
 	#[cfg(test)]
-	define_context!(TestingContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			UnknownFeature,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			,
-		],
-	});
-
-	#[cfg(test)]
-	define_feature!(23, UnknownFeature, [TestingContext],
+	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required);
 }
@@ -553,21 +533,6 @@ impl<T: sealed::Context> Features<T> {
 	pub(crate) fn byte_count(&self) -> usize {
 		self.flags.len()
 	}
-
-	#[cfg(test)]
-	pub(crate) fn set_required_unknown_bits(&mut self) {
-		<sealed::TestingContext as sealed::UnknownFeature>::set_required_bit(&mut self.flags);
-	}
-
-	#[cfg(test)]
-	pub(crate) fn set_optional_unknown_bits(&mut self) {
-		<sealed::TestingContext as sealed::UnknownFeature>::set_optional_bit(&mut self.flags);
-	}
-
-	#[cfg(test)]
-	pub(crate) fn clear_unknown_bits(&mut self) {
-		<sealed::TestingContext as sealed::UnknownFeature>::clear_bits(&mut self.flags);
-	}
 }
 
 impl<T: sealed::DataLossProtect> Features<T> {
@@ -765,19 +730,15 @@ mod tests {
 
 	#[test]
 	fn sanity_test_unknown_bits() {
-		let mut features = ChannelFeatures::empty();
+		let features = ChannelFeatures::empty();
 		assert!(!features.requires_unknown_bits());
 		assert!(!features.supports_unknown_bits());
 
-		features.set_required_unknown_bits();
+		let features = ChannelFeatures::empty().set_unknown_feature_required();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
 
-		features.clear_unknown_bits();
-		assert!(!features.requires_unknown_bits());
-		assert!(!features.supports_unknown_bits());
-
-		features.set_optional_unknown_bits();
+		let features = ChannelFeatures::empty().set_unknown_feature_optional();
 		assert!(!features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
 	}
