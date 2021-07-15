@@ -312,6 +312,8 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
+			x if x % 2 == 1 => Ok(None),
 			_ => Err(msgs::DecodeError::InvalidValue)
 		}
 	}
