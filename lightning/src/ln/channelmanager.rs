@@ -44,7 +44,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 pub use ln::channel::CounterpartyForwardingInfo;
-use ln::channel::{Channel, ChannelError, ChannelUpdateStatus};
+use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
 use ln::msgs;
@@ -2681,8 +2681,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(chan_id) {
 			let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
-				Ok((msgs, monitor_option)) => {
-					if let Some(monitor_update) = monitor_option {
+				Ok(msgs_monitor_option) => {
+					if let UpdateFulfillCommitFetch::NewClaim { msgs, monitor_update } = msgs_monitor_option {
 						if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							if was_frozen_for_monitor {
 								assert!(msgs.is_none());
@@ -2690,21 +2690,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								return Err(Some((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err())));
 							}
 						}
-					}
-					if let Some((msg, commitment_signed)) = msgs {
-						log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
-							log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get().get_counterparty_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: Vec::new(),
-								update_fulfill_htlcs: vec![msg],
-								update_fail_htlcs: Vec::new(),
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed,
-							}
-						});
+						if let Some((msg, commitment_signed)) = msgs {
+							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
+								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+								node_id: chan.get().get_counterparty_node_id(),
+								updates: msgs::CommitmentUpdate {
+									update_add_htlcs: Vec::new(),
+									update_fulfill_htlcs: vec![msg],
+									update_fail_htlcs: Vec::new(),
+									update_fail_malformed_htlcs: Vec::new(),
+									update_fee: None,
+									commitment_signed,
+								}
+							});
+						}
 					}
 					return Ok(())
 				},
