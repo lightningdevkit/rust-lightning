@@ -490,13 +490,14 @@ impl<T: sealed::Context> Features<T> {
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
 	/// included in the result.
 	fn to_context_internal<C: sealed::Context>(&self) -> Features<C> {
-		let byte_count = C::KNOWN_FEATURE_MASK.len();
+		let from_byte_count = T::KNOWN_FEATURE_MASK.len();
+		let to_byte_count = C::KNOWN_FEATURE_MASK.len();
 		let mut flags = Vec::new();
 		for (i, byte) in self.flags.iter().enumerate() {
-			if i < byte_count {
-				let known_source_features = T::KNOWN_FEATURE_MASK[i];
-				let known_target_features = C::KNOWN_FEATURE_MASK[i];
-				flags.push(byte & known_source_features & known_target_features);
+			if i < from_byte_count && i < to_byte_count {
+				let from_known_features = T::KNOWN_FEATURE_MASK[i];
+				let to_known_features = C::KNOWN_FEATURE_MASK[i];
+				flags.push(byte & from_known_features & to_known_features);
 			}
 		}
 		Features::<C> { flags, mark: PhantomData, }
