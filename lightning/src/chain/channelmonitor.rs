@@ -1779,27 +1779,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
 
-		macro_rules! wait_threshold_conf {
-			($source: expr, $commitment_tx: expr, $payment_hash: expr) => {
-				self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
-					if entry.height != height { return true; }
-					match entry.event {
-						OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
-							*update_source != $source
-						},
-						_ => true,
-					}
-				});
-				let entry = OnchainEventEntry {
-					txid: commitment_txid,
-					height,
-					event: OnchainEvent::HTLCUpdate { source: $source, payment_hash: $payment_hash },
-				};
-				log_trace!(logger, "Failing HTLC with payment_hash {} from {} holder commitment tx due to broadcast of transaction, waiting confirmation (at height{})", log_bytes!($payment_hash.0), $commitment_tx, entry.confirmation_threshold());
-				self.onchain_events_awaiting_threshold_conf.push(entry);
-			}
-		}
-
 		macro_rules! append_onchain_update {
 			($updates: expr, $to_watch: expr) => {
 				claim_requests = $updates.0;
@@ -1828,11 +1807,29 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		macro_rules! fail_dust_htlcs_after_threshold_conf {
-			($holder_tx: expr) => {
+			($holder_tx: expr, $commitment_tx: expr) => {
 				for &(ref htlc, _, ref source) in &$holder_tx.htlc_outputs {
 					if htlc.transaction_output_index.is_none() {
 						if let &Some(ref source) = source {
-							wait_threshold_conf!(source.clone(), "lastest", htlc.payment_hash.clone());
+							self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
+								if entry.height != height { return true; }
+								match entry.event {
+									OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
+										update_source != source
+									},
+									_ => true,
+								}
+							});
+							let entry = OnchainEventEntry {
+								txid: commitment_txid,
+								height,
+								event: OnchainEvent::HTLCUpdate {
+									source: source.clone(), payment_hash: htlc.payment_hash,
+								},
+							};
+							log_trace!(logger, "Failing HTLC with payment_hash {} from {} holder commitment tx due to broadcast of transaction, waiting confirmation (at height{})",
+								log_bytes!(htlc.payment_hash.0), $commitment_tx, entry.confirmation_threshold());
+							self.onchain_events_awaiting_threshold_conf.push(entry);
 						}
 					}
 				}
@@ -1840,9 +1837,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		if is_holder_tx {
-			fail_dust_htlcs_after_threshold_conf!(self.current_holder_commitment_tx);
+			fail_dust_htlcs_after_threshold_conf!(self.current_holder_commitment_tx, "latest");
 			if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
-				fail_dust_htlcs_after_threshold_conf!(holder_tx);
+				fail_dust_htlcs_after_threshold_conf!(holder_tx, "previous");
 			}
 		}
 
