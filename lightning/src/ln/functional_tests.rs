@@ -5329,16 +5329,11 @@ fn test_onchain_to_onchain_claim() {
 	// So we broadcast C's commitment tx and HTLC-Success on B's chain, we should successfully be able to extract preimage and update downstream monitor
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	connect_block(&nodes[1], &Block { header, txdata: vec![c_txn[1].clone(), c_txn[2].clone()]});
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 	{
 		let mut b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: claim tx, ChannelManager: local commitment tx
-		assert_eq!(b_txn.len(), 2);
+		// ChannelMonitor: claim tx
+		assert_eq!(b_txn.len(), 1);
 		check_spends!(b_txn[0], chan_2.3); // B local commitment tx, issued by ChannelManager
-		check_spends!(b_txn[1], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
-		assert_eq!(b_txn[1].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		assert!(b_txn[1].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-		assert_ne!(b_txn[1].lock_time, 0); // Timeout tx
 		b_txn.clear();
 	}
 	check_added_monitors!(nodes[1], 1);
@@ -5367,19 +5362,14 @@ fn test_onchain_to_onchain_claim() {
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	// ChannelMonitor: HTLC-Success tx + HTLC-Timeout RBF Bump, ChannelManager: local commitment tx + HTLC-Success tx
-	assert_eq!(b_txn.len(), 4);
-	check_spends!(b_txn[2], chan_1.3);
-	check_spends!(b_txn[3], b_txn[2]);
-	let (htlc_success_claim, htlc_timeout_bumped) =
-		if b_txn[0].input[0].previous_output.txid == commitment_tx[0].txid()
-			{ (&b_txn[0], &b_txn[1]) } else { (&b_txn[1], &b_txn[0]) };
-	check_spends!(htlc_success_claim, commitment_tx[0]);
-	assert_eq!(htlc_success_claim.input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert!(htlc_success_claim.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	assert_eq!(htlc_success_claim.lock_time, 0); // Success tx
-	check_spends!(htlc_timeout_bumped, c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
-	assert_ne!(htlc_timeout_bumped.lock_time, 0); // Success tx
+	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
+	assert_eq!(b_txn.len(), 3);
+	check_spends!(b_txn[1], chan_1.3);
+	check_spends!(b_txn[2], b_txn[1]);
+	check_spends!(b_txn[0], commitment_tx[0]);
+	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+	assert_eq!(b_txn[0].lock_time, 0); // Success tx
 
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
