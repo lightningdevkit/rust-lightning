@@ -1005,6 +1005,20 @@ macro_rules! expect_payment_sent {
 	}
 }
 
+macro_rules! expect_payment_forwarded {
+	($node: expr, $expected_fee: expr, $upstream_force_closed: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {
+				assert_eq!(fee_earned_msat, $expected_fee);
+				assert_eq!(claim_from_onchain_tx, $upstream_force_closed);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
 #[cfg(test)]
 macro_rules! expect_payment_failure_chan_update {
 	($node: expr, $scid: expr, $chan_closed: expr) => {
@@ -1169,6 +1183,8 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 			($node: expr, $prev_node: expr, $new_msgs: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
+					let fee = $node.node.channel_state.lock().unwrap().by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap().config.forwarding_fee_base_msat;
+					expect_payment_forwarded!($node, Some(fee as u64), false);
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();

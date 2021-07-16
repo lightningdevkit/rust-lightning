@@ -596,12 +596,10 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push(payment_hash);
 				},
-				Event::PaymentSent {..} => {},
-				Event::PaymentFailed {..} => {},
 				Event::PendingHTLCsForwardable {..} => {
 					should_forward = true;
 				},
-				Event::SpendableOutputs {..} => {},
+				_ => {},
 			}
 		}
 	}

@@ -1159,6 +1159,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[1], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
@@ -2317,6 +2318,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		assert_eq!(fulfill_msg, cs_updates.update_fulfill_htlcs[0]);
 	}
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &fulfill_msg);
+	expect_payment_forwarded!(nodes[1], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 
 	let mut bs_updates = None;

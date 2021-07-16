@@ -199,10 +199,12 @@ pub enum MonitorEvent {
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
-	pub(crate) source: HTLCSource
+	pub(crate) source: HTLCSource,
+	pub(crate) onchain_value_satoshis: Option<u64>,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
+	(1, onchain_value_satoshis, option),
 	(2, source, required),
 	(4, payment_preimage, option),
 });
@@ -385,6 +387,7 @@ enum OnchainEvent {
 	HTLCUpdate {
 		source: HTLCSource,
 		payment_hash: PaymentHash,
+		onchain_value_satoshis: Option<u64>,
 	},
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
@@ -400,6 +403,7 @@ impl_writeable_tlv_based!(OnchainEventEntry, {
 impl_writeable_tlv_based_enum!(OnchainEvent,
 	(0, HTLCUpdate) => {
 		(0, source, required),
+		(1, onchain_value_satoshis, option),
 		(2, payment_hash, required),
 	},
 	(1, MaturingOutput) => {
@@ -1574,6 +1578,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 										event: OnchainEvent::HTLCUpdate {
 											source: (**source).clone(),
 											payment_hash: htlc.payment_hash.clone(),
+											onchain_value_satoshis: Some(htlc.amount_msat / 1000),
 										},
 									};
 									log_info!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of revoked counterparty commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, entry.confirmation_threshold());
@@ -1641,6 +1646,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									event: OnchainEvent::HTLCUpdate {
 										source: (**source).clone(),
 										payment_hash: htlc.payment_hash.clone(),
+										onchain_value_satoshis: Some(htlc.amount_msat / 1000),
 									},
 								});
 							}
@@ -1825,6 +1831,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								height,
 								event: OnchainEvent::HTLCUpdate {
 									source: source.clone(), payment_hash: htlc.payment_hash,
+									onchain_value_satoshis: Some(htlc.amount_msat / 1000)
 								},
 							};
 							log_trace!(logger, "Failing HTLC with payment_hash {} from {} holder commitment tx due to broadcast of transaction, waiting confirmation (at height{})",
@@ -2087,7 +2094,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// Produce actionable events from on-chain events having reached their threshold.
 		for entry in onchain_events_reaching_threshold_conf.drain(..) {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, payment_hash } => {
+				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
@@ -2106,9 +2113,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 					log_debug!(logger, "HTLC {} failure update has got enough confirmations to be passed upstream", log_bytes!(payment_hash.0));
 					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-						payment_hash: payment_hash,
+						payment_hash,
 						payment_preimage: None,
 						source: source.clone(),
+						onchain_value_satoshis,
 					}));
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
@@ -2325,7 +2333,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
 								if let &Some(ref source) = pending_source {
 									log_claim!("revoked counterparty commitment tx", false, pending_htlc, true);
-									payment_data = Some(((**source).clone(), $htlc_output.payment_hash));
+									payment_data = Some(((**source).clone(), $htlc_output.payment_hash, $htlc_output.amount_msat));
 									break;
 								}
 							}
@@ -2345,7 +2353,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								// transaction. This implies we either learned a preimage, the HTLC
 								// has timed out, or we screwed up. In any case, we should now
 								// resolve the source HTLC with the original sender.
-								payment_data = Some(((*source).clone(), htlc_output.payment_hash));
+								payment_data = Some(((*source).clone(), htlc_output.payment_hash, htlc_output.amount_msat));
 							} else if !$holder_tx {
 									check_htlc_valid_counterparty!(self.current_counterparty_commitment_txid, htlc_output);
 								if payment_data.is_none() {
@@ -2378,7 +2386,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 			// Check that scan_commitment, above, decided there is some source worth relaying an
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
-			if let Some((source, payment_hash)) = payment_data {
+			if let Some((source, payment_hash, amount_msat)) = payment_data {
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				if accepted_preimage_claim {
 					if !self.pending_monitor_events.iter().any(
@@ -2387,7 +2395,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
-							payment_hash
+							payment_hash,
+							onchain_value_satoshis: Some(amount_msat / 1000),
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -2399,7 +2408,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
-							payment_hash
+							payment_hash,
+							onchain_value_satoshis: Some(amount_msat / 1000),
 						}));
 					}
 				} else {
@@ -2415,7 +2425,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					let entry = OnchainEventEntry {
 						txid: tx.txid(),
 						height,
-						event: OnchainEvent::HTLCUpdate { source: source, payment_hash: payment_hash },
+						event: OnchainEvent::HTLCUpdate {
+							source, payment_hash,
+							onchain_value_satoshis: Some(amount_msat / 1000),
+						},
 					};
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height {})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
 					self.onchain_events_awaiting_threshold_conf.push(entry);
