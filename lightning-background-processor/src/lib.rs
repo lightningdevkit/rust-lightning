@@ -43,7 +43,7 @@ pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
 	/// May be used to retrieve and handle the error if `BackgroundProcessor`'s thread
 	/// exits due to an error while persisting.
-	pub thread_handle: JoinHandle<Result<(), std::io::Error>>,
+	pub thread_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
 #[cfg(not(test))]
@@ -158,13 +158,27 @@ impl BackgroundProcessor {
 				}
 			}
 		});
-		Self { stop_thread: stop_thread_clone, thread_handle: handle }
+		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
 
 	/// Stop `BackgroundProcessor`'s thread.
-	pub fn stop(self) -> Result<(), std::io::Error> {
+	pub fn stop(mut self) -> Result<(), std::io::Error> {
+		assert!(self.thread_handle.is_some());
+		self.stop_and_join_thread()
+	}
+
+	fn stop_and_join_thread(&mut self) -> Result<(), std::io::Error> {
 		self.stop_thread.store(true, Ordering::Release);
-		self.thread_handle.join().unwrap()
+		match self.thread_handle.take() {
+			Some(handle) => handle.join().unwrap(),
+			None => Ok(()),
+		}
+	}
+}
+
+impl Drop for BackgroundProcessor {
+	fn drop(&mut self) {
+		self.stop_and_join_thread().unwrap();
 	}
 }
 
