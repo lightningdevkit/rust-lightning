@@ -416,7 +416,13 @@ mod tests {
 		let persister = |_: &_| Err(std::io::Error::new(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
-		let _ = bg_processor.thread_handle.join().unwrap().expect_err("Errored persisting manager: test");
+		match bg_processor.stop() {
+			Ok(_) => panic!("Expected error persisting manager"),
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::Other);
+				assert_eq!(e.get_ref().unwrap().to_string(), "test");
+			},
+		}
 	}
 
 	#[test]
