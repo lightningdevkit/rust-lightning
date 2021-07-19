@@ -1011,19 +1011,19 @@ fn htlc_fail_async_shutdown() {
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2);
-	let node_0_closing_signed = match msg_events[0] {
+	match msg_events[0] {
+		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
+			assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	let node_0_closing_signed = match msg_events[1] {
 		MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			(*msg).clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
-	match msg_events[1] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
-			assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
@@ -1140,7 +1140,23 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		let node_1_2nd_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
 
 		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_2nd_reestablish);
-		let node_0_3rd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+		let node_0_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(node_0_msgs.len(), 2);
+		let node_0_2nd_closing_signed = match node_0_msgs[1] {
+			MessageSendEvent::SendClosingSigned { ref msg, .. } => {
+				assert_eq!(node_0_closing_signed, *msg);
+				msg.clone()
+			},
+			_ => panic!(),
+		};
+
+		let node_0_3rd_shutdown = match node_0_msgs[0] {
+			MessageSendEvent::SendShutdown { ref msg, .. } => {
+				assert_eq!(node_0_2nd_shutdown, *msg);
+				msg.clone()
+			},
+			_ => panic!(),
+		};
 		assert!(node_0_2nd_shutdown == node_0_3rd_shutdown);
 
 		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_2nd_reestablish);
@@ -1151,8 +1167,6 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_3rd_shutdown);
-		let node_0_2nd_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
-		assert!(node_0_closing_signed == node_0_2nd_closing_signed);
 
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed);
 		let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
@@ -9023,7 +9037,7 @@ fn test_update_err_monitor_lockdown() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
-		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
+		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			if let Err(_) =  watchtower.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
 			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
@@ -9117,7 +9131,7 @@ fn test_concurrent_monitor_claim() {
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
-		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
+		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			if let Err(_) =  watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
 			if let Ok(_) = watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
