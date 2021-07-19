@@ -90,13 +90,15 @@ jobs:
         if: "matrix.build-no-std && !matrix.coverage"
         run: |
           cd lightning
-          cargo test --verbose --color always --features hashbrown
+          cargo test --verbose --color always --no-default-features --features no_std
+          # check if there is a conflict between no_std and the default std feature
+          cargo test --verbose --color always --features no_std
           cd ..
       - name: Test on no_std bullds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
         if: "matrix.build-no-std && matrix.coverage"
         run: |
           cd lightning
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features hashbrown
+          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no_std
           cd ..
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
