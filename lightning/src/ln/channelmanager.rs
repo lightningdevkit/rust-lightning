@@ -1465,10 +1465,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			// OUR PAYMENT!
 			// final_expiry_too_soon
-			// We have to have some headroom to broadcast on chain if we have the preimage, so make sure we have at least
-			// HTLC_FAIL_BACK_BUFFER blocks to go.
-			// Also, ensure that, in the case of an unknown payment hash, our payment logic has enough time to fail the HTLC backward
-			// before our onchain logic triggers a channel closure (see HTLC_FAIL_BACK_BUFFER rational).
+			// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
+			// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
+			// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
+			// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
+			// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 			if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 				return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
 			}
