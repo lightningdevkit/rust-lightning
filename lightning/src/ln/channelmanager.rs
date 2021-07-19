@@ -4959,6 +4959,7 @@ mod tests {
 	use ln::features::InitFeatures;
 	use ln::msgs::ChannelMessageHandler;
 
+	#[cfg(feature = "std")]
 	#[test]
 	fn test_wait_timeout() {
 		let persistence_notifier = Arc::new(PersistenceNotifier::new());

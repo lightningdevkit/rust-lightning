@@ -44,9 +44,8 @@ use util::scid_utils::scid_from_parts;
 use prelude::*;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
-#[cfg(any(test, feature = "fuzztarget"))]
+#[cfg(any(test, feature = "fuzztarget", debug_assertions))]
 use sync::Mutex;
-use sync;
 use bitcoin::hashes::hex::ToHex;
 use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0;
 
@@ -375,10 +374,10 @@ pub(super) struct Channel<Signer: Sign> {
 
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
-	holder_max_commitment_tx_output: sync::Mutex<(u64, u64)>,
+	holder_max_commitment_tx_output: Mutex<(u64, u64)>,
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
-	counterparty_max_commitment_tx_output: sync::Mutex<(u64, u64)>,
+	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
 
 	last_sent_closing_fee: Option<(u32, u64, Signature)>, // (feerate, fee, holder_sig)
 
@@ -596,9 +595,9 @@ impl<Signer: Sign> Channel<Signer> {
 			monitor_pending_failures: Vec::new(),
 
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: sync::Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 
 			last_sent_closing_fee: None,
 
@@ -837,9 +836,9 @@ impl<Signer: Sign> Channel<Signer> {
 			monitor_pending_failures: Vec::new(),
 
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			holder_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: sync::Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
+			counterparty_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
 
 			last_sent_closing_fee: None,
 
@@ -4944,9 +4943,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			feerate_per_kw,
 
 			#[cfg(debug_assertions)]
-			holder_max_commitment_tx_output: sync::Mutex::new((0, 0)),
+			holder_max_commitment_tx_output: Mutex::new((0, 0)),
 			#[cfg(debug_assertions)]
-			counterparty_max_commitment_tx_output: sync::Mutex::new((0, 0)),
+			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 
 			last_sent_closing_fee,
 

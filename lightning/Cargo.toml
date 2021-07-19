@@ -25,7 +25,11 @@ max_level_debug = []
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
 unstable = []
+
 no_std = ["hashbrown"]
+std = []
+
+default = ["std"]
 
 [dependencies]
 bitcoin = "0.26"
