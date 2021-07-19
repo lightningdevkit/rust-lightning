@@ -4973,15 +4973,11 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.update_time_counter.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 
-		match self.last_sent_closing_fee {
-			Some((feerate, fee, sig)) => {
-				1u8.write(writer)?;
-				feerate.write(writer)?;
-				fee.write(writer)?;
-				sig.write(writer)?;
-			},
-			None => 0u8.write(writer)?,
-		}
+		// Versions prior to 0.0.100 expected to read the fields of `last_sent_closing_fee` here,
+		// however we are supposed to restart shutdown fee negotiation on reconnect (and wipe
+		// `last_send_closing_fee` in `remove_uncommitted_htlcs_and_mark_paused`) so we should never
+		// consider the stale state on reload.
+		0u8.write(writer)?;
 
 		self.funding_tx_confirmed_in.write(writer)?;
 		self.funding_tx_confirmation_height.write(writer)?;
@@ -5189,11 +5185,19 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let update_time_counter = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 
-		let last_sent_closing_fee = match <u8 as Readable>::read(reader)? {
-			0 => None,
-			1 => Some((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?)),
+		// Versions prior to 0.0.100 expected to read the fields of `last_sent_closing_fee` here,
+		// however we are supposed to restart shutdown fee negotiation on reconnect (and wipe
+		// `last_send_closing_fee` in `remove_uncommitted_htlcs_and_mark_paused`) so we should never
+		// consider the stale state on reload.
+		match <u8 as Readable>::read(reader)? {
+			0 => {},
+			1 => {
+				let _: u32 = Readable::read(reader)?;
+				let _: u64 = Readable::read(reader)?;
+				let _: Signature = Readable::read(reader)?;
+			},
 			_ => return Err(DecodeError::InvalidValue),
-		};
+		}
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
 		let funding_tx_confirmation_height = Readable::read(reader)?;
@@ -5321,7 +5325,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			#[cfg(debug_assertions)]
 			counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 
-			last_sent_closing_fee,
+			last_sent_closing_fee: None,
 
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height,
