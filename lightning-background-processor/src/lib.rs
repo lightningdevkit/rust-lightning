@@ -41,9 +41,7 @@ use std::ops::Deref;
 /// for unilateral chain closure fees are at risk.
 pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
-	/// May be used to retrieve and handle the error if `BackgroundProcessor`'s thread
-	/// exits due to an error while persisting.
-	pub thread_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
+	thread_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
 #[cfg(not(test))]
@@ -84,21 +82,25 @@ ChannelManagerPersister<Signer, M, T, K, F, L> for Fun where
 }
 
 impl BackgroundProcessor {
-	/// Start a background thread that takes care of responsibilities enumerated in the top-level
-	/// documentation.
+	/// Start a background thread that takes care of responsibilities enumerated in the [top-level
+	/// documentation].
 	///
-	/// If `persist_manager` returns an error, then this thread will return said error (and
-	/// `start()` will need to be called again to restart the `BackgroundProcessor`). Users should
-	/// wait on [`thread_handle`]'s `join()` method to be able to tell if and when an error is
-	/// returned, or implement `persist_manager` such that an error is never returned to the
-	/// `BackgroundProcessor`
+	/// The thread runs indefinitely unless the object is dropped, [`stop`] is called, or
+	/// `persist_manager` returns an error. In case of an error, the error is retrieved by calling
+	/// either [`join`] or [`stop`].
+	///
+	/// Typically, users should either implement [`ChannelManagerPersister`] to never return an
+	/// error or call [`join`] and handle any error that may arise. For the latter case, the
+	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
 	///
 	/// `persist_manager` is responsible for writing out the [`ChannelManager`] to disk, and/or
 	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
 	/// [`ChannelManager`]. See [`FilesystemPersister::persist_manager`] for Rust-Lightning's
 	/// provided implementation.
 	///
-	/// [`thread_handle`]: BackgroundProcessor::thread_handle
+	/// [top-level documentation]: Self
+	/// [`join`]: Self::join
+	/// [`stop`]: Self::stop
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
 	/// [`FilesystemPersister::persist_manager`]: lightning_persister::FilesystemPersister::persist_manager
@@ -161,7 +163,29 @@ impl BackgroundProcessor {
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
 
-	/// Stop `BackgroundProcessor`'s thread.
+	/// Join `BackgroundProcessor`'s thread, returning any error that occurred while persisting
+	/// [`ChannelManager`].
+	///
+	/// # Panics
+	///
+	/// This function panics if the background thread has panicked such as while persisting or
+	/// handling events.
+	///
+	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+	pub fn join(mut self) -> Result<(), std::io::Error> {
+		assert!(self.thread_handle.is_some());
+		self.join_thread()
+	}
+
+	/// Stop `BackgroundProcessor`'s thread, returning any error that occurred while persisting
+	/// [`ChannelManager`].
+	///
+	/// # Panics
+	///
+	/// This function panics if the background thread has panicked such as while persisting or
+	/// handling events.
+	///
+	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	pub fn stop(mut self) -> Result<(), std::io::Error> {
 		assert!(self.thread_handle.is_some());
 		self.stop_and_join_thread()
@@ -169,6 +193,10 @@ impl BackgroundProcessor {
 
 	fn stop_and_join_thread(&mut self) -> Result<(), std::io::Error> {
 		self.stop_thread.store(true, Ordering::Release);
+		self.join_thread()
+	}
+
+	fn join_thread(&mut self) -> Result<(), std::io::Error> {
 		match self.thread_handle.take() {
 			Some(handle) => handle.join().unwrap(),
 			None => Ok(()),
@@ -430,7 +458,7 @@ mod tests {
 		let persister = |_: &_| Err(std::io::Error::new(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
-		match bg_processor.stop() {
+		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::Other);
