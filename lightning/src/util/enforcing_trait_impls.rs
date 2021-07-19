@@ -13,7 +13,7 @@ use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
 use prelude::*;
 use core::cmp;
-use std::sync::{Mutex, Arc};
+use sync::{Mutex, Arc};
 
 use bitcoin::blockdata::transaction::{Transaction, SigHashType};
 use bitcoin::util::bip143;

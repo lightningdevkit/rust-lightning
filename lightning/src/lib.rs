@@ -53,3 +53,7 @@ mod prelude {
 	#[cfg(feature = "hashbrown")]
 	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 }
+
+mod sync {
+	pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard};
+}

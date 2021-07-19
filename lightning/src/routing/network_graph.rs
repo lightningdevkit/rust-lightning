@@ -35,9 +35,9 @@ use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use prelude::*;
 use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
-use std::sync::{RwLock, RwLockReadGuard};
+use sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use sync::Mutex;
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
@@ -1088,7 +1088,7 @@ mod tests {
 	use bitcoin::secp256k1::{All, Secp256k1};
 
 	use prelude::*;
-	use std::sync::Arc;
+	use sync::Arc;
 
 	fn create_net_graph_msg_handler() -> (Secp256k1<All>, NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>) {
 		let secp_ctx = Secp256k1::new();

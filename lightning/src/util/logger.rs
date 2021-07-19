@@ -124,7 +124,7 @@ pub trait Logger {
 mod tests {
 	use util::logger::{Logger, Level};
 	use util::test_utils::TestLogger;
-	use std::sync::Arc;
+	use sync::Arc;
 
 	#[test]
 	fn test_level_show() {

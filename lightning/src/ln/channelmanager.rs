@@ -64,7 +64,7 @@ use prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use std::io::{Cursor, Read};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 #[cfg(any(test, feature = "allow_wallclock_use"))]
@@ -4951,7 +4951,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 #[cfg(test)]
 mod tests {
 	use ln::channelmanager::PersistenceNotifier;
-	use std::sync::Arc;
+	use sync::Arc;
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use std::thread;
 	use core::time::Duration;
@@ -5094,7 +5094,7 @@ pub mod bench {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Block, BlockHeader, Transaction, TxOut};
 
-	use std::sync::{Arc, Mutex};
+	use sync::{Arc, Mutex};
 
 	use test::Bencher;
 

@@ -33,7 +33,7 @@ use routing::network_graph::NetGraphMsgHandler;
 use prelude::*;
 use alloc::collections::LinkedList;
 use alloc::fmt::Debug;
-use std::sync::{Arc, Mutex};
+use sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
@@ -1447,7 +1447,7 @@ mod tests {
 	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 
 	use prelude::*;
-	use std::sync::{Arc, Mutex};
+	use sync::{Arc, Mutex};
 	use core::sync::atomic::Ordering;
 
 	#[derive(Clone)]
