@@ -2597,13 +2597,15 @@ fn test_temporary_error_during_shutdown() {
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = None;
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
-	let (_, closing_signed_b) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &closing_signed_b.unwrap());
-	let txn_b = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
-	let (_, none_a) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	assert!(none_a.is_none());
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id()));
+	let (_, closing_signed_a) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
 	let txn_a = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_a.unwrap());
+	let (_, none_b) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	assert!(none_b.is_none());
+	let txn_b = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);

@@ -1284,12 +1284,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
 	}
 
-	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
-	/// will be accepted on the given channel, and after additional timeout/the closing of all
-	/// pending HTLCs, the channel will be closed on chain.
-	///
-	/// May generate a SendShutdown message event on success, which should be relayed.
-	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let counterparty_node_id;
@@ -1305,7 +1300,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						Some(peer_state) => {
 							let peer_state = peer_state.lock().unwrap();
 							let their_features = &peer_state.latest_features;
-							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features)?
+							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
 						},
 						None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
 					};
@@ -1348,6 +1343,50 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let _ = handle_error!(self, result, counterparty_node_id);
 		Ok(())
+	}
+
+	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
+	/// will be accepted on the given channel, and after additional timeout/the closing of all
+	/// pending HTLCs, the channel will be closed on chain.
+	///
+	///  * If we are the channel initiator, we will pay between our [`Background`] and
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
+	///    estimate.
+	///  * If our counterparty is the channel initiator, we will require a channel closing
+	///    transaction feerate of at least our [`Background`] feerate or the feerate which
+	///    would appear on a force-closure transaction, whichever is lower. We will allow our
+	///    counterparty to pay as much fee as they'd like, however.
+	///
+	/// May generate a SendShutdown message event on success, which should be relayed.
+	///
+	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
+	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, None)
+	}
+
+	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
+	/// will be accepted on the given channel, and after additional timeout/the closing of all
+	/// pending HTLCs, the channel will be closed on chain.
+	///
+	/// `target_feerate_sat_per_1000_weight` has different meanings depending on if we initiated
+	/// the channel being closed or not:
+	///  * If we are the channel initiator, we will pay at least this feerate on the closing
+	///    transaction. The upper-bound is set by
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
+	///    estimate (or `target_feerate_sat_per_1000_weight`, if it is greater).
+	///  * If our counterparty is the channel initiator, we will refuse to accept a channel closure
+	///    transaction feerate below `target_feerate_sat_per_1000_weight` (or the feerate which
+	///    will appear on a force-closure transaction, whichever is lower).
+	///
+	/// May generate a SendShutdown message event on success, which should be relayed.
+	///
+	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
+	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, Some(target_feerate_sats_per_1000_weight))
 	}
 
 	#[inline]
@@ -3367,7 +3406,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 
 					if !chan_entry.get().received_shutdown() {
-						log_info!(self.logger, "Received a shutdown message from our couterparty for channel {}{}.",
+						log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
 							log_bytes!(msg.channel_id),
 							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
 					}
