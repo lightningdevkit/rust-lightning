@@ -36,6 +36,11 @@ fn sigrec_encode(sig_rec: RecoverableSignature) -> Vec<u8> {
 }
 
 fn sigrec_decode(sig_rec: Vec<u8>) -> Result<RecoverableSignature, Error> {
+    // Signature must be 64 + 1 bytes long (compact signature + recovery id)
+    if sig_rec.len() != 65 {
+        return Err(Error::InvalidSignature);
+    }
+
     let rsig = &sig_rec[1..];
     let rid = sig_rec[0] as i32 - 31;
 
