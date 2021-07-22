@@ -918,7 +918,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::UnsupportedCompression => {
-														log_gossip!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
+														log_gossip!(self.logger, "We don't support zlib-compressed message fields, sending a warning and ignoring message");
+														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unsupported message compression: zlib".to_owned() });
 														continue;
 													}
 												}

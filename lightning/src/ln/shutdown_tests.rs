@@ -762,10 +762,8 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 
 	if timeout_step != TimeoutStep::AfterShutdown {
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
-		// At this point nodes[1] should send back a warning message indicating it disagrees with the
-		// given channel-closing fee. Currently we do not implement warning messages so instead we
-		// remain silent here.
-		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan_id)
+			.starts_with("Unable to come to consensus about closing feerate"));
 
 		// Now deliver a mutated closing_signed indicating a higher acceptable fee range, which
 		// nodes[1] should happily accept and respond to.

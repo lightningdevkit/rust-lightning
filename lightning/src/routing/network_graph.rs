@@ -294,10 +294,21 @@ where C::Target: chain::Access, L::Target: Logger
 }
 
 macro_rules! secp_verify_sig {
-	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
+	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr, $msg_type: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
 			Ok(_) => {},
-			Err(_) => return Err(LightningError{err: "Invalid signature from remote node".to_owned(), action: ErrorAction::IgnoreError}),
+			Err(_) => {
+				return Err(LightningError {
+					err: format!("Invalid signature on {} message", $msg_type),
+					action: ErrorAction::SendWarningMessage {
+						msg: msgs::WarningMessage {
+							channel_id: [0; 32],
+							data: format!("Invalid signature on {} message", $msg_type),
+						},
+						log_level: Level::Trace,
+					},
+				});
+			},
 		}
 	};
 }
@@ -850,7 +861,7 @@ impl NetworkGraph {
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement<T: secp256k1::Verification>(&self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id, "node_announcement");
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
 
@@ -910,10 +921,10 @@ impl NetworkGraph {
 		C::Target: chain::Access,
 	{
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2);
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1, "channel_announcement");
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2, "channel_announcement");
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1, "channel_announcement");
+		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2, "channel_announcement");
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), chain_access)
 	}
 
@@ -1239,7 +1250,7 @@ impl NetworkGraph {
 						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse source node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
-						})?);
+						})?, "channel_update");
 					}
 					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
 				} else {
@@ -1248,7 +1259,7 @@ impl NetworkGraph {
 						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse destination node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
-						})?);
+						})?, "channel_update");
 					}
 					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
 				}
@@ -1522,7 +1533,7 @@ mod tests {
 				contents: valid_announcement.contents.clone()
 		}) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature on node_announcement message")
 		};
 
 		let announcement_with_data = get_signed_node_announcement(|unsigned_announcement| {
@@ -1651,7 +1662,7 @@ mod tests {
 		invalid_sig_announcement.contents.excess_data = Vec::new();
 		match net_graph_msg_handler.handle_channel_announcement(&invalid_sig_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature on channel_announcement message")
 		};
 
 		let channel_to_itself_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_1_privkey, &secp_ctx);
@@ -1760,7 +1771,7 @@ mod tests {
 		invalid_sig_channel_update.signature = secp_ctx.sign(&fake_msghash, node_1_privkey);
 		match net_graph_msg_handler.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
+			Err(e) => assert_eq!(e.err, "Invalid signature on channel_update message")
 		};
 	}
 

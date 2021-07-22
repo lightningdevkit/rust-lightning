@@ -780,6 +780,22 @@ macro_rules! get_closing_signed_broadcast {
 	}
 }
 
+#[cfg(test)]
+macro_rules! check_warn_msg {
+	($node: expr, $recipient_node_id: expr, $chan_id: expr) => {{
+		let msg_events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		match msg_events[0] {
+			MessageSendEvent::HandleError { action: ErrorAction::SendWarningMessage { ref msg, log_level: _ }, node_id } => {
+				assert_eq!(node_id, $recipient_node_id);
+				assert_eq!(msg.channel_id, $chan_id);
+				msg.data.clone()
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}}
+}
+
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
 #[macro_export]
