@@ -5114,10 +5114,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use core::sync::atomic::{AtomicBool, Ordering};
 	use core::time::Duration;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use ln::channelmanager::PersistenceNotifier;
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs;
@@ -5125,12 +5123,15 @@ mod tests {
 	use routing::router::{get_keysend_route, get_route};
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils;
-	use std::sync::Arc;
-	use std::thread;
 
 	#[cfg(feature = "std")]
 	#[test]
 	fn test_wait_timeout() {
+		use ln::channelmanager::PersistenceNotifier;
+		use sync::Arc;
+		use core::sync::atomic::{AtomicBool, Ordering};
+		use std::thread;
+
 		let persistence_notifier = Arc::new(PersistenceNotifier::new());
 		let thread_notifier = Arc::clone(&persistence_notifier);
 
