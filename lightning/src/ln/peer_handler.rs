@@ -821,6 +821,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 													self.enqueue_message(peer, &msg);
 													continue;
 												},
+												msgs::ErrorAction::SendWarningMessage { msg, log_level } => {
+													log_given_level!(self.logger, log_level, "Error handling message{}; sending warning message with: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
+													self.enqueue_message(peer, &msg);
+													continue;
+												},
 											}
 										}
 									}
@@ -1020,6 +1025,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.message_handler.chan_handler.handle_error(&peer.their_node_id.unwrap(), &msg);
 				if msg.channel_id == [0; 32] {
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
+				}
+			},
+			wire::Message::Warning(msg) => {
+				let mut data_is_printable = true;
+				for b in msg.data.bytes() {
+					if b < 32 || b > 126 {
+						data_is_printable = false;
+						break;
+					}
+				}
+
+				if data_is_printable {
+					log_debug!(self.logger, "Got warning message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.data);
+				} else {
+					log_debug!(self.logger, "Got warning message from {} with non-ASCII error message", log_pubkey!(peer.their_node_id.unwrap()));
 				}
 			},
 
@@ -1415,6 +1435,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							},
 							msgs::ErrorAction::SendErrorMessage { ref msg } => {
 								log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
+										log_pubkey!(node_id),
+										msg.data);
+								self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
+							},
+							msgs::ErrorAction::SendWarningMessage { ref msg, ref log_level } => {
+								log_given_level!(self.logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id),
 										msg.data);
 								self.enqueue_message(get_peer_for_forwarding!(node_id), msg);

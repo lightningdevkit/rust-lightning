@@ -35,6 +35,7 @@ pub trait CustomMessageReader {
 pub(crate) enum Message<T> where T: core::fmt::Debug + Type {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
+	Warning(msgs::WarningMessage),
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
 	OpenChannel(msgs::OpenChannel),
@@ -74,6 +75,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
+			&Message::Warning(ref msg) => msg.type_id(),
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
@@ -132,6 +134,9 @@ where
 		},
 		msgs::ErrorMessage::TYPE => {
 			Ok(Message::Error(Readable::read(buffer)?))
+		},
+		msgs::WarningMessage::TYPE => {
+			Ok(Message::Warning(Readable::read(buffer)?))
 		},
 		msgs::Ping::TYPE => {
 			Ok(Message::Ping(Readable::read(buffer)?))
@@ -262,6 +267,10 @@ impl Encode for msgs::Init {
 
 impl Encode for msgs::ErrorMessage {
 	const TYPE: u16 = 17;
+}
+
+impl Encode for msgs::WarningMessage {
+	const TYPE: u16 = 1;
 }
 
 impl Encode for msgs::Ping {

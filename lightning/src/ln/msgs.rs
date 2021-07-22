@@ -731,7 +731,16 @@ pub enum ErrorAction {
 	/// The peer did something incorrect. Tell them.
 	SendErrorMessage {
 		/// The message to send.
-		msg: ErrorMessage
+		msg: ErrorMessage,
+	},
+	/// The peer did something incorrect. Tell them without closing any channels.
+	SendWarningMessage {
+		/// The message to send.
+		msg: WarningMessage,
+		/// The peer may have done something harmless that we weren't able to meaningfully process,
+		/// though we should still tell them about it.
+		/// If this event is logged, log it at the given level.
+		log_level: logger::Level,
 	},
 }
 
