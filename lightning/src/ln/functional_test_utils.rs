@@ -42,7 +42,7 @@ use bitcoin::secp256k1::key::PublicKey;
 use prelude::*;
 use core::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use sync::{Arc, Mutex};
 use core::mem;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;

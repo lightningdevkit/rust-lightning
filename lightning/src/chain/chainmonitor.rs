@@ -38,7 +38,7 @@ use util::events;
 use util::events::EventHandler;
 
 use prelude::*;
-use std::sync::RwLock;
+use sync::RwLock;
 use core::ops::Deref;
 
 /// An implementation of [`chain::Watch`] for monitoring channels.

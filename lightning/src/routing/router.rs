@@ -1198,7 +1198,7 @@ mod tests {
 	use bitcoin::secp256k1::{Secp256k1, All};
 
 	use prelude::*;
-	use std::sync::Arc;
+	use sync::{self, Arc};
 
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
@@ -1321,7 +1321,7 @@ mod tests {
 		}
 	}
 
-	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<std::sync::Arc<test_utils::TestChainSource>, std::sync::Arc<crate::util::test_utils::TestLogger>>, std::sync::Arc<test_utils::TestChainSource>, std::sync::Arc<test_utils::TestLogger>) {
+	fn build_graph() -> (Secp256k1<All>, NetGraphMsgHandler<sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));

@@ -53,7 +53,7 @@ use regex;
 use prelude::*;
 use alloc::collections::BTreeSet;
 use core::default::Default;
-use std::sync::{Arc, Mutex};
+use sync::{Arc, Mutex};
 
 use ln::functional_test_utils::*;
 use ln::chan_utils::CommitmentTransaction;

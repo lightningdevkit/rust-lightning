@@ -41,7 +41,7 @@ use ln::functional_test_utils::*;
 use util::test_utils;
 
 use prelude::*;
-use std::sync::{Arc, Mutex};
+use sync::{Arc, Mutex};
 
 // If persister_fail is true, we have the persister return a PermanentFailure
 // instead of the higher-level ChainMonitor.

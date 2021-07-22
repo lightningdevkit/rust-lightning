@@ -13,7 +13,7 @@
 use prelude::*;
 use std::io::{Read, Write};
 use core::hash::Hash;
-use std::sync::Mutex;
+use sync::Mutex;
 use core::cmp;
 
 use bitcoin::secp256k1::Signature;

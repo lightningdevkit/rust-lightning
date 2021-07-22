@@ -39,7 +39,7 @@ use regex;
 
 use prelude::*;
 use core::time::Duration;
-use std::sync::{Mutex, Arc};
+use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
 use chain::keysinterface::InMemorySigner;
