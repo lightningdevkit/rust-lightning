@@ -19,7 +19,7 @@ stdin_fuzz = []
 [dependencies]
 afl = { version = "0.4", optional = true }
 lightning = { path = "../lightning", features = ["fuzztarget"] }
-bitcoin = { version = "0.26", features = ["fuzztarget", "secp-lowmemory"] }
+bitcoin = { version = "0.27", features = ["fuzztarget", "secp-lowmemory"] }
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }
 libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git", optional = true }

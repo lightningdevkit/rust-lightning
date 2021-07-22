@@ -10,7 +10,7 @@ Utilities to perform required background tasks for Rust Lightning.
 edition = "2018"
 
 [dependencies]
-bitcoin = "0.26"
+bitcoin = "0.27"
 lightning = { version = "0.0.99", path = "../lightning", features = ["allow_wallclock_use"] }
 lightning-persister = { version = "0.0.99", path = "../lightning-persister" }
 

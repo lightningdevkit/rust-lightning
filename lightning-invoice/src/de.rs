@@ -250,7 +250,13 @@ impl FromStr for SignedRawInvoice {
 	type Err = ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let (hrp, data) = bech32::decode(s)?;
+		let (hrp, data, var) = bech32::decode(s)?;
+
+		if var == bech32::Variant::Bech32m {
+			// Consider Bech32m addresses to be "Invalid Checksum", since that is what we'd get if
+			// we didn't support Bech32m (which lightning does not use).
+			return Err(ParseError::Bech32Error(bech32::Error::InvalidChecksum));
+		}
 
 		if data.len() < 104 {
 			return Err(ParseError::TooShortDataPart);
