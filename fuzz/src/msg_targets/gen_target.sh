@@ -43,4 +43,5 @@ GEN_TEST QueryShortChannelIds test_msg ""
 GEN_TEST ReplyChannelRange test_msg ""
 
 GEN_TEST ErrorMessage test_msg_hole ", 32, 2"
+GEN_TEST WarningMessage test_msg_hole ", 32, 2"
 GEN_TEST ChannelUpdate test_msg_hole ", 108, 1"

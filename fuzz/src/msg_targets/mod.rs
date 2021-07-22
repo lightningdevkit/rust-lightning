@@ -28,4 +28,5 @@ pub mod msg_node_announcement;
 pub mod msg_query_short_channel_ids;
 pub mod msg_reply_channel_range;
 pub mod msg_error_message;
+pub mod msg_warning_message;
 pub mod msg_channel_update;
