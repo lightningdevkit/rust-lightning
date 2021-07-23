@@ -244,12 +244,12 @@ impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	}
 }
 
-/// Wrapper to write each element of a Vec with no length prefix
-pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
-impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
+/// Wrapper to write each element of an iterator with no length prefix
+pub(crate) struct IterWriteWrapper<I: Iterator + Clone>(pub I) where I::Item: Writeable;
+impl<I: Iterator + Clone> Writeable for IterWriteWrapper<I> where I::Item: Writeable {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		for ref v in self.0.iter() {
+		for v in self.0.clone() {
 			v.write(writer)?;
 		}
 		Ok(())

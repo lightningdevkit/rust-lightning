@@ -21,7 +21,7 @@ use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
-use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
+use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, IterWriteWrapper};
 use routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::Transaction;
@@ -424,7 +424,7 @@ impl Writeable for Event {
 			&Event::SpendableOutputs { ref outputs } => {
 				5u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, VecWriteWrapper(outputs), required),
+					(0, IterWriteWrapper(outputs.iter()), required),
 				});
 			},
 			&Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {

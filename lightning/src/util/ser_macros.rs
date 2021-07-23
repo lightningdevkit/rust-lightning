@@ -17,7 +17,7 @@ macro_rules! encode_tlv {
 		$field.write($stream)?;
 	};
 	($stream: expr, $type: expr, $field: expr, vec_type) => {
-		encode_tlv!($stream, $type, ::util::ser::VecWriteWrapper(&$field), required);
+		encode_tlv!($stream, $type, ::util::ser::IterWriteWrapper($field.iter()), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -66,7 +66,7 @@ macro_rules! get_varint_length_prefixed_tlv_length {
 		$len.0 += field_len;
 	};
 	($len: expr, $type: expr, $field: expr, vec_type) => {
-		get_varint_length_prefixed_tlv_length!($len, $type, ::util::ser::VecWriteWrapper(&$field), required);
+		get_varint_length_prefixed_tlv_length!($len, $type, ::util::ser::IterWriteWrapper($field.iter()), required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
