@@ -25,7 +25,7 @@ use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
-use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField};
+use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField, SUPPORTED_GOSSIP_ENCODINGS};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
 use util::ser::{Writeable, Readable, Writer};
@@ -370,9 +370,15 @@ where C::Target: chain::Access, L::Target: Logger
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
 	fn sync_routing_table(&self, their_node_id: &PublicKey, init_msg: &Init) {
-
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
+			return ();
+		}
+
+		// We will only perform a sync with peers that support our encodings (if they specify their
+		// encodings)
+		if !init_msg.gossip_compression_encodings.is_empty() &&
+		   !init_msg.gossip_compression_encodings.iter().any(|e| SUPPORTED_GOSSIP_ENCODINGS.contains(e)) {
 			return ();
 		}
 
@@ -1230,7 +1236,8 @@ mod tests {
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, 
-		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
+		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT,
+		SUPPORTED_GOSSIP_ENCODINGS, GossipEncodingType};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
@@ -2215,13 +2222,39 @@ mod tests {
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
-			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), gossip_compression_encodings: Vec::new() };
+			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), gossip_compression_encodings: SUPPORTED_GOSSIP_ENCODINGS.iter().map(|e| *e).collect() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 0);
+		}
+
+		// It should ignore if available encodings do not match ours
+		{
+			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), gossip_compression_encodings: vec![GossipEncodingType::Zlib] };
 			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
 
 		// It should send a query_channel_message with the correct information
+		{
+			let init_msg = Init { features: InitFeatures::known(), gossip_compression_encodings: SUPPORTED_GOSSIP_ENCODINGS.iter().map(|e| *e).collect() };
+			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			match &events[0] {
+				MessageSendEvent::SendChannelRangeQuery{ node_id, msg } => {
+					assert_eq!(node_id, &node_id_1);
+					assert_eq!(msg.chain_hash, chain_hash);
+					assert_eq!(msg.first_blocknum, first_blocknum);
+					assert_eq!(msg.number_of_blocks, number_of_blocks);
+				},
+				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
+			};
+		}
+
+		// It should send a query_channel_message with the correct information if the peer was old
+		// and didn't send its supported encodings
 		{
 			let init_msg = Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() };
 			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
@@ -2244,7 +2277,7 @@ mod tests {
 		{
 			let network_graph = create_network_graph();
 			let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
-			let init_msg = Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() };
+			let init_msg = Init { features: InitFeatures::known(), gossip_compression_encodings: SUPPORTED_GOSSIP_ENCODINGS.iter().map(|e| *e).collect() };
 			for n in 1..7 {
 				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
 				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
