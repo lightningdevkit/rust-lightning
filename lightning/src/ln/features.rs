@@ -126,6 +126,8 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -136,6 +138,8 @@ mod sealed {
 			BasicMPP,
 			// Byte 3
 			ShutdownAnySegwit,
+			// Byte 4
+			CompressionAdvertisement,
 		],
 	});
 	define_context!(NodeContext {
@@ -165,7 +169,7 @@ mod sealed {
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
-			,
+			CompressionAdvertisement,
 			// Byte 5
 			,
 			// Byte 6
@@ -376,6 +380,10 @@ mod sealed {
 	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
+	define_feature!(33, CompressionAdvertisement, [InitContext, NodeContext],
+		"Feature flags for `option_compression`.", set_compression_advertisement_optional,
+		set_compression_advertisement_required, supports_compression_advertisement,
+		requires_compression_advertisement);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
@@ -810,6 +818,11 @@ mod tests {
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
 
+		assert!(InitFeatures::known().supports_compression_advertisement());
+		assert!(NodeFeatures::known().supports_compression_advertisement());
+		assert!(!InitFeatures::known().requires_compression_advertisement());
+		assert!(!NodeFeatures::known().requires_compression_advertisement());
+
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
@@ -845,11 +858,13 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp
 			// - opt_shutdown_anysegwit
-			assert_eq!(node_features.flags.len(), 4);
+			// - opt_compression_advertisement
+			assert_eq!(node_features.flags.len(), 5);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
 			assert_eq!(node_features.flags[3], 0b00001000);
+			assert_eq!(node_features.flags[4], 0b00000010);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
