@@ -915,15 +915,15 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 					chan_b_disconnected = false;
 				}
 			},
@@ -1118,13 +1118,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 					chan_b_disconnected = false;
 				}
 

@@ -40,7 +40,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
+use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, IterWriteWrapper};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -75,6 +75,9 @@ pub enum DecodeError {
 pub struct Init {
 	/// The relevant features which the sender supports
 	pub features: InitFeatures,
+	/// The set of encoding types which our peer supports for gossip messages, excluding those we
+	/// do not understand.
+	pub gossip_compression_encodings: Vec<GossipEncodingType>,
 }
 
 /// An error message to be sent or received from a peer
@@ -696,10 +699,22 @@ pub struct GossipTimestampFilter {
 }
 
 /// Encoding type for data compression of collections in gossip queries.
-/// We do not support encoding_type=1 zlib serialization defined in BOLT #7.
-enum EncodingType {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GossipEncodingType {
+	// Note that the enum variants here are defined to the values as used in message encodings.
+	// Because they currently match the bit indexes for the gossip encodings field in Init they are
+	// re-used there. If future encodings have different bit positions from encoding fields, code
+	// in Init (de-)serialization will need to adapt.
+	/// Uncompressed gossip query messages sent as-is on the wire
 	Uncompressed = 0x00,
+	/// Gossip messages compressed with the zlib compression algorithm.
+	/// For security reasons, we do not implement this or recommend anyone implement this.
+	Zlib = 0x01,
 }
+const KNOWN_ENCODINGS: [GossipEncodingType; 2] = [GossipEncodingType::Uncompressed, GossipEncodingType::Zlib];
+/// The gossip encodings which we support here. Note that due to security concerns we do not
+/// support reading zlib-compressed gossip messages.
+pub const SUPPORTED_GOSSIP_ENCODINGS: [GossipEncodingType; 1] = [GossipEncodingType::Uncompressed];
 
 /// Used to put an error message in a LightningError
 #[derive(Clone, Debug)]
@@ -1132,7 +1147,22 @@ impl Writeable for Init {
 		// global_features gets the bottom 13 bits of our features, and local_features gets all of
 		// our relevant feature bits. This keeps us compatible with old nodes.
 		self.features.write_up_to_13(w)?;
-		self.features.write(w)
+		self.features.write(w)?;
+		let mut highest_gossip_encoding = 0;
+		for enc in self.gossip_compression_encodings.iter() {
+			highest_gossip_encoding = cmp::max(1 << (*enc as u8), highest_gossip_encoding);
+		}
+		let mut gossip_compression_bits = Vec::new();
+		gossip_compression_bits.resize(((highest_gossip_encoding + 7) / 8) as usize, 0);
+		for enc in self.gossip_compression_encodings.iter() {
+			let val = 1u32 << (*enc as u8);
+			gossip_compression_bits[(val / 8) as usize] |= (val % 8) as u8;
+		}
+		encode_tlv_stream!(w, {
+			// 1 - networks field to list genesis block hashes
+			(3, IterWriteWrapper(gossip_compression_bits.iter()), required)
+		});
+		Ok(())
 	}
 }
 
@@ -1140,8 +1170,23 @@ impl Readable for Init {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
+		let mut gossip_compression_bits = Some(Vec::<u8>::new());
+		decode_tlv_stream!(r, {
+			// 1 - networks field to list genesis block hashes
+			(3, gossip_compression_bits, vec_type),
+		});
+		let gossip_compression_bits = gossip_compression_bits.unwrap();
+		let mut gossip_compression_encodings = Vec::new();
+		for encoding in &KNOWN_ENCODINGS {
+			let enc_val = 1u32 << (*encoding as u8);
+			if gossip_compression_bits.len() <= (enc_val / 8) as usize { continue; }
+			if gossip_compression_bits[(enc_val / 8) as usize] & (enc_val % 8) as u8 != 0 {
+				gossip_compression_encodings.push(*encoding);
+			}
+		}
 		Ok(Init {
 			features: features.or(global_features),
+			gossip_compression_encodings,
 		})
 	}
 }
@@ -1617,7 +1662,7 @@ impl Readable for QueryShortChannelIds {
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		if encoding_type != EncodingType::Uncompressed as u8 {
+		if encoding_type != GossipEncodingType::Uncompressed as u8 {
 			return Err(DecodeError::UnsupportedCompression);
 		}
 
@@ -1651,7 +1696,7 @@ impl Writeable for QueryShortChannelIds {
 		encoding_len.write(w)?;
 
 		// We only support type=0 uncompressed serialization
-		(EncodingType::Uncompressed as u8).write(w)?;
+		(GossipEncodingType::Uncompressed as u8).write(w)?;
 
 		for scid in self.short_channel_ids.iter() {
 			scid.write(w)?;
@@ -1697,7 +1742,7 @@ impl Readable for ReplyChannelRange {
 
 		// Must be encoding_type=0 uncompressed serialization. We do not
 		// support encoding_type=1 zlib serialization.
-		if encoding_type != EncodingType::Uncompressed as u8 {
+		if encoding_type != GossipEncodingType::Uncompressed as u8 {
 			return Err(DecodeError::UnsupportedCompression);
 		}
 
@@ -1734,7 +1779,7 @@ impl Writeable for ReplyChannelRange {
 		self.sync_complete.write(w)?;
 
 		encoding_len.write(w)?;
-		(EncodingType::Uncompressed as u8).write(w)?;
+		(GossipEncodingType::Uncompressed as u8).write(w)?;
 		for scid in self.short_channel_ids.iter() {
 			scid.write(w)?;
 		}
@@ -1755,7 +1800,7 @@ mod tests {
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs;
-	use ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat, GossipEncodingType};
 	use util::ser::{Writeable, Readable};
 
 	use bitcoin::hashes::hex::FromHex;
@@ -2390,13 +2435,24 @@ mod tests {
 	fn encoding_init() {
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
-		}.encode(), hex::decode("00023fff0003ffffff").unwrap());
+			gossip_compression_encodings: Vec::new(),
+		}.encode(), hex::decode("00023fff0003ffffff0300").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF]),
-		}.encode(), hex::decode("0001ff0001ff").unwrap());
+			gossip_compression_encodings: Vec::new(),
+		}.encode(), hex::decode("0001ff0001ff0300").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
-		}.encode(), hex::decode("00000000").unwrap());
+			gossip_compression_encodings: Vec::new(),
+		}.encode(), hex::decode("000000000300").unwrap());
+		assert_eq!(msgs::Init {
+			features: InitFeatures::from_le_bytes(vec![]),
+			gossip_compression_encodings: vec![GossipEncodingType::Uncompressed],
+		}.encode(), hex::decode("00000000030101").unwrap());
+		assert_eq!(msgs::Init {
+			features: InitFeatures::from_le_bytes(vec![]),
+			gossip_compression_encodings: vec![GossipEncodingType::Uncompressed, GossipEncodingType::Zlib],
+		}.encode(), hex::decode("00000000030103").unwrap());
 	}
 
 	#[test]

@@ -19,7 +19,7 @@ use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, LightningError, RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler, LightningError, RoutingMessageHandler, SUPPORTED_GOSSIP_ENCODINGS};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
@@ -858,7 +858,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let features = InitFeatures::known();
-									let resp = msgs::Init { features };
+									let resp = msgs::Init { features, gossip_compression_encodings: SUPPORTED_GOSSIP_ENCODINGS.iter().map(|e| *e).collect() };
 									self.enqueue_message(peer, &resp);
 									peer.awaiting_pong_timer_tick_intervals = 0;
 								},
@@ -869,7 +869,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let features = InitFeatures::known();
-									let resp = msgs::Init { features };
+									let resp = msgs::Init { features, gossip_compression_encodings: SUPPORTED_GOSSIP_ENCODINGS.iter().map(|e| *e).collect() };
 									self.enqueue_message(peer, &resp);
 									peer.awaiting_pong_timer_tick_intervals = 0;
 								},

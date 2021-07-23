@@ -6494,8 +6494,8 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
 		let params = RouteParameters {
@@ -6537,8 +6537,8 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known(), gossip_compression_encodings: Vec::new() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
 		let params = RouteParameters {
