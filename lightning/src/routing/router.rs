@@ -882,7 +882,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					htlc_maximum_msat: hop.htlc_maximum_msat,
 					fees: hop.fees,
 				};
-				if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, None::<u64>, &empty_channel_features, 0, path_value_msat, 0) {
+				// We assume that the recipient only included route hints for routes which had
+				// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
+				// invoices where the invoice does not specify value this may not be the case, but
+				// better to include the hints than not.
+				if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, Some((final_value_msat + 999) / 1000), &empty_channel_features, 0, path_value_msat, 0) {
 					// If this hop connects to a node with which we have a direct channel,
 					// ignore the network graph and, if the last hop was added, add our
 					// direct channel to the candidate set.
