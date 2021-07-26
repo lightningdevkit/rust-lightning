@@ -452,13 +452,19 @@ pub(super) struct Channel<Signer: Sign> {
 	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
 
 	last_sent_closing_fee: Option<(u64, Signature)>, // (fee, holder_sig)
-	closing_fee_limits: Option<(u64, u64)>,
 	target_closing_feerate_sats_per_kw: Option<u32>,
 
 	/// If our counterparty sent us a closing_signed while we were waiting for a `ChannelMonitor`
 	/// update, we need to delay processing it until later. We do that here by simply storing the
 	/// closing_signed message and handling it in `maybe_propose_closing_signed`.
 	pending_counterparty_closing_signed: Option<msgs::ClosingSigned>,
+
+	/// The minimum and maximum absolute fee we are willing to place on the closing transaction.
+	/// These are set once we reach `closing_negotiation_ready`.
+	#[cfg(test)]
+	pub(crate) closing_fee_limits: Option<(u64, u64)>,
+	#[cfg(not(test))]
+	closing_fee_limits: Option<(u64, u64)>,
 
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,

@@ -417,11 +417,21 @@ macro_rules! get_htlc_update_msgs {
 }
 
 #[cfg(test)]
+macro_rules! get_channel_ref {
+	($node: expr, $lock: ident, $channel_id: expr) => {
+		{
+			$lock = $node.node.channel_state.lock().unwrap();
+			$lock.by_id.get_mut(&$channel_id).unwrap()
+		}
+	}
+}
+
+#[cfg(test)]
 macro_rules! get_feerate {
 	($node: expr, $channel_id: expr) => {
 		{
-			let chan_lock = $node.node.channel_state.lock().unwrap();
-			let chan = chan_lock.by_id.get(&$channel_id).unwrap();
+			let mut lock;
+			let chan = get_channel_ref!($node, lock, $channel_id);
 			chan.get_feerate()
 		}
 	}

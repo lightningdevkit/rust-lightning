@@ -726,3 +726,111 @@ fn test_invalid_shutdown_script() {
 	}
 	check_added_monitors!(nodes[0], 1);
 }
+
+#[derive(PartialEq)]
+enum TimeoutStep {
+	AfterShutdown,
+	AfterClosingSigned,
+	NoTimeout,
+}
+
+fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
+	// The range-based closing signed negotiation allows the funder to restart the process with a
+	// new range if the previous range did not overlap. This allows implementations to request user
+	// intervention allowing users to enter a new fee range. We do not implement the sending side
+	// of this, instead opting to allow users to enter an explicit "willing to pay up to X to avoid
+	// force-closing" value and relying on that instead.
+	//
+	// Here we run test the fundee side of that restart mechanism, implementing the funder side of
+	// it manually.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+
+	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
+
+	nodes[0].node.close_channel(&chan_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
+
+	{
+		// Now we set nodes[1] to require a relatively high feerate for closing. This should result
+		// in it rejecting nodes[0]'s initial closing_signed, giving nodes[0] a chance to try
+		// again.
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 10;
+	}
+
+	let mut node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	// nodes[0] should use a "reasonable" feerate, well under the 10 sat/vByte that nodes[1] thinks
+	// is the current prevailing feerate.
+	assert!(node_0_closing_signed.fee_satoshis <= 500);
+
+	if timeout_step != TimeoutStep::AfterShutdown {
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+		// At this point nodes[1] should send back a warning message indicating it disagrees with the
+		// given channel-closing fee. Currently we do not implement warning messages so instead we
+		// remain silent here.
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		// Now deliver a mutated closing_signed indicating a higher acceptable fee range, which
+		// nodes[1] should happily accept and respond to.
+		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
+		{
+			let mut lock;
+			get_channel_ref!(nodes[0], lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
+		}
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+		let node_0_2nd_closing_signed = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+		if timeout_step == TimeoutStep::NoTimeout {
+			nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.1.unwrap());
+		}
+	}
+
+	if timeout_step != TimeoutStep::NoTimeout {
+		assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	} else {
+		assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	}
+
+	nodes[1].node.timer_tick_occurred();
+	nodes[1].node.timer_tick_occurred();
+
+	let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert_eq!(txn.len(), 1);
+	assert_eq!(txn[0].output.len(), 2);
+
+	if timeout_step != TimeoutStep::NoTimeout {
+		assert!((txn[0].output[0].script_pubkey.is_v0_p2wpkh() &&
+		         txn[0].output[1].script_pubkey.is_v0_p2wsh()) ||
+		        (txn[0].output[1].script_pubkey.is_v0_p2wpkh() &&
+		         txn[0].output[0].script_pubkey.is_v0_p2wsh()));
+		check_closed_broadcast!(nodes[1], true);
+		check_added_monitors!(nodes[1], 1);
+	} else {
+		assert!(txn[0].output[0].script_pubkey.is_v0_p2wpkh());
+		assert!(txn[0].output[1].script_pubkey.is_v0_p2wpkh());
+
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				assert_eq!(msg.contents.flags & 2, 2);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
+fn test_closing_signed_reinit_timeout() {
+	do_test_closing_signed_reinit_timeout(TimeoutStep::AfterShutdown);
+	do_test_closing_signed_reinit_timeout(TimeoutStep::AfterClosingSigned);
+	do_test_closing_signed_reinit_timeout(TimeoutStep::NoTimeout);
+}
