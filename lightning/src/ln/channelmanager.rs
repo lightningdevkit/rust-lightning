@@ -276,6 +276,10 @@ impl MsgHandleErrInternal {
 	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
+				ChannelError::Warn(msg) =>  LightningError {
+					err: msg,
+					action: msgs::ErrorAction::IgnoreError,
+				},
 				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
@@ -819,6 +823,11 @@ macro_rules! handle_error {
 macro_rules! convert_chan_err {
 	($self: ident, $err: expr, $short_to_id: expr, $channel: expr, $channel_id: expr) => {
 		match $err {
+			ChannelError::Warn(msg) => {
+				//TODO: Once warning messages are merged, we should send a `warning` message to our
+				//peer here.
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
+			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
 			},
@@ -2322,9 +2331,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									// close channel and then send error message to peer.
 									let counterparty_node_id = chan.get().get_counterparty_node_id();
 									let err: Result<(), _>  = match e {
-										ChannelError::Ignore(_) => {
+										ChannelError::Ignore(_) | ChannelError::Warn(_) => {
 											panic!("Stated return value requirements in send_commitment() were not met");
-										},
+										}
 										ChannelError::Close(msg) => {
 											log_trace!(self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
 											let (channel_id, mut channel) = chan.remove_entry();

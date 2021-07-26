@@ -574,6 +574,7 @@ pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 330;
 /// channel_id in ChannelManager.
 pub(super) enum ChannelError {
 	Ignore(String),
+	Warn(String),
 	Close(String),
 	CloseDelayBroadcast(String),
 }
@@ -582,6 +583,7 @@ impl fmt::Debug for ChannelError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
+			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
 			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
 			&ChannelError::CloseDelayBroadcast(ref e) => write!(f, "CloseDelayBroadcast : {}", e)
 		}
@@ -3323,7 +3325,8 @@ impl<Signer: Sign> Channel<Signer> {
 				// now!
 				match self.free_holding_cell_htlcs(logger) {
 					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
-					Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) => panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
+					Err(ChannelError::Warn(_)) | Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) =>
+						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok((Some((commitment_update, monitor_update)), htlcs_to_fail)) => {
 						return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), htlcs_to_fail, shutdown_msg));
 					},
