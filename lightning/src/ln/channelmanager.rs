@@ -2715,6 +2715,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let pending_msg_events = &mut channel_state.pending_msg_events;
 				let short_to_id = &mut channel_state.short_to_id;
 				channel_state.by_id.retain(|chan_id, chan| {
+					let counterparty_node_id = chan.get_counterparty_node_id();
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+					if err.is_err() {
+						handle_errors.push((err, counterparty_node_id));
+					}
+					if !retain_channel { return false; }
+
+					if let Err(e) = chan.timer_check_closing_negotiation_progress() {
+						let (needs_close, err) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+						handle_errors.push((Err(err), chan.get_counterparty_node_id()));
+						if needs_close { return false; }
+					}
+
 					match chan.channel_update_status() {
 						ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
 						ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
@@ -2741,20 +2755,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						_ => {},
 					}
 
-					let counterparty_node_id = chan.get_counterparty_node_id();
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
-					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
-					if err.is_err() {
-						handle_errors.push((err, counterparty_node_id));
-					}
-					retain_channel
+					true
 				});
 			}
 
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
-
 			should_persist
 		});
 	}

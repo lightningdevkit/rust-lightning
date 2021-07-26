@@ -255,8 +255,6 @@ enum ChannelState {
 	RemoteShutdownSent = 1 << 10,
 	/// Flag which is set on ChannelFunded or FundingSent after sending a shutdown message. At this
 	/// point, we may not add any new HTLCs to the channel.
-	/// TODO: Investigate some kind of timeout mechanism by which point the remote end must provide
-	/// us their shutdown.
 	LocalShutdownSent = 1 << 11,
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
 	/// to drop us, but we store this anyway.
@@ -503,6 +501,13 @@ pub(super) struct Channel<Signer: Sign> {
 	commitment_secrets: CounterpartyCommitmentSecrets,
 
 	channel_update_status: ChannelUpdateStatus,
+	/// Once we reach `closing_negotiation_ready`, we set this, indicating if closing_signed does
+	/// not complete within a single timer tick (one minute), we should force-close the channel.
+	/// This prevents us from keeping unusable channels around forever if our counterparty wishes
+	/// to DoS us.
+	/// Note that this field is reset to false on deserialization to give us a chance to connect to
+	/// our peer and start the closing_signed negotiation fresh.
+	closing_signed_in_flight: bool,
 
 	/// Our counterparty's channel_announcement signatures provided in announcement_signatures.
 	/// This can be used to rebroadcast the channel_announcement message later.
@@ -740,6 +745,7 @@ impl<Signer: Sign> Channel<Signer> {
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			channel_update_status: ChannelUpdateStatus::Enabled,
+			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
 
@@ -1006,6 +1012,7 @@ impl<Signer: Sign> Channel<Signer> {
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
 
 			channel_update_status: ChannelUpdateStatus::Enabled,
+			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
 
@@ -3413,16 +3420,38 @@ impl<Signer: Sign> Channel<Signer> {
 		self.closing_fee_limits.clone().unwrap()
 	}
 
+	/// Returns true if we're ready to commence the closing_signed negotiation phase. This is true
+	/// after both sides have exchanged a `shutdown` message and all HTLCs have been drained. At
+	/// this point if we're the funder we should send the initial closing_signed, and in any case
+	/// shutdown should complete within a reasonable timeframe.
+	fn closing_negotiation_ready(&self) -> bool {
+		self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() &&
+			self.channel_state &
+				(BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32 |
+				 ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
+				== BOTH_SIDES_SHUTDOWN_MASK &&
+			self.pending_update_fee.is_none()
+	}
+
+	/// Checks if the closing_signed negotiation is making appropriate progress, possibly returning
+	/// an Err if no progress is being made and the channel should be force-closed instead.
+	/// Should be called on a one-minute timer.
+	pub fn timer_check_closing_negotiation_progress(&mut self) -> Result<(), ChannelError> {
+		if self.closing_negotiation_ready() {
+			if self.closing_signed_in_flight {
+				return Err(ChannelError::Close("closing_signed negotiation failed to finish within two timer ticks".to_owned()));
+			} else {
+				self.closing_signed_in_flight = true;
+			}
+		}
+		Ok(())
+	}
+
 	pub fn maybe_propose_closing_signed<F: Deref, L: Deref>(&mut self, fee_estimator: &F, logger: &L)
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() ||
-				self.channel_state &
-					(BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32 |
-					 ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
-				!= BOTH_SIDES_SHUTDOWN_MASK ||
-				self.last_sent_closing_fee.is_some() || self.pending_update_fee.is_some() {
+		if self.last_sent_closing_fee.is_some() || !self.closing_negotiation_ready() {
 			return Ok((None, None));
 		}
 
@@ -5463,6 +5492,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			commitment_secrets,
 
 			channel_update_status,
+			closing_signed_in_flight: false,
 
 			announcement_sigs,
 
