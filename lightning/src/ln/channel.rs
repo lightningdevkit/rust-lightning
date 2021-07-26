@@ -4087,7 +4087,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if !self.is_outbound() {
 			// Check that we won't violate the remote channel reserve by adding this HTLC.
 			let counterparty_balance_msat = self.channel_value_satoshis * 1000 - self.value_to_self_msat;
-			let holder_selected_chan_reserve_msat = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
+			let holder_selected_chan_reserve_msat = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat {
