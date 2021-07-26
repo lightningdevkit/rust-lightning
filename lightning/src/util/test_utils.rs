@@ -19,6 +19,7 @@ use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
+use ln::script::ShutdownScript;
 use util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use util::events;
 use util::logger::{Logger, Level, Record};
@@ -71,7 +72,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 
 	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
-	fn get_shutdown_pubkey(&self) -> PublicKey { unreachable!(); }
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
@@ -459,7 +460,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
-	fn get_shutdown_pubkey(&self) -> PublicKey { self.backing.get_shutdown_pubkey() }
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { self.backing.get_shutdown_scriptpubkey() }
 	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
 		let keys = self.backing.get_channel_signer(inbound, channel_value_satoshis);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);

@@ -36,6 +36,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor};
 use lightning::ln::msgs::DecodeError;
+use lightning::ln::script::ShutdownScript;
 use lightning::routing::router::get_route;
 use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::config::UserConfig;
@@ -271,9 +272,11 @@ impl KeysInterface for KeyProvider {
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
-	fn get_shutdown_pubkey(&self) -> PublicKey {
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 		let secp_ctx = Secp256k1::signing_only();
-		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap())
+		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
+		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
+		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 
 	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {

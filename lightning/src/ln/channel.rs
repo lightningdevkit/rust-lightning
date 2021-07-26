@@ -9,15 +9,15 @@
 
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
-use bitcoin::blockdata::opcodes;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256d;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hash_types::{Txid, BlockHash};
 
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
@@ -356,7 +356,7 @@ pub(super) struct Channel<Signer: Sign> {
 	latest_monitor_update_id: u64,
 
 	holder_signer: Signer,
-	shutdown_pubkey: PublicKey,
+	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: Script,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
@@ -614,7 +614,7 @@ impl<Signer: Sign> Channel<Signer> {
 			latest_monitor_update_id: 0,
 
 			holder_signer,
-			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
+			shutdown_scriptpubkey: Some(keys_provider.get_shutdown_scriptpubkey()),
 			destination_script: keys_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -858,7 +858,7 @@ impl<Signer: Sign> Channel<Signer> {
 			latest_monitor_update_id: 0,
 
 			holder_signer,
-			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
+			shutdown_scriptpubkey: Some(keys_provider.get_shutdown_scriptpubkey()),
 			destination_script: keys_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -1137,8 +1137,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let channel_close_key_hash = WPubkeyHash::hash(&self.shutdown_pubkey.serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_close_key_hash[..]).into_script()
+		// The shutdown scriptpubkey is set on channel opening when option_upfront_shutdown_script
+		// is signaled. Otherwise, it is set when sending a shutdown message. Calling this method
+		// outside of those situations will fail.
+		self.shutdown_scriptpubkey.clone().unwrap().into_inner()
 	}
 
 	#[inline]
@@ -1687,8 +1689,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
@@ -1760,8 +1763,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo = self.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script),
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
@@ -4560,7 +4564,12 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		(key_data.0.len() as u32).write(writer)?;
 		writer.write_all(&key_data.0[..])?;
 
-		self.shutdown_pubkey.write(writer)?;
+		// Write out the old serialization for shutdown_pubkey for backwards compatibility, if
+		// deserialized from that format.
+		match self.shutdown_scriptpubkey.as_ref().and_then(|script| script.as_legacy_pubkey()) {
+			Some(shutdown_pubkey) => shutdown_pubkey.write(writer)?,
+			None => [0u8; PUBLIC_KEY_SIZE].write(writer)?,
+		}
 		self.destination_script.write(writer)?;
 
 		self.cur_holder_commitment_transaction_number.write(writer)?;
@@ -4756,6 +4765,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(1, self.minimum_depth, option),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
 			(5, self.config, required),
+			(7, self.shutdown_scriptpubkey, option),
 		});
 
 		Ok(())
@@ -4799,7 +4809,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		}
 		let holder_signer = keys_source.read_chan_signer(&keys_data)?;
 
-		let shutdown_pubkey = Readable::read(reader)?;
+		// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
+		let mut shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
+			Ok(pubkey) => Some(ShutdownScript::new_p2wpkh_from_pubkey(pubkey)),
+			Err(_) => None,
+		};
 		let destination_script = Readable::read(reader)?;
 
 		let cur_holder_commitment_transaction_number = Readable::read(reader)?;
@@ -4970,6 +4984,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(1, minimum_depth, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
 			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
+			(7, shutdown_scriptpubkey, option),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -4987,7 +5002,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			latest_monitor_update_id,
 
 			holder_signer,
-			shutdown_pubkey,
+			shutdown_scriptpubkey,
 			destination_script,
 
 			cur_holder_commitment_transaction_number,
@@ -5080,6 +5095,7 @@ mod tests {
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
+	use ln::script::ShutdownScript;
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
 	use chain::BestBlock;
@@ -5129,10 +5145,10 @@ mod tests {
 			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash[..]).into_script()
 		}
 
-		fn get_shutdown_pubkey(&self) -> PublicKey {
+		fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_close_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
+			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
 
 		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {

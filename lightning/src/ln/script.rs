@@ -7,13 +7,17 @@ use bitcoin::hash_types::{PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::key::PublicKey;
 
 use ln::features::InitFeatures;
+use ln::msgs::DecodeError;
+use util::ser::{Readable, Writeable, Writer};
 
 use core::convert::TryFrom;
 use core::num::NonZeroU8;
+use io;
 
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
 /// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
+#[derive(Clone)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
 /// An error occurring when converting from [`Script`] to [`ShutdownScript`].
@@ -25,6 +29,7 @@ pub struct InvalidShutdownScript {
 	pub script: Script
 }
 
+#[derive(Clone)]
 enum ShutdownScriptImpl {
 	/// [`PublicKey`] used to form a P2WPKH script pubkey. Used to support backward-compatible
 	/// serialization.
@@ -34,9 +39,30 @@ enum ShutdownScriptImpl {
 	Bolt2(Script),
 }
 
+impl Writeable for ShutdownScript {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+
+	fn serialized_length(&self) -> usize {
+		self.0.serialized_length()
+	}
+}
+
+impl Readable for ShutdownScript {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(ShutdownScript(ShutdownScriptImpl::read(r)?))
+	}
+}
+
+impl_writeable_tlv_based_enum!(ShutdownScriptImpl, ;
+	(0, Legacy),
+	(1, Bolt2),
+);
+
 impl ShutdownScript {
 	/// Generates a P2WPKH script pubkey from the given [`PublicKey`].
-	pub fn new_p2wpkh_from_pubkey(pubkey: PublicKey) -> Self {
+	pub(crate) fn new_p2wpkh_from_pubkey(pubkey: PublicKey) -> Self {
 		Self(ShutdownScriptImpl::Legacy(pubkey))
 	}
 
