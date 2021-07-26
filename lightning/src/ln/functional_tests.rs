@@ -28,8 +28,10 @@ use routing::network_graph::RoutingFees;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler,HTLCFailChannelUpdate, ErrorAction};
+use ln::script::ShutdownScript;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
+use util::test_utils::OnGetShutdownScriptpubkey;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
@@ -55,6 +57,7 @@ use io;
 use prelude::*;
 use alloc::collections::BTreeSet;
 use core::default::Default;
+use core::num::NonZeroU8;
 use sync::{Arc, Mutex};
 
 use ln::functional_test_utils::*;
@@ -7477,9 +7480,9 @@ fn test_upfront_shutdown_script() {
 	let flags_no = InitFeatures::known().clear_upfront_shutdown_script();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags_no, flags.clone());
 	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
-	let mut node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	node_1_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	let node_1_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
+	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -7491,8 +7494,8 @@ fn test_upfront_shutdown_script() {
 	// channel smoothly, opt-out is from channel initiator here
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 1000000, 1000000, flags.clone(), flags.clone());
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
-	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	check_added_monitors!(nodes[1], 1);
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -7505,8 +7508,8 @@ fn test_upfront_shutdown_script() {
 	//// channel smoothly
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 1000000, flags.clone(), flags.clone());
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
-	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
+	check_added_monitors!(nodes[1], 1);
+	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -7610,6 +7613,7 @@ fn test_segwit_v0_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	check_added_monitors!(nodes[1], 1);
 
 	// Use a segwit v0 script supported even without option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -7644,6 +7648,7 @@ fn test_anysegwit_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	check_added_monitors!(nodes[1], 1);
 
 	// Use a non-v0 segwit script supported by option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -7672,20 +7677,33 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	node_cfgs[0].features = InitFeatures::known().clear_shutdown_anysegwit();
+	node_cfgs[1].features = InitFeatures::known().clear_shutdown_anysegwit();
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &user_cfgs);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let node_features = InitFeatures::known().clear_shutdown_anysegwit();
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), node_features.clone());
-	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	// Check that using an unsupported shutdown script fails and a supported one succeeds.
+	let supported_shutdown_script = chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey();
+	let unsupported_shutdown_script =
+		ShutdownScript::new_witness_program(NonZeroU8::new(16).unwrap(), &[0, 40]).unwrap();
+	chanmon_cfgs[1].keys_manager
+		.expect(OnGetShutdownScriptpubkey { returns: unsupported_shutdown_script.clone() })
+		.expect(OnGetShutdownScriptpubkey { returns: supported_shutdown_script });
 
-	// Use a non-v0 segwit script supported by option_shutdown_anysegwit
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, node_cfgs[0].features.clone(), node_cfgs[1].features.clone());
+	match nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()) {
+		Err(APIError::APIMisuseError { err }) => assert_eq!(err, "Provided a scriptpubkey format not accepted by peer. script: (60020028)"),
+		Err(e) => panic!("Unexpected error: {:?}", e),
+		Ok(_) => panic!("Expected error"),
+	}
+	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	check_added_monitors!(nodes[1], 1);
+
+	// Use a non-v0 segwit script unsupported without option_shutdown_anysegwit
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	node_0_shutdown.scriptpubkey = Builder::new().push_int(16)
-		.push_slice(&[0, 40])
-		.into_script();
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_features, &node_0_shutdown);
+	node_0_shutdown.scriptpubkey = unsupported_shutdown_script.into_inner();
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_cfgs[1].features, &node_0_shutdown);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -7713,6 +7731,7 @@ fn test_invalid_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	check_added_monitors!(nodes[1], 1);
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -7748,7 +7767,7 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), 1000000, 1000000, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), InitFeatures::known(), 1000000, 1000000, 0, &low_our_to_self_config) {
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),

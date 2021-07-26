@@ -438,6 +438,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		/// think we've fallen behind!
 		should_broadcast: bool,
 	},
+	ShutdownScript {
+		scriptpubkey: Script,
+	},
 }
 
 impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
@@ -460,6 +463,9 @@ impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
 	},
 	(4, ChannelForceClosed) => {
 		(0, should_broadcast, required),
+	},
+	(5, ShutdownScript) => {
+		(0, scriptpubkey, required),
 	},
 ;);
 
@@ -1437,7 +1443,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						// shouldn't print the scary warning above.
 						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
 					}
-				}
+				},
+				ChannelMonitorUpdateStep::ShutdownScript { scriptpubkey } => {
+					log_trace!(logger, "Updating ChannelMonitor with shutdown script");
+					if let Some(shutdown_script) = self.shutdown_script.replace(scriptpubkey.clone()) {
+						panic!("Attempted to replace shutdown script {} with {}", shutdown_script, scriptpubkey);
+					}
+				},
 			}
 		}
 		self.latest_update_id = updates.update_id;

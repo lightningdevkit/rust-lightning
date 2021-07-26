@@ -453,6 +453,7 @@ pub struct TestKeysInterface {
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
 	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
+	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 }
 
 impl keysinterface::KeysInterface for TestKeysInterface {
@@ -460,7 +461,17 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { self.backing.get_shutdown_scriptpubkey() }
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		match &mut *self.expectations.lock().unwrap() {
+			None => self.backing.get_shutdown_scriptpubkey(),
+			Some(expectations) => match expectations.pop_front() {
+				None => panic!("Unexpected get_shutdown_scriptpubkey"),
+				Some(expectation) => expectation.returns,
+			},
+		}
+	}
+
 	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
 		let keys = self.backing.get_channel_signer(inbound, channel_value_satoshis);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
@@ -503,7 +514,6 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	}
 }
 
-
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
@@ -513,8 +523,19 @@ impl TestKeysInterface {
 			override_channel_id_priv: Mutex::new(None),
 			disable_revocation_policy_check: false,
 			revoked_commitments: Mutex::new(HashMap::new()),
+			expectations: Mutex::new(None),
 		}
 	}
+
+	/// Sets an expectation that [`keysinterface::KeysInterface::get_shutdown_scriptpubkey`] is
+	/// called.
+	pub fn expect(&self, expectation: OnGetShutdownScriptpubkey) -> &Self {
+		self.expectations.lock().unwrap()
+			.get_or_insert_with(|| VecDeque::new())
+			.push_back(expectation);
+		self
+	}
+
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
@@ -528,6 +549,33 @@ impl TestKeysInterface {
 		}
 		let cell = revoked_commitments.get(&commitment_seed).unwrap();
 		Arc::clone(cell)
+	}
+}
+
+impl Drop for TestKeysInterface {
+	fn drop(&mut self) {
+		if std::thread::panicking() {
+			return;
+		}
+
+		if let Some(expectations) = &*self.expectations.lock().unwrap() {
+			if !expectations.is_empty() {
+				panic!("Unsatisfied expectations: {:?}", expectations);
+			}
+		}
+	}
+}
+
+/// An expectation that [`keysinterface::KeysInterface::get_shutdown_scriptpubkey`] was called and
+/// returns a [`ShutdownScript`].
+pub struct OnGetShutdownScriptpubkey {
+	/// A shutdown script used to close a channel.
+	pub returns: ShutdownScript,
+}
+
+impl core::fmt::Debug for OnGetShutdownScriptpubkey {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		f.debug_struct("OnGetShutdownScriptpubkey").finish()
 	}
 }
 
