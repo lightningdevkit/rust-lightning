@@ -272,11 +272,15 @@ struct HolderSignedTx {
 	b_htlc_key: PublicKey,
 	delayed_payment_key: PublicKey,
 	per_commitment_point: PublicKey,
-	feerate_per_kw: u32,
 	htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
+	to_self_value_sat: u64,
+	feerate_per_kw: u32,
 }
 impl_writeable_tlv_based!(HolderSignedTx, {
 	(0, txid, required),
+	// Note that this is filled in with data from OnchainTxHandler if it's missing.
+	// For HolderSignedTx objects serialized with 0.0.100+, this should be filled in.
+	(1, to_self_value_sat, (default_value, u64::max_value())),
 	(2, revocation_key, required),
 	(4, a_htlc_key, required),
 	(6, b_htlc_key, required),
@@ -869,8 +873,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				b_htlc_key: tx_keys.countersignatory_htlc_key,
 				delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
 				per_commitment_point: tx_keys.per_commitment_point,
-				feerate_per_kw: trusted_tx.feerate_per_kw(),
 				htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+				to_self_value_sat: initial_holder_commitment_tx.to_broadcaster_value_sat(),
+				feerate_per_kw: trusted_tx.feerate_per_kw(),
 			};
 			(holder_commitment_tx, trusted_tx.commitment_number())
 		};
@@ -1424,8 +1429,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				b_htlc_key: tx_keys.countersignatory_htlc_key,
 				delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
 				per_commitment_point: tx_keys.per_commitment_point,
-				feerate_per_kw: trusted_tx.feerate_per_kw(),
 				htlc_outputs,
+				to_self_value_sat: holder_commitment_tx.to_broadcaster_value_sat(),
+				feerate_per_kw: trusted_tx.feerate_per_kw(),
 			}
 		};
 		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx);
@@ -2708,14 +2714,15 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			}
 		}
 
-		let prev_holder_signed_commitment_tx = match <u8 as Readable>::read(reader)? {
-			0 => None,
-			1 => {
-				Some(Readable::read(reader)?)
-			},
-			_ => return Err(DecodeError::InvalidValue),
-		};
-		let current_holder_commitment_tx = Readable::read(reader)?;
+		let mut prev_holder_signed_commitment_tx: Option<HolderSignedTx> =
+			match <u8 as Readable>::read(reader)? {
+				0 => None,
+				1 => {
+					Some(Readable::read(reader)?)
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+		let mut current_holder_commitment_tx: HolderSignedTx = Readable::read(reader)?;
 
 		let current_counterparty_commitment_number = <U48 as Readable>::read(reader)?.0;
 		let current_holder_commitment_number = <U48 as Readable>::read(reader)?.0;
@@ -2772,10 +2779,27 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler = ReadableArgs::read(reader, keys_manager)?;
+		let onchain_tx_handler: OnchainTxHandler<Signer> = ReadableArgs::read(reader, keys_manager)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
+
+		if let Some(prev_commitment_tx) = prev_holder_signed_commitment_tx.as_mut() {
+			let prev_holder_value = onchain_tx_handler.get_prev_holder_commitment_to_self_value();
+			if prev_holder_value.is_none() { return Err(DecodeError::InvalidValue); }
+			if prev_commitment_tx.to_self_value_sat == u64::max_value() {
+				prev_commitment_tx.to_self_value_sat = prev_holder_value.unwrap();
+			} else if prev_commitment_tx.to_self_value_sat != prev_holder_value.unwrap() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let cur_holder_value = onchain_tx_handler.get_cur_holder_commitment_to_self_value();
+		if current_holder_commitment_tx.to_self_value_sat == u64::max_value() {
+			current_holder_commitment_tx.to_self_value_sat = cur_holder_value;
+		} else if current_holder_commitment_tx.to_self_value_sat != cur_holder_value {
+			return Err(DecodeError::InvalidValue);
+		}
 
 		read_tlv_fields!(reader, {});
 

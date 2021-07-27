@@ -365,6 +365,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	pub(crate) fn get_prev_holder_commitment_to_self_value(&self) -> Option<u64> {
+		self.prev_holder_commitment.as_ref().map(|commitment| commitment.to_broadcaster_value_sat())
+	}
+
+	pub(crate) fn get_cur_holder_commitment_to_self_value(&self) -> u64 {
+		self.holder_commitment.to_broadcaster_value_sat()
+	}
+
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
