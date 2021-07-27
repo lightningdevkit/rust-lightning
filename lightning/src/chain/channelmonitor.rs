@@ -297,19 +297,11 @@ struct CounterpartyCommitmentTransaction {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
 	on_counterparty_tx_csv: u16,
-	per_htlc: HashMap<Txid, Vec<HTLCOutputInCommitment>>
 }
 
 impl Writeable for CounterpartyCommitmentTransaction {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
-		for (ref txid, ref htlcs) in self.per_htlc.iter() {
-			w.write_all(&txid[..])?;
-			w.write_all(&byte_utils::be64_to_array(htlcs.len() as u64))?;
-			for &ref htlc in htlcs.iter() {
-				htlc.write(w)?;
-			}
-		}
+		w.write_all(&byte_utils::be64_to_array(0))?;
 		write_tlv_fields!(w, {
 			(0, self.counterparty_delayed_payment_base_key, required),
 			(2, self.counterparty_htlc_base_key, required),
@@ -321,20 +313,17 @@ impl Writeable for CounterpartyCommitmentTransaction {
 impl Readable for CounterpartyCommitmentTransaction {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let counterparty_commitment_transaction = {
+			// Versions prior to 0.0.100 had some per-HTLC state stored here, which is no longer
+			// used. Read it for compatibility.
 			let per_htlc_len: u64 = Readable::read(r)?;
-			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
 			for _  in 0..per_htlc_len {
-				let txid: Txid = Readable::read(r)?;
+				let _txid: Txid = Readable::read(r)?;
 				let htlcs_count: u64 = Readable::read(r)?;
-				let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
 				for _ in 0..htlcs_count {
-					let htlc = Readable::read(r)?;
-					htlcs.push(htlc);
-				}
-				if let Some(_) = per_htlc.insert(txid, htlcs) {
-					return Err(DecodeError::InvalidValue);
+					let _htlc: HTLCOutputInCommitment = Readable::read(r)?;
 				}
 			}
+
 			let mut counterparty_delayed_payment_base_key = OptionDeserWrapper(None);
 			let mut counterparty_htlc_base_key = OptionDeserWrapper(None);
 			let mut on_counterparty_tx_csv: u16 = 0;
@@ -347,7 +336,6 @@ impl Readable for CounterpartyCommitmentTransaction {
 				counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
 				counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 				on_counterparty_tx_csv,
-				per_htlc,
 			}
 		};
 		Ok(counterparty_commitment_transaction)
@@ -855,7 +843,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
 		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
 		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
-		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv, per_htlc: HashMap::new() };
+		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
 
 		let channel_keys_id = keys.channel_keys_id();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
@@ -1407,7 +1395,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				htlcs.push(htlc.0);
 			}
 		}
-		self.counterparty_tx_cache.per_htlc.insert(txid, htlcs);
 	}
 
 	/// Informs this monitor of the latest holder (ie broadcastable) commitment transaction. The
