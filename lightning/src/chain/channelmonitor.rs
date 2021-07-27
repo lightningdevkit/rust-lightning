@@ -290,16 +290,16 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 	(14, htlc_outputs, vec_type)
 });
 
-/// We use this to track counterparty commitment transactions and htlcs outputs and
-/// use it to generate any justice or 2nd-stage preimage/timeout transactions.
+/// We use this to track static counterparty commitment transaction data and to generate any
+/// justice or 2nd-stage preimage/timeout transactions.
 #[derive(PartialEq)]
-struct CounterpartyCommitmentTransaction {
+struct CounterpartyCommitmentParameters {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
 	on_counterparty_tx_csv: u16,
 }
 
-impl Writeable for CounterpartyCommitmentTransaction {
+impl Writeable for CounterpartyCommitmentParameters {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(&byte_utils::be64_to_array(0))?;
 		write_tlv_fields!(w, {
@@ -310,7 +310,7 @@ impl Writeable for CounterpartyCommitmentTransaction {
 		Ok(())
 	}
 }
-impl Readable for CounterpartyCommitmentTransaction {
+impl Readable for CounterpartyCommitmentParameters {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let counterparty_commitment_transaction = {
 			// Versions prior to 0.0.100 had some per-HTLC state stored here, which is no longer
@@ -332,7 +332,7 @@ impl Readable for CounterpartyCommitmentTransaction {
 				(2, counterparty_htlc_base_key, required),
 				(4, on_counterparty_tx_csv, required),
 			});
-			CounterpartyCommitmentTransaction {
+			CounterpartyCommitmentParameters {
 				counterparty_delayed_payment_base_key: counterparty_delayed_payment_base_key.0.unwrap(),
 				counterparty_htlc_base_key: counterparty_htlc_base_key.0.unwrap(),
 				on_counterparty_tx_csv,
@@ -524,7 +524,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
 
-	counterparty_tx_cache: CounterpartyCommitmentTransaction,
+	counterparty_commitment_params: CounterpartyCommitmentParameters,
 	funding_redeemscript: Script,
 	channel_value_satoshis: u64,
 	// first is the idx of the first of the two revocation points
@@ -637,7 +637,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.funding_info != other.funding_info ||
 			self.current_counterparty_commitment_txid != other.current_counterparty_commitment_txid ||
 			self.prev_counterparty_commitment_txid != other.prev_counterparty_commitment_txid ||
-			self.counterparty_tx_cache != other.counterparty_tx_cache ||
+			self.counterparty_commitment_params != other.counterparty_commitment_params ||
 			self.funding_redeemscript != other.funding_redeemscript ||
 			self.channel_value_satoshis != other.channel_value_satoshis ||
 			self.their_cur_revocation_points != other.their_cur_revocation_points ||
@@ -708,7 +708,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.current_counterparty_commitment_txid.write(writer)?;
 		self.prev_counterparty_commitment_txid.write(writer)?;
 
-		self.counterparty_tx_cache.write(writer)?;
+		self.counterparty_commitment_params.write(writer)?;
 		self.funding_redeemscript.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
@@ -843,7 +843,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
 		let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
 		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
-		let counterparty_tx_cache = CounterpartyCommitmentTransaction { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
+		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
 
 		let channel_keys_id = keys.channel_keys_id();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
@@ -891,7 +891,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				current_counterparty_commitment_txid: None,
 				prev_counterparty_commitment_txid: None,
 
-				counterparty_tx_cache,
+				counterparty_commitment_params,
 				funding_redeemscript,
 				channel_value_satoshis,
 				their_cur_revocation_points: None,
@@ -1629,16 +1629,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint));
-			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_tx_cache.counterparty_delayed_payment_base_key));
+			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key));
 
-			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_tx_cache.on_counterparty_tx_csv, &delayed_key);
+			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
 
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
-					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_tx_cache.on_counterparty_tx_csv);
-					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv);
+					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, true, height);
 					claimable_outpoints.push(justice_package);
 				}
 			}
@@ -1651,7 +1651,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone());
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone());
 						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height);
 						claimable_outpoints.push(justice_package);
 					}
@@ -1719,7 +1719,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							}
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							if preimage.is_some() || !htlc.offered {
-								let counterparty_htlc_outp = if htlc.offered { PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, preimage.unwrap(), htlc.clone())) } else { PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(*revocation_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, htlc.clone())) };
+								let counterparty_htlc_outp = if htlc.offered { PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(*revocation_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, preimage.unwrap(), htlc.clone())) } else { PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(*revocation_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, htlc.clone())) };
 								let aggregation = if !htlc.offered { false } else { true };
 								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
 								claimable_outpoints.push(counterparty_package);
@@ -1753,8 +1753,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 
 		log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, 0);
-		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_tx_cache.counterparty_delayed_payment_base_key, self.counterparty_tx_cache.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_tx_cache.on_counterparty_tx_csv);
-		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_tx_cache.on_counterparty_tx_csv as u32, true, height);
+		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_commitment_params.on_counterparty_tx_csv);
+		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, true, height);
 		let claimable_outpoints = vec!(justice_package);
 		let outputs = vec![(0, tx.output[0].clone())];
 		(claimable_outpoints, Some((htlc_txid, outputs)))
@@ -2628,7 +2628,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let current_counterparty_commitment_txid = Readable::read(reader)?;
 		let prev_counterparty_commitment_txid = Readable::read(reader)?;
 
-		let counterparty_tx_cache = Readable::read(reader)?;
+		let counterparty_commitment_params = Readable::read(reader)?;
 		let funding_redeemscript = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
@@ -2809,7 +2809,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				current_counterparty_commitment_txid,
 				prev_counterparty_commitment_txid,
 
-				counterparty_tx_cache,
+				counterparty_commitment_params,
 				funding_redeemscript,
 				channel_value_satoshis,
 				their_cur_revocation_points,
