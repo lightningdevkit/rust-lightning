@@ -897,6 +897,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 					log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(peer.their_node_id.unwrap()));
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
+				if !msg.features.supports_shutdown_anysegwit() {
+					log_debug!(self.logger, "Peer {} does not support option_shutdown_anysegwit, disconnecting with no_connection_possible", log_pubkey!(peer.their_node_id.unwrap()));
+					return Err(PeerHandleError{ no_connection_possible: true }.into());
+				}
 
 				self.message_handler.route_handler.sync_routing_table(&peer.their_node_id.unwrap(), &msg);
 

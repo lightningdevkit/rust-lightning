@@ -123,7 +123,7 @@ mod sealed {
 			// Byte 2
 			,
 			// Byte 3
-			,
+			ShutdownAnySegwit,
 		],
 		optional_features: [
 			// Byte 0
@@ -133,7 +133,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP,
 			// Byte 3
-			ShutdownAnySegwit,
+			,
 		],
 	});
 	define_context!(NodeContext {
@@ -145,7 +145,7 @@ mod sealed {
 			// Byte 2
 			,
 			// Byte 3
-			,
+			ShutdownAnySegwit,
 			// Byte 4
 			,
 			// Byte 5
@@ -161,7 +161,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP,
 			// Byte 3
-			ShutdownAnySegwit,
+			,
 			// Byte 4
 			,
 			// Byte 5
@@ -684,11 +684,6 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 	pub(crate) fn supports_shutdown_anysegwit(&self) -> bool {
 		<T as sealed::ShutdownAnySegwit>::supports_feature(&self.flags)
 	}
-	#[cfg(test)]
-	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
-		<T as sealed::ShutdownAnySegwit>::clear_bits(&mut self.flags);
-		self
-	}
 }
 
 impl<T: sealed::Context> Writeable for Features<T> {
@@ -805,12 +800,12 @@ mod tests {
 			// - option_data_loss_protect
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp
-			// - opt_shutdown_anysegwit
+			// - opt_shutdown_anysegwit (req)
 			assert_eq!(node_features.flags.len(), 4);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
-			assert_eq!(node_features.flags[3], 0b00001000);
+			assert_eq!(node_features.flags[3], 0b00000100);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
