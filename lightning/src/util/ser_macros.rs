@@ -115,6 +115,9 @@ macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable) => {{
+		// no-op
+	}};
 }
 
 macro_rules! check_missing_tlv {
@@ -138,6 +141,9 @@ macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, ignorable) => {{
+		// no-op
+	}};
 }
 
 macro_rules! decode_tlv {
@@ -152,6 +158,9 @@ macro_rules! decode_tlv {
 	}};
 	($reader: expr, $field: ident, option) => {{
 		$field = Some(ser::Readable::read(&mut $reader)?);
+	}};
+	($reader: expr, $field: ident, ignorable) => {{
+		$field = ser::MaybeReadable::read(&mut $reader)?;
 	}};
 }
 
@@ -405,7 +414,7 @@ macro_rules! init_tlv_field_var {
 	};
 	($field: ident, option) => {
 		let mut $field = None;
-	}
+	};
 }
 
 /// Implements Readable/Writeable for a struct storing it as a set of TLVs
@@ -458,17 +467,7 @@ macro_rules! impl_writeable_tlv_based {
 	}
 }
 
-/// Implement Readable and Writeable for an enum, with struct variants stored as TLVs and tuple
-/// variants stored directly.
-/// The format is, for example
-/// impl_writeable_tlv_based_enum!(EnumName,
-///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
-///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, vec_type)};
-///   (2, TupleVariantA), (3, TupleVariantB),
-/// );
-/// The type is written as a single byte, followed by any variant data.
-/// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
-macro_rules! impl_writeable_tlv_based_enum {
+macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*;
@@ -492,6 +491,72 @@ macro_rules! impl_writeable_tlv_based_enum {
 				Ok(())
 			}
 		}
+	}
+}
+
+/// Implement MaybeReadable and Writeable for an enum, with struct variants stored as TLVs and
+/// tuple variants stored directly.
+///
+/// This is largely identical to `impl_writeable_tlv_based_enum`, except that odd variants will
+/// return `Ok(None)` instead of `Err(UnknownRequiredFeature)`. It should generally be preferred
+/// when `MaybeReadable` is practical instead of just `Readable` as it provides an upgrade path for
+/// new variants to be added which are simply ignored by existing clients.
+macro_rules! impl_writeable_tlv_based_enum_upgradable {
+	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
+		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	),* $(,)*) => {
+		_impl_writeable_tlv_based_enum_common!($st,
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*; );
+
+		impl ::util::ser::MaybeReadable for $st {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, ::ln::msgs::DecodeError> {
+				let id: u8 = ::util::ser::Readable::read(reader)?;
+				match id {
+					$($variant_id => {
+						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
+						// in the same function body. Instead, we define a closure and call it.
+						let f = || {
+							$(
+								init_tlv_field_var!($field, $fieldty);
+							)*
+							read_tlv_fields!(reader, {
+								$(($type, $field, $fieldty)),*
+							});
+							Ok(Some($st::$variant_name {
+								$(
+									$field: init_tlv_based_struct_field!($field, $fieldty)
+								),*
+							}))
+						};
+						f()
+					}),*
+					_ if id % 2 == 1 => Ok(None),
+					_ => Err(DecodeError::UnknownRequiredFeature),
+				}
+			}
+		}
+
+	}
+}
+
+/// Implement Readable and Writeable for an enum, with struct variants stored as TLVs and tuple
+/// variants stored directly.
+/// The format is, for example
+/// impl_writeable_tlv_based_enum!(EnumName,
+///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
+///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, vec_type)};
+///   (2, TupleVariantA), (3, TupleVariantB),
+/// );
+/// The type is written as a single byte, followed by any variant data.
+/// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
+macro_rules! impl_writeable_tlv_based_enum {
+	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
+		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	),* $(,)*;
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
+		_impl_writeable_tlv_based_enum_common!($st,
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
+			$(($tuple_variant_id, $tuple_variant_name)),*);
 
 		impl ::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
