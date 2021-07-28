@@ -327,6 +327,18 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 	}
 }
 
+/// Gets a keysend route from us (payer) to the given target node (payee). This is needed because
+/// keysend payments do not have an invoice from which to pull the payee's supported features, which
+/// makes it tricky to otherwise supply the `payee_features` parameter of `get_route`.
+pub fn get_keysend_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee:
+                       &PublicKey, first_hops: Option<&[&ChannelDetails]>, last_hops: &[&RouteHint],
+                       final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route,
+                       LightningError> where L::Target: Logger {
+	let invoice_features = InvoiceFeatures::for_keysend();
+	get_route(our_node_id, network, payee, Some(invoice_features), first_hops, last_hops,
+            final_value_msat, final_cltv, logger)
+}
+
 /// Gets a route from us (payer) to the given target node (payee).
 ///
 /// If the payee provided features in their invoice, they should be provided via payee_features.

@@ -99,6 +99,10 @@ enum PendingHTLCRouting {
 		payment_data: msgs::FinalOnionHopData,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
+	ReceiveKeysend {
+		payment_preimage: PaymentPreimage,
+		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
+	},
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -153,14 +157,20 @@ pub(crate) struct HTLCPreviousHopData {
 	outpoint: OutPoint,
 }
 
-struct ClaimableHTLC {
-	prev_hop: HTLCPreviousHopData,
-	value: u64,
+enum OnionPayload {
 	/// Contains a total_msat (which may differ from value if this is a Multi-Path Payment) and a
 	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
 	/// are part of the same payment.
-	payment_data: msgs::FinalOnionHopData,
+	Invoice(msgs::FinalOnionHopData),
+	/// Contains the payer-provided preimage.
+	Spontaneous(PaymentPreimage),
+}
+
+struct ClaimableHTLC {
+	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
+	value: u64,
+	onion_payload: OnionPayload,
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
@@ -1437,120 +1447,140 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 
 		let pending_forward_info = if next_hop_hmac == [0; 32] {
-				#[cfg(test)]
-				{
-					// In tests, make sure that the initial onion pcket data is, at least, non-0.
-					// We could do some fancy randomness test here, but, ehh, whatever.
-					// This checks for the issue where you can calculate the path length given the
-					// onion data as all the path entries that the originator sent will be here
-					// as-is (and were originally 0s).
-					// Of course reverse path calculation is still pretty easy given naive routing
-					// algorithms, but this fixes the most-obvious case.
-					let mut next_bytes = [0; 32];
-					chacha_stream.read_exact(&mut next_bytes).unwrap();
-					assert_ne!(next_bytes[..], [0; 32][..]);
-					chacha_stream.read_exact(&mut next_bytes).unwrap();
-					assert_ne!(next_bytes[..], [0; 32][..]);
-				}
+			#[cfg(test)]
+			{
+				// In tests, make sure that the initial onion pcket data is, at least, non-0.
+				// We could do some fancy randomness test here, but, ehh, whatever.
+				// This checks for the issue where you can calculate the path length given the
+				// onion data as all the path entries that the originator sent will be here
+				// as-is (and were originally 0s).
+				// Of course reverse path calculation is still pretty easy given naive routing
+				// algorithms, but this fixes the most-obvious case.
+				let mut next_bytes = [0; 32];
+				chacha_stream.read_exact(&mut next_bytes).unwrap();
+				assert_ne!(next_bytes[..], [0; 32][..]);
+				chacha_stream.read_exact(&mut next_bytes).unwrap();
+				assert_ne!(next_bytes[..], [0; 32][..]);
+			}
 
-				// OUR PAYMENT!
-				// final_expiry_too_soon
-				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure we have at least
-				// HTLC_FAIL_BACK_BUFFER blocks to go.
-				// Also, ensure that, in the case of an unknown payment hash, our payment logic has enough time to fail the HTLC backward
-				// before our onchain logic triggers a channel closure (see HTLC_FAIL_BACK_BUFFER rational).
-				if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
-					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
-				}
-				// final_incorrect_htlc_amount
-				if next_hop_data.amt_to_forward > msg.amount_msat {
-					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
-				}
-				// final_incorrect_cltv_expiry
-				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
-					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
-				}
+			// OUR PAYMENT!
+			// final_expiry_too_soon
+			// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
+			// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
+			// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
+			// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
+			// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
+			if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+				return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
+			}
+			// final_incorrect_htlc_amount
+			if next_hop_data.amt_to_forward > msg.amount_msat {
+				return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
+			}
+			// final_incorrect_cltv_expiry
+			if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
+				return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
+			}
 
-				let payment_data = match next_hop_data.format {
-					msgs::OnionHopDataFormat::Legacy { .. } => None,
-					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
-					msgs::OnionHopDataFormat::FinalNode { payment_data } => payment_data,
-				};
+			let routing = match next_hop_data.format {
+				msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
+				msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
+				msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+					if payment_data.is_some() && keysend_preimage.is_some() {
+						return_err!("We don't support MPP keysend payments", 0x4000|22, &[0;0]);
+					} else if let Some(data) = payment_data {
+						PendingHTLCRouting::Receive {
+							payment_data: data,
+							incoming_cltv_expiry: msg.cltv_expiry,
+						}
+					} else if let Some(payment_preimage) = keysend_preimage {
+						// We need to check that the sender knows the keysend preimage before processing this
+						// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+						// could discover the final destination of X, by probing the adjacent nodes on the route
+						// with a keysend payment of identical payment hash to X and observing the processing
+						// time discrepancies due to a hash collision with X.
+						let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+						if hashed_preimage != msg.payment_hash {
+							return_err!("Payment preimage didn't match payment hash", 0x4000|22, &[0;0]);
+						}
 
-				if payment_data.is_none() {
-					return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
-				}
-
-				// Note that we could obviously respond immediately with an update_fulfill_htlc
-				// message, however that would leak that we are the recipient of this payment, so
-				// instead we stay symmetric with the forwarding case, only responding (after a
-				// delay) once they've send us a commitment_signed!
-
-				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing: PendingHTLCRouting::Receive {
-						payment_data: payment_data.unwrap(),
-						incoming_cltv_expiry: msg.cltv_expiry,
-					},
-					payment_hash: msg.payment_hash.clone(),
-					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-				})
-			} else {
-				let mut new_packet_data = [0; 20*65];
-				let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
-				#[cfg(debug_assertions)]
-				{
-					// Check two things:
-					// a) that the behavior of our stream here will return Ok(0) even if the TLV
-					//    read above emptied out our buffer and the unwrap() wont needlessly panic
-					// b) that we didn't somehow magically end up with extra data.
-					let mut t = [0; 1];
-					debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
-				}
-				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
-				// fill the onion hop data we'll forward to our next-hop peer.
-				chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
-
-				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
-
-				let blinding_factor = {
-					let mut sha = Sha256::engine();
-					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret);
-					Sha256::from_engine(sha).into_inner()
-				};
-
-				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
-					Err(e)
-				} else { Ok(new_pubkey) };
-
-				let outgoing_packet = msgs::OnionPacket {
-					version: 0,
-					public_key,
-					hop_data: new_packet_data,
-					hmac: next_hop_hmac.clone(),
-				};
-
-				let short_channel_id = match next_hop_data.format {
-					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::FinalNode { .. } => {
-						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
-					},
-				};
-
-				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing: PendingHTLCRouting::Forward {
-						onion_packet: outgoing_packet,
-						short_channel_id,
-					},
-					payment_hash: msg.payment_hash.clone(),
-					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-				})
+						PendingHTLCRouting::ReceiveKeysend {
+							payment_preimage,
+							incoming_cltv_expiry: msg.cltv_expiry,
+						}
+					} else {
+						return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
+					}
+				},
 			};
+
+			// Note that we could obviously respond immediately with an update_fulfill_htlc
+			// message, however that would leak that we are the recipient of this payment, so
+			// instead we stay symmetric with the forwarding case, only responding (after a
+			// delay) once they've send us a commitment_signed!
+
+			PendingHTLCStatus::Forward(PendingHTLCInfo {
+				routing,
+				payment_hash: msg.payment_hash.clone(),
+				incoming_shared_secret: shared_secret,
+				amt_to_forward: next_hop_data.amt_to_forward,
+				outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+			})
+		} else {
+			let mut new_packet_data = [0; 20*65];
+			let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
+			#[cfg(debug_assertions)]
+			{
+				// Check two things:
+				// a) that the behavior of our stream here will return Ok(0) even if the TLV
+				//    read above emptied out our buffer and the unwrap() wont needlessly panic
+				// b) that we didn't somehow magically end up with extra data.
+				let mut t = [0; 1];
+				debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
+			}
+			// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
+			// fill the onion hop data we'll forward to our next-hop peer.
+			chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
+
+			let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
+
+			let blinding_factor = {
+				let mut sha = Sha256::engine();
+				sha.input(&new_pubkey.serialize()[..]);
+				sha.input(&shared_secret);
+				Sha256::from_engine(sha).into_inner()
+			};
+
+			let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+				Err(e)
+			} else { Ok(new_pubkey) };
+
+			let outgoing_packet = msgs::OnionPacket {
+				version: 0,
+				public_key,
+				hop_data: new_packet_data,
+				hmac: next_hop_hmac.clone(),
+			};
+
+			let short_channel_id = match next_hop_data.format {
+				msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
+				msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+				msgs::OnionHopDataFormat::FinalNode { .. } => {
+					return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
+				},
+			};
+
+			PendingHTLCStatus::Forward(PendingHTLCInfo {
+				routing: PendingHTLCRouting::Forward {
+					onion_packet: outgoing_packet,
+					short_channel_id,
+				},
+				payment_hash: msg.payment_hash.clone(),
+				incoming_shared_secret: shared_secret,
+				amt_to_forward: next_hop_data.amt_to_forward,
+				outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+			})
+		};
 
 		channel_state = Some(self.channel_state.lock().unwrap());
 		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
@@ -1689,7 +1719,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	// Only public for testing, this should otherwise never be called direcly
-	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32) -> Result<(), APIError> {
+	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
@@ -1697,7 +1727,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
 			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height)?;
+		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height, keysend_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
 			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
 		}
@@ -1806,6 +1836,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), PaymentSendFailure> {
+		self.send_payment_internal(route, payment_hash, payment_secret, None)
+	}
+
+	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>) -> Result<(), PaymentSendFailure> {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
@@ -1839,7 +1873,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let cur_height = self.best_block.read().unwrap().height() + 1;
 		let mut results = Vec::new();
 		for path in route.paths.iter() {
-			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height));
+			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height, &keysend_preimage));
 		}
 		let mut has_ok = false;
 		let mut has_err = false;
@@ -1860,6 +1894,28 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
 			Ok(())
+		}
+	}
+
+	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
+	/// generated an invoice. Optionally, you may specify the preimage. If you do choose to specify
+	/// the preimage, it must be a cryptographically secure random value that no intermediate node
+	/// would be able to guess -- otherwise, an intermediate node may claim the payment and it will
+	/// never reach the recipient.
+	///
+	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
+	/// [`send_payment`] for more information about the risks of duplicate preimage usage.
+	///
+	/// [`send_payment`]: Self::send_payment
+	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>) -> Result<PaymentHash, PaymentSendFailure> {
+		let preimage = match payment_preimage {
+			Some(p) => p,
+			None => PaymentPreimage(self.keys_manager.get_secure_random_bytes()),
+		};
+		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
+		match self.send_payment_internal(route, payment_hash, &None, Some(preimage)) {
+			Ok(()) => Ok(payment_hash),
+			Err(e) => Err(e)
 		}
 	}
 
@@ -2248,9 +2304,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing: PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry },
-									incoming_shared_secret, payment_hash, amt_to_forward, .. },
+									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
+								let (cltv_expiry, onion_payload) = match routing {
+									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry } =>
+										(incoming_cltv_expiry, OnionPayload::Invoice(payment_data)),
+									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
+										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage)),
+									_ => {
+										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
+									}
+								};
 								let claimable_htlc = ClaimableHTLC {
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
@@ -2259,8 +2323,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										incoming_packet_shared_secret: incoming_shared_secret,
 									},
 									value: amt_to_forward,
-									payment_data: payment_data.clone(),
-									cltv_expiry: incoming_cltv_expiry,
+									cltv_expiry,
+									onion_payload,
 								};
 
 								macro_rules! fail_htlc {
@@ -2289,10 +2353,38 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
-										log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
-										fail_htlc!(claimable_htlc);
+										match claimable_htlc.onion_payload {
+											OnionPayload::Invoice(_) => {
+												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
+												fail_htlc!(claimable_htlc);
+											},
+											OnionPayload::Spontaneous(preimage) => {
+												match channel_state.claimable_htlcs.entry(payment_hash) {
+													hash_map::Entry::Vacant(e) => {
+														e.insert(vec![claimable_htlc]);
+														new_events.push(events::Event::PaymentReceived {
+															payment_hash,
+															amt: amt_to_forward,
+															purpose: events::PaymentPurpose::SpontaneousPayment(preimage),
+														});
+													},
+													hash_map::Entry::Occupied(_) => {
+														log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
+														fail_htlc!(claimable_htlc);
+													}
+												}
+											}
+										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
+										let payment_data =
+											if let OnionPayload::Invoice(ref data) = claimable_htlc.onion_payload {
+												data.clone()
+											} else {
+												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
+												fail_htlc!(claimable_htlc);
+												continue
+											};
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc);
@@ -2304,15 +2396,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											let mut total_value = 0;
 											let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
 												.or_insert(Vec::new());
+											if htlcs.len() == 1 {
+												if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
+													log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
+													fail_htlc!(claimable_htlc);
+													continue
+												}
+											}
 											htlcs.push(claimable_htlc);
 											for htlc in htlcs.iter() {
 												total_value += htlc.value;
-												if htlc.payment_data.total_msat != payment_data.total_msat {
-													log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-														log_bytes!(payment_hash.0), payment_data.total_msat, htlc.payment_data.total_msat);
-													total_value = msgs::MAX_VALUE_MSAT;
+												match &htlc.onion_payload {
+													OnionPayload::Invoice(htlc_payment_data) => {
+														if htlc_payment_data.total_msat != payment_data.total_msat {
+															log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
+																				 log_bytes!(payment_hash.0), payment_data.total_msat, htlc_payment_data.total_msat);
+															total_value = msgs::MAX_VALUE_MSAT;
+														}
+														if total_value >= msgs::MAX_VALUE_MSAT { break; }
+													},
+													_ => unreachable!(),
 												}
-												if total_value >= msgs::MAX_VALUE_MSAT { break; }
 											}
 											if total_value >= msgs::MAX_VALUE_MSAT || total_value > payment_data.total_msat {
 												log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
@@ -2323,10 +2427,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else if total_value == payment_data.total_msat {
 												new_events.push(events::Event::PaymentReceived {
 													payment_hash,
-													payment_preimage: inbound_payment.get().payment_preimage,
-													payment_secret: payment_data.payment_secret,
+													purpose: events::PaymentPurpose::InvoicePayment {
+														payment_preimage: inbound_payment.get().payment_preimage,
+														payment_secret: payment_data.payment_secret,
+														user_payment_id: inbound_payment.get().user_payment_id,
+													},
 													amt: total_value,
-													user_payment_id: inbound_payment.get().user_payment_id,
 												});
 												// Only ever generate at most one PaymentReceived
 												// per registered payment_hash, even if it isn't
@@ -2340,9 +2446,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										}
 									},
 								};
-							},
-							HTLCForwardInfo::AddHTLC { .. } => {
-								panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 							},
 							HTLCForwardInfo::FailHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
@@ -3318,6 +3421,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					match channel_state.forward_htlcs.entry(match forward_info.routing {
 							PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 							PendingHTLCRouting::Receive { .. } => 0,
+							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
@@ -3773,7 +3877,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
 	/// method may return an Err if another payment with the same payment_hash is still pending.
 	///
-	/// `user_payment_id` will be provided back in [`PaymentReceived::user_payment_id`] events to
+	/// `user_payment_id` will be provided back in [`PaymentPurpose::InvoicePayment::user_payment_id`] events to
 	/// allow tracking of which events correspond with which calls to this and
 	/// [`create_inbound_payment`]. `user_payment_id` has no meaning inside of LDK, it is simply
 	/// copied to events and otherwise ignored. It may be used to correlate PaymentReceived events
@@ -3807,7 +3911,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
-	/// [`PaymentReceived::user_payment_id`]: events::Event::PaymentReceived::user_payment_id
+	/// [`PaymentPurpose::InvoicePayment::user_payment_id`]: events::PaymentPurpose::InvoicePayment::user_payment_id
 	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, user_payment_id: u64) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs, user_payment_id)
 	}
@@ -4471,7 +4575,11 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(1, Receive) => {
 		(0, payment_data, required),
 		(2, incoming_cltv_expiry, required),
-	}
+	},
+	(2, ReceiveKeysend) => {
+		(0, payment_preimage, required),
+		(2, incoming_cltv_expiry, required),
+	},
 ;);
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
@@ -4498,12 +4606,63 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(6, incoming_packet_shared_secret, required)
 });
 
-impl_writeable_tlv_based!(ClaimableHTLC, {
-	(0, prev_hop, required),
-	(2, value, required),
-	(4, payment_data, required),
-	(6, cltv_expiry, required),
-});
+impl Writeable for ClaimableHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		let payment_data = match &self.onion_payload {
+			OnionPayload::Invoice(data) => Some(data.clone()),
+			_ => None,
+		};
+		let keysend_preimage = match self.onion_payload {
+			OnionPayload::Invoice(_) => None,
+			OnionPayload::Spontaneous(preimage) => Some(preimage.clone()),
+		};
+		write_tlv_fields!
+		(writer,
+		 {
+		   (0, self.prev_hop, required), (2, self.value, required),
+		   (4, payment_data, option), (6, self.cltv_expiry, required),
+			 (8, keysend_preimage, option),
+		 });
+		Ok(())
+	}
+}
+
+impl Readable for ClaimableHTLC {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut prev_hop = ::util::ser::OptionDeserWrapper(None);
+		let mut value = 0;
+		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
+		let mut cltv_expiry = 0;
+		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		read_tlv_fields!
+		(reader,
+		 {
+		   (0, prev_hop, required), (2, value, required),
+		   (4, payment_data, option), (6, cltv_expiry, required),
+			 (8, keysend_preimage, option)
+		 });
+		let onion_payload = match keysend_preimage {
+			Some(p) => {
+				if payment_data.is_some() {
+					return Err(DecodeError::InvalidValue)
+				}
+				OnionPayload::Spontaneous(p)
+			},
+			None => {
+				if payment_data.is_none() {
+					return Err(DecodeError::InvalidValue)
+				}
+				OnionPayload::Invoice(payment_data.unwrap())
+			},
+		};
+		Ok(Self {
+			prev_hop: prev_hop.0.unwrap(),
+			value,
+			onion_payload,
+			cltv_expiry,
+		})
+	}
+}
 
 impl_writeable_tlv_based_enum!(HTLCSource,
 	(0, OutboundRoute) => {
@@ -4950,14 +5109,21 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 #[cfg(test)]
 mod tests {
-	use ln::channelmanager::PersistenceNotifier;
-	use sync::Arc;
+	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::sync::atomic::{AtomicBool, Ordering};
-	use std::thread;
 	use core::time::Duration;
+	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use ln::channelmanager::PersistenceNotifier;
+	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
-	use ln::features::InitFeatures;
+	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
+	use routing::router::{get_keysend_route, get_route};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::test_utils;
+	use std::sync::Arc;
+	use std::thread;
 
 	#[cfg(feature = "std")]
 	#[test]
@@ -5073,6 +5239,265 @@ mod tests {
 		assert_ne!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_ne!(nodes[1].node.list_channels()[0], node_b_chan_info);
 	}
+
+	#[test]
+	fn test_keysend_dup_hash_partial_mpp() {
+		// Test that a keysend payment with a duplicate hash to an existing partial MPP payment fails as
+		// expected.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		let logger = test_utils::TestLogger::new();
+
+		// First, send a partial MPP payment.
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+		// Use the utility function send_payment_along_path to send the payment with MPP data which
+		// indicates there are more HTLCs coming.
+		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+
+		// Next, send a keysend payment with the same payment_hash and make sure it fails.
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], our_payment_hash, true);
+
+		// Send the second half of the original MPP payment.
+		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
+
+		// Claim the full MPP payment. Note that we can't use a test utility like
+		// claim_funds_along_route because the ordering of the messages causes the second half of the
+		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
+		// lightning messages manually.
+		assert!(nodes[1].node.claim_funds(payment_preimage));
+		check_added_monitors!(nodes[1], 2);
+		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_first_cs);
+		check_added_monitors!(nodes[1], 1);
+		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+		let as_second_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		check_added_monitors!(nodes[0], 1);
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
+		check_added_monitors!(nodes[1], 1);
+		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
+		check_added_monitors!(nodes[0], 1);
+
+		// There's an existing bug that generates a PaymentSent event for each MPP path, so handle that here.
+		let events = nodes[0].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::PaymentSent { payment_preimage: ref preimage } => {
+				assert_eq!(payment_preimage, *preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentSent { payment_preimage: ref preimage } => {
+				assert_eq!(payment_preimage, *preimage);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	#[test]
+	fn test_keysend_dup_payment_hash() {
+		// (1): Test that a keysend payment with a duplicate payment hash to an existing pending
+		//      outbound regular payment fails as expected.
+		// (2): Test that a regular payment with a duplicate payment hash to an existing keysend payment
+		//      fails as expected.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		let logger = test_utils::TestLogger::new();
+
+		// To start (1), send a regular payment but don't claim it.
+		let expected_route = [&nodes[1]];
+		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
+
+		// Next, attempt a keysend payment and make sure it fails.
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, claim the original payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
+
+		// To start (2), send a keysend payment but don't claim it.
+		let payment_preimage = PaymentPreimage([42; 32]);
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let event = events.pop().unwrap();
+		let path = vec![&nodes[1]];
+		pass_along_path(&nodes[0], &path, 100_000, payment_hash, None, event, true, Some(payment_preimage));
+
+		// Next, attempt a regular payment and make sure it fails.
+		let payment_secret = PaymentSecret([43; 32]);
+		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = events.drain(..).next().unwrap();
+		let payment_event = SendEvent::from_event(ev);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[1], 0);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(updates.update_add_htlcs.is_empty());
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert_eq!(updates.update_fail_htlcs.len(), 1);
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, true, true);
+		expect_payment_failed!(nodes[0], payment_hash, true);
+
+		// Finally, succeed the keysend payment.
+		claim_payment(&nodes[0], &expected_route, payment_preimage);
+	}
+
+	#[test]
+	fn test_keysend_hash_mismatch() {
+		// Test that if we receive a keysend `update_add_htlc` msg, we fail as expected if the keysend
+		// preimage doesn't match the msg's payment hash.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let payer_pubkey = nodes[0].node.get_our_node_id();
+		let payee_pubkey = nodes[1].node.get_our_node_id();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let first_hops = nodes[0].node.list_usable_channels();
+		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
+                                  nodes[0].logger).unwrap();
+
+		let test_preimage = PaymentPreimage([42; 32]);
+		let mismatch_payment_hash = PaymentHash([43; 32]);
+		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, Some(test_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert_eq!(updates.update_add_htlcs.len(), 1);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Payment preimage didn't match payment hash".to_string(), 1);
+	}
+
+	#[test]
+	fn test_keysend_msg_with_secret_err() {
+		// Test that we error as expected if we receive a keysend payment that includes a payment secret.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let payer_pubkey = nodes[0].node.get_our_node_id();
+		let payee_pubkey = nodes[1].node.get_our_node_id();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: InitFeatures::known() });
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
+
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let first_hops = nodes[0].node.list_usable_channels();
+		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
+                                  nodes[0].logger).unwrap();
+
+		let test_preimage = PaymentPreimage([42; 32]);
+		let test_secret = PaymentSecret([43; 32]);
+		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).into_inner());
+		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), Some(test_preimage)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+		assert_eq!(updates.update_add_htlcs.len(), 1);
+		assert!(updates.update_fulfill_htlcs.is_empty());
+		assert!(updates.update_fail_htlcs.is_empty());
+		assert!(updates.update_fail_malformed_htlcs.is_empty());
+		assert!(updates.update_fee.is_none());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
+
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "We don't support MPP keysend payments".to_string(), 1);
+	}
 }
 
 #[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))]
@@ -5089,7 +5514,7 @@ pub mod bench {
 	use routing::router::get_route;
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;

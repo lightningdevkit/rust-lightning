@@ -124,6 +124,12 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -134,6 +140,12 @@ mod sealed {
 			BasicMPP,
 			// Byte 3
 			ShutdownAnySegwit,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			Keysend,
 		],
 	});
 	define_context!(ChannelContext {
@@ -299,6 +311,8 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required);
+	define_feature!(55, Keysend, [NodeContext],
+		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required);
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
@@ -385,6 +399,18 @@ impl InvoiceFeatures {
 	/// context `C` are included in the result.
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
+	}
+
+	/// Getting a route for a keysend payment to a private node requires providing the payee's
+	/// features (since they were not announced in a node announcement). However, keysend payments
+	/// don't have an invoice to pull the payee's features from, so this method is provided for use in
+	/// [`get_keysend_route`], thus omitting the need for payers to manually construct an
+	/// `InvoiceFeatures` for [`get_route`].
+	///
+	/// [`get_keysend_route`]: crate::routing::router::get_keysend_route
+	/// [`get_route`]: crate::routing::router::get_route
+	pub(crate) fn for_keysend() -> InvoiceFeatures {
+		InvoiceFeatures::empty().set_variable_length_onion_optional()
 	}
 }
 

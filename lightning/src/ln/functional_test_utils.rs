@@ -23,7 +23,7 @@ use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 use util::test_utils::TestChainMonitor;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable, Readable};
@@ -976,11 +976,16 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+			Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
-				assert!(payment_preimage.is_none());
-				assert_eq!($expected_payment_secret, *payment_secret);
 				assert_eq!($expected_recv_value, amt);
+				match purpose {
+					PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+						assert!(payment_preimage.is_none());
+						assert_eq!($expected_payment_secret, *payment_secret);
+					},
+					_ => {},
+				}
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1051,7 +1056,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
 }
 
-pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret, ev: MessageSendEvent, payment_received_expected: bool) {
+pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 
@@ -1069,10 +1074,18 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref payment_preimage, ref payment_secret, amt, user_payment_id: _ } => {
+					Event::PaymentReceived { ref payment_hash, ref purpose, amt} => {
 						assert_eq!(our_payment_hash, *payment_hash);
-						assert!(payment_preimage.is_none());
-						assert_eq!(our_payment_secret, *payment_secret);
+						match &purpose {
+							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+								assert_eq!(expected_preimage, *payment_preimage);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+							},
+							PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+								assert_eq!(expected_preimage.unwrap(), *payment_preimage);
+								assert!(our_payment_secret.is_none());
+							},
+						}
 						assert_eq!(amt, recv_value);
 					},
 					_ => panic!("Unexpected event"),
@@ -1099,7 +1112,7 @@ pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		// Once we've gotten through all the HTLCs, the last one should result in a
 		// PaymentReceived (but each previous one should not!), .
 		let expect_payment = path_idx == expected_route.len() - 1;
-		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), our_payment_secret, ev, expect_payment);
+		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), Some(our_payment_secret), ev, expect_payment, None);
 	}
 }
 
