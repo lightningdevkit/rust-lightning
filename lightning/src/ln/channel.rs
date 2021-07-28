@@ -26,6 +26,7 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
+use ln::script::ShutdownScript;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
 use ln::chan_utils;
@@ -44,11 +45,11 @@ use util::scid_utils::scid_from_parts;
 use io;
 use prelude::*;
 use core::{cmp,mem,fmt};
+use core::convert::TryFrom;
 use core::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget", debug_assertions))]
 use sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
-use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -829,11 +830,11 @@ impl<Signer: Sign> Channel<Signer> {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
-					} else if is_unsupported_shutdown_script(&their_features, script) {
-						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
 					} else {
-						Some(script.clone())
+						match ShutdownScript::try_from((script.clone(), &their_features)) {
+							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
+							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: ({})", script.to_bytes().to_hex()))),
+						}
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -1560,11 +1561,11 @@ impl<Signer: Sign> Channel<Signer> {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
-					} else if is_unsupported_shutdown_script(&their_features, script) {
-						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
 					} else {
-						Some(script.clone())
+						match ShutdownScript::try_from((script.clone(), &their_features)) {
+							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
+							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: ({})", script.to_bytes().to_hex()))),
+						}
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -3239,16 +3240,17 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		if is_unsupported_shutdown_script(&their_features, &msg.scriptpubkey) {
-			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
-		}
+		let shutdown_scriptpubkey = match ShutdownScript::try_from((msg.scriptpubkey.clone(), their_features)) {
+			Ok(script) => script.into_inner(),
+			Err(_) => return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex()))),
+		};
 
 		if self.counterparty_shutdown_scriptpubkey.is_some() {
-			if Some(&msg.scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
+			if Some(&shutdown_scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
+				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", shutdown_scriptpubkey.to_bytes().to_hex())));
 			}
 		} else {
-			self.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
+			self.counterparty_shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 		}
 
 		// From here on out, we may not fail!
@@ -4493,24 +4495,6 @@ impl<Signer: Sign> Channel<Signer> {
 		self.update_time_counter += 1;
 		(monitor_update, dropped_outbound_htlcs)
 	}
-}
-
-fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script) -> bool {
-	// We restrain shutdown scripts to standards forms to avoid transactions not propagating on the p2p tx-relay network
-
-	// BOLT 2 says we must only send a scriptpubkey of certain standard forms,
-	// which for a a BIP-141-compliant witness program is at max 42 bytes in length.
-	// So don't let the remote peer feed us some super fee-heavy script.
-	let is_script_too_long = script.len() > 42;
-	if is_script_too_long {
-		return true;
-	}
-
-	if their_features.supports_shutdown_anysegwit() && script.is_witness_program() && script.as_bytes()[0] != OP_PUSHBYTES_0.into_u8() {
-		return false;
-	}
-
-	return !script.is_p2pkh() && !script.is_p2sh() && !script.is_v0_p2wpkh() && !script.is_v0_p2wsh()
 }
 
 const SERIALIZATION_VERSION: u8 = 2;
