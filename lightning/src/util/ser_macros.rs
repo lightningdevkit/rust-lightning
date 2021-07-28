@@ -371,7 +371,7 @@ macro_rules! read_ver_prefix {
 /// Reads a suffix added by write_tlv_fields.
 macro_rules! read_tlv_fields {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
-		let tlv_len = ::util::ser::BigSize::read($stream)?;
+		let tlv_len: ::util::ser::BigSize = ::util::ser::Readable::read($stream)?;
 		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
 		decode_tlv_stream!(&mut rd, {$(($type, $field, $fieldty)),*});
 		rd.eat_remaining().map_err(|_| ::ln::msgs::DecodeError::ShortRead)?;

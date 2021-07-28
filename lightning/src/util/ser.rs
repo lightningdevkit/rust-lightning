@@ -241,6 +241,13 @@ pub trait MaybeReadable
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
 }
 
+impl<T: Readable> MaybeReadable for T {
+	#[inline]
+	fn read<R: Read>(reader: &mut R) -> Result<Option<T>, DecodeError> {
+		Ok(Some(Readable::read(reader)?))
+	}
+}
+
 pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	#[inline]
@@ -262,15 +269,16 @@ impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 }
 
 /// Wrapper to read elements from a given stream until it reaches the end of the stream.
-pub(crate) struct VecReadWrapper<T: Readable>(pub Vec<T>);
-impl<T: Readable> Readable for VecReadWrapper<T> {
+pub(crate) struct VecReadWrapper<T>(pub Vec<T>);
+impl<T: MaybeReadable> Readable for VecReadWrapper<T> {
 	#[inline]
 	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
 		let mut values = Vec::new();
 		loop {
 			let mut track_read = ReadTrackingReader::new(&mut reader);
-			match Readable::read(&mut track_read) {
-				Ok(v) => { values.push(v); },
+			match MaybeReadable::read(&mut track_read) {
+				Ok(Some(v)) => { values.push(v); },
+				Ok(None) => { },
 				// If we failed to read any bytes at all, we reached the end of our TLV
 				// stream and have simply exhausted all entries.
 				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
@@ -561,7 +569,7 @@ impl Readable for Vec<Signature> {
 			return Err(DecodeError::BadLengthDescriptor);
 		}
 		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(Signature::read(r)?); }
+		for _ in 0..len { ret.push(Readable::read(r)?); }
 		Ok(ret)
 	}
 }
@@ -726,7 +734,8 @@ impl<T: Writeable> Writeable for Option<T> {
 impl<T: Readable> Readable for Option<T>
 {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		match BigSize::read(r)?.0 {
+		let len: BigSize = Readable::read(r)?;
+		match len.0 {
 			0 => Ok(None),
 			len => {
 				let mut reader = FixedLengthReader::new(r, len - 1);
