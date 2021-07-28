@@ -2138,6 +2138,26 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
+			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			if on_counterparty_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					on_counterparty_tx_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat());
+				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
+			}
+		}
+
+		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
+			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			if on_holder_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+					on_holder_tx_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat());
+				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
+			}
+		}
+
 		let pending_value_to_self_msat =
 			self.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
@@ -4216,6 +4236,24 @@ impl<Signer: Sign> Channel<Signer> {
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat {
 				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
+			}
+		}
+
+		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		if amount_msat / 1000 < exposure_dust_limit_success_sats {
+			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
+			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					on_counterparty_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
+			}
+		}
+
+		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
+			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
+			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Ignore(format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+					on_holder_dust_htlc_exposure_msat, self.get_max_dust_htlc_exposure_msat())));
 			}
 		}
 
