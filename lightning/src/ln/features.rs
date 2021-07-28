@@ -89,6 +89,28 @@ mod sealed {
 					)*
 				];
 			}
+
+			impl alloc::fmt::Display for Features<$context> {
+				fn fmt(&self, fmt: &mut alloc::fmt::Formatter) -> Result<(), alloc::fmt::Error> {
+					$(
+						$(
+							fmt.write_fmt(format_args!("{}: {}, ", stringify!($required_feature),
+								if <$context as $required_feature>::requires_feature(&self.flags) { "required" }
+								else if <$context as $required_feature>::supports_feature(&self.flags) { "supported" }
+								else { "not supported" }))?;
+						)*
+						$(
+							fmt.write_fmt(format_args!("{}: {}, ", stringify!($optional_feature),
+								if <$context as $optional_feature>::requires_feature(&self.flags) { "required" }
+								else if <$context as $optional_feature>::supports_feature(&self.flags) { "supported" }
+								else { "not supported" }))?;
+						)*
+					)*
+					fmt.write_fmt(format_args!("unknown flags: {}",
+						if self.requires_unknown_bits() { "required" }
+						else if self.supports_unknown_bits() { "supported" } else { "none" }))
+				}
+			}
 		};
 	}
 
@@ -566,6 +588,7 @@ impl<T: sealed::DataLossProtect> Features<T> {
 	pub(crate) fn requires_data_loss_protect(&self) -> bool {
 		<T as sealed::DataLossProtect>::requires_feature(&self.flags)
 	}
+	#[cfg(test)]
 	pub(crate) fn supports_data_loss_protect(&self) -> bool {
 		<T as sealed::DataLossProtect>::supports_feature(&self.flags)
 	}
