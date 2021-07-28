@@ -1657,7 +1657,7 @@ macro_rules! handle_chan_reestablish_msgs {
 
 /// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 /// for claims/fails they are separated out.
-pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, send_funding_locked: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool))  {
+pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, send_funding_locked: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_htlc_fails: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool))  {
 	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
 	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
@@ -1711,8 +1711,10 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 	}
 
 	// We don't yet support both needing updates, as that would require a different commitment dance:
-	assert!((pending_htlc_adds.0 == 0 && pending_htlc_claims.0 == 0 && pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0) ||
-			(pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
+	assert!((pending_htlc_adds.0 == 0 && pending_htlc_claims.0 == 0 && pending_htlc_fails.0 == 0 &&
+			 pending_cell_htlc_claims.0 == 0 && pending_cell_htlc_fails.0 == 0) ||
+			(pending_htlc_adds.1 == 0 && pending_htlc_claims.1 == 0 && pending_htlc_fails.1 == 0 &&
+			 pending_cell_htlc_claims.1 == 0 && pending_cell_htlc_fails.1 == 0));
 
 	for chan_msgs in resp_1.drain(..) {
 		if send_funding_locked.0 {
@@ -1735,7 +1737,7 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
+		if pending_htlc_adds.0 != 0 || pending_htlc_claims.0 != 0 || pending_htlc_fails.0 != 0 || pending_cell_htlc_claims.0 != 0 || pending_cell_htlc_fails.0 != 0 {
 			let commitment_update = chan_msgs.2.unwrap();
 			if pending_htlc_adds.0 != -1 { // We use -1 to denote a response commitment_signed
 				assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0 as usize);
@@ -1743,7 +1745,7 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 				assert!(commitment_update.update_add_htlcs.is_empty());
 			}
 			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
-			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_cell_htlc_fails.0);
+			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.0 + pending_cell_htlc_fails.0);
 			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
 			for update_add in commitment_update.update_add_htlcs {
 				node_a.node.handle_update_add_htlc(&node_b.node.get_our_node_id(), &update_add);
@@ -1792,13 +1794,13 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
+		if pending_htlc_adds.1 != 0 || pending_htlc_claims.1 != 0 || pending_htlc_fails.1 != 0 || pending_cell_htlc_claims.1 != 0 || pending_cell_htlc_fails.1 != 0 {
 			let commitment_update = chan_msgs.2.unwrap();
 			if pending_htlc_adds.1 != -1 { // We use -1 to denote a response commitment_signed
 				assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1 as usize);
 			}
-			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.0 + pending_cell_htlc_claims.0);
-			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_cell_htlc_fails.0);
+			assert_eq!(commitment_update.update_fulfill_htlcs.len(), pending_htlc_claims.1 + pending_cell_htlc_claims.1);
+			assert_eq!(commitment_update.update_fail_htlcs.len(), pending_htlc_fails.1 + pending_cell_htlc_fails.1);
 			assert!(commitment_update.update_fail_malformed_htlcs.is_empty());
 			for update_add in commitment_update.update_add_htlcs {
 				node_b.node.handle_update_add_htlc(&node_a.node.get_our_node_id(), &update_add);

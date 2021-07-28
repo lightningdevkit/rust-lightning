@@ -114,7 +114,7 @@ impl Readable for ChannelMonitorUpdate {
 }
 
 /// An error enum representing a failure to persist a channel monitor update.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChannelMonitorUpdateErr {
 	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
 	/// our state failed, but is expected to succeed at some point in the future).
