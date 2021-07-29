@@ -2451,7 +2451,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					output: outp.clone(),
 				});
 				break;
-			} else if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
+			}
+			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
 				if broadcasted_holder_revokable_script.0 == outp.script_pubkey {
 					spendable_output =  Some(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
 						outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
@@ -2464,7 +2465,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					}));
 					break;
 				}
-			} else if self.counterparty_payment_script == outp.script_pubkey {
+			}
+			if self.counterparty_payment_script == outp.script_pubkey {
 				spendable_output = Some(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
@@ -2472,11 +2474,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					channel_value_satoshis: self.channel_value_satoshis,
 				}));
 				break;
-			} else if outp.script_pubkey == self.shutdown_script {
+			}
+			if outp.script_pubkey == self.shutdown_script {
 				spendable_output = Some(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
 					output: outp.clone(),
 				});
+				break;
 			}
 		}
 		if let Some(spendable_output) = spendable_output {
