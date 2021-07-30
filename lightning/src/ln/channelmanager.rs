@@ -5180,6 +5180,12 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+		// All nodes start with a persistable update pending as `create_network` connects each node
+		// with all other nodes to make most tests simpler.
+		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+
 		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 		// We check that the channel info nodes have doesn't change too early, even though we try
