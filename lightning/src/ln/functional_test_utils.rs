@@ -1404,6 +1404,13 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		})
 	}
 
+	for i in 0..node_count {
+		for j in (i+1)..node_count {
+			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+		}
+	}
+
 	nodes
 }
 
