@@ -12,7 +12,7 @@ Utilities to manage Rust-Lightning channel data persistence and retrieval.
 unstable = ["lightning/unstable"]
 
 [dependencies]
-bitcoin = "0.26"
+bitcoin = "0.27"
 lightning = { version = "0.0.99", path = "../lightning" }
 libc = "0.2"
 

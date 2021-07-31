@@ -16,8 +16,8 @@ jobs:
                      1.41.0,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
                      1.45.2,
-                     # 1.49.0 is MSRV for no_std builds using hashbrown
-                     1.49.0]
+                     # 1.47.0 will be the MSRV for no_std builds using hashbrown once core2 is updated
+                     1.47.0]
         include:
           - toolchain: stable
             build-net-tokio: true
@@ -41,8 +41,8 @@ jobs:
             build-net-tokio: true
             build-no-std: false
             coverage: true
-          - toolchain: 1.49.0
-            build-no-std: true
+          - toolchain: 1.47.0
+            build-no-std: false
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code

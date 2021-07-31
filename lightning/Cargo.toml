@@ -26,13 +26,13 @@ max_level_debug = []
 unsafe_revoked_tx_signing = []
 unstable = []
 
-no_std = ["hashbrown"]
-std = []
+no_std = ["hashbrown", "bitcoin/no-std"]
+std = ["bitcoin/std"]
 
 default = ["std"]
 
 [dependencies]
-bitcoin = "0.26"
+bitcoin = "0.27"
 
 hashbrown = { version = "0.11", optional = true }
 hex = { version = "0.3", optional = true }
@@ -43,7 +43,7 @@ hex = "0.3"
 regex = "0.1.80"
 
 [dev-dependencies.bitcoin]
-version = "0.26"
+version = "0.27"
 features = ["bitcoinconsensus"]
 
 [package.metadata.docs.rs]

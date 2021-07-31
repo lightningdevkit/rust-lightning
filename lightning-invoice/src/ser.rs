@@ -117,7 +117,7 @@ impl Display for SignedRawInvoice {
 		let mut data  = self.raw_invoice.data.to_base32();
 		data.extend_from_slice(&self.signature.to_base32());
 
-		bech32::encode_to_fmt(f, &hrp, data).expect("HRP is valid")?;
+		bech32::encode_to_fmt(f, &hrp, data, bech32::Variant::Bech32).expect("HRP is valid")?;
 
 		Ok(())
 	}

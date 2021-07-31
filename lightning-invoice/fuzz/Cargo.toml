@@ -15,7 +15,7 @@ honggfuzz_fuzz = ["honggfuzz"]
 honggfuzz = { version = "0.5", optional = true }
 afl = { version = "0.4", optional = true }
 lightning-invoice = { path = ".."}
-bech32 = "0.7"
+bech32 = "0.8"
 
 # Prevent this from interfering with workspaces
 [workspace]
