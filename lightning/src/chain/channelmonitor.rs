@@ -1201,6 +1201,69 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 }
 
+/// Compares a broadcasted commitment transaction's HTLCs with those in the latest state,
+/// failing any HTLCs which didn't make it into the broadcasted commitment transaction back
+/// after ANTI_REORG_DELAY blocks.
+macro_rules! fail_unbroadcast_htlcs {
+	($self: expr, $commitment_tx_type: expr, $commitment_tx_conf_height: expr, $confirmed_htlcs_list: expr, $logger: expr) => { {
+		macro_rules! check_htlc_fails {
+			($txid: expr, $commitment_tx: expr) => {
+				if let Some(ref latest_outpoints) = $self.counterparty_claimable_outpoints.get($txid) {
+					for &(ref htlc, ref source_option) in latest_outpoints.iter() {
+						if let &Some(ref source) = source_option {
+							// Check if the HTLC is present in the commitment transaction that was
+							// broadcast, but not if it was below the dust limit, which we should
+							// fail backwards immediately as there is no way for us to learn the
+							// payment_preimage.
+							// Note that if the dust limit were allowed to change between
+							// commitment transactions we'd want to be check whether *any*
+							// broadcastable commitment transaction has the HTLC in it, but it
+							// cannot currently change after channel initialization, so we don't
+							// need to here.
+							let confirmed_htlcs_iter: &mut Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> = &mut $confirmed_htlcs_list;
+							let mut matched_htlc = false;
+							for (ref broadcast_htlc, ref broadcast_source) in confirmed_htlcs_iter {
+								if broadcast_htlc.transaction_output_index.is_some() && Some(&**source) == *broadcast_source {
+									matched_htlc = true;
+									break;
+								}
+							}
+							if matched_htlc { continue; }
+							$self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
+								if entry.height != $commitment_tx_conf_height { return true; }
+								match entry.event {
+									OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
+										*update_source != **source
+									},
+									_ => true,
+								}
+							});
+							let entry = OnchainEventEntry {
+								txid: *$txid,
+								height: $commitment_tx_conf_height,
+								event: OnchainEvent::HTLCUpdate {
+									source: (**source).clone(),
+									payment_hash: htlc.payment_hash.clone(),
+									onchain_value_satoshis: Some(htlc.amount_msat / 1000),
+								},
+							};
+							log_trace!($logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of {} commitment transaction, waiting for confirmation (at height {})",
+								log_bytes!(htlc.payment_hash.0), $commitment_tx, $commitment_tx_type, entry.confirmation_threshold());
+							$self.onchain_events_awaiting_threshold_conf.push(entry);
+						}
+					}
+				}
+			}
+		}
+		if let Some(ref txid) = $self.current_counterparty_commitment_txid {
+			check_htlc_fails!(txid, "current");
+		}
+		if let Some(ref txid) = $self.prev_counterparty_commitment_txid {
+			check_htlc_fails!(txid, "previous");
+		}
+	} }
+}
+
 impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
@@ -1558,43 +1621,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				}
 				self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
-				macro_rules! check_htlc_fails {
-					($txid: expr, $commitment_tx: expr) => {
-						if let Some(ref outpoints) = self.counterparty_claimable_outpoints.get($txid) {
-							for &(ref htlc, ref source_option) in outpoints.iter() {
-								if let &Some(ref source) = source_option {
-									self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
-										if entry.height != height { return true; }
-										match entry.event {
-											OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
-												*update_source != **source
-											},
-											_ => true,
-										}
-									});
-									let entry = OnchainEventEntry {
-										txid: *$txid,
-										height,
-										event: OnchainEvent::HTLCUpdate {
-											source: (**source).clone(),
-											payment_hash: htlc.payment_hash.clone(),
-											onchain_value_satoshis: Some(htlc.amount_msat / 1000),
-										},
-									};
-									log_info!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of revoked counterparty commitment transaction, waiting for confirmation (at height {})", log_bytes!(htlc.payment_hash.0), $commitment_tx, entry.confirmation_threshold());
-									self.onchain_events_awaiting_threshold_conf.push(entry);
-								}
-							}
-						}
-					}
-				}
-				if let Some(ref txid) = self.current_counterparty_commitment_txid {
-					check_htlc_fails!(txid, "current");
-				}
-				if let Some(ref txid) = self.prev_counterparty_commitment_txid {
-					check_htlc_fails!(txid, "counterparty");
-				}
-				// No need to check holder commitment txn, symmetric HTLCSource must be present as per-htlc data on counterparty commitment tx
+				fail_unbroadcast_htlcs!(self, "revoked counterparty", height, [].iter().map(|a| *a), logger);
 			}
 		} else if let Some(per_commitment_data) = per_commitment_option {
 			// While this isn't useful yet, there is a potential race where if a counterparty
@@ -1610,56 +1637,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
 			log_info!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
-
-			macro_rules! check_htlc_fails {
-				($txid: expr, $commitment_tx: expr, $id: tt) => {
-					if let Some(ref latest_outpoints) = self.counterparty_claimable_outpoints.get($txid) {
-						$id: for &(ref htlc, ref source_option) in latest_outpoints.iter() {
-							if let &Some(ref source) = source_option {
-								// Check if the HTLC is present in the commitment transaction that was
-								// broadcast, but not if it was below the dust limit, which we should
-								// fail backwards immediately as there is no way for us to learn the
-								// payment_preimage.
-								// Note that if the dust limit were allowed to change between
-								// commitment transactions we'd want to be check whether *any*
-								// broadcastable commitment transaction has the HTLC in it, but it
-								// cannot currently change after channel initialization, so we don't
-								// need to here.
-								for &(ref broadcast_htlc, ref broadcast_source) in per_commitment_data.iter() {
-									if broadcast_htlc.transaction_output_index.is_some() && Some(source) == broadcast_source.as_ref() {
-										continue $id;
-									}
-								}
-								log_trace!(logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of counterparty commitment transaction", log_bytes!(htlc.payment_hash.0), $commitment_tx);
-								self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
-									if entry.height != height { return true; }
-									match entry.event {
-										OnchainEvent::HTLCUpdate { source: ref update_source, .. } => {
-											*update_source != **source
-										},
-										_ => true,
-									}
-								});
-								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-									txid: *$txid,
-									height,
-									event: OnchainEvent::HTLCUpdate {
-										source: (**source).clone(),
-										payment_hash: htlc.payment_hash.clone(),
-										onchain_value_satoshis: Some(htlc.amount_msat / 1000),
-									},
-								});
-							}
-						}
-					}
-				}
-			}
-			if let Some(ref txid) = self.current_counterparty_commitment_txid {
-				check_htlc_fails!(txid, "current", 'current_loop);
-			}
-			if let Some(ref txid) = self.prev_counterparty_commitment_txid {
-				check_htlc_fails!(txid, "previous", 'prev_loop);
-			}
+			fail_unbroadcast_htlcs!(self, "counterparty", height, per_commitment_data.iter().map(|(a, b)| (a, b.as_ref().map(|b| b.as_ref()))), logger);
 
 			let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs(commitment_number, commitment_txid, Some(tx));
 			for req in htlc_claim_reqs {
