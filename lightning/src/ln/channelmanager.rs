@@ -5559,7 +5559,7 @@ pub mod bench {
 	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
-	use ln::msgs::ChannelMessageHandler;
+	use ln::msgs::{ChannelMessageHandler, Init};
 	use routing::network_graph::NetworkGraph;
 	use routing::router::get_route;
 	use util::test_utils;
@@ -5622,6 +5622,8 @@ pub mod bench {
 		});
 		let node_b_holder = NodeHolder { node: &node_b };
 
+		node_a.peer_connected(&node_b.get_our_node_id(), &Init { features: InitFeatures::known() });
+		node_b.peer_connected(&node_a.get_our_node_id(), &Init { features: InitFeatures::known() });
 		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None).unwrap();
 		node_b.handle_open_channel(&node_a.get_our_node_id(), InitFeatures::known(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), InitFeatures::known(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));

@@ -223,7 +223,7 @@ mod tests {
 	use lightning::get_event_msg;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
 	use lightning::ln::features::InitFeatures;
-	use lightning::ln::msgs::ChannelMessageHandler;
+	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
@@ -297,6 +297,14 @@ mod tests {
 			let node = Node { node: manager, peer_manager, chain_monitor, persister, tx_broadcaster, logger, best_block };
 			nodes.push(node);
 		}
+
+		for i in 0..num_nodes {
+			for j in (i+1)..num_nodes {
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: InitFeatures::known() });
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: InitFeatures::known() });
+			}
+		}
+
 		nodes
 	}
 

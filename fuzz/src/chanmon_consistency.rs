@@ -396,6 +396,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
+			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: InitFeatures::known() });
+			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: InitFeatures::known() });
+
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();
