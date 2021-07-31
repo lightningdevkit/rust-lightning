@@ -163,6 +163,15 @@ impl Into<Script> for ShutdownScript {
 	}
 }
 
+impl core::fmt::Display for ShutdownScript{
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		match &self.0 {
+			ShutdownScriptImpl::Legacy(_) => self.clone().into_inner().fmt(f),
+			ShutdownScriptImpl::Bolt2(script) => script.fmt(f),
+		}
+	}
+}
+
 #[cfg(test)]
 mod shutdown_script_tests {
 	use super::ShutdownScript;
