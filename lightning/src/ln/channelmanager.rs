@@ -1179,15 +1179,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
-		let their_features = {
+		let channel = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			match per_peer_state.get(&their_network_key) {
-				Some(peer_state) => peer_state.lock().unwrap().latest_features.clone(),
+				Some(peer_state) => {
+					let peer_state = peer_state.lock().unwrap();
+					let their_features = &peer_state.latest_features;
+					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
+					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_id, config)?
+				},
 				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
 			}
 		};
-		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-		let channel = Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_id, config)?;
 		let res = channel.get_open_channel(self.genesis_hash.clone());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -1289,14 +1292,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			match channel_state.by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
 					counterparty_node_id = chan_entry.get().get_counterparty_node_id();
-					let their_features = {
-						let per_peer_state = self.per_peer_state.read().unwrap();
-						match per_peer_state.get(&counterparty_node_id) {
-							Some(peer_state) => peer_state.lock().unwrap().latest_features.clone(),
-							None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
-						}
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					let (shutdown_msg, monitor_update, htlcs) = match per_peer_state.get(&counterparty_node_id) {
+						Some(peer_state) => {
+							let peer_state = peer_state.lock().unwrap();
+							let their_features = &peer_state.latest_features;
+							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features)?
+						},
+						None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
 					};
-					let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.keys_manager, &their_features)?;
 					failed_htlcs = htlcs;
 
 					// Update the monitor with the shutdown script if necessary.
@@ -3068,7 +3072,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(), their_features, msg, 0, &self.default_configuration)
+		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(), &their_features, msg, 0, &self.default_configuration)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -3094,7 +3098,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, their_features), channel_state, chan);
+					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, &their_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))

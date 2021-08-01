@@ -574,7 +574,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: InitFeatures, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
+	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
@@ -607,7 +607,7 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
-			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+			if !shutdown_scriptpubkey.is_compatible(their_features) {
 				return Err(APIError::APIMisuseError { err: format!("Provided a scriptpubkey format not accepted by peer. script: ({})", shutdown_scriptpubkey.clone().into_inner().to_bytes().to_hex()) });
 			}
 		}
@@ -720,7 +720,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
+	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
@@ -841,7 +841,7 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), &their_features)) {
+						match ShutdownScript::try_from((script.clone(), their_features)) {
 							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
 							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: ({})", script.to_bytes().to_hex()))),
 						}
@@ -1513,7 +1513,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: InitFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: &InitFeatures) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer".to_owned()));
@@ -1585,7 +1585,7 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), &their_features)) {
+						match ShutdownScript::try_from((script.clone(), their_features)) {
 							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
 							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format. script: ({})", script.to_bytes().to_hex()))),
 						}
@@ -5259,7 +5259,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, features, 10000000, 100000, 42, &config) {
+		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config) {
 			Err(APIError::APIMisuseError { err }) => {
 				assert_eq!(err, "Provided a scriptpubkey format not accepted by peer. script: (60020028)");
 			},
@@ -5281,7 +5281,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -5306,18 +5306,18 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
-		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
 
 		// Put some inbound and outbound HTLCs in A's channel.
@@ -5373,7 +5373,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		let commitment_tx_fee_0_htlcs = chan.commit_tx_fee_msat(0);
 		let commitment_tx_fee_1_htlc = chan.commit_tx_fee_msat(1);
@@ -5422,16 +5422,16 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
-		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
@@ -5484,7 +5484,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -5548,7 +5548,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, InitFeatures::known(), 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
