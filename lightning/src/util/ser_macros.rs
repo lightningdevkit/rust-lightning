@@ -200,7 +200,7 @@ macro_rules! decode_tlv_stream {
 macro_rules! impl_writeable {
 	($st:ident, $len: expr, {$($field:ident),*}) => {
 		impl ::util::ser::Writeable for $st {
-			fn write<W: ::util::ser::Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+			fn write<W: ::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				if $len != 0 {
 					w.size_hint($len);
 				}
@@ -235,7 +235,7 @@ macro_rules! impl_writeable {
 		}
 
 		impl ::util::ser::Readable for $st {
-			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				Ok(Self {
 					$($field: ::util::ser::Readable::read(r)?),*
 				})
@@ -246,7 +246,7 @@ macro_rules! impl_writeable {
 macro_rules! impl_writeable_len_match {
 	($struct: ident, $cmp: tt, ($calc_len: expr), {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
 		impl Writeable for $struct {
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				let len = match *self {
 					$($match => $length,)*
 				};
@@ -282,7 +282,7 @@ macro_rules! impl_writeable_len_match {
 		}
 
 		impl ::util::ser::Readable for $struct {
-			fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 				Ok(Self {
 					$($field: Readable::read(r)?),*
 				})
@@ -387,7 +387,7 @@ macro_rules! init_tlv_field_var {
 macro_rules! impl_writeable_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => {
 		impl ::util::ser::Writeable for $st {
-			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				write_tlv_fields!(writer, {
 					$(($type, self.$field, $fieldty)),*
 				});
@@ -412,7 +412,7 @@ macro_rules! impl_writeable_tlv_based {
 		}
 
 		impl ::util::ser::Readable for $st {
-			fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				$(
 					init_tlv_field_var!($field, $fieldty);
 				)*
@@ -445,7 +445,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 	),* $(,)*;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
 		impl ::util::ser::Writeable for $st {
-			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				match self {
 					$($st::$variant_name { $(ref $field),* } => {
 						let id: u8 = $variant_id;
@@ -465,7 +465,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 		}
 
 		impl ::util::ser::Readable for $st {
-			fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
 				let id: u8 = ::util::ser::Readable::read(reader)?;
 				match id {
 					$($variant_id => {
@@ -500,8 +500,8 @@ macro_rules! impl_writeable_tlv_based_enum {
 
 #[cfg(test)]
 mod tests {
+	use io::{self, Cursor};
 	use prelude::*;
-	use std::io::Cursor;
 	use ln::msgs::DecodeError;
 	use util::ser::{Writeable, HighZeroBytesDroppedVarInt, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
@@ -685,7 +685,7 @@ mod tests {
 		do_test!(concat!("fd00fe", "02", "0226"), None, None, None, Some(550));
 	}
 
-	fn do_simple_test_tlv_write() -> Result<(), ::std::io::Error> {
+	fn do_simple_test_tlv_write() -> Result<(), io::Error> {
 		let mut stream = VecWriter(Vec::new());
 
 		stream.0.clear();

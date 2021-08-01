@@ -32,6 +32,7 @@ use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, Writer, Writeable, VecWriter};
 use util::byte_utils;
 
+use io;
 use prelude::*;
 use alloc::collections::BTreeMap;
 use core::cmp;
@@ -94,7 +95,7 @@ impl_writeable_tlv_based_enum!(OnchainEvent,
 ;);
 
 impl Readable for Option<Vec<Option<(usize, Signature)>>> {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
 			1u8 => {
@@ -115,7 +116,7 @@ impl Readable for Option<Vec<Option<(usize, Signature)>>> {
 }
 
 impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&Some(ref vec) => {
 				1u8.write(writer)?;
@@ -191,7 +192,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
-	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.destination_script.write(writer)?;
@@ -242,7 +243,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 }
 
 impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
-	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let destination_script = Readable::read(reader)?;
@@ -285,7 +286,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 		for _ in 0..locktimed_packages_len {
 			let locktime = Readable::read(reader)?;
 			let packages_len: u64 = Readable::read(reader)?;
-			let mut packages = Vec::with_capacity(cmp::min(packages_len as usize, MAX_ALLOC_SIZE / std::mem::size_of::<PackageTemplate>()));
+			let mut packages = Vec::with_capacity(cmp::min(packages_len as usize, MAX_ALLOC_SIZE / core::mem::size_of::<PackageTemplate>()));
 			for _ in 0..packages_len {
 				packages.push(Readable::read(reader)?);
 			}

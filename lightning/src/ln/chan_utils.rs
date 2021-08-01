@@ -31,6 +31,7 @@ use bitcoin::secp256k1::{Secp256k1, Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::secp256k1;
 
+use io;
 use prelude::*;
 use core::cmp;
 use ln::chan_utils;
@@ -167,7 +168,7 @@ impl CounterpartyCommitmentSecrets {
 }
 
 impl Writeable for CounterpartyCommitmentSecrets {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		for &(ref secret, ref idx) in self.old_secrets.iter() {
 			writer.write_all(secret)?;
 			writer.write_all(&byte_utils::be64_to_array(*idx))?;
@@ -177,7 +178,7 @@ impl Writeable for CounterpartyCommitmentSecrets {
 	}
 }
 impl Readable for CounterpartyCommitmentSecrets {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut old_secrets = [([0; 32], 1 << 48); 49];
 		for &mut (ref mut secret, ref mut idx) in old_secrets.iter_mut() {
 			*secret = Readable::read(reader)?;

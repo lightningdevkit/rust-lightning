@@ -32,6 +32,7 @@ use util::logger::{Logger, Level};
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
+use io;
 use prelude::*;
 use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
@@ -611,7 +612,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for NetworkGraph {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.genesis_hash.write(writer)?;
@@ -632,7 +633,7 @@ impl Writeable for NetworkGraph {
 }
 
 impl Readable for NetworkGraph {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -1087,6 +1088,7 @@ mod tests {
 	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 
+	use io;
 	use prelude::*;
 	use sync::Arc;
 
@@ -1996,7 +1998,7 @@ mod tests {
 		assert!(!network.get_nodes().is_empty());
 		assert!(!network.get_channels().is_empty());
 		network.write(&mut w).unwrap();
-		assert!(<NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap() == *network);
+		assert!(<NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap() == *network);
 	}
 
 	#[test]

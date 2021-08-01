@@ -35,7 +35,8 @@ use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use prelude::*;
 use core::{cmp, fmt};
 use core::fmt::Debug;
-use std::io::Read;
+use io::{self, Read};
+use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
@@ -64,7 +65,7 @@ pub enum DecodeError {
 	BadLengthDescriptor,
 	/// Error from std::io
 	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
-        ::std::io::ErrorKind),
+        io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
 }
@@ -420,7 +421,7 @@ impl NetAddress {
 }
 
 impl Writeable for NetAddress {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&NetAddress::IPv4 { ref addr, ref port } => {
 				1u8.write(writer)?;
@@ -979,9 +980,9 @@ impl fmt::Display for DecodeError {
 	}
 }
 
-impl From<::std::io::Error> for DecodeError {
-	fn from(e: ::std::io::Error) -> Self {
-		if e.kind() == ::std::io::ErrorKind::UnexpectedEof {
+impl From<io::Error> for DecodeError {
+	fn from(e: io::Error) -> Self {
+		if e.kind() == io::ErrorKind::UnexpectedEof {
 			DecodeError::ShortRead
 		} else {
 			DecodeError::Io(e.kind())
@@ -990,7 +991,7 @@ impl From<::std::io::Error> for DecodeError {
 }
 
 impl Writeable for OptionalField<Script> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match *self {
 			OptionalField::Present(ref script) => {
 				// Note that Writeable for script includes the 16-bit length tag for us
@@ -1017,7 +1018,7 @@ impl Readable for OptionalField<Script> {
 }
 
 impl Writeable for OptionalField<u64> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match *self {
 			OptionalField::Present(ref value) => {
 				value.write(w)?;
@@ -1065,7 +1066,7 @@ impl_writeable!(AnnouncementSignatures, 32+8+64*2, {
 });
 
 impl Writeable for ChannelReestablish {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(if let OptionalField::Present(..) = self.data_loss_protect { 32+2*8+33+32 } else { 32+2*8 });
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
@@ -1142,7 +1143,7 @@ impl_writeable!(FundingLocked, 32+33, {
 });
 
 impl Writeable for Init {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		// global_features gets the bottom 13 bits of our features, and local_features gets all of
 		// our relevant feature bits. This keeps us compatible with old nodes.
 		self.features.write_up_to_13(w)?;
@@ -1231,7 +1232,7 @@ impl_writeable_len_match!(OnionErrorPacket, {
 });
 
 impl Writeable for OnionPacket {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(1 + 33 + 20*65 + 32);
 		self.version.write(w)?;
 		match self.public_key {
@@ -1269,7 +1270,7 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 });
 
 impl Writeable for FinalOnionHopData {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(32 + 8 - (self.total_msat.leading_zeros()/8) as usize);
 		self.payment_secret.0.write(w)?;
 		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
@@ -1285,7 +1286,7 @@ impl Readable for FinalOnionHopData {
 }
 
 impl Writeable for OnionHopData {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(33);
 		// Note that this should never be reachable if Rust-Lightning generated the message, as we
 		// check values are sane long before we get here, though its possible in the future
@@ -1386,7 +1387,7 @@ impl Readable for OnionHopData {
 }
 
 impl Writeable for Ping {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(self.byteslen as usize + 4);
 		self.ponglen.write(w)?;
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
@@ -1408,7 +1409,7 @@ impl Readable for Ping {
 }
 
 impl Writeable for Pong {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(self.byteslen as usize + 2);
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
@@ -1428,7 +1429,7 @@ impl Readable for Pong {
 }
 
 impl Writeable for UnsignedChannelAnnouncement {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(2 + 32 + 8 + 4*33 + self.features.byte_count() + self.excess_data.len());
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
@@ -1452,11 +1453,7 @@ impl Readable for UnsignedChannelAnnouncement {
 			node_id_2: Readable::read(r)?,
 			bitcoin_key_1: Readable::read(r)?,
 			bitcoin_key_2: Readable::read(r)?,
-			excess_data: {
-				let mut excess_data = vec![];
-				r.read_to_end(&mut excess_data)?;
-				excess_data
-			},
+			excess_data: read_to_end(r)?,
 		})
 	}
 }
@@ -1473,7 +1470,7 @@ impl_writeable_len_match!(ChannelAnnouncement, {
 });
 
 impl Writeable for UnsignedChannelUpdate {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let mut size = 64 + self.excess_data.len();
 		let mut message_flags: u8 = 0;
 		if let OptionalField::Present(_) = self.htlc_maximum_msat {
@@ -1514,11 +1511,7 @@ impl Readable for UnsignedChannelUpdate {
 			fee_base_msat: Readable::read(r)?,
 			fee_proportional_millionths: Readable::read(r)?,
 			htlc_maximum_msat: if has_htlc_maximum_msat { Readable::read(r)? } else { OptionalField::Absent },
-			excess_data: {
-				let mut excess_data = vec![];
-				r.read_to_end(&mut excess_data)?;
-				excess_data
-			},
+			excess_data: read_to_end(r)?,
 		})
 	}
 }
@@ -1532,7 +1525,7 @@ impl_writeable_len_match!(ChannelUpdate, {
 });
 
 impl Writeable for ErrorMessage {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(32 + 2 + self.data.len());
 		self.channel_id.write(w)?;
 		(self.data.len() as u16).write(w)?;
@@ -1547,9 +1540,8 @@ impl Readable for ErrorMessage {
 			channel_id: Readable::read(r)?,
 			data: {
 				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
-				let mut data = vec![];
-				let data_len = r.read_to_end(&mut data)?;
-				sz = cmp::min(data_len, sz);
+				let data = read_to_end(r)?;
+				sz = cmp::min(data.len(), sz);
 				match String::from_utf8(data[..sz as usize].to_vec()) {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
@@ -1560,7 +1552,7 @@ impl Readable for ErrorMessage {
 }
 
 impl Writeable for UnsignedNodeAnnouncement {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(76 + self.features.byte_count() + self.addresses.len()*38 + self.excess_address_data.len() + self.excess_data.len());
 		self.features.write(w)?;
 		self.timestamp.write(w)?;
@@ -1630,7 +1622,7 @@ impl Readable for UnsignedNodeAnnouncement {
 			}
 			Vec::new()
 		};
-		r.read_to_end(&mut excess_data)?;
+		excess_data.extend(read_to_end(r)?.iter());
 		Ok(UnsignedNodeAnnouncement {
 			features,
 			timestamp,
@@ -1687,7 +1679,7 @@ impl Readable for QueryShortChannelIds {
 }
 
 impl Writeable for QueryShortChannelIds {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		// Calculated from 1-byte encoding_type plus 8-bytes per short_channel_id
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
 
@@ -1718,7 +1710,7 @@ impl Readable for ReplyShortChannelIdsEnd {
 }
 
 impl Writeable for ReplyShortChannelIdsEnd {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(32 + 1);
 		self.chain_hash.write(w)?;
 		self.full_information.write(w)?;
@@ -1753,7 +1745,7 @@ impl Readable for QueryChannelRange {
 }
 
 impl Writeable for QueryChannelRange {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(32 + 4 + 4);
 		self.chain_hash.write(w)?;
 		self.first_blocknum.write(w)?;
@@ -1803,7 +1795,7 @@ impl Readable for ReplyChannelRange {
 }
 
 impl Writeable for ReplyChannelRange {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
 		w.size_hint(32 + 4 + 4 + 1 + 2 + encoding_len as usize);
 		self.chain_hash.write(w)?;
@@ -1835,7 +1827,7 @@ impl Readable for GossipTimestampFilter {
 }
 
 impl Writeable for GossipTimestampFilter {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(32 + 4 + 4);
 		self.chain_hash.write(w)?;
 		self.first_timestamp.write(w)?;
@@ -1863,8 +1855,8 @@ mod tests {
 	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
 
+	use io::Cursor;
 	use prelude::*;
-	use std::io::Cursor;
 
 	#[test]
 	fn encoding_channel_reestablish_no_secret() {

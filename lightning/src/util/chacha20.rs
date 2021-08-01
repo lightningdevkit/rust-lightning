@@ -9,7 +9,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use std::io;
+use io;
 
 #[cfg(not(feature = "fuzztarget"))]
 mod real_chacha {

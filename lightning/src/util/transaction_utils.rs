@@ -15,6 +15,7 @@ use bitcoin::consensus::encode::VarInt;
 use ln::msgs::MAX_VALUE_MSAT;
 
 use prelude::*;
+use io_extras::sink;
 use core::cmp::Ordering;
 
 pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
@@ -56,7 +57,7 @@ pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, wi
 		script_pubkey: change_destination_script,
 		value: 0,
 	};
-	let change_len = change_output.consensus_encode(&mut std::io::sink()).unwrap();
+	let change_len = change_output.consensus_encode(&mut sink()).unwrap();
 	let mut weight_with_change: i64 = tx.get_weight() as i64 + 2 + witness_max_weight as i64 + change_len as i64 * 4;
 	// Include any extra bytes required to push an extra output.
 	weight_with_change += (VarInt(tx.output.len() as u64 + 1).len() - VarInt(tx.output.len() as u64).len()) as i64 * 4;

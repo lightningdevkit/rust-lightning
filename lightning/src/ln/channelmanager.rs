@@ -60,10 +60,11 @@ use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::{Logger, Level};
 use util::errors::APIError;
 
+use io;
 use prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
-use std::io::{Cursor, Read};
+use io::{Cursor, Read};
 use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
@@ -3990,7 +3991,7 @@ where
 				result = NotifyOption::DoPersist;
 			}
 
-			let mut pending_events = std::mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
+			let mut pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
 			if !pending_events.is_empty() {
 				result = NotifyOption::DoPersist;
 			}
@@ -4610,7 +4611,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 });
 
 impl Writeable for ClaimableHTLC {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let payment_data = match &self.onion_payload {
 			OnionPayload::Invoice(data) => Some(data.clone()),
 			_ => None,
@@ -4714,7 +4715,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
 
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
@@ -4910,7 +4911,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
@@ -4924,7 +4925,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: ::std::io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;

@@ -21,6 +21,7 @@ use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
+use io;
 use prelude::*;
 use alloc::collections::BinaryHeap;
 use core::cmp;
@@ -74,7 +75,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for Route {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		for hops in self.paths.iter() {
@@ -89,7 +90,7 @@ impl Writeable for Route {
 }
 
 impl Readable for Route {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);

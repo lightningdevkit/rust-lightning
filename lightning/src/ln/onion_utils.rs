@@ -27,7 +27,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use prelude::*;
-use std::io::Cursor;
+use io::Cursor;
 use core::convert::TryInto;
 use core::ops::Deref;
 
@@ -480,6 +480,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 #[cfg(test)]
 mod tests {
+	use io;
 	use prelude::*;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, NodeFeatures};
@@ -648,7 +649,7 @@ mod tests {
 		}
 	}
 	impl Writeable for RawOnionHopData {
-		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 			writer.write_all(&self.data[..])
 		}
 	}

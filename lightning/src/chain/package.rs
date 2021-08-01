@@ -31,6 +31,8 @@ use util::byte_utils;
 use util::logger::Logger;
 use util::ser::{Readable, Writer, Writeable};
 
+use io;
+use prelude::*;
 use core::cmp;
 use core::mem;
 use core::ops::Deref;
@@ -395,8 +397,8 @@ impl PackageSolvingData {
 			PackageSolvingData::RevokedOutput(_) => output_conf_height + 1,
 			PackageSolvingData::RevokedHTLCOutput(_) => output_conf_height + 1,
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => output_conf_height + 1,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => std::cmp::max(outp.htlc.cltv_expiry, output_conf_height + 1),
-			PackageSolvingData::HolderHTLCOutput(ref outp) => std::cmp::max(outp.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, output_conf_height + 1),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => cmp::max(outp.cltv_expiry, output_conf_height + 1),
 			PackageSolvingData::HolderFundingOutput(_) => output_conf_height + 1,
 		};
 		absolute_timelock
@@ -682,7 +684,7 @@ impl PackageTemplate {
 }
 
 impl Writeable for PackageTemplate {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		writer.write_all(&byte_utils::be64_to_array(self.inputs.len() as u64))?;
 		for (ref outpoint, ref rev_outp) in self.inputs.iter() {
 			outpoint.write(writer)?;
@@ -699,7 +701,7 @@ impl Writeable for PackageTemplate {
 }
 
 impl Readable for PackageTemplate {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inputs_count = <u64 as Readable>::read(reader)?;
 		let mut inputs: Vec<(BitcoinOutPoint, PackageSolvingData)> = Vec::with_capacity(cmp::min(inputs_count as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..inputs_count {
