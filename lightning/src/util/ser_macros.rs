@@ -154,7 +154,8 @@ macro_rules! decode_tlv {
 		$field = ser::Readable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, vec_type) => {{
-		$field = Some(ser::Readable::read(&mut $reader)?);
+		let f: ::util::ser::VecReadWrapper<_> = ser::Readable::read(&mut $reader)?;
+		$field = Some(f.0);
 	}};
 	($reader: expr, $field: ident, option) => {{
 		$field = Some(ser::Readable::read(&mut $reader)?);
@@ -399,7 +400,7 @@ macro_rules! init_tlv_based_struct_field {
 		$field.0.unwrap()
 	};
 	($field: ident, vec_type) => {
-		$field.unwrap().0
+		$field.unwrap()
 	};
 }
 
@@ -411,7 +412,7 @@ macro_rules! init_tlv_field_var {
 		let mut $field = ::util::ser::OptionDeserWrapper(None);
 	};
 	($field: ident, vec_type) => {
-		let mut $field = Some(::util::ser::VecReadWrapper(Vec::new()));
+		let mut $field = Some(Vec::new());
 	};
 	($field: ident, option) => {
 		let mut $field = None;
