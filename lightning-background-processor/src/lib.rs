@@ -39,6 +39,7 @@ use std::ops::Deref;
 /// then there is a risk of channels force-closing on startup when the manager realizes it's
 /// outdated. However, as long as `ChannelMonitor` backups are sound, no funds besides those used
 /// for unilateral chain closure fees are at risk.
+#[must_use = "BackgroundProcessor will immediately stop on drop. It should be stored until shutdown."]
 pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
 	thread_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
