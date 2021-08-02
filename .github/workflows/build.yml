@@ -262,4 +262,4 @@ jobs:
           rustup component add clippy
       - name: Run default clippy linting
         run: |
-          cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else
+          cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else -Dclippy::try_err
