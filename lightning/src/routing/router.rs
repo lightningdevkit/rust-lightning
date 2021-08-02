@@ -373,8 +373,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	if final_value_msat == 0 {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
-	
-	let last_hops = &(*last_hops).clone().iter().map(|hops| hops.0.clone()).collect::<Vec<_>>();
+	let last_hops = last_hops.iter().map(|hops| hops.0.clone()).collect::<Vec<_>>();
 
 	for routes in last_hops.iter() {
 		for last_hop in routes.iter() {
@@ -786,7 +785,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
-	macro_rules! add_entries_to_cheapest_to_target_node {
+	macro_rules! add_entries_to_cheapest_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => {
 			let skip_node = if let Some(elem) = dist.get_mut($node_id) {
 				let was_processed = elem.was_processed;
@@ -870,7 +869,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0);
+				add_entries_to_cheapest_target_node!(node, payee, 0, path_value_msat, 0);
 			},
 		}
 
@@ -879,6 +878,14 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
 		for route in last_hops.iter() {
+			//TODO:-
+			//The loop starts from the very last RouteHintHop and build a path from the payee along 
+			//the RouteHintHop(s) for each route. This is done because for every step of the loop,
+			//we need the ```next_hops_path_htlc_minimum_msat``` and ```next_hops_fee_msat``` values
+			//to reflect the total minimum htlc msat and fees required to route to the payee from the current
+			//RouteHintHop node through the route. This also prevents adding any RouteHintHop which may be invalid.
+			//If a RouteHintHop is invalid, this means the preceeding RouteHintHops (in normal order) cannot be used
+			//however the next RouteHintHops and thereafter may be still viable.
 			for hop in route.iter() {
 				let have_hop_src_in_graph =
 					// Only add the last hop to our candidate set if either we have a direct channel or
@@ -1040,7 +1047,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 			// If we found a path back to the payee, we shouldn't try to process it again. This is
 			// the equivalent of the `elem.was_processed` check in
-			// add_entries_to_cheapest_to_target_node!() (see comment there for more info).
+			// add_entries_to_cheapest_target_node!() (see comment there for more info).
 			if pubkey == *payee { continue 'path_construction; }
 
 			// Otherwise, since the current target node is not us,
@@ -1049,7 +1056,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			match network.get_nodes().get(&pubkey) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat);
+					add_entries_to_cheapest_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat);
 				},
 			}
 		}
