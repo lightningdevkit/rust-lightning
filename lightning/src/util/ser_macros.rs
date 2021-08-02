@@ -93,7 +93,7 @@ macro_rules! check_tlv_order {
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
-			Err(DecodeError::InvalidValue)?
+			return Err(DecodeError::InvalidValue);
 		}
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, option) => {{
@@ -109,7 +109,7 @@ macro_rules! check_missing_tlv {
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
-			Err(DecodeError::InvalidValue)?
+			return Err(DecodeError::InvalidValue);
 		}
 	}};
 	($last_seen_type: expr, $type: expr, vec_type) => {{
@@ -149,12 +149,12 @@ macro_rules! decode_tlv_stream {
 				match ser::Readable::read(&mut tracking_reader) {
 					Err(DecodeError::ShortRead) => {
 						if !tracking_reader.have_read {
-							break 'tlv_read
+							break 'tlv_read;
 						} else {
-							Err(DecodeError::ShortRead)?
+							return Err(DecodeError::ShortRead);
 						}
 					},
-					Err(e) => Err(e)?,
+					Err(e) => return Err(e),
 					Ok(t) => t,
 				}
 			};
@@ -162,7 +162,7 @@ macro_rules! decode_tlv_stream {
 			// Types must be unique and monotonically increasing:
 			match last_seen_type {
 				Some(t) if typ.0 <= t => {
-					Err(DecodeError::InvalidValue)?
+					return Err(DecodeError::InvalidValue);
 				},
 				_ => {},
 			}
@@ -180,11 +180,11 @@ macro_rules! decode_tlv_stream {
 					decode_tlv!(s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
-						Err(DecodeError::InvalidValue)?
+						return Err(DecodeError::InvalidValue);
 					}
 				},)*
 				x if x % 2 == 0 => {
-					Err(DecodeError::UnknownRequiredFeature)?
+					return Err(DecodeError::UnknownRequiredFeature);
 				},
 				_ => {},
 			}
@@ -490,7 +490,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 						Ok($st::$tuple_variant_name(Readable::read(reader)?))
 					}),*
 					_ => {
-						Err(DecodeError::UnknownRequiredFeature)?
+						Err(DecodeError::UnknownRequiredFeature)
 					},
 				}
 			}
