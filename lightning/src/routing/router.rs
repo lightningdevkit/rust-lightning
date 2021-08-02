@@ -373,11 +373,14 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	if final_value_msat == 0 {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
+	
+	let last_hops = last_hops.clone().iter().map(|hops| hops.0.clone()).collect::<Vec<_>>();
 
-	let last_hops = last_hops.iter().filter_map(|hops| hops.0.last()).collect::<Vec<_>>();
-	for last_hop in last_hops.iter() {
-		if last_hop.src_node_id == *payee {
-			return Err(LightningError{err: "Last hop cannot have a payee as a source.".to_owned(), action: ErrorAction::IgnoreError});
+	for routes in last_hops.iter() {
+		for last_hop in routes.iter() {
+			if last_hop.src_node_id == *payee {
+				return Err(LightningError{err: "Last hop cannot have a payee as a source.".to_owned(), action: ErrorAction::IgnoreError});
+			}
 		}
 	}
 
@@ -405,7 +408,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	//
 	// We are not a faithful Dijkstra's implementation because we can change values which impact
 	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
-	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) then
+	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) than
 	// the value we are currently attempting to send over a path, we simply reduce the value being
 	// sent along the path for any hops after that channel. This may imply that later fees (which
 	// we've already tabulated) are lower because a smaller value is passing through the channels
@@ -875,39 +878,41 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		for hop in last_hops.iter() {
-			let have_hop_src_in_graph =
-				// Only add the last hop to our candidate set if either we have a direct channel or
-				// they are in the regular network graph.
-				first_hop_targets.get(&hop.src_node_id).is_some() ||
-				network.get_nodes().get(&hop.src_node_id).is_some();
-			if have_hop_src_in_graph {
-				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
-				// really sucks, cause we're gonna need that eventually.
-				let last_hop_htlc_minimum_msat: u64 = match hop.htlc_minimum_msat {
-					Some(htlc_minimum_msat) => htlc_minimum_msat,
-					None => 0
-				};
-				let directional_info = DummyDirectionalChannelInfo {
-					cltv_expiry_delta: hop.cltv_expiry_delta as u32,
-					htlc_minimum_msat: last_hop_htlc_minimum_msat,
-					htlc_maximum_msat: hop.htlc_maximum_msat,
-					fees: hop.fees,
-				};
-				// We assume that the recipient only included route hints for routes which had
-				// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
-				// invoices where the invoice does not specify value this may not be the case, but
-				// better to include the hints than not.
-				if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, Some((final_value_msat + 999) / 1000), &empty_channel_features, 0, path_value_msat, 0) {
-					// If this hop connects to a node with which we have a direct channel,
-					// ignore the network graph and, if the last hop was added, add our
-					// direct channel to the candidate set.
-					//
-					// Note that we *must* check if the last hop was added as `add_entry`
-					// always assumes that the third argument is a node to which we have a
-					// path.
-					if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
-						add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
+		for route in last_hops.iter() {
+			for hop in route.iter() {
+				let have_hop_src_in_graph =
+					// Only add the last hop to our candidate set if either we have a direct channel or
+					// they are in the regular network graph.
+					first_hop_targets.get(&hop.src_node_id).is_some() ||
+					network.get_nodes().get(&hop.src_node_id).is_some();
+				if have_hop_src_in_graph {
+					// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
+					// really sucks, cause we're gonna need that eventually.
+					let last_hop_htlc_minimum_msat: u64 = match hop.htlc_minimum_msat {
+						Some(htlc_minimum_msat) => htlc_minimum_msat,
+						None => 0
+					};
+					let directional_info = DummyDirectionalChannelInfo {
+						cltv_expiry_delta: hop.cltv_expiry_delta as u32,
+						htlc_minimum_msat: last_hop_htlc_minimum_msat,
+						htlc_maximum_msat: hop.htlc_maximum_msat,
+						fees: hop.fees,
+					};
+					// We assume that the recipient only included route hints for routes which had
+					// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
+					// invoices where the invoice does not specify value this may not be the case, but
+					// better to include the hints than not.
+					if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, Some((final_value_msat + 999) / 1000), &empty_channel_features, 0, path_value_msat, 0) {
+						// If this hop connects to a node with which we have a direct channel,
+						// ignore the network graph and, if the last hop was added, add our
+						// direct channel to the candidate set.
+						//
+						// Note that we *must* check if the last hop was added as `add_entry`
+						// always assumes that the third argument is a node to which we have a
+						// path.
+						if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
+							add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
+						}
 					}
 				}
 			}
@@ -1342,7 +1347,7 @@ mod tests {
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
-		// Build network from our_id to node7:
+		// Build network from our_id to node6:
 		//
 		//        -1(1)2-  node0  -1(3)2-
 		//       /                       \
@@ -2124,12 +2129,45 @@ mod tests {
 		}])]
 	}
 
+	fn multiple_last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+		let zero_fees = RoutingFees {
+			base_msat: 0,
+			proportional_millionths: 0,
+		};
+		vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}, RouteHintHop {
+			src_node_id: nodes[4].clone(),
+			short_channel_id: 9,
+			fees: RoutingFees {
+				base_msat: 1001,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (9 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])]
+	}
+
 	#[test]
-	fn last_hops_test() {
+	fn last_hops_test_1() {
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
+		// Tests with just 1 RouteHintHop per RouteHint in the invoice
 
 		// First check that last hop can't have its source as the payee.
 		let invalid_last_hop = RouteHint(vec![RouteHintHop {
@@ -2145,6 +2183,76 @@ mod tests {
 		}]);
 
 		let mut invalid_last_hops = last_hops(&nodes);
+		invalid_last_hops.push(invalid_last_hop);
+		{
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &invalid_last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)) {
+				assert_eq!(err, "Last hop cannot have a payee as a source.");
+			} else { panic!(); }
+		}
+
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &last_hops(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
+		assert_eq!(route.paths[0].len(), 5);
+
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 100);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0][1].short_channel_id, 4);
+		assert_eq!(route.paths[0][1].fee_msat, 0);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0][2].short_channel_id, 6);
+		assert_eq!(route.paths[0][2].fee_msat, 0);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+
+		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0][3].short_channel_id, 11);
+		assert_eq!(route.paths[0][3].fee_msat, 0);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		// If we have a peer in the node map, we'll use their features here since we don't have
+		// a way of figuring out their features from the invoice:
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+
+		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0][4].short_channel_id, 8);
+		assert_eq!(route.paths[0][4].fee_msat, 100);
+		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	#[test]
+	fn last_hops_test_2() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+
+		// Simple test across 2, 3, 5, and 4 via a last_hop channel
+		// Tests with just 2 RouteHintHops in the first RouteHint in the invoice
+
+		// First check that last hop can't have its source as the payee.
+		let invalid_last_hop = RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[6],
+			short_channel_id: 8,
+			fees: RoutingFees {
+				base_msat: 1000,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+
+		let mut invalid_last_hops = multiple_last_hops(&nodes);
 		invalid_last_hops.push(invalid_last_hop);
 		{
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &invalid_last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)) {
