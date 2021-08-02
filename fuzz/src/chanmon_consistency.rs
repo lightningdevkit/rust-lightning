@@ -253,6 +253,7 @@ fn check_api_err(api_err: APIError) {
 		APIError::MonitorUpdateFailed => {
 			// We can (obviously) temp-fail a monitor update
 		},
+		APIError::IncompatibleShutdownScript { .. } => panic!("Cannot send an incompatible shutdown script"),
 	}
 }
 #[inline]

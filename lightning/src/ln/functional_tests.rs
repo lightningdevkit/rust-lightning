@@ -7693,7 +7693,9 @@ fn test_unsupported_anysegwit_shutdown_script() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, node_cfgs[0].features.clone(), node_cfgs[1].features.clone());
 	match nodes[1].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()) {
-		Err(APIError::APIMisuseError { err }) => assert_eq!(err, "Provided a scriptpubkey format not accepted by peer. script: (60020028)"),
+		Err(APIError::IncompatibleShutdownScript { script }) => {
+			assert_eq!(script.into_inner(), unsupported_shutdown_script.clone().into_inner());
+		},
 		Err(e) => panic!("Unexpected error: {:?}", e),
 		Ok(_) => panic!("Expected error"),
 	}

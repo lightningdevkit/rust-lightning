@@ -9,6 +9,8 @@
 
 //! Error types live here.
 
+use ln::script::ShutdownScript;
+
 use alloc::string::String;
 use core::fmt;
 
@@ -47,6 +49,18 @@ pub enum APIError {
 	/// An attempt to call watch/update_channel returned an Err (ie you did this!), causing the
 	/// attempted action to fail.
 	MonitorUpdateFailed,
+	/// [`KeysInterface::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
+	/// with the channel counterparty as negotiated in [`InitFeatures`].
+	///
+	/// Using a SegWit v0 script should resolve this issue. If you cannot, you won't be able to open
+	/// a channel or cooperatively close one with this peer (and will have to force-close instead).
+	///
+	/// [`KeysInterface::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::KeysInterface::get_shutdown_scriptpubkey
+	/// [`InitFeatures`]: crate::ln::features::InitFeatures
+	IncompatibleShutdownScript {
+		/// The incompatible shutdown script.
+		script: ShutdownScript,
+	},
 }
 
 impl fmt::Debug for APIError {
@@ -57,6 +71,9 @@ impl fmt::Debug for APIError {
 			APIError::RouteError {ref err} => f.write_str(err),
 			APIError::ChannelUnavailable {ref err} => f.write_str(err),
 			APIError::MonitorUpdateFailed => f.write_str("Client indicated a channel monitor update failed"),
+			APIError::IncompatibleShutdownScript { ref script } => {
+				write!(f, "Provided a scriptpubkey format not accepted by peer: {}", script)
+			},
 		}
 	}
 }

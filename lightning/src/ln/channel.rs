@@ -607,8 +607,8 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
-			if !shutdown_scriptpubkey.is_compatible(their_features) {
-				return Err(APIError::APIMisuseError { err: format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey) });
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 			}
 		}
 
@@ -4487,7 +4487,7 @@ impl<Signer: Sign> Channel<Signer> {
 			None => {
 				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(APIError::APIMisuseError { err: format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey) });
+					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 				}
 				self.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
@@ -5253,15 +5253,17 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		keys_provider.expect(OnGetShutdownScriptpubkey { returns: non_v0_segwit_shutdown_script });
+		keys_provider.expect(OnGetShutdownScriptpubkey {
+			returns: non_v0_segwit_shutdown_script.clone(),
+		});
 
 		let fee_estimator = TestFeeEstimator { fee_est: 253 };
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config) {
-			Err(APIError::APIMisuseError { err }) => {
-				assert_eq!(err, "Provided a scriptpubkey format not accepted by peer. script: (60020028)");
+			Err(APIError::IncompatibleShutdownScript { script }) => {
+				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => panic!("Expected error"),
