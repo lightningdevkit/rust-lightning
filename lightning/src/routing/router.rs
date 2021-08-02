@@ -374,7 +374,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 	
-	let last_hops = last_hops.clone().iter().map(|hops| hops.0.clone()).collect::<Vec<_>>();
+	let last_hops = &(*last_hops).clone().iter().map(|hops| hops.0.clone()).collect::<Vec<_>>();
 
 	for routes in last_hops.iter() {
 		for last_hop in routes.iter() {
