@@ -135,7 +135,7 @@ mod tests {
 		// Create the channel data file and make it a directory.
 		fs::create_dir_all(get_full_filepath(path.clone(), filename.to_string())).unwrap();
 		match write_to_file(path.clone(), filename.to_string(), &test_writeable) {
-			Err(e) => assert_eq!(e.kind(), io::ErrorKind::Other),
+			Err(e) => assert_eq!(e.raw_os_error(), Some(libc::EISDIR)),
 			_ => panic!("Unexpected Ok(())")
 		}
 		fs::remove_dir_all(path).unwrap();
@@ -178,7 +178,7 @@ mod tests {
 		match write_to_file(path, filename, &test_writeable) {
 			Err(e) => {
 				#[cfg(not(target_os = "windows"))]
-				assert_eq!(e.kind(), io::ErrorKind::Other);
+				assert_eq!(e.raw_os_error(), Some(libc::EISDIR));
 				#[cfg(target_os = "windows")]
 				assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
 			}
