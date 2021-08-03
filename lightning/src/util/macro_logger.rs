@@ -142,7 +142,7 @@ impl<'a> core::fmt::Display for DebugSpendable<'a> {
 				write!(f, "DelayedPaymentOutput {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
 			}
 			&SpendableOutputDescriptor::StaticPaymentOutput(ref descriptor) => {
-				write!(f, "DynamicOutputP2WPKH {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
+				write!(f, "StaticPaymentOutput {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
 			}
 		}
 		Ok(())
