@@ -23,6 +23,7 @@ use bitcoin::blockdata::script::Script;
 
 use bitcoin::secp256k1::key::PublicKey;
 
+use io;
 use prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
@@ -153,7 +154,7 @@ pub enum Event {
 }
 
 impl Writeable for Event {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			&Event::FundingGenerationReady { .. } => {
 				0u8.write(writer)?;
@@ -222,7 +223,7 @@ impl Writeable for Event {
 	}
 }
 impl MaybeReadable for Event {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
 			0u8 => Ok(None),
 			1u8 => {

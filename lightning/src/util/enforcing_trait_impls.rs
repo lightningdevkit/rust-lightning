@@ -11,6 +11,7 @@ use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitment
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
+use io;
 use prelude::*;
 use core::cmp;
 use sync::{Mutex, Arc};
@@ -22,7 +23,7 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, Signature};
 use util::ser::{Writeable, Writer, Readable};
-use std::io::Error;
+use io::Error;
 use ln::msgs::DecodeError;
 
 /// Initial value for revoked commitment downward counter
@@ -181,7 +182,7 @@ impl Writeable for EnforcingSigner {
 }
 
 impl Readable for EnforcingSigner {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
 		let last_commitment_number = Readable::read(reader)?;
 		Ok(EnforcingSigner {

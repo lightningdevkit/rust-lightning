@@ -37,6 +37,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 
 use regex;
 
+use io;
 use prelude::*;
 use core::time::Duration;
 use sync::{Mutex, Arc};
@@ -46,7 +47,7 @@ use chain::keysinterface::InMemorySigner;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
@@ -75,7 +76,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		EnforcingSigner::read(&mut std::io::Cursor::new(reader))
+		EnforcingSigner::read(&mut io::Cursor::new(reader))
 	}
 	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
@@ -114,7 +115,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
+			&mut io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
@@ -136,7 +137,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
-				&mut ::std::io::Cursor::new(&w.0)).unwrap() == update);
+				&mut io::Cursor::new(&w.0)).unwrap() == update);
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(funding_txo.to_channel_id(), exp.0);
@@ -155,7 +156,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-			&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
+			&mut io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
 
@@ -481,7 +482,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		let mut reader = std::io::Cursor::new(buffer);
+		let mut reader = io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);

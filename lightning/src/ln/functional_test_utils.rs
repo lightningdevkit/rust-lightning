@@ -39,6 +39,7 @@ use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::key::PublicKey;
 
+use io;
 use prelude::*;
 use core::cell::RefCell;
 use std::rc::Rc;
@@ -239,7 +240,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				let network_graph_ser = self.net_graph_msg_handler.network_graph.read().unwrap();
 				network_graph_ser.write(&mut w).unwrap();
-				let network_graph_deser = <NetworkGraph>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
 					Some(self.chain_source), self.logger, network_graph_deser
@@ -277,7 +278,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					old_monitor.write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-						&mut ::std::io::Cursor::new(&w.0), self.keys_manager).unwrap();
+						&mut io::Cursor::new(&w.0), self.keys_manager).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
 			}
@@ -292,7 +293,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
-				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut ::std::io::Cursor::new(w.0), ChannelManagerReadArgs {
+				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
 					default_config: *self.node.get_current_default_configuration(),
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },

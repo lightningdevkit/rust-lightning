@@ -6,4 +6,4 @@ cargo check
 cargo doc
 cargo doc --document-private-items
 cd fuzz && cargo check --features=stdin_fuzz
-cd ../lightning && cargo check --no-default-features --features=no_std
+cd ../lightning && cargo check --no-default-features --features=no-std

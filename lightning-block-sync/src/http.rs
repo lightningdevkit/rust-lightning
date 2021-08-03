@@ -636,7 +636,10 @@ pub(crate) mod client_tests {
 	#[test]
 	fn connect_to_unresolvable_host() {
 		match HttpClient::connect(("example.invalid", 80)) {
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
+			Err(e) => {
+				assert!(e.to_string().contains("failed to lookup address information") ||
+					e.to_string().contains("No such host"), "{:?}", e);
+			},
 			Ok(_) => panic!("Expected error"),
 		}
 	}
