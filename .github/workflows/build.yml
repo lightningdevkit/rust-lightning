@@ -26,7 +26,15 @@ jobs:
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+          - toolchain: beta
+            platform: macos-latest
+            build-net-tokio: true
+            build-no-std: true
           - toolchain: stable
+            platform: windows-latest
+            build-net-tokio: true
+            build-no-std: true
+          - toolchain: beta
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
