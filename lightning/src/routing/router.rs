@@ -3831,7 +3831,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	pub(super) fn random_init_seed() -> u64 {
 		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
 		use core::hash::{BuildHasher, Hasher};
@@ -3839,11 +3839,11 @@ mod tests {
 		println!("Using seed of {}", seed);
 		seed
 	}
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	use util::ser::Readable;
 
 	#[test]
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	fn generate_routes() {
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
@@ -3871,7 +3871,7 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	fn generate_routes_mpp() {
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
@@ -3899,7 +3899,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, not(feature = "no_std")))]
+#[cfg(all(test, not(feature = "no-std")))]
 pub(crate) mod test_utils {
 	use std::fs::File;
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
@@ -3926,7 +3926,7 @@ pub(crate) mod test_utils {
 	}
 }
 
-#[cfg(all(test, feature = "unstable", not(feature = "no_std")))]
+#[cfg(all(test, feature = "unstable", not(feature = "no-std")))]
 mod benches {
 	use super::*;
 	use util::logger::{Logger, Record};

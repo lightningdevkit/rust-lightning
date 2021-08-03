@@ -33,8 +33,8 @@
 #![cfg_attr(all(any(test, feature = "_test_utils"), feature = "unstable"), feature(test))]
 #[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))] extern crate test;
 
-#[cfg(not(any(feature = "std", feature = "no_std")))]
-compile_error!("at least one of the `std` or `no_std` features must be enabled");
+#[cfg(not(any(feature = "std", feature = "no-std")))]
+compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
 #[macro_use]
 extern crate alloc;
