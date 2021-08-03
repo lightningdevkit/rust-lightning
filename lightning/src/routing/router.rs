@@ -21,6 +21,7 @@ use routing::network_graph::{NetworkGraph, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::Logger;
 
+use io;
 use prelude::*;
 use alloc::collections::BinaryHeap;
 use core::cmp;
@@ -74,7 +75,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for Route {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		for hops in self.paths.iter() {
@@ -89,7 +90,7 @@ impl Writeable for Route {
 }
 
 impl Readable for Route {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
@@ -3830,7 +3831,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	pub(super) fn random_init_seed() -> u64 {
 		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
 		use core::hash::{BuildHasher, Hasher};
@@ -3838,11 +3839,11 @@ mod tests {
 		println!("Using seed of {}", seed);
 		seed
 	}
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	use util::ser::Readable;
 
 	#[test]
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	fn generate_routes() {
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
@@ -3870,7 +3871,7 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(not(feature = "no_std"))]
+	#[cfg(not(feature = "no-std"))]
 	fn generate_routes_mpp() {
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
@@ -3898,7 +3899,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, not(feature = "no_std")))]
+#[cfg(all(test, not(feature = "no-std")))]
 pub(crate) mod test_utils {
 	use std::fs::File;
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
@@ -3925,7 +3926,7 @@ pub(crate) mod test_utils {
 	}
 }
 
-#[cfg(all(test, feature = "unstable", not(feature = "no_std")))]
+#[cfg(all(test, feature = "unstable", not(feature = "no-std")))]
 mod benches {
 	use super::*;
 	use util::logger::{Logger, Record};

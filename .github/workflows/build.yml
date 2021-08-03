@@ -16,7 +16,7 @@ jobs:
                      1.41.0,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
                      1.45.2,
-                     # 1.47.0 will be the MSRV for no_std builds using hashbrown once core2 is updated
+                     # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
                      1.47.0]
         include:
           - toolchain: stable
@@ -95,19 +95,19 @@ jobs:
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
-      - name: Test on no_std bullds Rust ${{ matrix.toolchain }}
+      - name: Test on no-std bullds Rust ${{ matrix.toolchain }}
         if: "matrix.build-no-std && !matrix.coverage"
         run: |
           cd lightning
-          cargo test --verbose --color always --no-default-features --features no_std
-          # check if there is a conflict between no_std and the default std feature
-          cargo test --verbose --color always --features no_std
+          cargo test --verbose --color always --no-default-features --features no-std
+          # check if there is a conflict between no-std and the default std feature
+          cargo test --verbose --color always --features no-std
           cd ..
-      - name: Test on no_std bullds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
+      - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
         if: "matrix.build-no-std && matrix.coverage"
         run: |
           cd lightning
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no_std
+          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
           cd ..
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"

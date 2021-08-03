@@ -39,7 +39,7 @@ use ln::msgs::UnsignedChannelAnnouncement;
 
 use prelude::*;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::io::Error;
+use io::{self, Error};
 use ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 
 /// Information about a spendable output to a P2WSH script. See
@@ -699,7 +699,7 @@ impl Writeable for InMemorySigner {
 }
 
 impl Readable for InMemorySigner {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let funding_key = Readable::read(reader)?;
@@ -1039,7 +1039,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut std::io::Cursor::new(reader))
+		InMemorySigner::read(&mut io::Cursor::new(reader))
 	}
 
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {

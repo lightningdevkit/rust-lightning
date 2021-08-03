@@ -53,7 +53,7 @@ use util::events::Event;
 
 use prelude::*;
 use core::{cmp, mem};
-use std::io::Error;
+use io::{self, Error};
 use core::ops::Deref;
 use sync::Mutex;
 
@@ -88,7 +88,7 @@ pub struct ChannelMonitorUpdate {
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(w, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		self.update_id.write(w)?;
 		(self.updates.len() as u64).write(w)?;
@@ -100,7 +100,7 @@ impl Writeable for ChannelMonitorUpdate {
 	}
 }
 impl Readable for ChannelMonitorUpdate {
-	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(r, SERIALIZATION_VERSION);
 		let update_id: u64 = Readable::read(r)?;
 		let len: u64 = Readable::read(r)?;
@@ -293,7 +293,7 @@ struct CounterpartyCommitmentTransaction {
 }
 
 impl Writeable for CounterpartyCommitmentTransaction {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(&byte_utils::be64_to_array(self.per_htlc.len() as u64))?;
 		for (ref txid, ref htlcs) in self.per_htlc.iter() {
 			w.write_all(&txid[..])?;
@@ -311,7 +311,7 @@ impl Writeable for CounterpartyCommitmentTransaction {
 	}
 }
 impl Readable for CounterpartyCommitmentTransaction {
-	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let counterparty_commitment_transaction = {
 			let per_htlc_len: u64 = Readable::read(r)?;
 			let mut per_htlc = HashMap::with_capacity(cmp::min(per_htlc_len as usize, MAX_ALLOC_SIZE / 64));
@@ -2581,7 +2581,7 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 
 impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		for (BlockHash, ChannelMonitor<Signer>) {
-	fn read<R: ::std::io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
 				match $key {

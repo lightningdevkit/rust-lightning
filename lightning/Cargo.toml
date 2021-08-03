@@ -26,25 +26,32 @@ max_level_debug = []
 unsafe_revoked_tx_signing = []
 unstable = []
 
-no_std = ["hashbrown", "bitcoin/no-std"]
+no-std = ["hashbrown", "bitcoin/no-std", "core2/alloc"]
 std = ["bitcoin/std"]
 
 default = ["std"]
 
 [dependencies]
-bitcoin = "0.27"
+bitcoin = { version = "0.27", default-features = false, features = ["secp-recovery"] }
+# TODO remove this once rust-bitcoin PR #637 is released
+secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"] }
 
 hashbrown = { version = "0.11", optional = true }
 hex = { version = "0.3", optional = true }
 regex = { version = "0.1.80", optional = true }
 
+core2 = { version = "0.3.0", optional = true, default-features = false }
+
 [dev-dependencies]
 hex = "0.3"
 regex = "0.1.80"
+# TODO remove this once rust-bitcoin PR #637 is released
+secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"] }
 
 [dev-dependencies.bitcoin]
 version = "0.27"
-features = ["bitcoinconsensus"]
+default-features = false
+features = ["bitcoinconsensus", "secp-recovery"]
 
 [package.metadata.docs.rs]
 features = ["allow_wallclock_use"] # When https://github.com/rust-lang/rust/issues/43781 complies with our MSVR, we can add nice banners in the docs for the methods behind this feature-gate.

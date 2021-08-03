@@ -31,13 +31,14 @@ use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
 
 use prelude::*;
+use io;
 use alloc::collections::LinkedList;
 use alloc::fmt::Debug;
 use sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
-use std::error;
+#[cfg(feature = "std")] use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
@@ -230,6 +231,8 @@ impl fmt::Display for PeerHandleError {
 		formatter.write_str("Peer Sent Invalid Data")
 	}
 }
+
+#[cfg(feature = "std")]
 impl error::Error for PeerHandleError {
 	fn description(&self) -> &str {
 		"Peer Sent Invalid Data"
@@ -801,7 +804,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 										peer.pending_read_buffer = [0; 18].to_vec();
 										peer.pending_read_is_header = true;
 
-										let mut reader = ::std::io::Cursor::new(&msg_data[..]);
+										let mut reader = io::Cursor::new(&msg_data[..]);
 										let message_result = wire::read(&mut reader);
 										let message = match message_result {
 											Ok(x) => x,

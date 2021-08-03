@@ -41,6 +41,7 @@ use util::errors::APIError;
 use util::config::{UserConfig,ChannelConfig};
 use util::scid_utils::scid_from_parts;
 
+use io;
 use prelude::*;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
@@ -4512,7 +4513,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
 );
 
 impl Writeable for ChannelUpdateStatus {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// We only care about writing out the current state as it was announced, ie only either
 		// Enabled or Disabled. In the case of DisabledStaged, we most recently announced the
 		// channel as enabled, so we write 0. For EnabledStaged, we similarly write a 1.
@@ -4527,7 +4528,7 @@ impl Writeable for ChannelUpdateStatus {
 }
 
 impl Readable for ChannelUpdateStatus {
-	fn read<R: ::std::io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(match <u8 as Readable>::read(reader)? {
 			0 => ChannelUpdateStatus::Enabled,
 			1 => ChannelUpdateStatus::Disabled,
@@ -4537,7 +4538,7 @@ impl Readable for ChannelUpdateStatus {
 }
 
 impl<Signer: Sign> Writeable for Channel<Signer> {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
@@ -4770,7 +4771,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		where K::Target: KeysInterface<Signer = Signer> {
-	fn read<R : ::std::io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
+	fn read<R : io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let user_id = Readable::read(reader)?;

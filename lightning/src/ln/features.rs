@@ -22,6 +22,7 @@
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
+use io;
 use prelude::*;
 use core::{cmp, fmt};
 use core::marker::PhantomData;
@@ -383,7 +384,7 @@ pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
 
 impl InitFeatures {
 	/// Writes all features present up to, and including, 13.
-	pub(crate) fn write_up_to_13<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	pub(crate) fn write_up_to_13<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let len = cmp::min(2, self.flags.len());
 		w.size_hint(len + 2);
 		(len as u16).write(w)?;
@@ -692,7 +693,7 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 }
 
 impl<T: sealed::Context> Writeable for Features<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), ::std::io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.size_hint(self.flags.len() + 2);
 		(self.flags.len() as u16).write(w)?;
 		for f in self.flags.iter().rev() { // Swap back to big-endian
@@ -703,7 +704,7 @@ impl<T: sealed::Context> Writeable for Features<T> {
 }
 
 impl<T: sealed::Context> Readable for Features<T> {
-	fn read<R: ::std::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let mut flags: Vec<u8> = Readable::read(r)?;
 		flags.reverse(); // Swap to little-endian
 		Ok(Self {
