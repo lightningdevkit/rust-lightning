@@ -2804,7 +2804,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							} else { errs.push((pk, err)); }
 						},
 						ClaimFundsFromHop::PrevHopForceClosed => unreachable!("We already checked for channel existence, we can't fail here!"),
-						_ => claimed_any_htlcs = true,
+						ClaimFundsFromHop::DuplicateClaim => {
+							// While we should never get here in most cases, if we do, it likely
+							// indicates that the HTLC was timed out some time ago and is no longer
+							// available to be claimed. Thus, it does not make sense to set
+							// `claimed_any_htlcs`.
+						},
+						ClaimFundsFromHop::Success(_) => claimed_any_htlcs = true,
 					}
 				}
 			}
