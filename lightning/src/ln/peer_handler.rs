@@ -1372,9 +1372,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		}
 	}
 
-	/// This function should be called roughly once every 30 seconds.
-	/// It will send pings to each peer and disconnect those which did not respond to the last
-	/// round of pings.
+	/// Send pings to each peer and disconnect those which did not respond to the last round of
+	/// pings.
+	///
+	/// This may be called on any timescale you want, however, roughly once every five to ten
+	/// seconds is preferred. The call rate determines both how often we send a ping to our peers
+	/// and how much time they have to respond before we disconnect them.
 	///
 	/// May call [`send_data`] on all [`SocketDescriptor`]s. Thus, be very careful with reentrancy
 	/// issues!
