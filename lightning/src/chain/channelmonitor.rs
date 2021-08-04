@@ -535,6 +535,59 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 );
 
+/// Details about the balance(s) available for spending once the channel appears on chain.
+///
+/// See [`ChannelMonitor::get_claimable_balances`] for more details on when these will or will not
+/// be provided.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
+pub enum Balance {
+	/// The channel is not yet closed (or the commitment or closing transaction has not yet
+	/// appeared in a block). The given balance is claimable (less on-chain fees) if the channel is
+	/// force-closed now.
+	ClaimableOnChannelClose {
+		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
+		/// required to do so.
+		claimable_amount_satoshis: u64,
+	},
+	/// The channel has been closed, and the given balance is ours but awaiting confirmations until
+	/// we consider it spendable.
+	ClaimableAwaitingConfirmations {
+		/// The amount available to claim, in satoshis, possibly excluding the on-chain fees which
+		/// were spent in broadcasting the transaction.
+		claimable_amount_satoshis: u64,
+		/// The height at which an [`Event::SpendableOutputs`] event will be generated for this
+		/// amount.
+		confirmation_height: u32,
+	},
+	/// The channel has been closed, and the given balance should be ours but awaiting spending
+	/// transaction confirmation. If the spending transaction does not confirm in time, it is
+	/// possible our counterparty can take the funds by broadcasting an HTLC timeout on-chain.
+	///
+	/// Once the spending transaction confirms, before it has reached enough confirmations to be
+	/// considered safe from chain reorganizations, the balance will instead be provided via
+	/// [`Balance::ClaimableAwaitingConfirmations`].
+	ContentiousClaimable {
+		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
+		/// required to do so.
+		claimable_amount_satoshis: u64,
+		/// The height at which the counterparty may be able to claim the balance if we have not
+		/// done so.
+		timeout_height: u32,
+	},
+	/// HTLCs which we sent to our counterparty which are claimable after a timeout (less on-chain
+	/// fees) if the counterparty does not know the preimage for the HTLCs. These are somewhat
+	/// likely to be claimed by our counterparty before we do.
+	MaybeClaimableHTLCAwaitingTimeout {
+		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
+		/// required to do so.
+		claimable_amount_satoshis: u64,
+		/// The height at which we will be able to claim the balance if our counterparty has not
+		/// done so.
+		claimable_height: u32,
+	},
+}
+
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
 #[derive(PartialEq)]
 struct IrrevocablyResolvedHTLC {
@@ -1301,6 +1354,173 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// [`chain::Confirm`] interfaces.
 	pub fn current_best_block(&self) -> BestBlock {
 		self.inner.lock().unwrap().best_block.clone()
+	}
+
+	/// Gets the balances in this channel which are either claimable by us if we were to
+	/// force-close the channel now or which are claimable on-chain (possibly awaiting
+	/// confirmation).
+	///
+	/// Any balances in the channel which are available on-chain (excluding on-chain fees) are
+	/// included here until an [`Event::SpendableOutputs`] event has been generated for the
+	/// balance, or until our counterparty has claimed the balance and accrued several
+	/// confirmations on the claim transaction.
+	///
+	/// Note that the balances available when you or your counterparty have broadcasted revoked
+	/// state(s) may not be fully captured here.
+	// TODO, fix that ^
+	///
+	/// See [`Balance`] for additional details on the types of claimable balances which
+	/// may be returned here and their meanings.
+	pub fn get_claimable_balances(&self) -> Vec<Balance> {
+		let mut res = Vec::new();
+		let us = self.inner.lock().unwrap();
+
+		let mut confirmed_txid = us.funding_spend_confirmed;
+		let mut pending_commitment_tx_conf_thresh = None;
+		let funding_spend_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+			if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+				Some((event.txid, event.confirmation_threshold()))
+			} else { None }
+		});
+		if let Some((txid, conf_thresh)) = funding_spend_pending {
+			debug_assert!(us.funding_spend_confirmed.is_none(),
+				"We have a pending funding spend awaiting anti-reorg confirmation, we can't have confirmed it already!");
+			confirmed_txid = Some(txid);
+			pending_commitment_tx_conf_thresh = Some(conf_thresh);
+		}
+
+		macro_rules! walk_htlcs {
+			($holder_commitment: expr, $htlc_iter: expr) => {
+				for htlc in $htlc_iter {
+					if let Some(htlc_input_idx) = htlc.transaction_output_index {
+						if us.htlcs_resolved_on_chain.iter().any(|v| v.input_idx == htlc_input_idx) {
+							assert!(us.funding_spend_confirmed.is_some());
+						} else if htlc.offered == $holder_commitment {
+							// If the payment was outbound, check if there's an HTLCUpdate
+							// indicating we have spent this HTLC with a timeout, claiming it back
+							// and awaiting confirmations on it.
+							let htlc_update_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+								if let OnchainEvent::HTLCUpdate { input_idx: Some(input_idx), .. } = event.event {
+									if input_idx == htlc_input_idx { Some(event.confirmation_threshold()) } else { None }
+								} else { None }
+							});
+							if let Some(conf_thresh) = htlc_update_pending {
+								res.push(Balance::ClaimableAwaitingConfirmations {
+									claimable_amount_satoshis: htlc.amount_msat / 1000,
+									confirmation_height: conf_thresh,
+								});
+							} else {
+								res.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
+									claimable_amount_satoshis: htlc.amount_msat / 1000,
+									claimable_height: htlc.cltv_expiry,
+								});
+							}
+						} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
+							// Otherwise (the payment was inbound), only expose it as claimable if
+							// we know the preimage.
+							// Note that if there is a pending claim, but it did not use the
+							// preimage, we lost funds to our counterparty! We will then continue
+							// to show it as ContentiousClaimable until ANTI_REORG_DELAY.
+							let htlc_spend_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+								if let OnchainEvent::HTLCSpendConfirmation { input_idx, preimage, .. } = event.event {
+									if input_idx == htlc_input_idx {
+										Some((event.confirmation_threshold(), preimage.is_some()))
+									} else { None }
+								} else { None }
+							});
+							if let Some((conf_thresh, true)) = htlc_spend_pending {
+								res.push(Balance::ClaimableAwaitingConfirmations {
+									claimable_amount_satoshis: htlc.amount_msat / 1000,
+									confirmation_height: conf_thresh,
+								});
+							} else {
+								res.push(Balance::ContentiousClaimable {
+									claimable_amount_satoshis: htlc.amount_msat / 1000,
+									timeout_height: htlc.cltv_expiry,
+								});
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if let Some(txid) = confirmed_txid {
+			let mut found_commitment_tx = false;
+			if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
+				walk_htlcs!(false, us.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(a, _)| a));
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+						if let OnchainEvent::MaturingOutput {
+							descriptor: SpendableOutputDescriptor::StaticPaymentOutput(descriptor)
+						} = &event.event {
+							Some(descriptor.output.value)
+						} else { None }
+					}) {
+						res.push(Balance::ClaimableAwaitingConfirmations {
+							claimable_amount_satoshis: value,
+							confirmation_height: conf_thresh,
+						});
+					} else {
+						// If a counterparty commitment transaction is awaiting confirmation, we
+						// should either have a StaticPaymentOutput MaturingOutput event awaiting
+						// confirmation with the same height or have never met our dust amount.
+					}
+				}
+				found_commitment_tx = true;
+			} else if txid == us.current_holder_commitment_tx.txid {
+				walk_htlcs!(true, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, _)| a));
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					res.push(Balance::ClaimableAwaitingConfirmations {
+						claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						confirmation_height: conf_thresh,
+					});
+				}
+				found_commitment_tx = true;
+			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
+				if txid == prev_commitment.txid {
+					walk_htlcs!(true, prev_commitment.htlc_outputs.iter().map(|(a, _, _)| a));
+					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+						res.push(Balance::ClaimableAwaitingConfirmations {
+							claimable_amount_satoshis: prev_commitment.to_self_value_sat,
+							confirmation_height: conf_thresh,
+						});
+					}
+					found_commitment_tx = true;
+				}
+			}
+			if !found_commitment_tx {
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					// We blindly assume this is a cooperative close transaction here, and that
+					// neither us nor our counterparty misbehaved. At worst we've under-estimated
+					// the amount we can claim as we'll punish a misbehaving counterparty.
+					res.push(Balance::ClaimableAwaitingConfirmations {
+						claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						confirmation_height: conf_thresh,
+					});
+				}
+			}
+			// TODO: Add logic to provide claimable balances for counterparty broadcasting revoked
+			// outputs.
+		} else {
+			let mut claimable_inbound_htlc_value_sat = 0;
+			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
+				if htlc.transaction_output_index.is_none() { continue; }
+				if htlc.offered {
+					res.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
+						claimable_amount_satoshis: htlc.amount_msat / 1000,
+						claimable_height: htlc.cltv_expiry,
+					});
+				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
+					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+				}
+			}
+			res.push(Balance::ClaimableOnChannelClose {
+				claimable_amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
+			});
+		}
+
+		res
 	}
 }
 
@@ -2488,7 +2708,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									// we've already failed the HTLC as the commitment transaction
 									// which was broadcasted was revoked. In that case, we should
 									// spend the HTLC output here immediately, and expose that fact
-									// as a ClaimableBalance, something which we do not yet do.
+									// as a Balance, something which we do not yet do.
 									// TODO: Track the above as claimable!
 								}
 								continue 'outer_loop;
