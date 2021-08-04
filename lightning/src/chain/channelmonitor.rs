@@ -364,7 +364,8 @@ impl OnchainEventEntry {
 				// it's broadcastable when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
 			},
-			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } => {
+			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } |
+			OnchainEvent::HTLCSpendConfirmation { on_to_local_output_csv: Some(csv), .. } => {
 				// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
 				// it's broadcastable when we see the previous block.
 				conf_threshold = cmp::max(conf_threshold, self.height + csv as u32 - 1);
@@ -383,13 +384,19 @@ impl OnchainEventEntry {
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
 #[derive(PartialEq)]
 enum OnchainEvent {
-	/// HTLC output getting solved by a timeout, at maturation we pass upstream payment source information to solve
-	/// inbound HTLC in backward channel. Note, in case of preimage, we pass info to upstream without delay as we can
-	/// only win from it, so it's never an OnchainEvent
+	/// An outbound HTLC failing after a transaction is confirmed. Used
+	///  * when an outbound HTLC output is spent by us after the HTLC timed out
+	///  * an outbound HTLC which was not present in the commitment transaction which appeared
+	///    on-chain (either because it was not fully committed to or it was dust).
+	/// Note that this is *not* used for preimage claims, as those are passed upstream immediately,
+	/// appearing only as an `HTLCSpendConfirmation`, below.
 	HTLCUpdate {
 		source: HTLCSource,
 		payment_hash: PaymentHash,
 		onchain_value_satoshis: Option<u64>,
+		/// None in the second case, above, ie when there is no relevant output in the commitment
+		/// transaction which appeared on chain.
+		input_idx: Option<u32>,
 	},
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
@@ -397,10 +404,26 @@ enum OnchainEvent {
 	/// A spend of the funding output, either a commitment transaction or a cooperative closing
 	/// transaction.
 	FundingSpendConfirmation {
-		txid: Txid,
 		/// The CSV delay for the output of the funding spend transaction (implying it is a local
 		/// commitment transaction, and this is the delay on the to_self output).
 		on_local_output_csv: Option<u16>,
+	},
+	/// A spend of a commitment transaction HTLC output, set in the cases where *no* `HTLCUpdate`
+	/// is constructed. This is used when
+	///  * an outbound HTLC is claimed by our counterparty with a preimage, causing us to
+	///    immediately claim the HTLC on the inbound edge and track the resolution here,
+	///  * an inbound HTLC is claimed by our counterparty (with a timeout),
+	///  * an inbound HTLC is claimed by us (with a preimage).
+	///  * a revoked-state HTLC transaction was broadcasted, which was claimed by the revocation
+	///    signature.
+	HTLCSpendConfirmation {
+		input_idx: u32,
+		/// If the claim was made by either party with a preimage, this is filled in
+		preimage: Option<PaymentPreimage>,
+		/// If the claim was made by us on an inbound HTLC against a local commitment transaction,
+		/// we set this to the output CSV value which we will have to wait until to spend the
+		/// output (and generate a SpendableOutput event).
+		on_to_local_output_csv: Option<u16>,
 	},
 }
 
@@ -438,14 +461,20 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(0, source, required),
 		(1, onchain_value_satoshis, option),
 		(2, payment_hash, required),
+		(3, input_idx, option),
 	},
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
 	},
 	(3, FundingSpendConfirmation) => {
-		(0, txid, required),
-		(2, on_local_output_csv, option),
+		(0, on_local_output_csv, option),
 	},
+	(5, HTLCSpendConfirmation) => {
+		(0, input_idx, required),
+		(2, preimage, option),
+		(4, on_to_local_output_csv, option),
+	},
+
 );
 
 #[cfg_attr(any(test, feature = "fuzztarget", feature = "_test_utils"), derive(PartialEq))]
@@ -505,6 +534,19 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 		(0, scriptpubkey, required),
 	},
 );
+
+/// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
+#[derive(PartialEq)]
+struct IrrevocablyResolvedHTLC {
+	input_idx: u32,
+	/// Only set if the HTLC claim was ours using a payment preimage
+	payment_preimage: Option<PaymentPreimage>,
+}
+
+impl_writeable_tlv_based!(IrrevocablyResolvedHTLC, {
+	(0, input_idx, required),
+	(2, payment_preimage, option),
+});
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
@@ -619,6 +661,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	holder_tx_signed: bool,
 
 	funding_spend_confirmed: Option<Txid>,
+	/// The set of HTLCs which have been either claimed or failed on chain and have reached
+	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
+	/// spending CSV for revocable outputs).
+	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
 	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
@@ -679,7 +725,8 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.outputs_to_watch != other.outputs_to_watch ||
 			self.lockdown_from_offchain != other.lockdown_from_offchain ||
 			self.holder_tx_signed != other.holder_tx_signed ||
-			self.funding_spend_confirmed != other.funding_spend_confirmed
+			self.funding_spend_confirmed != other.funding_spend_confirmed ||
+			self.htlcs_resolved_on_chain != other.htlcs_resolved_on_chain
 		{
 			false
 		} else {
@@ -846,6 +893,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
+			(3, self.htlcs_resolved_on_chain, vec_type),
 		});
 
 		Ok(())
@@ -945,6 +993,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
 				funding_spend_confirmed: None,
+				htlcs_resolved_on_chain: Vec::new(),
 
 				best_block,
 
@@ -1311,6 +1360,7 @@ macro_rules! fail_unbroadcast_htlcs {
 									source: (**source).clone(),
 									payment_hash: htlc.payment_hash.clone(),
 									onchain_value_satoshis: Some(htlc.amount_msat / 1000),
+									input_idx: None,
 								},
 							};
 							log_trace!($logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of {} commitment transaction, waiting for confirmation (at height {})",
@@ -2024,7 +2074,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						txid,
 						height: height,
 						event: OnchainEvent::FundingSpendConfirmation {
-							txid,
 							on_local_output_csv: balance_spendable_csv,
 						},
 					});
@@ -2115,8 +2164,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			.iter()
 			.filter_map(|entry| match &entry.event {
 				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
-				OnchainEvent::MaturingOutput { .. } => None,
-				OnchainEvent::FundingSpendConfirmation { .. } => None,
+				_ => None,
 			})
 			.collect();
 		#[cfg(debug_assertions)]
@@ -2125,7 +2173,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// Produce actionable events from on-chain events having reached their threshold.
 		for entry in onchain_events_reaching_threshold_conf.drain(..) {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis } => {
+				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis, input_idx } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
@@ -2149,6 +2197,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						onchain_value_satoshis,
 					}));
+					if let Some(idx) = input_idx {
+						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { input_idx: idx, payment_preimage: None });
+					}
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
 					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
@@ -2156,8 +2207,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						outputs: vec![descriptor]
 					});
 				},
-				OnchainEvent::FundingSpendConfirmation { txid, .. } => {
-					self.funding_spend_confirmed = Some(txid);
+				OnchainEvent::HTLCSpendConfirmation { input_idx, preimage, .. } => {
+					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { input_idx, payment_preimage: preimage });
+				},
+				OnchainEvent::FundingSpendConfirmation { .. } => {
+					self.funding_spend_confirmed = Some(entry.txid);
 				},
 			}
 		}
@@ -2336,15 +2390,32 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let revocation_sig_claim = (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC) && input.witness[1].len() == 33)
 				|| (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::AcceptedHTLC) && input.witness[1].len() == 33);
 			let accepted_preimage_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::AcceptedHTLC);
-			let offered_preimage_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC);
+			let accepted_timeout_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::AcceptedHTLC) && !revocation_sig_claim;
+			let offered_preimage_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC) && !revocation_sig_claim;
+			let offered_timeout_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::OfferedHTLC);
+
+			let mut payment_preimage = PaymentPreimage([0; 32]);
+			if accepted_preimage_claim {
+				payment_preimage.0.copy_from_slice(&input.witness[3]);
+			} else if offered_preimage_claim {
+				payment_preimage.0.copy_from_slice(&input.witness[1]);
+			}
 
 			macro_rules! log_claim {
 				($tx_info: expr, $holder_tx: expr, $htlc: expr, $source_avail: expr) => {
-					// We found the output in question, but aren't failing it backwards
-					// as we have no corresponding source and no valid counterparty commitment txid
-					// to try a weak source binding with same-hash, same-value still-valid offered HTLC.
-					// This implies either it is an inbound HTLC or an outbound HTLC on a revoked transaction.
 					let outbound_htlc = $holder_tx == $htlc.offered;
+					// HTLCs must either be claimed by a matching script type or through the
+					// revocation path:
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					debug_assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim);
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					debug_assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim);
+					// Further, only exactly one of the possible spend paths should have been
+					// matched by any HTLC spend:
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
+					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
+					                 revocation_sig_claim as u8, 1);
 					if ($holder_tx && revocation_sig_claim) ||
 							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
 						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
@@ -2396,6 +2467,30 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							}
 							if payment_data.is_none() {
 								log_claim!($tx_info, $holder_tx, htlc_output, false);
+								let outbound_htlc = $holder_tx == htlc_output.offered;
+								if !outbound_htlc || revocation_sig_claim {
+									self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+										txid: tx.txid(), height,
+										event: OnchainEvent::HTLCSpendConfirmation {
+											input_idx: input.previous_output.vout,
+											preimage: if accepted_preimage_claim || offered_preimage_claim {
+												Some(payment_preimage) } else { None },
+											// If this is a payment to us (!outbound_htlc, above),
+											// wait for the CSV delay before dropping the HTLC from
+											// claimable balance if the claim was an HTLC-Success
+											// transaction.
+											on_to_local_output_csv: if accepted_preimage_claim {
+												Some(self.on_holder_tx_csv) } else { None },
+										},
+									});
+								} else {
+									// Outbound claims should always have payment_data, unless
+									// we've already failed the HTLC as the commitment transaction
+									// which was broadcasted was revoked. In that case, we should
+									// spend the HTLC output here immediately, and expose that fact
+									// as a ClaimableBalance, something which we do not yet do.
+									// TODO: Track the above as claimable!
+								}
 								continue 'outer_loop;
 							}
 						}
@@ -2421,11 +2516,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// Check that scan_commitment, above, decided there is some source worth relaying an
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
-				let mut payment_preimage = PaymentPreimage([0; 32]);
 				if accepted_preimage_claim {
 					if !self.pending_monitor_events.iter().any(
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
-						payment_preimage.0.copy_from_slice(&input.witness[3]);
+						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+							txid: tx.txid(),
+							height,
+							event: OnchainEvent::HTLCSpendConfirmation {
+								input_idx: input.previous_output.vout,
+								preimage: Some(payment_preimage),
+								on_to_local_output_csv: None,
+							},
+						});
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
@@ -2438,7 +2540,15 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
 							upd.source == source
 						} else { false }) {
-						payment_preimage.0.copy_from_slice(&input.witness[1]);
+						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+							txid: tx.txid(),
+							height,
+							event: OnchainEvent::HTLCSpendConfirmation {
+								input_idx: input.previous_output.vout,
+								preimage: Some(payment_preimage),
+								on_to_local_output_csv: None,
+							},
+						});
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),
@@ -2462,6 +2572,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						event: OnchainEvent::HTLCUpdate {
 							source, payment_hash,
 							onchain_value_satoshis: Some(amount_msat / 1000),
+							input_idx: Some(input.previous_output.vout),
 						},
 					};
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height {})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
@@ -2834,8 +2945,10 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		}
 
 		let mut funding_spend_confirmed = None;
+		let mut htlcs_resolved_on_chain = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
+			(3, htlcs_resolved_on_chain, vec_type),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -2886,6 +2999,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				lockdown_from_offchain,
 				holder_tx_signed,
 				funding_spend_confirmed,
+				htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 
 				best_block,
 
