@@ -356,12 +356,20 @@ struct OnchainEventEntry {
 impl OnchainEventEntry {
 	fn confirmation_threshold(&self) -> u32 {
 		let mut conf_threshold = self.height + ANTI_REORG_DELAY - 1;
-		if let OnchainEvent::MaturingOutput {
-			descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor)
-		} = self.event {
-			// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
-			// it's broadcastable when we see the previous block.
-			conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
+		match self.event {
+			OnchainEvent::MaturingOutput {
+				descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor)
+			} => {
+				// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
+				// it's broadcastable when we see the previous block.
+				conf_threshold = cmp::max(conf_threshold, self.height + descriptor.to_self_delay as u32 - 1);
+			},
+			OnchainEvent::FundingSpendConfirmation { on_local_output_csv: Some(csv), .. } => {
+				// A CSV'd transaction is confirmable in block (input height) + CSV delay, which means
+				// it's broadcastable when we see the previous block.
+				conf_threshold = cmp::max(conf_threshold, self.height + csv as u32 - 1);
+			},
+			_ => {},
 		}
 		conf_threshold
 	}
@@ -385,6 +393,14 @@ enum OnchainEvent {
 	},
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
+	},
+	/// A spend of the funding output, either a commitment transaction or a cooperative closing
+	/// transaction.
+	FundingSpendConfirmation {
+		txid: Txid,
+		/// The CSV delay for the output of the funding spend transaction (implying it is a local
+		/// commitment transaction, and this is the delay on the to_self output).
+		on_local_output_csv: Option<u16>,
 	},
 }
 
@@ -425,6 +441,10 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	},
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
+	},
+	(3, FundingSpendConfirmation) => {
+		(0, txid, required),
+		(2, on_local_output_csv, option),
 	},
 );
 
@@ -598,6 +618,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// remote monitor out-of-order with regards to the block view.
 	holder_tx_signed: bool,
 
+	funding_spend_confirmed: Option<Txid>,
+
 	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
@@ -656,7 +678,8 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf != other.onchain_events_awaiting_threshold_conf ||
 			self.outputs_to_watch != other.outputs_to_watch ||
 			self.lockdown_from_offchain != other.lockdown_from_offchain ||
-			self.holder_tx_signed != other.holder_tx_signed
+			self.holder_tx_signed != other.holder_tx_signed ||
+			self.funding_spend_confirmed != other.funding_spend_confirmed
 		{
 			false
 		} else {
@@ -821,7 +844,9 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {
+			(1, self.funding_spend_confirmed, option),
+		});
 
 		Ok(())
 	}
@@ -919,6 +944,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
+				funding_spend_confirmed: None,
 
 				best_block,
 
@@ -1804,7 +1830,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Attempts to claim any claimable HTLCs in a commitment transaction which was not (yet)
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> (Vec<PackageTemplate>, TransactionOutputs) where L::Target: Logger {
+	/// Returns None unless the transaction is definitely one of our commitment transactions.
+	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> where L::Target: Logger {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -1839,9 +1866,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		if is_holder_tx {
+			Some((claim_requests, (commitment_txid, watch_outputs)))
+		} else {
+			None
 		}
-
-		(claim_requests, (commitment_txid, watch_outputs))
 	}
 
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
@@ -1973,20 +2001,33 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				// filters.
 				let prevout = &tx.input[0].previous_output;
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
+					let mut balance_spendable_csv = None;
+					log_info!(logger, "Channel closed by funding output spend in txid {}.", log_bytes!(tx.txid()));
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs) = self.check_spend_counterparty_transaction(&tx, height, &logger);
 						if !new_outputs.1.is_empty() {
 							watch_outputs.push(new_outputs);
 						}
-						if new_outpoints.is_empty() {
-							let (mut new_outpoints, new_outputs) = self.check_spend_holder_transaction(&tx, height, &logger);
-							if !new_outputs.1.is_empty() {
-								watch_outputs.push(new_outputs);
-							}
-							claimable_outpoints.append(&mut new_outpoints);
-						}
 						claimable_outpoints.append(&mut new_outpoints);
+						if new_outpoints.is_empty() {
+							if let Some((mut new_outpoints, new_outputs)) = self.check_spend_holder_transaction(&tx, height, &logger) {
+								if !new_outputs.1.is_empty() {
+									watch_outputs.push(new_outputs);
+								}
+								claimable_outpoints.append(&mut new_outpoints);
+								balance_spendable_csv = Some(self.on_holder_tx_csv);
+							}
+						}
 					}
+					let txid = tx.txid();
+					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+						txid,
+						height: height,
+						event: OnchainEvent::FundingSpendConfirmation {
+							txid,
+							on_local_output_csv: balance_spendable_csv,
+						},
+					});
 				} else {
 					if let Some(&commitment_number) = self.counterparty_commitment_txn_on_chain.get(&prevout.txid) {
 						let (mut new_outpoints, new_outputs_option) = self.check_spend_counterparty_htlc(&tx, commitment_number, height, &logger);
@@ -2075,6 +2116,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			.filter_map(|entry| match &entry.event {
 				OnchainEvent::HTLCUpdate { source, .. } => Some(source),
 				OnchainEvent::MaturingOutput { .. } => None,
+				OnchainEvent::FundingSpendConfirmation { .. } => None,
 			})
 			.collect();
 		#[cfg(debug_assertions)]
@@ -2113,7 +2155,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor]
 					});
-				}
+				},
+				OnchainEvent::FundingSpendConfirmation { txid, .. } => {
+					self.funding_spend_confirmed = Some(txid);
+				},
 			}
 		}
 
@@ -2788,7 +2833,10 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			return Err(DecodeError::InvalidValue);
 		}
 
-		read_tlv_fields!(reader, {});
+		let mut funding_spend_confirmed = None;
+		read_tlv_fields!(reader, {
+			(1, funding_spend_confirmed, option),
+		});
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
@@ -2837,6 +2885,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 				lockdown_from_offchain,
 				holder_tx_signed,
+				funding_spend_confirmed,
 
 				best_block,
 
