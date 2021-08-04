@@ -10,6 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
+use chain::transaction::OutPoint;
 use chain::{Confirm, Watch};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
@@ -20,7 +21,10 @@ use util::test_utils;
 use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::opcodes;
 use bitcoin::hash_types::BlockHash;
+use bitcoin::secp256k1::Secp256k1;
 
 use prelude::*;
 use core::mem;
@@ -426,4 +430,113 @@ fn test_set_outpoints_partial_claiming() {
 		assert_eq!(node_txn.len(), 0);
 		node_txn.clear();
 	}
+}
+
+fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
+	// In previous code, detection of to_remote outputs in a counterparty commitment transaction
+	// was dependent on whether a local commitment transaction had been seen on-chain previously.
+	// This resulted in some edge cases around not being able to generate a SpendableOutput event
+	// after a reorg.
+	//
+	// Here, we test this by first confirming one set of commitment transactions, then
+	// disconnecting them and reconnecting another. We then confirm them and check that the correct
+	// SpendableOutput event is generated.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	*nodes[0].connect_style.borrow_mut() = style;
+	*nodes[1].connect_style.borrow_mut() = style;
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, InitFeatures::known(), InitFeatures::known());
+	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
+
+	let remote_txn_a = get_local_commitment_txn!(nodes[0], chan_id);
+	let remote_txn_b = get_local_commitment_txn!(nodes[1], chan_id);
+
+	mine_transaction(&nodes[0], &remote_txn_a[0]);
+	mine_transaction(&nodes[1], &remote_txn_a[0]);
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[0], true);
+	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 1);
+
+	// Drop transactions broadcasted in response to the first commitment transaction (we have good
+	// test coverage of these things already elsewhere).
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
+	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
+
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	disconnect_blocks(&nodes[0], 1);
+	disconnect_blocks(&nodes[1], 1);
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	mine_transaction(&nodes[0], &remote_txn_b[0]);
+	mine_transaction(&nodes[1], &remote_txn_b[0]);
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(node_a_spendable.len(), 1);
+	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
+		assert_eq!(outputs.len(), 1);
+		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+		check_spends!(spend_tx, remote_txn_b[0]);
+	}
+
+	// nodes[1] is waiting for the to_self_delay to expire, which is many more than
+	// ANTI_REORG_DELAY. Instead, walk it back and confirm the original remote_txn_a commitment
+	// again and check that nodes[1] generates a similar spendable output.
+	// Technically a reorg of ANTI_REORG_DELAY violates our assumptions, so this is undefined by
+	// our API spec, but we currently handle this correctly and there's little reason we shouldn't
+	// in the future.
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	disconnect_blocks(&nodes[1], ANTI_REORG_DELAY);
+	mine_transaction(&nodes[1], &remote_txn_a[0]);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(node_b_spendable.len(), 1);
+	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
+		assert_eq!(outputs.len(), 1);
+		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+		check_spends!(spend_tx, remote_txn_a[0]);
+	}
+}
+
+#[test]
+fn test_to_remote_after_local_detection() {
+	do_test_to_remote_after_local_detection(ConnectStyle::BestBlockFirst);
+	do_test_to_remote_after_local_detection(ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirst);
+	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirstSkippingBlocks);
+	do_test_to_remote_after_local_detection(ConnectStyle::FullBlockViaListen);
 }
