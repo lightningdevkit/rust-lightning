@@ -151,6 +151,27 @@ pub enum Event {
 		/// The outputs which you should store as spendable by you.
 		outputs: Vec<SpendableOutputDescriptor>,
 	},
+	/// This event is generated when a payment has been successfully forwarded through us and a
+	/// forwarding fee earned.
+	PaymentForwarded {
+		/// The fee, in milli-satoshis, which was earned as a result of the payment.
+		///
+		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
+		/// was pending, the amount the next hop claimed will have been rounded down to the nearest
+		/// whole satoshi. Thus, the fee calculated here may be higher than expected as we still
+		/// claimed the full value in millisatoshis from the source. In this case,
+		/// `claim_from_onchain_tx` will be set.
+		///
+		/// If the channel which sent us the payment has been force-closed, we will claim the funds
+		/// via an on-chain transaction. In that case we do not yet know the on-chain transaction
+		/// fees which we will spend and will instead set this to `None`. It is possible duplicate
+		/// `PaymentForwarded` events are generated for the same payment iff `fee_earned_msat` is
+		/// `None`.
+		fee_earned_msat: Option<u64>,
+		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
+		/// transaction.
+		claim_from_onchain_tx: bool,
+	},
 }
 
 impl Writeable for Event {
@@ -216,6 +237,13 @@ impl Writeable for Event {
 				5u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, VecWriteWrapper(outputs), required),
+				});
+			},
+			&Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {
+				7u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, fee_earned_msat, option),
+					(2, claim_from_onchain_tx, required),
 				});
 			},
 		}
@@ -313,6 +341,20 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			7u8 => {
+				let f = || {
+					let mut fee_earned_msat = None;
+					let mut claim_from_onchain_tx = false;
+					read_tlv_fields!(reader, {
+						(0, fee_earned_msat, option),
+						(2, claim_from_onchain_tx, required),
+					});
+					Ok(Some(Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx }))
+				};
+				f()
+			},
+			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
+			x if x % 2 == 1 => Ok(None),
 			_ => Err(msgs::DecodeError::InvalidValue)
 		}
 	}

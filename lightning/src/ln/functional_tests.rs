@@ -887,6 +887,7 @@ fn updates_shutdown_wait() {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[1], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
@@ -1061,6 +1062,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[1], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
@@ -2833,6 +2835,12 @@ fn test_htlc_on_chain_success() {
 		assert_eq!(added_monitors[0].0.txid, chan_2.3.txid());
 		added_monitors.clear();
 	}
+	let forwarded_events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(forwarded_events.len(), 2);
+	if let Event::PaymentForwarded { fee_earned_msat: Some(1000), claim_from_onchain_tx: true } = forwarded_events[0] {
+		} else { panic!(); }
+	if let Event::PaymentForwarded { fee_earned_msat: Some(1000), claim_from_onchain_tx: true } = forwarded_events[1] {
+		} else { panic!(); }
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
@@ -5330,19 +5338,15 @@ fn test_onchain_to_onchain_claim() {
 	// So we broadcast C's commitment tx and HTLC-Success on B's chain, we should successfully be able to extract preimage and update downstream monitor
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 	connect_block(&nodes[1], &Block { header, txdata: vec![c_txn[1].clone(), c_txn[2].clone()]});
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
+	check_added_monitors!(nodes[1], 1);
+	expect_payment_forwarded!(nodes[1], Some(1000), true);
 	{
 		let mut b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: claim tx, ChannelManager: local commitment tx
-		assert_eq!(b_txn.len(), 2);
+		// ChannelMonitor: claim tx
+		assert_eq!(b_txn.len(), 1);
 		check_spends!(b_txn[0], chan_2.3); // B local commitment tx, issued by ChannelManager
-		check_spends!(b_txn[1], c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
-		assert_eq!(b_txn[1].input[0].witness.clone().last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-		assert!(b_txn[1].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-		assert_ne!(b_txn[1].lock_time, 0); // Timeout tx
 		b_txn.clear();
 	}
-	check_added_monitors!(nodes[1], 1);
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
 	check_added_monitors!(nodes[1], 1);
@@ -5368,19 +5372,14 @@ fn test_onchain_to_onchain_claim() {
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-	// ChannelMonitor: HTLC-Success tx + HTLC-Timeout RBF Bump, ChannelManager: local commitment tx + HTLC-Success tx
-	assert_eq!(b_txn.len(), 4);
-	check_spends!(b_txn[2], chan_1.3);
-	check_spends!(b_txn[3], b_txn[2]);
-	let (htlc_success_claim, htlc_timeout_bumped) =
-		if b_txn[0].input[0].previous_output.txid == commitment_tx[0].txid()
-			{ (&b_txn[0], &b_txn[1]) } else { (&b_txn[1], &b_txn[0]) };
-	check_spends!(htlc_success_claim, commitment_tx[0]);
-	assert_eq!(htlc_success_claim.input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert!(htlc_success_claim.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	assert_eq!(htlc_success_claim.lock_time, 0); // Success tx
-	check_spends!(htlc_timeout_bumped, c_txn[1]); // timeout tx on C remote commitment tx, issued by ChannelMonitor
-	assert_ne!(htlc_timeout_bumped.lock_time, 0); // Success tx
+	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
+	assert_eq!(b_txn.len(), 3);
+	check_spends!(b_txn[1], chan_1.3);
+	check_spends!(b_txn[2], b_txn[1]);
+	check_spends!(b_txn[0], commitment_tx[0]);
+	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
+	assert_eq!(b_txn[0].lock_time, 0); // Success tx
 
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -5498,7 +5497,10 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	expect_payment_failed!(nodes[0], duplicate_payment_hash, false);
 
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
+	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
+	// and nodes[2] fee) is rounded down and then claimed in full.
 	mine_transaction(&nodes[1], &htlc_success_txn[0]);
+	expect_payment_forwarded!(nodes[1], Some(196*2), true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -9157,6 +9159,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	assert_eq!(carol_updates.update_fulfill_htlcs.len(), 1);
 
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &carol_updates.update_fulfill_htlcs[0]);
+	expect_payment_forwarded!(nodes[1], if go_onchain_before_fulfill || force_closing_node == 1 { None } else { Some(1000) }, false);
 	// If Alice broadcasted but Bob doesn't know yet, here he prepares to tell her about the preimage.
 	if !go_onchain_before_fulfill && broadcast_alice {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();

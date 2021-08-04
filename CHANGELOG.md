@@ -1,3 +1,17 @@
+# 0.0.100 - WIP
+
+## Serialization Compatibility
+ * HTLCs which were in the process of being claimed on-chain when a pre-0.0.100
+   `ChannelMonitor` was serialized may generate `PaymentForwarded` events with
+   spurious `fee_earned_msat` values. This only applies to payments which were
+   unresolved at the time of the upgrade.
+ * 0.0.100 clients with pending PaymentForwarded events at serialization-time
+   will generate serialized `ChannelManager` objects which 0.0.99 and earlier
+   clients cannot read. The likelihood of this can be reduced by ensuring you
+   process all pending events immediately before serialization (as is done by
+   the `lightning-background-processor` crate).
+
+
 # 0.0.99 - 2021-07-09
 
 ## API Updates
