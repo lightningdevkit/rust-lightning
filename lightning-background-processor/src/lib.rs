@@ -49,6 +49,8 @@ const FRESHNESS_TIMER: u64 = 60;
 #[cfg(test)]
 const FRESHNESS_TIMER: u64 = 1;
 
+const PING_TIMER: u64 = 5;
+
 /// Trait which handles persisting a [`ChannelManager`] to disk.
 ///
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
@@ -137,7 +139,8 @@ impl BackgroundProcessor {
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
-			let mut current_time = Instant::now();
+			let mut last_freshness_call = Instant::now();
+			let mut last_ping_call = Instant::now();
 			loop {
 				peer_manager.process_events();
 				channel_manager.process_pending_events(&event_handler);
@@ -152,11 +155,15 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Terminating background processor.");
 					return Ok(());
 				}
-				if current_time.elapsed().as_secs() > FRESHNESS_TIMER {
-					log_trace!(logger, "Calling ChannelManager's and PeerManager's timer_tick_occurred");
+				if last_freshness_call.elapsed().as_secs() > FRESHNESS_TIMER {
+					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
 					channel_manager.timer_tick_occurred();
+					last_freshness_call = Instant::now();
+				}
+				if last_ping_call.elapsed().as_secs() > PING_TIMER {
+					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 					peer_manager.timer_tick_occurred();
-					current_time = Instant::now();
+					last_ping_call = Instant::now();
 				}
 			}
 		});
@@ -440,8 +447,10 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
-			let desired_log = "Calling ChannelManager's and PeerManager's timer_tick_occurred".to_string();
-			if log_entries.get(&("lightning_background_processor".to_string(), desired_log)).is_some() {
+			let desired_log = "Calling ChannelManager's timer_tick_occurred".to_string();
+			let second_desired_log = "Calling PeerManager's timer_tick_occurred".to_string();
+			if log_entries.get(&("lightning_background_processor".to_string(), desired_log)).is_some() &&
+					log_entries.get(&("lightning_background_processor".to_string(), second_desired_log)).is_some() {
 				break
 			}
 		}
