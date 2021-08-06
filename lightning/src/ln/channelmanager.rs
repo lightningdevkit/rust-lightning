@@ -1858,6 +1858,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// for now more than 10 paths likely carries too much one-path failure.
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "Sending over more than 10 paths is not currently supported"}));
 		}
+		if payment_secret.is_none() && route.paths.len() > 1 {
+			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
+		}
 		let mut total_value = 0;
 		let our_node_id = self.get_our_node_id();
 		let mut path_errs = Vec::with_capacity(route.paths.len());
@@ -5164,11 +5167,13 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::time::Duration;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use ln::channelmanager::PaymentSendFailure;
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{get_keysend_route, get_route};
+	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils;
 
@@ -5555,6 +5560,39 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "We don't support MPP keysend payments".to_string(), 1);
+	}
+
+	#[test]
+	fn test_multi_hop_missing_secret() {
+		let chanmon_cfgs = create_chanmon_cfgs(4);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+		let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let logger = test_utils::TestLogger::new();
+
+		// Marshall an MPP route.
+		let (_, payment_hash, _) = get_payment_preimage_hash!(&nodes[3]);
+		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+		let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
+		let path = route.paths[0].clone();
+		route.paths.push(path);
+		route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
+		route.paths[0][0].short_channel_id = chan_1_id;
+		route.paths[0][1].short_channel_id = chan_3_id;
+		route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
+		route.paths[1][0].short_channel_id = chan_2_id;
+		route.paths[1][1].short_channel_id = chan_4_id;
+
+		match nodes[0].node.send_payment(&route, payment_hash, &None).unwrap_err() {
+			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {
+				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))			},
+			_ => panic!("unexpected error")
+		}
 	}
 }
 
