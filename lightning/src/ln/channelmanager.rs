@@ -1912,8 +1912,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// would be able to guess -- otherwise, an intermediate node may claim the payment and it will
 	/// never reach the recipient.
 	///
+	/// See [`send_payment`] documentation for more details on the return value of this function.
+	///
 	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
 	/// [`send_payment`] for more information about the risks of duplicate preimage usage.
+	///
+	/// Note that `route` must have exactly one path.
 	///
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>) -> Result<PaymentHash, PaymentSendFailure> {
