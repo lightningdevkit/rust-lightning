@@ -160,7 +160,19 @@ impl BackgroundProcessor {
 					channel_manager.timer_tick_occurred();
 					last_freshness_call = Instant::now();
 				}
-				if last_ping_call.elapsed().as_secs() > PING_TIMER {
+				if last_ping_call.elapsed().as_secs() > PING_TIMER * 2 {
+					// On various platforms, we may be starved of CPU cycles for several reasons.
+					// E.g. on iOS, if we've been in the background, we will be entirely paused.
+					// Similarly, if we're on a desktop platform and the device has been asleep, we
+					// may not get any cycles.
+					// In any case, if we've been entirely paused for more than double our ping
+					// timer, we should have disconnected all sockets by now (and they're probably
+					// dead anyway), so disconnect them by calling `timer_tick_occurred()` twice.
+					log_trace!(logger, "Awoke after more than double our ping timer, disconnecting peers.");
+					peer_manager.timer_tick_occurred();
+					peer_manager.timer_tick_occurred();
+					last_ping_call = Instant::now();
+				} else if last_ping_call.elapsed().as_secs() > PING_TIMER {
 					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 					peer_manager.timer_tick_occurred();
 					last_ping_call = Instant::now();
