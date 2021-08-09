@@ -199,6 +199,7 @@ pub struct NodeCfg<'a> {
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
 	pub node_seed: [u8; 32],
+	pub features: InitFeatures,
 }
 
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
@@ -1368,7 +1369,16 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 	for i in 0..node_count {
 		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister, &chanmon_cfgs[i].keys_manager);
 		let seed = [i as u8; 32];
-		nodes.push(NodeCfg { chain_source: &chanmon_cfgs[i].chain_source, logger: &chanmon_cfgs[i].logger, tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster, fee_estimator: &chanmon_cfgs[i].fee_estimator, chain_monitor, keys_manager: &chanmon_cfgs[i].keys_manager, node_seed: seed });
+		nodes.push(NodeCfg {
+			chain_source: &chanmon_cfgs[i].chain_source,
+			logger: &chanmon_cfgs[i].logger,
+			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
+			fee_estimator: &chanmon_cfgs[i].fee_estimator,
+			chain_monitor,
+			keys_manager: &chanmon_cfgs[i].keys_manager,
+			node_seed: seed,
+			features: InitFeatures::known(),
+		});
 	}
 
 	nodes
@@ -1423,8 +1433,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		for j in (i+1)..node_count {
-			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
-			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known() });
+			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init { features: cfgs[j].features.clone() });
+			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init { features: cfgs[i].features.clone() });
 		}
 	}
 

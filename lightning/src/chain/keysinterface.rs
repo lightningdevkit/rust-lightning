@@ -36,6 +36,7 @@ use chain::transaction::OutPoint;
 use ln::chan_utils;
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
+use ln::script::ShutdownScript;
 
 use prelude::*;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -118,8 +119,8 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpendableOutputDescriptor {
 	/// An output to a script which was provided via KeysInterface directly, either from
-	/// `get_destination_script()` or `get_shutdown_pubkey()`, thus you should already know how to
-	/// spend it. No secret keys are provided as rust-lightning was never given any key.
+	/// `get_destination_script()` or `get_shutdown_scriptpubkey()`, thus you should already know
+	/// how to spend it. No secret keys are provided as rust-lightning was never given any key.
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
 	/// on-chain using the payment preimage or after it has timed out.
 	StaticOutput {
@@ -351,12 +352,11 @@ pub trait KeysInterface {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_destination_script(&self) -> Script;
-	/// Get a public key which we will send funds to (in the form of a P2WPKH output) when closing
-	/// a channel.
+	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_pubkey(&self) -> PublicKey;
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
 	/// Get a new set of Sign for per-channel secrets. These MUST be unique even if you
 	/// restarted with some stale data!
 	///
@@ -1013,8 +1013,8 @@ impl KeysInterface for KeysManager {
 		self.destination_script.clone()
 	}
 
-	fn get_shutdown_pubkey(&self) -> PublicKey {
-		self.shutdown_pubkey.clone()
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
 	}
 
 	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::Signer {

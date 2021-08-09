@@ -9,15 +9,15 @@
 
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
-use bitcoin::blockdata::opcodes;
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256d;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hash_types::{Txid, BlockHash};
 
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
@@ -26,6 +26,7 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
+use ln::script::ShutdownScript;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
 use ln::chan_utils;
@@ -44,11 +45,11 @@ use util::scid_utils::scid_from_parts;
 use io;
 use prelude::*;
 use core::{cmp,mem,fmt};
+use core::convert::TryFrom;
 use core::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget", debug_assertions))]
 use sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
-use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -355,7 +356,7 @@ pub(super) struct Channel<Signer: Sign> {
 	latest_monitor_update_id: u64,
 
 	holder_signer: Signer,
-	shutdown_pubkey: PublicKey,
+	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: Script,
 
 	// Our commitment numbers start at 2^48-1 and count down, whereas the ones used in transaction
@@ -573,7 +574,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
+	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
@@ -601,6 +602,16 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
 
+		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+			Some(keys_provider.get_shutdown_scriptpubkey())
+		} else { None };
+
+		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
+			}
+		}
+
 		Ok(Channel {
 			user_id,
 			config: config.channel_options.clone(),
@@ -613,7 +624,7 @@ impl<Signer: Sign> Channel<Signer> {
 			latest_monitor_update_id: 0,
 
 			holder_signer,
-			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
+			shutdown_scriptpubkey,
 			destination_script: keys_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -709,7 +720,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
+	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
@@ -829,11 +840,11 @@ impl<Signer: Sign> Channel<Signer> {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
-					} else if is_unsupported_shutdown_script(&their_features, script) {
-						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
 					} else {
-						Some(script.clone())
+						match ShutdownScript::try_from((script.clone(), their_features)) {
+							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
+							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						}
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -842,6 +853,16 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		} else { None };
+
+		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+			Some(keys_provider.get_shutdown_scriptpubkey())
+		} else { None };
+
+		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+			}
+		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
@@ -857,7 +878,7 @@ impl<Signer: Sign> Channel<Signer> {
 			latest_monitor_update_id: 0,
 
 			holder_signer,
-			shutdown_pubkey: keys_provider.get_shutdown_pubkey(),
+			shutdown_scriptpubkey,
 			destination_script: keys_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -1136,8 +1157,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 	#[inline]
 	fn get_closing_scriptpubkey(&self) -> Script {
-		let channel_close_key_hash = WPubkeyHash::hash(&self.shutdown_pubkey.serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_close_key_hash[..]).into_script()
+		// The shutdown scriptpubkey is set on channel opening when option_upfront_shutdown_script
+		// is signaled. Otherwise, it is set when sending a shutdown message. Calling this method
+		// outside of those situations will fail.
+		self.shutdown_scriptpubkey.clone().unwrap().into_inner()
 	}
 
 	#[inline]
@@ -1203,6 +1226,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}, ()));
 		}
 
+		assert!(self.shutdown_scriptpubkey.is_some());
 		if value_to_self as u64 > self.holder_dust_limit_satoshis {
 			txouts.push((TxOut {
 				script_pubkey: self.get_closing_scriptpubkey(),
@@ -1489,7 +1513,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: InitFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: &InitFeatures) -> Result<(), ChannelError> {
 		// Check sanity of message fields:
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer".to_owned()));
@@ -1560,11 +1584,11 @@ impl<Signer: Sign> Channel<Signer> {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
 						None
-					// Peer is signaling upfront_shutdown and has provided a non-accepted scriptpubkey format. Fail the channel
-					} else if is_unsupported_shutdown_script(&their_features, script) {
-						return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided a non-accepted scriptpubkey format. script: ({})", script.to_bytes().to_hex())));
 					} else {
-						Some(script.clone())
+						match ShutdownScript::try_from((script.clone(), their_features)) {
+							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
+							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						}
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -1686,8 +1710,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
@@ -1759,8 +1784,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo = self.get_funding_txo().unwrap();
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
+		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
-		                                          &self.shutdown_pubkey, self.get_holder_selected_contest_delay(),
+		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script),
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
@@ -3091,6 +3117,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
 
 		let shutdown_msg = if self.channel_state & (ChannelState::LocalShutdownSent as u32) != 0 {
+			assert!(self.shutdown_scriptpubkey.is_some());
 			Some(msgs::Shutdown {
 				channel_id: self.channel_id,
 				scriptpubkey: self.get_closing_scriptpubkey(),
@@ -3202,6 +3229,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.feerate_per_kw > proposed_feerate {
 			proposed_feerate = self.feerate_per_kw;
 		}
+		assert!(self.shutdown_scriptpubkey.is_some());
 		let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
 		let proposed_total_fee_satoshis = proposed_feerate as u64 * tx_weight / 1000;
 
@@ -3220,8 +3248,12 @@ impl<Signer: Sign> Channel<Signer> {
 		})
 	}
 
-	pub fn shutdown<F: Deref>(&mut self, fee_estimator: &F, their_features: &InitFeatures, msg: &msgs::Shutdown) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-		where F::Target: FeeEstimator
+	pub fn shutdown<F: Deref, K: Deref>(
+		&mut self, fee_estimator: &F, keys_provider: &K, their_features: &InitFeatures, msg: &msgs::Shutdown
+	) -> Result<(Option<msgs::Shutdown>, Option<msgs::ClosingSigned>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	where
+		F::Target: FeeEstimator,
+		K::Target: KeysInterface<Signer = Signer>
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
@@ -3239,22 +3271,57 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		if is_unsupported_shutdown_script(&their_features, &msg.scriptpubkey) {
-			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
-		}
+		let shutdown_scriptpubkey = match ShutdownScript::try_from((msg.scriptpubkey.clone(), their_features)) {
+			Ok(script) => script.into_inner(),
+			Err(_) => return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex()))),
+		};
 
 		if self.counterparty_shutdown_scriptpubkey.is_some() {
-			if Some(&msg.scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
+			if Some(&shutdown_scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
+				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", shutdown_scriptpubkey.to_bytes().to_hex())));
 			}
 		} else {
-			self.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
+			self.counterparty_shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 		}
+
+		// If we have any LocalAnnounced updates we'll probably just get back an update_fail_htlc
+		// immediately after the commitment dance, but we can send a Shutdown because we won't send
+		// any further commitment updates after we set LocalShutdownSent.
+		let send_shutdown = (self.channel_state & ChannelState::LocalShutdownSent as u32) != ChannelState::LocalShutdownSent as u32;
+
+		let update_shutdown_script = match self.shutdown_scriptpubkey {
+			Some(_) => false,
+			None => {
+				assert!(send_shutdown);
+				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
+				if !shutdown_scriptpubkey.is_compatible(their_features) {
+					return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+				}
+				self.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
+				true
+			},
+		};
 
 		// From here on out, we may not fail!
 
 		self.channel_state |= ChannelState::RemoteShutdownSent as u32;
 		self.update_time_counter += 1;
+
+		let monitor_update = if update_shutdown_script {
+			self.latest_monitor_update_id += 1;
+			Some(ChannelMonitorUpdate {
+				update_id: self.latest_monitor_update_id,
+				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
+					scriptpubkey: self.get_closing_scriptpubkey(),
+				}],
+			})
+		} else { None };
+		let shutdown = if send_shutdown {
+			Some(msgs::Shutdown {
+				channel_id: self.channel_id,
+				scriptpubkey: self.get_closing_scriptpubkey(),
+			})
+		} else { None };
 
 		// We can't send our shutdown until we've committed all of our pending HTLCs, but the
 		// remote side is unlikely to accept any new HTLCs, so we go ahead and "free" any holding
@@ -3270,23 +3337,11 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => true
 			}
 		});
-		// If we have any LocalAnnounced updates we'll probably just get back a update_fail_htlc
-		// immediately after the commitment dance, but we can send a Shutdown cause we won't send
-		// any further commitment updates after we set LocalShutdownSent.
-
-		let shutdown = if (self.channel_state & ChannelState::LocalShutdownSent as u32) == ChannelState::LocalShutdownSent as u32 {
-			None
-		} else {
-			Some(msgs::Shutdown {
-				channel_id: self.channel_id,
-				scriptpubkey: self.get_closing_scriptpubkey(),
-			})
-		};
 
 		self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		self.update_time_counter += 1;
 
-		Ok((shutdown, self.maybe_propose_first_closing_signed(fee_estimator), dropped_outbound_htlcs))
+		Ok((shutdown, self.maybe_propose_first_closing_signed(fee_estimator), monitor_update, dropped_outbound_htlcs))
 	}
 
 	fn build_signed_closing_transaction(&self, tx: &mut Transaction, counterparty_sig: &Signature, sig: &Signature) {
@@ -3361,6 +3416,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		macro_rules! propose_new_feerate {
 			($new_feerate: expr) => {
+				assert!(self.shutdown_scriptpubkey.is_some());
 				let tx_weight = self.get_closing_transaction_weight(Some(&self.get_closing_scriptpubkey()), Some(self.counterparty_shutdown_scriptpubkey.as_ref().unwrap()));
 				let (closing_tx, used_total_fee) = self.build_closing_transaction($new_feerate as u64 * tx_weight / 1000, false);
 				let sig = self.holder_signer
@@ -3859,7 +3915,10 @@ impl<Signer: Sign> Channel<Signer> {
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
 			channel_flags: if self.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
+			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+				Some(script) => script.clone().into_inner(),
+				None => Builder::new().into_script(),
+			}),
 		}
 	}
 
@@ -3892,7 +3951,10 @@ impl<Signer: Sign> Channel<Signer> {
 			delayed_payment_basepoint: keys.delayed_payment_basepoint,
 			htlc_basepoint: keys.htlc_basepoint,
 			first_per_commitment_point,
-			shutdown_scriptpubkey: OptionalField::Present(if self.config.commit_upfront_shutdown_pubkey { self.get_closing_scriptpubkey() } else { Builder::new().into_script() })
+			shutdown_scriptpubkey: OptionalField::Present(match &self.shutdown_scriptpubkey {
+				Some(script) => script.clone().into_inner(),
+				None => Builder::new().into_script(),
+			}),
 		}
 	}
 
@@ -4400,7 +4462,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown(&mut self) -> Result<(msgs::Shutdown, Vec<(HTLCSource, PaymentHash)>), APIError> {
+	pub fn get_shutdown<K: Deref>(&mut self, keys_provider: &K, their_features: &InitFeatures) -> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
+	where K::Target: KeysInterface<Signer = Signer> {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
@@ -4419,7 +4482,17 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected or we're waiting on a monitor update, maybe force-close instead?".to_owned()});
 		}
 
-		let closing_script = self.get_closing_scriptpubkey();
+		let update_shutdown_script = match self.shutdown_scriptpubkey {
+			Some(_) => false,
+			None => {
+				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
+				if !shutdown_scriptpubkey.is_compatible(their_features) {
+					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
+				}
+				self.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
+				true
+			},
+		};
 
 		// From here on out, we may not fail!
 		if self.channel_state < ChannelState::FundingSent as u32 {
@@ -4428,6 +4501,20 @@ impl<Signer: Sign> Channel<Signer> {
 			self.channel_state |= ChannelState::LocalShutdownSent as u32;
 		}
 		self.update_time_counter += 1;
+
+		let monitor_update = if update_shutdown_script {
+			self.latest_monitor_update_id += 1;
+			Some(ChannelMonitorUpdate {
+				update_id: self.latest_monitor_update_id,
+				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
+					scriptpubkey: self.get_closing_scriptpubkey(),
+				}],
+			})
+		} else { None };
+		let shutdown = msgs::Shutdown {
+			channel_id: self.channel_id,
+			scriptpubkey: self.get_closing_scriptpubkey(),
+		};
 
 		// Go ahead and drop holding cell updates as we'd rather fail payments than wait to send
 		// our shutdown until we've committed all of the pending changes.
@@ -4443,10 +4530,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		});
 
-		Ok((msgs::Shutdown {
-			channel_id: self.channel_id,
-			scriptpubkey: closing_script,
-		}, dropped_outbound_htlcs))
+		Ok((shutdown, monitor_update, dropped_outbound_htlcs))
 	}
 
 	/// Gets the latest commitment transaction and any dependent transactions for relay (forcing
@@ -4493,24 +4577,6 @@ impl<Signer: Sign> Channel<Signer> {
 		self.update_time_counter += 1;
 		(monitor_update, dropped_outbound_htlcs)
 	}
-}
-
-fn is_unsupported_shutdown_script(their_features: &InitFeatures, script: &Script) -> bool {
-	// We restrain shutdown scripts to standards forms to avoid transactions not propagating on the p2p tx-relay network
-
-	// BOLT 2 says we must only send a scriptpubkey of certain standard forms,
-	// which for a a BIP-141-compliant witness program is at max 42 bytes in length.
-	// So don't let the remote peer feed us some super fee-heavy script.
-	let is_script_too_long = script.len() > 42;
-	if is_script_too_long {
-		return true;
-	}
-
-	if their_features.supports_shutdown_anysegwit() && script.is_witness_program() && script.as_bytes()[0] != OP_PUSHBYTES_0.into_u8() {
-		return false;
-	}
-
-	return !script.is_p2pkh() && !script.is_p2sh() && !script.is_v0_p2wpkh() && !script.is_v0_p2wsh()
 }
 
 const SERIALIZATION_VERSION: u8 = 2;
@@ -4576,7 +4642,12 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		(key_data.0.len() as u32).write(writer)?;
 		writer.write_all(&key_data.0[..])?;
 
-		self.shutdown_pubkey.write(writer)?;
+		// Write out the old serialization for shutdown_pubkey for backwards compatibility, if
+		// deserialized from that format.
+		match self.shutdown_scriptpubkey.as_ref().and_then(|script| script.as_legacy_pubkey()) {
+			Some(shutdown_pubkey) => shutdown_pubkey.write(writer)?,
+			None => [0u8; PUBLIC_KEY_SIZE].write(writer)?,
+		}
 		self.destination_script.write(writer)?;
 
 		self.cur_holder_commitment_transaction_number.write(writer)?;
@@ -4772,6 +4843,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(1, self.minimum_depth, option),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
 			(5, self.config, required),
+			(7, self.shutdown_scriptpubkey, option),
 		});
 
 		Ok(())
@@ -4815,7 +4887,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		}
 		let holder_signer = keys_source.read_chan_signer(&keys_data)?;
 
-		let shutdown_pubkey = Readable::read(reader)?;
+		// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
+		let mut shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
+			Ok(pubkey) => Some(ShutdownScript::new_p2wpkh_from_pubkey(pubkey)),
+			Err(_) => None,
+		};
 		let destination_script = Readable::read(reader)?;
 
 		let cur_holder_commitment_transaction_number = Readable::read(reader)?;
@@ -4986,6 +5062,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(1, minimum_depth, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
 			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
+			(7, shutdown_scriptpubkey, option),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -5003,7 +5080,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			latest_monitor_update_id,
 
 			holder_signer,
-			shutdown_pubkey,
+			shutdown_scriptpubkey,
 			destination_script,
 
 			cur_holder_commitment_transaction_number,
@@ -5096,6 +5173,7 @@ mod tests {
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
+	use ln::script::ShutdownScript;
 	use ln::chan_utils;
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
 	use chain::BestBlock;
@@ -5104,7 +5182,9 @@ mod tests {
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
 	use util::enforcing_trait_impls::EnforcingSigner;
+	use util::errors::APIError;
 	use util::test_utils;
+	use util::test_utils::OnGetShutdownScriptpubkey;
 	use util::logger::Logger;
 	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
@@ -5113,6 +5193,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
+	use core::num::NonZeroU8;
 	use sync::Arc;
 	use prelude::*;
 
@@ -5145,10 +5226,10 @@ mod tests {
 			Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&channel_monitor_claim_key_hash[..]).into_script()
 		}
 
-		fn get_shutdown_pubkey(&self) -> PublicKey {
+		fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_close_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-			PublicKey::from_secret_key(&secp_ctx, &channel_close_key)
+			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
 
 		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {
@@ -5161,6 +5242,32 @@ mod tests {
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
+	}
+
+	#[test]
+	fn upfront_shutdown_script_incompatibility() {
+		let features = InitFeatures::known().clear_shutdown_anysegwit();
+		let non_v0_segwit_shutdown_script =
+			ShutdownScript::new_witness_program(NonZeroU8::new(16).unwrap(), &[0, 40]).unwrap();
+
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		keys_provider.expect(OnGetShutdownScriptpubkey {
+			returns: non_v0_segwit_shutdown_script.clone(),
+		});
+
+		let fee_estimator = TestFeeEstimator { fee_est: 253 };
+		let secp_ctx = Secp256k1::new();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config) {
+			Err(APIError::IncompatibleShutdownScript { script }) => {
+				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
+			},
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => panic!("Expected error"),
+		}
 	}
 
 	// Check that, during channel creation, we use the same feerate in the open channel message
@@ -5176,7 +5283,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, 10000000, 100000, 42, &config).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -5201,18 +5308,18 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
-		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
 
 		// Put some inbound and outbound HTLCs in A's channel.
@@ -5268,7 +5375,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		let commitment_tx_fee_0_htlcs = chan.commit_tx_fee_msat(0);
 		let commitment_tx_fee_1_htlc = chan.commit_tx_fee_msat(1);
@@ -5317,16 +5424,16 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
-		node_a_chan.accept_channel(&accept_channel_msg, &config, InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
@@ -5379,7 +5486,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -5443,7 +5550,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 

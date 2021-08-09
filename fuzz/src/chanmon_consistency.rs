@@ -39,6 +39,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
+use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
 use lightning::util::errors::APIError;
 use lightning::util::events;
@@ -164,9 +165,11 @@ impl KeysInterface for KeyProvider {
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
-	fn get_shutdown_pubkey(&self) -> PublicKey {
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 		let secp_ctx = Secp256k1::signing_only();
-		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap())
+		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap();
+		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
+		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 
 	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
@@ -250,6 +253,7 @@ fn check_api_err(api_err: APIError) {
 		APIError::MonitorUpdateFailed => {
 			// We can (obviously) temp-fail a monitor update
 		},
+		APIError::IncompatibleShutdownScript { .. } => panic!("Cannot send an incompatible shutdown script"),
 	}
 }
 #[inline]
@@ -393,6 +397,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
+			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: InitFeatures::known() });
+			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: InitFeatures::known() });
+
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
 				let events = $source.get_and_clear_pending_msg_events();

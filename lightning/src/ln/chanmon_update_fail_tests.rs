@@ -2369,3 +2369,66 @@ fn test_reconnect_dup_htlc_claims() {
 	do_test_reconnect_dup_htlc_claims(HTLCStatusAtDupClaim::HoldingCell, true);
 	do_test_reconnect_dup_htlc_claims(HTLCStatusAtDupClaim::Cleared, true);
 }
+
+#[test]
+fn test_temporary_error_during_shutdown() {
+	// Test that temporary failures when updating the monitor's shutdown script do not prevent
+	// cooperative close.
+	let mut config = test_default_channel_config();
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, false);
+	check_added_monitors!(nodes[0], 1);
+	check_added_monitors!(nodes[1], 1);
+}
+
+#[test]
+fn test_permanent_error_during_sending_shutdown() {
+	// Test that permanent failures when updating the monitor's shutdown script result in a force
+	// close when initiating a cooperative close.
+	let mut config = test_default_channel_config();
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::PermanentFailure));
+
+	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
+	check_closed_broadcast!(nodes[0], true);
+	check_added_monitors!(nodes[0], 2);
+}
+
+#[test]
+fn test_permanent_error_during_handling_shutdown() {
+	// Test that permanent failures when updating the monitor's shutdown script result in a force
+	// close when handling a cooperative close.
+	let mut config = test_default_channel_config();
+	config.channel_options.commit_upfront_shutdown_pubkey = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::PermanentFailure));
+
+	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
+	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &shutdown);
+	check_closed_broadcast!(nodes[1], true);
+	check_added_monitors!(nodes[1], 2);
+}
