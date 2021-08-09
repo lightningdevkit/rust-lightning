@@ -2742,8 +2742,10 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
 		}
 
+		let secret = secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned());
+
 		if let Some(counterparty_prev_commitment_point) = self.counterparty_prev_commitment_point {
-			if PublicKey::from_secret_key(&self.secp_ctx, &secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned())) != counterparty_prev_commitment_point {
+			if PublicKey::from_secret_key(&self.secp_ctx, &secret) != counterparty_prev_commitment_point {
 				return Err(ChannelError::Close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
 			}
 		}
@@ -2765,6 +2767,10 @@ impl<Signer: Sign> Channel<Signer> {
 			*self.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 		}
 
+		self.holder_signer.validate_counterparty_revocation(
+			self.cur_counterparty_commitment_transaction_number + 1,
+			&secret
+		);
 		self.commitment_secrets.provide_secret(self.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|_| ChannelError::Close("Previous secrets did not match new one".to_owned()))?;
 		self.latest_monitor_update_id += 1;

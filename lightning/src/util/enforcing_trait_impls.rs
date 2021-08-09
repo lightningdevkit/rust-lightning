@@ -122,10 +122,19 @@ impl BaseSign for EnforcingSigner {
 			// These commitment numbers are backwards counting.  We expect either the same as the previously encountered,
 			// or the next one.
 			assert!(last_commitment_number == actual_commitment_number || last_commitment_number - 1 == actual_commitment_number, "{} doesn't come after {}", actual_commitment_number, last_commitment_number);
+			// Ensure that the counterparty doesn't get more than two broadcastable commitments -
+			// the last and the one we are trying to sign
+			assert!(actual_commitment_number >= state.last_counterparty_revoked_commitment - 2, "cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}", actual_commitment_number, state.last_counterparty_revoked_commitment);
 			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, secp_ctx).unwrap())
+	}
+
+	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) {
+		let mut state = self.state.lock().unwrap();
+		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
+		state.last_counterparty_revoked_commitment = idx;
 	}
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
@@ -230,6 +239,8 @@ impl EnforcingSigner {
 pub struct EnforcementState {
 	/// The last counterparty commitment number we signed, backwards counting
 	pub last_counterparty_commitment: u64,
+	/// The last counterparty commitment they revoked, backwards counting
+	pub last_counterparty_revoked_commitment: u64,
 	/// The last holder commitment number we revoked, backwards counting
 	pub last_holder_revoked_commitment: u64,
 	/// The last validated holder commitment number, backwards counting
@@ -241,6 +252,7 @@ impl EnforcementState {
 	pub fn new() -> Self {
 		EnforcementState {
 			last_counterparty_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			last_counterparty_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 		}

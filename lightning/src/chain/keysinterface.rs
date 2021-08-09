@@ -230,6 +230,11 @@ pub trait BaseSign {
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	/// Validate the counterparty's revocation.
+	///
+	/// This is required in order for the signer to make sure that the state has moved
+	/// forward and it is safe to sign the next counterparty commitment.
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey);
 
 	/// Create a signatures for a holder's commitment transaction and its claiming HTLC transactions.
 	/// This will only ever be called with a non-revoked commitment_tx.  This will be called with the
@@ -590,6 +595,9 @@ impl BaseSign for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
+	}
+
+	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) {
 	}
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
