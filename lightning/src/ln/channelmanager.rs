@@ -3271,15 +3271,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						});
 					}
 
-					if chan_entry.get().is_shutdown() {
-						let channel = remove_channel!(channel_state, chan_entry);
-						if let Ok(channel_update) = self.get_channel_update_for_broadcast(&channel) {
-							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: channel_update
-							});
-						}
-					}
-
 					break Ok(());
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
