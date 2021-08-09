@@ -53,6 +53,7 @@ mod functional_tests;
 #[allow(unused_mut)]
 mod chanmon_update_fail_tests;
 #[cfg(test)]
+#[allow(unused_mut)]
 mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
