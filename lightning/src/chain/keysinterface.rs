@@ -212,6 +212,11 @@ pub trait BaseSign {
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
 	// TODO: return a Result so we can signal a validation error
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
+	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
+	///
+	/// This is required in order for the signer to make sure that releasing a commitment
+	/// secret won't leave us without a broadcastable holder transaction.
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction);
 	/// Gets the holder's channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
@@ -556,6 +561,9 @@ impl BaseSign for InMemorySigner {
 
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
+	}
+
+	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction) {
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }

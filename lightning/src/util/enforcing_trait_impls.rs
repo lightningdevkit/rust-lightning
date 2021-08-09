@@ -15,6 +15,7 @@ use io;
 use prelude::*;
 use core::cmp;
 use sync::{Mutex, Arc};
+#[cfg(test)] use sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::{Transaction, SigHashType};
 use bitcoin::util::bip143;
@@ -35,11 +36,16 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// - When signing, the holder transaction has not been revoked
 /// - When revoking, the holder transaction has not been signed
 /// - The holder commitment number is monotonic and without gaps
+/// - The revoked holder commitment number is monotonic and without gaps
+/// - There is at least one unrevoked holder transaction at all times
 /// - The counterparty commitment number is monotonic and without gaps
 /// - The pre-derived keys and pre-built transaction in CommitmentTransaction were correctly built
 ///
 /// Eventually we will probably want to expose a variant of this which would essentially
 /// be what you'd want to run on a hardware wallet.
+///
+/// Note that counterparty signatures on the holder transaction are not checked, but it should
+/// be in a complete implementation.
 ///
 /// Note that before we do so we should ensure its serialization format has backwards- and
 /// forwards-compatibility prefix/suffixes!
@@ -74,6 +80,11 @@ impl EnforcingSigner {
 			disable_revocation_policy_check
 		}
 	}
+
+	#[cfg(test)]
+	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
+		self.state.lock().unwrap()
+	}
 }
 
 impl BaseSign for EnforcingSigner {
@@ -84,10 +95,18 @@ impl BaseSign for EnforcingSigner {
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
 		{
 			let mut state = self.state.lock().unwrap();
-			assert!(idx == state.revoked_commitment || idx == state.revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, revoked {}", idx, state.revoked_commitment);
-			state.revoked_commitment = idx;
+			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);
+			assert!(idx > state.last_holder_commitment, "cannot revoke the last holder commitment - attempted to revoke {} last commitment {}", idx, state.last_holder_commitment);
+			state.last_holder_revoked_commitment = idx;
 		}
 		self.inner.release_commitment_secret(idx)
+	}
+
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) {
+		let mut state = self.state.lock().unwrap();
+		let idx = holder_tx.commitment_number();
+		assert!(idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1, "expecting to validate the current or next holder commitment - trying {}, current {}", idx, state.last_holder_commitment);
+		state.last_holder_commitment = idx;
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
@@ -116,10 +135,10 @@ impl BaseSign for EnforcingSigner {
 
 		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
-		if state.revoked_commitment - 1 != commitment_number && state.revoked_commitment - 2 != commitment_number {
+		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
 			}
 		}
 
@@ -212,8 +231,9 @@ pub struct EnforcementState {
 	/// The last counterparty commitment number we signed, backwards counting
 	pub last_counterparty_commitment: u64,
 	/// The last holder commitment number we revoked, backwards counting
-	pub revoked_commitment: u64,
-
+	pub last_holder_revoked_commitment: u64,
+	/// The last validated holder commitment number, backwards counting
+	pub last_holder_commitment: u64,
 }
 
 impl EnforcementState {
@@ -221,7 +241,8 @@ impl EnforcementState {
 	pub fn new() -> Self {
 		EnforcementState {
 			last_counterparty_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
-			revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			last_holder_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			last_holder_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 		}
 	}
 }

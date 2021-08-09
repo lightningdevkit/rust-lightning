@@ -194,7 +194,7 @@ pub struct FundingCreated {
 	pub funding_txid: Txid,
 	/// The specific output index funding this channel
 	pub funding_output_index: u16,
-	/// The signature of the channel initiator (funder) on the funding transaction
+	/// The signature of the channel initiator (funder) on the initial commitment transaction
 	pub signature: Signature,
 }
 
@@ -203,7 +203,7 @@ pub struct FundingCreated {
 pub struct FundingSigned {
 	/// The channel ID
 	pub channel_id: [u8; 32],
-	/// The signature of the channel acceptor (fundee) on the funding transaction
+	/// The signature of the channel acceptor (fundee) on the initial commitment transaction
 	pub signature: Signature,
 }
 
