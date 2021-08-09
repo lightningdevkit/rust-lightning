@@ -375,10 +375,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	let last_hops = last_hops.iter().filter_map(|hops| hops.0.last()).collect::<Vec<_>>();
-	for last_hop in last_hops.iter() {
-		if last_hop.src_node_id == *payee {
-			return Err(LightningError{err: "Last hop cannot have a payee as a source.".to_owned(), action: ErrorAction::IgnoreError});
+	for route in last_hops.iter() {
+		for hop in &route.0 {
+			if hop.src_node_id == *payee {
+				return Err(LightningError{err: "Last hop cannot have a payee as a source.".to_owned(), action: ErrorAction::IgnoreError});
+			}
 		}
 	}
 
@@ -876,39 +877,89 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		for hop in last_hops.iter() {
+		for route in last_hops.iter().filter(|route| !route.0.is_empty()) {
+			let first_hop_in_route = &(route.0)[0];
 			let have_hop_src_in_graph =
-				// Only add the last hop to our candidate set if either we have a direct channel or
-				// they are in the regular network graph.
-				first_hop_targets.get(&hop.src_node_id).is_some() ||
-				network.get_nodes().get(&hop.src_node_id).is_some();
+				// Only add the hops in this route to our candidate set if either
+				// we have a direct channel to the first hop or the first hop is
+				// in the regular network graph.
+				first_hop_targets.get(&first_hop_in_route.src_node_id).is_some() ||
+				network.get_nodes().get(&first_hop_in_route.src_node_id).is_some();
 			if have_hop_src_in_graph {
-				// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
-				// really sucks, cause we're gonna need that eventually.
-				let last_hop_htlc_minimum_msat: u64 = match hop.htlc_minimum_msat {
-					Some(htlc_minimum_msat) => htlc_minimum_msat,
-					None => 0
-				};
-				let directional_info = DummyDirectionalChannelInfo {
-					cltv_expiry_delta: hop.cltv_expiry_delta as u32,
-					htlc_minimum_msat: last_hop_htlc_minimum_msat,
-					htlc_maximum_msat: hop.htlc_maximum_msat,
-					fees: hop.fees,
-				};
-				// We assume that the recipient only included route hints for routes which had
-				// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
-				// invoices where the invoice does not specify value this may not be the case, but
-				// better to include the hints than not.
-				if add_entry!(hop.short_channel_id, hop.src_node_id, payee, directional_info, Some((final_value_msat + 999) / 1000), &empty_channel_features, 0, path_value_msat, 0) {
-					// If this hop connects to a node with which we have a direct channel,
-					// ignore the network graph and, if the last hop was added, add our
-					// direct channel to the candidate set.
-					//
-					// Note that we *must* check if the last hop was added as `add_entry`
-					// always assumes that the third argument is a node to which we have a
-					// path.
-					if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
-						add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
+				// We start building the path from reverse, i.e., from payee
+				// to the first RouteHintHop in the path.
+				let hop_iter = route.0.iter().rev();
+				let prev_hop_iter = core::iter::once(payee).chain(
+					route.0.iter().skip(1).rev().map(|hop| &hop.src_node_id));
+				let mut hop_used = true;
+				let mut aggregate_next_hops_fee_msat: u64 = 0;
+				let mut aggregate_next_hops_path_htlc_minimum_msat: u64 = 0;
+
+				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
+					// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
+					// really sucks, cause we're gonna need that eventually.
+					let hop_htlc_minimum_msat: u64 = hop.htlc_minimum_msat.unwrap_or(0);
+
+					let directional_info = DummyDirectionalChannelInfo {
+						cltv_expiry_delta: hop.cltv_expiry_delta as u32,
+						htlc_minimum_msat: hop_htlc_minimum_msat,
+						htlc_maximum_msat: hop.htlc_maximum_msat,
+						fees: hop.fees,
+					};
+
+					let reqd_channel_cap = if let Some (val) = final_value_msat.checked_add(match idx {
+						0 => 999,
+						_ => aggregate_next_hops_fee_msat.checked_add(999).unwrap_or(u64::max_value())
+					}) { Some( val / 1000 ) } else { break; }; // converting from msat or breaking if max ~ infinity
+
+
+					// We assume that the recipient only included route hints for routes which had
+					// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
+					// invoices where the invoice does not specify value this may not be the case, but
+					// better to include the hints than not.
+					if !add_entry!(hop.short_channel_id, hop.src_node_id, prev_hop_id, directional_info, reqd_channel_cap, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat) {
+						// If this hop was not used then there is no use checking the preceding hops
+						// in the RouteHint. We can break by just searching for a direct channel between
+						// last checked hop and first_hop_targets
+						hop_used = false;
+					}
+
+					// Searching for a direct channel between last checked hop and first_hop_targets
+					if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&prev_hop_id) {
+						add_entry!(first_hop, *our_node_id , prev_hop_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
+					}
+
+					if !hop_used {
+						break;
+					}
+
+					// In the next values of the iterator, the aggregate fees already reflects
+					// the sum of value sent from payer (final_value_msat) and routing fees
+					// for the last node in the RouteHint. We need to just add the fees to
+					// route through the current node so that the preceeding node (next iteration)
+					// can use it.
+					let hops_fee = compute_fees(aggregate_next_hops_fee_msat + final_value_msat, hop.fees)
+						.map_or(None, |inc| inc.checked_add(aggregate_next_hops_fee_msat));
+					aggregate_next_hops_fee_msat = if let Some(val) = hops_fee { val } else { break; };
+
+					let hop_htlc_minimum_msat_inc = if let Some(val) = compute_fees(aggregate_next_hops_path_htlc_minimum_msat, hop.fees) { val } else { break; };
+					let hops_path_htlc_minimum = aggregate_next_hops_path_htlc_minimum_msat
+						.checked_add(hop_htlc_minimum_msat_inc);
+					aggregate_next_hops_path_htlc_minimum_msat = if let Some(val) = hops_path_htlc_minimum { cmp::max(hop_htlc_minimum_msat, val) } else { break; };
+
+					if idx == route.0.len() - 1 {
+						// The last hop in this iterator is the first hop in
+						// overall RouteHint.
+						// If this hop connects to a node with which we have a direct channel,
+						// ignore the network graph and, if the last hop was added, add our
+						// direct channel to the candidate set.
+						//
+						// Note that we *must* check if the last hop was added as `add_entry`
+						// always assumes that the third argument is a node to which we have a
+						// path.
+						if let Some(&(ref first_hop, ref features, ref outbound_capacity_msat, _)) = first_hop_targets.get(&hop.src_node_id) {
+							add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
+						}
 					}
 				}
 			}
@@ -1343,7 +1394,7 @@ mod tests {
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(genesis_block(Network::Testnet).header.block_hash(), None, Arc::clone(&logger));
-		// Build network from our_id to node7:
+		// Build network from our_id to node6:
 		//
 		//        -1(1)2-  node0  -1(3)2-
 		//       /                       \
@@ -1378,6 +1429,8 @@ mod tests {
 		// node2--1(6)2- node4 -1(9)2--- node6 (not in global route map)
 		//      \                      /
 		//       -1(7)2- node5 -1(10)2-
+		//
+		// Channels 5, 8, 9 and 10 are private channels.
 		//
 		// chan5  1-to-2: enabled, 100 msat fee
 		// chan5  2-to-1: enabled, 0 fee
@@ -2105,7 +2158,51 @@ mod tests {
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
+		}
+		]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[4].clone(),
+			short_channel_id: 9,
+			fees: RoutingFees {
+				base_msat: 1001,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (9 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])]
+	}
+
+	fn last_hops_multi_private_channels(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+		let zero_fees = RoutingFees {
+			base_msat: 0,
+			proportional_millionths: 0,
+		};
+		vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[2].clone(),
+			short_channel_id: 5,
+			fees: RoutingFees {
+				base_msat: 100,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (5 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}, RouteHintHop {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}
+		]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[4].clone(),
 			short_channel_id: 9,
 			fees: RoutingFees {
@@ -2126,11 +2223,13 @@ mod tests {
 	}
 
 	#[test]
-	fn last_hops_test() {
+	fn partial_route_hint_test() {
 		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
+		// Tests the behaviour when the RouteHint contains a suboptimal hop.
+		// RouteHint may be partially used by the algo to build the best path.
 
 		// First check that last hop can't have its source as the payee.
 		let invalid_last_hop = RouteHint(vec![RouteHintHop {
@@ -2145,7 +2244,7 @@ mod tests {
 			htlc_maximum_msat: None,
 		}]);
 
-		let mut invalid_last_hops = last_hops(&nodes);
+		let mut invalid_last_hops = last_hops_multi_private_channels(&nodes);
 		invalid_last_hops.push(invalid_last_hop);
 		{
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &invalid_last_hops.iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)) {
@@ -2153,7 +2252,7 @@ mod tests {
 			} else { panic!(); }
 		}
 
-		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &last_hops(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &last_hops_multi_private_channels(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
@@ -2185,6 +2284,262 @@ mod tests {
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+
+		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0][4].short_channel_id, 8);
+		assert_eq!(route.paths[0][4].fee_msat, 100);
+		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	fn empty_last_hop(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+		let zero_fees = RoutingFees {
+			base_msat: 0,
+			proportional_millionths: 0,
+		};
+		vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]), RouteHint(vec![
+
+		]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])]
+	}
+
+	#[test]
+	fn ignores_empty_last_hops_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+
+		// Test handling of an empty RouteHint passed in Invoice.
+
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &empty_last_hop(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
+		assert_eq!(route.paths[0].len(), 5);
+
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 100);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0][1].short_channel_id, 4);
+		assert_eq!(route.paths[0][1].fee_msat, 0);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0][2].short_channel_id, 6);
+		assert_eq!(route.paths[0][2].fee_msat, 0);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+
+		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0][3].short_channel_id, 11);
+		assert_eq!(route.paths[0][3].fee_msat, 0);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		// If we have a peer in the node map, we'll use their features here since we don't have
+		// a way of figuring out their features from the invoice:
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &id_to_feature_flags(11));
+
+		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
+		assert_eq!(route.paths[0][4].short_channel_id, 8);
+		assert_eq!(route.paths[0][4].fee_msat, 100);
+		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	fn multi_hint_last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+		let zero_fees = RoutingFees {
+			base_msat: 0,
+			proportional_millionths: 0,
+		};
+		vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[2].clone(),
+			short_channel_id: 5,
+			fees: RoutingFees {
+				base_msat: 100,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (5 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}, RouteHintHop {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])]
+	}
+
+	#[test]
+	fn multi_hint_last_hops_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		// Test through channels 2, 3, 5, 8.
+		// Test shows that multiple hop hints are considered.
+
+		// Disabling channels 6 & 7 by flags=2
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 2,
+			flags: 2, // to disable
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 7,
+			timestamp: 2,
+			flags: 2, // to disable
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &multi_hint_last_hops(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
+		assert_eq!(route.paths[0].len(), 4);
+
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 200);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, 1025);
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0][1].short_channel_id, 4);
+		assert_eq!(route.paths[0][1].fee_msat, 100);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, 1281);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		assert_eq!(route.paths[0][2].pubkey, nodes[3]);
+		assert_eq!(route.paths[0][2].short_channel_id, 5);
+		assert_eq!(route.paths[0][2].fee_msat, 0);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, 2049);
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new());
+
+		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
+		assert_eq!(route.paths[0][3].short_channel_id, 8);
+		assert_eq!(route.paths[0][3].fee_msat, 100);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	fn last_hops_with_public_channel(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+		let zero_fees = RoutingFees {
+			base_msat: 0,
+			proportional_millionths: 0,
+		};
+		vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[4].clone(),
+			short_channel_id: 11,
+			fees: zero_fees,
+			cltv_expiry_delta: (11 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}, RouteHintHop {
+			src_node_id: nodes[3].clone(),
+			short_channel_id: 8,
+			fees: zero_fees,
+			cltv_expiry_delta: (8 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[4].clone(),
+			short_channel_id: 9,
+			fees: RoutingFees {
+				base_msat: 1001,
+				proportional_millionths: 0,
+			},
+			cltv_expiry_delta: (9 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]), RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[5].clone(),
+			short_channel_id: 10,
+			fees: zero_fees,
+			cltv_expiry_delta: (10 << 8) | 1,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}])]
+	}
+
+	#[test]
+	fn last_hops_with_public_channel_test() {
+		let (secp_ctx, net_graph_msg_handler, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		// This test shows that public routes can be present in the invoice
+		// which would be handled in the same manner.
+
+		let route = get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[6], None, None, &last_hops_with_public_channel(&nodes).iter().collect::<Vec<_>>(), 100, 42, Arc::clone(&logger)).unwrap();
+		assert_eq!(route.paths[0].len(), 5);
+
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 100);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0][1].short_channel_id, 4);
+		assert_eq!(route.paths[0][1].fee_msat, 0);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
+		assert_eq!(route.paths[0][2].short_channel_id, 6);
+		assert_eq!(route.paths[0][2].fee_msat, 0);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
+
+		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
+		assert_eq!(route.paths[0][3].short_channel_id, 11);
+		assert_eq!(route.paths[0][3].fee_msat, 0);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		// If we have a peer in the node map, we'll use their features here since we don't have
+		// a way of figuring out their features from the invoice:
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new());
 
 		assert_eq!(route.paths[0][4].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][4].short_channel_id, 8);

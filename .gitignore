@@ -7,4 +7,4 @@ lightning-c-bindings/a.out
 **/*.rs.bk
 Cargo.lock
 .idea
-
+lightning/target
