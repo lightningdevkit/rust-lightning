@@ -41,7 +41,7 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
-use lightning::util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
+use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
@@ -161,7 +161,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 struct KeyProvider {
 	node_id: u8,
 	rand_bytes_id: atomic::AtomicU32,
-	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
+	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 }
 impl KeysInterface for KeyProvider {
 	type Signer = EnforcingSigner;
@@ -198,7 +198,7 @@ impl KeysInterface for KeyProvider {
 			channel_value_satoshis,
 			[0; 32],
 		);
-		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
+		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		EnforcingSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 
@@ -213,14 +213,11 @@ impl KeysInterface for KeyProvider {
 		let mut reader = std::io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = Readable::read(&mut reader)?;
-		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);
-
-		let last_commitment_number = Readable::read(&mut reader)?;
+		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner {
 			inner,
-			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
-			revoked_commitment,
+			state,
 			disable_revocation_policy_check: false,
 		})
 	}
@@ -231,10 +228,10 @@ impl KeysInterface for KeyProvider {
 }
 
 impl KeyProvider {
-	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {
-		let mut revoked_commitments = self.revoked_commitments.lock().unwrap();
+	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
+		let mut revoked_commitments = self.enforcement_states.lock().unwrap();
 		if !revoked_commitments.contains_key(&commitment_seed) {
-			revoked_commitments.insert(commitment_seed, Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)));
+			revoked_commitments.insert(commitment_seed, Arc::new(Mutex::new(EnforcementState::new())));
 		}
 		let cell = revoked_commitments.get(&commitment_seed).unwrap();
 		Arc::clone(cell)
@@ -351,7 +348,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
+			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(), Arc::new(TestPersister{}), Arc::clone(&keys_manager)));
 
 			let mut config = UserConfig::default();

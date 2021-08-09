@@ -46,20 +46,18 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 #[derive(Clone)]
 pub struct EnforcingSigner {
 	pub inner: InMemorySigner,
-	/// The last counterparty commitment number we signed, backwards counting
-	pub last_commitment_number: Arc<Mutex<Option<u64>>>,
-	/// The last holder commitment number we revoked, backwards counting
-	pub revoked_commitment: Arc<Mutex<u64>>,
+	/// Channel state used for policy enforcement
+	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
 }
 
 impl EnforcingSigner {
 	/// Construct an EnforcingSigner
 	pub fn new(inner: InMemorySigner) -> Self {
+		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Self {
 			inner,
-			last_commitment_number: Arc::new(Mutex::new(None)),
-			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)),
+			state,
 			disable_revocation_policy_check: false
 		}
 	}
@@ -67,13 +65,12 @@ impl EnforcingSigner {
 	/// Construct an EnforcingSigner with externally managed storage
 	///
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
-	/// so that all copies are aware of revocations.  A pointer to this state is provided here, usually
-	/// by an implementation of KeysInterface.
-	pub fn new_with_revoked(inner: InMemorySigner, revoked_commitment: Arc<Mutex<u64>>, disable_revocation_policy_check: bool) -> Self {
+	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
+	/// here, usually by an implementation of KeysInterface.
+	pub fn new_with_revoked(inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>, disable_revocation_policy_check: bool) -> Self {
 		Self {
 			inner,
-			last_commitment_number: Arc::new(Mutex::new(None)),
-			revoked_commitment,
+			state,
 			disable_revocation_policy_check
 		}
 	}
@@ -86,9 +83,9 @@ impl BaseSign for EnforcingSigner {
 
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
 		{
-			let mut revoked = self.revoked_commitment.lock().unwrap();
-			assert!(idx == *revoked || idx == *revoked - 1, "can only revoke the current or next unrevoked commitment - trying {}, revoked {}", idx, *revoked);
-			*revoked = idx;
+			let mut state = self.state.lock().unwrap();
+			assert!(idx == state.revoked_commitment || idx == state.revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, revoked {}", idx, state.revoked_commitment);
+			state.revoked_commitment = idx;
 		}
 		self.inner.release_commitment_secret(idx)
 	}
@@ -100,13 +97,13 @@ impl BaseSign for EnforcingSigner {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
 		{
-			let mut last_commitment_number_guard = self.last_commitment_number.lock().unwrap();
+			let mut state = self.state.lock().unwrap();
 			let actual_commitment_number = commitment_tx.commitment_number();
-			let last_commitment_number = last_commitment_number_guard.unwrap_or(actual_commitment_number);
+			let last_commitment_number = state.last_counterparty_commitment;
 			// These commitment numbers are backwards counting.  We expect either the same as the previously encountered,
 			// or the next one.
 			assert!(last_commitment_number == actual_commitment_number || last_commitment_number - 1 == actual_commitment_number, "{} doesn't come after {}", actual_commitment_number, last_commitment_number);
-			*last_commitment_number_guard = Some(cmp::min(last_commitment_number, actual_commitment_number))
+			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, secp_ctx).unwrap())
@@ -117,12 +114,12 @@ impl BaseSign for EnforcingSigner {
 		let commitment_txid = trusted_tx.txid();
 		let holder_csv = self.inner.counterparty_selected_contest_delay();
 
-		let revoked = self.revoked_commitment.lock().unwrap();
+		let state = self.state.lock().unwrap();
 		let commitment_number = trusted_tx.commitment_number();
-		if *revoked - 1 != commitment_number && *revoked - 2 != commitment_number {
+		if state.revoked_commitment - 1 != commitment_number && state.revoked_commitment - 2 != commitment_number {
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       *revoked, commitment_number, self.inner.commitment_seed[0])
+				       state.revoked_commitment, commitment_number, self.inner.commitment_seed[0])
 			}
 		}
 
@@ -175,8 +172,7 @@ impl Sign for EnforcingSigner {}
 impl Writeable for EnforcingSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.write(writer)?;
-		let last = *self.last_commitment_number.lock().unwrap();
-		last.write(writer)?;
+		// NOTE - the commitment state is maintained by KeysInterface, so we don't persist it
 		Ok(())
 	}
 }
@@ -184,11 +180,10 @@ impl Writeable for EnforcingSigner {
 impl Readable for EnforcingSigner {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let inner = Readable::read(reader)?;
-		let last_commitment_number = Readable::read(reader)?;
+		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Ok(EnforcingSigner {
 			inner,
-			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
-			revoked_commitment: Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)),
+			state,
 			disable_revocation_policy_check: false,
 		})
 	}
@@ -205,5 +200,28 @@ impl EnforcingSigner {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_holder_broadcastable(),
 		                     self.inner.pubkeys(), self.inner.counterparty_pubkeys(), secp_ctx)
 			.expect("derived different per-tx keys or built transaction")
+	}
+}
+
+/// The state used by [`EnforcingSigner`] in order to enforce policy checks
+///
+/// This structure is maintained by KeysInterface since we may have multiple copies of
+/// the signer and they must coordinate their state.
+#[derive(Clone)]
+pub struct EnforcementState {
+	/// The last counterparty commitment number we signed, backwards counting
+	pub last_counterparty_commitment: u64,
+	/// The last holder commitment number we revoked, backwards counting
+	pub revoked_commitment: u64,
+
+}
+
+impl EnforcementState {
+	/// Enforcement state for a new channel
+	pub fn new() -> Self {
+		EnforcementState {
+			last_counterparty_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+		}
 	}
 }
