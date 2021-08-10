@@ -206,7 +206,23 @@ pub struct ChannelConfig {
 	/// This cannot be changed after a channel has been initialized.
 	///
 	/// Default value: true.
-	pub commit_upfront_shutdown_pubkey: bool
+	pub commit_upfront_shutdown_pubkey: bool,
+	/// Limit our total exposure to in-flight HTLCs which are burned to fees as they are too
+	/// small to claim on-chain.
+	///
+	/// When an HTLC present in one of our channels is below a "dust" threshold, the HTLC will
+	/// not be claimable on-chain, instead being turned into additional miner fees if either
+	/// party force-closes the channel. Because the threshold is per-HTLC, our total exposure
+	/// to such payments may be sustantial if there are many dust HTLCs present when the
+	/// channel is force-closed.
+	///
+	/// This limit is applied for sent, forwarded, and received HTLCs and limits the total
+	/// exposure across all three types per-channel. Setting this too low may prevent the
+	/// sending or receipt of low-value HTLCs on high-traffic nodes, and this limit is very
+	/// important to prevent stealing of dust HTLCs by miners.
+	///
+	/// Default value: 5_000_000 msat.
+	pub max_dust_htlc_exposure_msat: u64,
 }
 
 impl Default for ChannelConfig {
@@ -218,12 +234,14 @@ impl Default for ChannelConfig {
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
+			max_dust_htlc_exposure_msat: 5_000_000,
 		}
 	}
 }
 
 impl_writeable_tlv_based!(ChannelConfig, {
 	(0, forwarding_fee_proportional_millionths, required),
+	(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
 	(2, cltv_expiry_delta, required),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),

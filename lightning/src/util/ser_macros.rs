@@ -8,6 +8,9 @@
 // licenses.
 
 macro_rules! encode_tlv {
+	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
+		encode_tlv!($stream, $type, $field, required)
+	};
 	($stream: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -26,7 +29,7 @@ macro_rules! encode_tlv {
 }
 
 macro_rules! encode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
 		#[allow(unused_imports)]
 		use {
 			ln::msgs::DecodeError,
@@ -53,6 +56,9 @@ macro_rules! encode_tlv_stream {
 }
 
 macro_rules! get_varint_length_prefixed_tlv_length {
+	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
+		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
+	};
 	($len: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
 		let field_len = $field.serialized_length();
@@ -73,7 +79,7 @@ macro_rules! get_varint_length_prefixed_tlv_length {
 }
 
 macro_rules! encode_varint_length_prefixed_tlv {
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),*}) => { {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),*}) => { {
 		use util::ser::BigSize;
 		let len = {
 			#[allow(unused_mut)]
@@ -89,38 +95,55 @@ macro_rules! encode_varint_length_prefixed_tlv {
 }
 
 macro_rules! check_tlv_order {
-	($last_seen_type: expr, $typ: expr, $type: expr, required) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
+		if invalid_order {
+			$field = $default;
+		}
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, option) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, vec_type) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
 }
 
 macro_rules! check_missing_tlv {
-	($last_seen_type: expr, $type: expr, required) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
+		if missing_req_type {
+			$field = $default;
+		}
+	}};
+	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
-	($last_seen_type: expr, $type: expr, vec_type) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, option) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
 }
 
 macro_rules! decode_tlv {
+	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
+		decode_tlv!($reader, $field, required)
+	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = ser::Readable::read(&mut $reader)?;
 	}};
@@ -133,7 +156,7 @@ macro_rules! decode_tlv {
 }
 
 macro_rules! decode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
 		use ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		'tlv_read: loop {
@@ -168,7 +191,7 @@ macro_rules! decode_tlv_stream {
 			}
 			// As we read types, make sure we hit every required type:
 			$({
-				check_tlv_order!(last_seen_type, typ, $type, $fieldty);
+				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
 			last_seen_type = Some(typ.0);
 
@@ -192,7 +215,7 @@ macro_rules! decode_tlv_stream {
 		}
 		// Make sure we got to each required type after we've read every TLV:
 		$({
-			check_missing_tlv!(last_seen_type, $type, $fieldty);
+			check_missing_tlv!(last_seen_type, $type, $field, $fieldty);
 		})*
 	} }
 }
@@ -326,7 +349,7 @@ macro_rules! write_ver_prefix {
 /// This is the preferred method of adding new fields that old nodes can ignore and still function
 /// correctly.
 macro_rules! write_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: expr, $fieldty: ident)),* $(,)*}) => {
+	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => {
 		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*});
 	}
 }
@@ -347,7 +370,7 @@ macro_rules! read_ver_prefix {
 
 /// Reads a suffix added by write_tlv_fields.
 macro_rules! read_tlv_fields {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
 		let tlv_len = ::util::ser::BigSize::read($stream)?;
 		let mut rd = ::util::ser::FixedLengthReader::new($stream, tlv_len.0);
 		decode_tlv_stream!(&mut rd, {$(($type, $field, $fieldty)),*});
@@ -356,6 +379,9 @@ macro_rules! read_tlv_fields {
 }
 
 macro_rules! init_tlv_based_struct_field {
+	($field: ident, (default_value, $default: expr)) => {
+		$field
+	};
 	($field: ident, option) => {
 		$field
 	};
@@ -368,6 +394,9 @@ macro_rules! init_tlv_based_struct_field {
 }
 
 macro_rules! init_tlv_field_var {
+	($field: ident, (default_value, $default: expr)) => {
+		let mut $field = $default;
+	};
 	($field: ident, required) => {
 		let mut $field = ::util::ser::OptionDeserWrapper(None);
 	};
@@ -385,7 +414,7 @@ macro_rules! init_tlv_field_var {
 /// if $fieldty is `vec_type`, then $field is a Vec, which needs to have its individual elements
 /// serialized.
 macro_rules! impl_writeable_tlv_based {
-	($st: ident, {$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}) => {
+	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		impl ::util::ser::Writeable for $st {
 			fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				write_tlv_fields!(writer, {
@@ -441,7 +470,7 @@ macro_rules! impl_writeable_tlv_based {
 /// Attempts to read an unknown type byte result in DecodeError::UnknownRequiredFeature.
 macro_rules! impl_writeable_tlv_based_enum {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
-		{$(($type: expr, $field: ident, $fieldty: ident)),* $(,)*}
+		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
 		impl ::util::ser::Writeable for $st {
