@@ -239,10 +239,10 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
-				let network_graph_ser = self.net_graph_msg_handler.network_graph.read().unwrap();
+				let network_graph_ser = &self.net_graph_msg_handler.network_graph;
 				network_graph_ser.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
-				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
+				assert!(network_graph_deser == self.net_graph_msg_handler.network_graph);
 				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
 					Some(self.chain_source), self.logger, network_graph_deser
 				);
@@ -962,7 +962,7 @@ macro_rules! get_route_and_payment_hash {
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node);
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
 		let route = get_route(&$send_node.node.get_our_node_id(),
-			&net_graph_msg_handler.network_graph.read().unwrap(),
+			&net_graph_msg_handler.network_graph,
 			&$recv_node.node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
@@ -1250,7 +1250,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph,
 		&expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()),
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()), &[],
 		recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
@@ -1265,7 +1265,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {

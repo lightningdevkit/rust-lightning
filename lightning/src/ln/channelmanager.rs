@@ -5517,7 +5517,7 @@ mod tests {
 
 		// First, send a partial MPP payment.
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
@@ -5624,7 +5624,7 @@ mod tests {
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -5652,7 +5652,7 @@ mod tests {
 
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -5704,9 +5704,9 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
                                   nodes[0].logger).unwrap();
 
@@ -5740,9 +5740,9 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
                                   nodes[0].logger).unwrap();
 
@@ -5779,7 +5779,7 @@ mod tests {
 		// Marshall an MPP route.
 		let (_, payment_hash, _) = get_payment_preimage_hash!(&nodes[3]);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
+		let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 		let path = route.paths[0].clone();
 		route.paths.push(path);
 		route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();

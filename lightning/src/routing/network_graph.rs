@@ -58,11 +58,6 @@ pub struct NetworkGraph {
 	nodes: RwLock<BTreeMap<PublicKey, NodeInfo>>,
 }
 
-/// A simple newtype for RwLockReadGuard<'a, NetworkGraph>.
-/// This exists only to make accessing a RwLock<NetworkGraph> possible from
-/// the C bindings, as it can be done directly in Rust code.
-pub struct LockedNetworkGraph<'a>(pub RwLockReadGuard<'a, NetworkGraph>);
-
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
 /// This network graph is then used for routing payments.
@@ -71,7 +66,7 @@ pub struct LockedNetworkGraph<'a>(pub RwLockReadGuard<'a, NetworkGraph>);
 pub struct NetGraphMsgHandler<C: Deref, L: Deref> where C::Target: chain::Access, L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	/// Representation of the payment channel network
-	pub network_graph: RwLock<NetworkGraph>,
+	pub network_graph: NetworkGraph,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
@@ -87,7 +82,7 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	pub fn new(genesis_hash: BlockHash, chain_access: Option<C>, logger: L) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph: RwLock::new(NetworkGraph::new(genesis_hash)),
+			network_graph: NetworkGraph::new(genesis_hash),
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
 			pending_events: Mutex::new(vec![]),
@@ -100,7 +95,7 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	pub fn from_net_graph(chain_access: Option<C>, logger: L, network_graph: NetworkGraph) -> Self {
 		NetGraphMsgHandler {
 			secp_ctx: Secp256k1::verification_only(),
-			network_graph: RwLock::new(network_graph),
+			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
 			pending_events: Mutex::new(vec![]),
@@ -113,14 +108,6 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	/// Add, update or remove the provider would replace the current one.
 	pub fn add_chain_access(&mut self, chain_access: Option<C>) {
 		self.chain_access = chain_access;
-	}
-
-	/// Take a read lock on the network_graph and return it in the C-bindings
-	/// newtype helper. This is likely only useful when called via the C
-	/// bindings as you can call `self.network_graph.read().unwrap()` in Rust
-	/// yourself.
-	pub fn read_locked_graph<'a>(&'a self) -> LockedNetworkGraph<'a> {
-		LockedNetworkGraph(self.network_graph.read().unwrap())
 	}
 
 	/// Returns true when a full routing table sync should be performed with a peer.
@@ -136,14 +123,6 @@ impl<C: Deref, L: Deref> NetGraphMsgHandler<C, L> where C::Target: chain::Access
 	}
 }
 
-impl<'a> LockedNetworkGraph<'a> {
-	/// Get a reference to the NetworkGraph which this read-lock contains.
-	pub fn graph(&self) -> &NetworkGraph {
-		&*self.0
-	}
-}
-
-
 macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr ) => {
 		match $secp_ctx.verify($msg, $sig, $pubkey) {
@@ -155,14 +134,14 @@ macro_rules! secp_verify_sig {
 
 impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> where C::Target: chain::Access, L::Target: Logger {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().update_node_from_announcement(msg, &self.secp_ctx)?;
+		self.network_graph.update_node_from_announcement(msg, &self.secp_ctx)?;
 		Ok(msg.contents.excess_data.len() <=  MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
+		self.network_graph.update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
@@ -172,28 +151,27 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
 				let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
 				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}abled.", msg.contents.short_channel_id, if chan_enabled { "en" } else { "dis" });
-				let _ = self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx);
+				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
 			},
 			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
 				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, short_channel_id);
-				self.network_graph.write().unwrap().close_channel_from_update(short_channel_id, is_permanent);
+				self.network_graph.close_channel_from_update(short_channel_id, is_permanent);
 			},
 			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent } => {
 				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, node_id);
-				self.network_graph.write().unwrap().fail_node(node_id, is_permanent);
+				self.network_graph.fail_node(node_id, is_permanent);
 			},
 		}
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		self.network_graph.write().unwrap().update_channel(msg, &self.secp_ctx)?;
+		self.network_graph.update_channel(msg, &self.secp_ctx)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
-		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
-		let channels = network_graph.get_channels();
+		let channels = self.network_graph.get_channels();
 		let mut iter = channels.range(starting_point..);
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref chan)) = iter.next() {
@@ -220,9 +198,8 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 	}
 
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
-		let network_graph = self.network_graph.read().unwrap();
 		let mut result = Vec::with_capacity(batch_amount as usize);
-		let nodes = network_graph.get_nodes();
+		let nodes = self.network_graph.get_nodes();
 		let mut iter = if let Some(pubkey) = starting_point {
 				let mut iter = nodes.range((*pubkey)..);
 				iter.next();
@@ -272,7 +249,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 		pending_events.push(MessageSendEvent::SendChannelRangeQuery {
 			node_id: their_node_id.clone(),
 			msg: QueryChannelRange {
-				chain_hash: self.network_graph.read().unwrap().genesis_hash,
+				chain_hash: self.network_graph.genesis_hash,
 				first_blocknum,
 				number_of_blocks,
 			},
@@ -334,8 +311,6 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError> {
 		log_debug!(self.logger, "Handling query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks);
 
-		let network_graph = self.network_graph.read().unwrap();
-
 		let inclusive_start_scid = scid_from_parts(msg.first_blocknum as u64, 0, 0);
 
 		// We might receive valid queries with end_blocknum that would overflow SCID conversion.
@@ -343,7 +318,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 		let exclusive_end_scid = scid_from_parts(cmp::min(msg.end_blocknum() as u64, MAX_SCID_BLOCK), 0, 0);
 
 		// Per spec, we must reply to a query. Send an empty message when things are invalid.
-		if msg.chain_hash != network_graph.genesis_hash || inclusive_start_scid.is_err() || exclusive_end_scid.is_err() || msg.number_of_blocks == 0 {
+		if msg.chain_hash != self.network_graph.genesis_hash || inclusive_start_scid.is_err() || exclusive_end_scid.is_err() || msg.number_of_blocks == 0 {
 			let mut pending_events = self.pending_events.lock().unwrap();
 			pending_events.push(MessageSendEvent::SendReplyChannelRange {
 				node_id: their_node_id.clone(),
@@ -365,7 +340,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
 		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
-		for (_, ref chan) in network_graph.get_channels().range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
+		for (_, ref chan) in self.network_graph.get_channels().range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
 				if batches.last().unwrap().len() == batches.last().unwrap().capacity() {
@@ -376,7 +351,6 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 				batch.push(chan_announcement.contents.short_channel_id);
 			}
 		}
-		drop(network_graph);
 
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let batch_count = batches.len();
@@ -731,7 +705,7 @@ impl NetworkGraph {
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
-	pub fn update_node_from_announcement<T: secp256k1::Verification>(&mut self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
+	pub fn update_node_from_announcement<T: secp256k1::Verification>(&self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id);
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
@@ -741,11 +715,11 @@ impl NetworkGraph {
 	/// given node announcement without verifying the associated signatures. Because we aren't
 	/// given the associated signatures here we cannot relay the node announcement to any of our
 	/// peers.
-	pub fn update_node_from_unsigned_announcement(&mut self, msg: &msgs::UnsignedNodeAnnouncement) -> Result<(), LightningError> {
+	pub fn update_node_from_unsigned_announcement(&self, msg: &msgs::UnsignedNodeAnnouncement) -> Result<(), LightningError> {
 		self.update_node_from_announcement_intern(msg, None)
 	}
 
-	fn update_node_from_announcement_intern(&mut self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
+	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
 		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
@@ -781,10 +755,12 @@ impl NetworkGraph {
 	///
 	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_announcement<T: secp256k1::Verification, C: Deref>
-			(&mut self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>, secp_ctx: &Secp256k1<T>)
-			-> Result<(), LightningError>
-			where C::Target: chain::Access {
+	pub fn update_channel_from_announcement<T: secp256k1::Verification, C: Deref>(
+		&self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>, secp_ctx: &Secp256k1<T>
+	) -> Result<(), LightningError>
+	where
+		C::Target: chain::Access,
+	{
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1);
 		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2);
@@ -799,17 +775,21 @@ impl NetworkGraph {
 	///
 	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_unsigned_announcement<C: Deref>
-			(&mut self, msg: &msgs::UnsignedChannelAnnouncement, chain_access: &Option<C>)
-			-> Result<(), LightningError>
-			where C::Target: chain::Access {
+	pub fn update_channel_from_unsigned_announcement<C: Deref>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, chain_access: &Option<C>
+	) -> Result<(), LightningError>
+	where
+		C::Target: chain::Access,
+	{
 		self.update_channel_from_unsigned_announcement_intern(msg, None, chain_access)
 	}
 
-	fn update_channel_from_unsigned_announcement_intern<C: Deref>
-			(&mut self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, chain_access: &Option<C>)
-			-> Result<(), LightningError>
-			where C::Target: chain::Access {
+	fn update_channel_from_unsigned_announcement_intern<C: Deref>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, chain_access: &Option<C>
+	) -> Result<(), LightningError>
+	where
+		C::Target: chain::Access,
+	{
 		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
@@ -909,7 +889,7 @@ impl NetworkGraph {
 	/// If permanent, removes a channel from the local storage.
 	/// May cause the removal of nodes too, if this was their last channel.
 	/// If not permanent, makes channels unavailable for routing.
-	pub fn close_channel_from_update(&mut self, short_channel_id: u64, is_permanent: bool) {
+	pub fn close_channel_from_update(&self, short_channel_id: u64, is_permanent: bool) {
 		let mut channels = self.channels.write().unwrap();
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
@@ -928,7 +908,7 @@ impl NetworkGraph {
 		}
 	}
 
-	fn fail_node(&mut self, _node_id: &PublicKey, is_permanent: bool) {
+	fn fail_node(&self, _node_id: &PublicKey, is_permanent: bool) {
 		if is_permanent {
 			// TODO: Wholly remove the node
 		} else {
@@ -942,18 +922,18 @@ impl NetworkGraph {
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
-	pub fn update_channel<T: secp256k1::Verification>(&mut self, msg: &msgs::ChannelUpdate, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
+	pub fn update_channel<T: secp256k1::Verification>(&self, msg: &msgs::ChannelUpdate, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
 		self.update_channel_intern(&msg.contents, Some(&msg), Some((&msg.signature, secp_ctx)))
 	}
 
 	/// For an already known (from announcement) channel, update info about one of the directions
 	/// of the channel without verifying the associated signatures. Because we aren't given the
 	/// associated signatures here we cannot relay the channel update to any of our peers.
-	pub fn update_channel_unsigned(&mut self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
+	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
 		self.update_channel_intern(msg, None, None::<(&secp256k1::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
 	}
 
-	fn update_channel_intern<T: secp256k1::Verification>(&mut self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
+	fn update_channel_intern<T: secp256k1::Verification>(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
 		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
@@ -1287,7 +1267,7 @@ mod tests {
 		};
 
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
@@ -1339,7 +1319,7 @@ mod tests {
 		};
 
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
@@ -1370,7 +1350,7 @@ mod tests {
 			_ => panic!()
 		};
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
 				Some(channel_entry) => {
 					assert_eq!(channel_entry.features, ChannelFeatures::empty());
@@ -1500,7 +1480,7 @@ mod tests {
 		};
 
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
@@ -1606,7 +1586,7 @@ mod tests {
 
 		{
 			// There is no nodes in the table at the beginning.
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			assert_eq!(network.get_nodes().len(), 0);
 		}
 
@@ -1662,7 +1642,7 @@ mod tests {
 
 		// Non-permanent closing just disables a channel
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
@@ -1680,7 +1660,7 @@ mod tests {
 
 		// Non-permanent closing just disables a channel
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			match network.get_channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
@@ -1698,7 +1678,7 @@ mod tests {
 
 		// Permanent closing deletes a channel
 		{
-			let network = net_graph_msg_handler.network_graph.read().unwrap();
+			let network = &net_graph_msg_handler.network_graph;
 			assert_eq!(network.get_channels().len(), 0);
 			// Nodes are also deleted because there are no associated channels anymore
 			assert_eq!(network.get_nodes().len(), 0);
@@ -2016,7 +1996,7 @@ mod tests {
 			Err(_) => panic!()
 		};
 
-		let network = net_graph_msg_handler.network_graph.write().unwrap();
+		let network = &net_graph_msg_handler.network_graph;
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		assert!(!network.get_nodes().is_empty());
 		assert!(!network.get_channels().is_empty());
