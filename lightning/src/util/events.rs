@@ -130,10 +130,13 @@ pub enum Event {
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
 		/// Any failure information conveyed via the Onion return packet by a node along the failed
-		/// payment route. Should be applied to the [`NetworkGraph`] so that routing decisions can
-		/// take into account the update.
+		/// payment route.
+		///
+		/// Should be applied to the [`NetworkGraph`] so that routing decisions can take into
+		/// account the update. [`NetGraphMsgHandler`] is capable of doing this.
 		///
 		/// [`NetworkGraph`]: crate::routing::network_graph::NetworkGraph
+		/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 		network_update: Option<NetworkUpdate>,
 #[cfg(test)]
 		error_code: Option<u16>,

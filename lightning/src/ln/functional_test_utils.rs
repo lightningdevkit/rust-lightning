@@ -243,8 +243,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				network_graph_ser.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == self.net_graph_msg_handler.network_graph);
-				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					Some(self.chain_source), self.logger, network_graph_deser
+				let net_graph_msg_handler = NetGraphMsgHandler::new(
+					network_graph_deser, Some(self.chain_source), self.logger
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -1440,7 +1440,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
 
 	for i in 0..node_count {
-		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_source.genesis_hash, None, cfgs[i].logger);
+		let network_graph = NetworkGraph::new(cfgs[i].chain_source.genesis_hash);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, cfgs[i].logger);
 		nodes.push(Node{ chain_source: cfgs[i].chain_source,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
