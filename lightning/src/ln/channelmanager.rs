@@ -2822,6 +2822,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash,
 								rejected_by_dest: false,
+								network_update: None,
 #[cfg(test)]
 								error_code: None,
 #[cfg(test)]
@@ -2866,23 +2867,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
-						let (channel_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (channel_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
-						if let Some(update) = channel_update {
-							self.channel_state.lock().unwrap().pending_msg_events.push(
-								events::MessageSendEvent::PaymentFailureNetworkUpdate {
-									update,
-								}
-							);
-						}
 						self.pending_events.lock().unwrap().push(
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
+								network_update,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2897,7 +2892,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							ref data,
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
-						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
+						// TODO: We'd like to generate a NetworkUpdate for temporary
 						// failures here, but that would be insufficient as get_route
 						// generally ignores its view of our own channels as we provide them via
 						// ChannelDetails.
@@ -2907,6 +2902,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
+								network_update: None,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
@@ -4670,7 +4666,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,

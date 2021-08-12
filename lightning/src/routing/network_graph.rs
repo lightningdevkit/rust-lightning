@@ -64,6 +64,52 @@ pub struct ReadOnlyNetworkGraph<'a> {
 	nodes: RwLockReadGuard<'a, BTreeMap<PublicKey, NodeInfo>>,
 }
 
+/// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
+/// return packet by a node along the route. See [BOLT #4] for details.
+///
+/// [BOLT #4]: https://github.com/lightningnetwork/lightning-rfc/blob/master/04-onion-routing.md
+#[derive(Clone, Debug, PartialEq)]
+pub enum NetworkUpdate {
+	/// An error indicating a `channel_update` messages should be applied via
+	/// [`NetworkGraph::update_channel`].
+	ChannelUpdateMessage {
+		/// The update to apply via [`NetworkGraph::update_channel`].
+		msg: ChannelUpdate,
+	},
+	/// An error indicating only that a channel has been closed, which should be applied via
+	/// [`NetworkGraph::close_channel_from_update`].
+	ChannelClosed {
+		/// The short channel id of the closed channel.
+		short_channel_id: u64,
+		/// Whether the channel should be permanently removed or temporarily disabled until a new
+		/// `channel_update` message is received.
+		is_permanent: bool,
+	},
+	/// An error indicating only that a node has failed, which should be applied via
+	/// [`NetworkGraph::fail_node`].
+	NodeFailure {
+		/// The node id of the failed node.
+		node_id: PublicKey,
+		/// Whether the node should be permanently removed from consideration or can be restored
+		/// when a new `channel_update` message is received.
+		is_permanent: bool,
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
+	(0, ChannelUpdateMessage) => {
+		(0, msg, required),
+	},
+	(2, ChannelClosed) => {
+		(0, short_channel_id, required),
+		(2, is_permanent, required),
+	},
+	(4, NodeFailure) => {
+		(0, node_id, required),
+		(2, is_permanent, required),
+	},
+);
+
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
 /// This network graph is then used for routing payments.
@@ -150,24 +196,6 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 		self.network_graph.update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
 		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
-	}
-
-	fn handle_htlc_fail_channel_update(&self, update: &msgs::HTLCFailChannelUpdate) {
-		match update {
-			&msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } => {
-				let chan_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
-				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}abled.", msg.contents.short_channel_id, if chan_enabled { "en" } else { "dis" });
-				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
-			},
-			&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } => {
-				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, short_channel_id);
-				self.network_graph.close_channel_from_update(short_channel_id, is_permanent);
-			},
-			&msgs::HTLCFailChannelUpdate::NodeFailure { ref node_id, is_permanent } => {
-				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", if is_permanent { "Removing" } else { "Disabling" }, node_id);
-				self.network_graph.fail_node(node_id, is_permanent);
-			},
-		}
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
@@ -898,7 +926,8 @@ impl NetworkGraph {
 		}
 	}
 
-	fn fail_node(&self, _node_id: &PublicKey, is_permanent: bool) {
+	/// Marks a node in the graph as failed.
+	pub fn fail_node(&self, _node_id: &PublicKey, is_permanent: bool) {
 		if is_permanent {
 			// TODO: Wholly remove the node
 		} else {
@@ -1090,7 +1119,7 @@ mod tests {
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, HTLCFailChannelUpdate,
+		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, 
 		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
@@ -1671,12 +1700,7 @@ mod tests {
 			};
 		}
 
-		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
-			short_channel_id,
-			is_permanent: false
-		};
-
-		net_graph_msg_handler.handle_htlc_fail_channel_update(&channel_close_msg);
+		net_graph_msg_handler.network_graph.close_channel_from_update(short_channel_id, false);
 
 		// Non-permanent closing just disables a channel
 		{
@@ -1689,12 +1713,7 @@ mod tests {
 			};
 		}
 
-		let channel_close_msg = HTLCFailChannelUpdate::ChannelClosed {
-			short_channel_id,
-			is_permanent: true
-		};
-
-		net_graph_msg_handler.handle_htlc_fail_channel_update(&channel_close_msg);
+		net_graph_msg_handler.network_graph.close_channel_from_update(short_channel_id, true);
 
 		// Permanent closing deletes a channel
 		{
@@ -1703,7 +1722,7 @@ mod tests {
 			// Nodes are also deleted because there are no associated channels anymore
 			assert_eq!(network.read_only().nodes().len(), 0);
 		}
-		// TODO: Test HTLCFailChannelUpdate::NodeFailure, which is not implemented yet.
+		// TODO: Test NetworkUpdate::NodeFailure, which is not implemented yet.
 	}
 
 	#[test]

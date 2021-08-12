@@ -594,7 +594,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						},
 						events::MessageSendEvent::SendFundingLocked { .. } => continue,
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
-						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => continue,
 						events::MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
 							assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
@@ -727,10 +726,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => {
 							// Can be generated as a reestablish response
 						},
-						events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {
-							// Can be generated due to a payment forward being rejected due to a
-							// channel having previously failed a monitor update
-						},
 						events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 							// When we reconnect we will resend a channel_update to make sure our
 							// counterparty has the latest parameters for receiving payments
@@ -769,7 +764,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
 							},
@@ -787,7 +781,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendFundingLocked { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
-							events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
 							},

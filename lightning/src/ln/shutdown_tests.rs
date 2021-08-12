@@ -13,6 +13,7 @@ use chain::keysinterface::KeysInterface;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::PaymentSendFailure;
+use routing::network_graph::NetworkUpdate;
 use routing::router::get_route;
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -192,18 +193,11 @@ fn htlc_fail_async_shutdown() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
 
-	expect_payment_failed!(nodes[0], our_payment_hash, false);
+	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2);
-	match msg_events[0] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent }} => {
-			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
-			assert!(is_permanent);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	let node_0_closing_signed = match msg_events[1] {
+	assert_eq!(msg_events.len(), 1);
+	let node_0_closing_signed = match msg_events[0] {
 		MessageSendEvent::SendClosingSigned { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			(*msg).clone()

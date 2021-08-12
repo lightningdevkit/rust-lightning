@@ -1036,22 +1036,27 @@ macro_rules! expect_payment_forwarded {
 }
 
 #[cfg(test)]
-macro_rules! expect_payment_failure_chan_update {
-	($node: expr, $scid: expr, $chan_closed: expr) => {
-		let events = $node.node.get_and_clear_pending_msg_events();
+macro_rules! expect_payment_failed_with_update {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $scid: expr, $chan_closed: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
-				match update {
-					&HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } if !$chan_closed => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
+				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
+				assert!(error_code.is_some(), "expected error_code.is_some() = true");
+				assert!(error_data.is_some(), "expected error_data.is_some() = true");
+				match network_update {
+					&Some(NetworkUpdate::ChannelUpdateMessage { ref msg }) if !$chan_closed => {
 						assert_eq!(msg.contents.short_channel_id, $scid);
 						assert_eq!(msg.contents.flags & 2, 0);
 					},
-					&HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } if $chan_closed => {
+					&Some(NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if $chan_closed => {
 						assert_eq!(short_channel_id, $scid);
 						assert!(is_permanent);
 					},
-					_ => panic!("Unexpected update type"),
+					Some(_) => panic!("Unexpected update type"),
+					None => panic!("Expected update"),
 				}
 			},
 			_ => panic!("Unexpected event"),
@@ -1065,7 +1070,7 @@ macro_rules! expect_payment_failed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");

@@ -745,35 +745,6 @@ pub struct CommitmentUpdate {
 	pub commitment_signed: CommitmentSigned,
 }
 
-/// The information we received from a peer along the route of a payment we originated. This is
-/// returned by ChannelMessageHandler::handle_update_fail_htlc to be passed into
-/// RoutingMessageHandler::handle_htlc_fail_channel_update to update our network map.
-#[derive(Clone, Debug, PartialEq)]
-pub enum HTLCFailChannelUpdate {
-	/// We received an error which included a full ChannelUpdate message.
-	ChannelUpdateMessage {
-		/// The unwrapped message we received
-		msg: ChannelUpdate,
-	},
-	/// We received an error which indicated only that a channel has been closed
-	ChannelClosed {
-		/// The short_channel_id which has now closed.
-		short_channel_id: u64,
-		/// when this true, this channel should be permanently removed from the
-		/// consideration. Otherwise, this channel can be restored as new channel_update is received
-		is_permanent: bool,
-	},
-	/// We received an error which indicated only that a node has failed
-	NodeFailure {
-		/// The node_id that has failed.
-		node_id: PublicKey,
-		/// when this true, node should be permanently removed from the
-		/// consideration. Otherwise, the channels connected to this node can be
-		/// restored as new channel_update is received
-		is_permanent: bool,
-	}
-}
-
 /// Messages could have optional fields to use with extended features
 /// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
 /// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
@@ -868,8 +839,6 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming channel_update message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, LightningError>;
-	/// Handle some updates to the route graph that we learned due to an outbound failed payment.
-	fn handle_htlc_fail_channel_update(&self, update: &HTLCFailChannelUpdate);
 	/// Gets a subset of the channel announcements and updates required to dump our routing table
 	/// to a remote node, starting at the short_channel_id indicated by starting_point and
 	/// including the batch_amount entries immediately higher in numerical value than starting_point.

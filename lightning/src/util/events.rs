@@ -14,9 +14,10 @@
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 
+use chain::keysinterface::SpendableOutputDescriptor;
 use ln::msgs;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use chain::keysinterface::SpendableOutputDescriptor;
+use routing::network_graph::NetworkUpdate;
 use util::ser::{Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 
 use bitcoin::blockdata::script::Script;
@@ -128,6 +129,12 @@ pub enum Event {
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
 		rejected_by_dest: bool,
+		/// Any failure information conveyed via the Onion return packet by a node along the failed
+		/// payment route. Should be applied to the [`NetworkGraph`] so that routing decisions can
+		/// take into account the update.
+		///
+		/// [`NetworkGraph`]: crate::routing::network_graph::NetworkGraph
+		network_update: Option<NetworkUpdate>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -211,7 +218,7 @@ impl Writeable for Event {
 					(0, payment_preimage, required),
 				});
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest,
+			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -224,6 +231,7 @@ impl Writeable for Event {
 				error_data.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
+					(1, network_update, option),
 					(2, rejected_by_dest, required),
 				});
 			},
@@ -307,13 +315,16 @@ impl MaybeReadable for Event {
 					let error_data = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut rejected_by_dest = false;
+					let mut network_update = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
+						(1, network_update, ignorable),
 						(2, rejected_by_dest, required),
 					});
 					Ok(Some(Event::PaymentFailed {
 						payment_hash,
 						rejected_by_dest,
+						network_update,
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]
@@ -484,12 +495,6 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The action which should be taken.
 		action: msgs::ErrorAction
-	},
-	/// When a payment fails we may receive updates back from the hop where it failed. In such
-	/// cases this event is generated so that we can inform the network graph of this information.
-	PaymentFailureNetworkUpdate {
-		/// The channel/node update which should be sent to NetGraphMsgHandler
-		update: msgs::HTLCFailChannelUpdate,
 	},
 	/// Query a peer for channels with funding transaction UTXOs in a block range.
 	SendChannelRangeQuery {

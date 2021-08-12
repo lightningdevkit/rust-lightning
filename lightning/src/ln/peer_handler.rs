@@ -66,7 +66,6 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
-	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) ->
 		Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { Vec::new() }
 	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> { Vec::new() }
@@ -1317,9 +1316,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 								log_pubkey!(node_id), msg.contents.short_channel_id);
 						let peer = get_peer_for_forwarding!(node_id);
 						peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encode_msg!(msg)));
-					},
-					MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
-						self.message_handler.route_handler.handle_htlc_fail_channel_update(update);
 					},
 					MessageSendEvent::HandleError { ref node_id, ref action } => {
 						match *action {

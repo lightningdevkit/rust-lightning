@@ -12,8 +12,9 @@
 use chain::channelmonitor::ANTI_REORG_DELAY;
 use ln::{PaymentPreimage, PaymentHash};
 use ln::features::InitFeatures;
-use ln::msgs::{ChannelMessageHandler, HTLCFailChannelUpdate, ErrorAction};
+use ln::msgs::{ChannelMessageHandler, ErrorAction};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use routing::network_graph::NetworkUpdate;
 use routing::router::get_route;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -76,6 +77,5 @@ fn chanmon_fail_from_stale_commitment() {
 
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, true, true);
-	expect_payment_failed!(nodes[0], payment_hash, false);
-	expect_payment_failure_chan_update!(nodes[0], update_a.contents.short_channel_id, true);
+	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
 }
