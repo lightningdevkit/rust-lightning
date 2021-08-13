@@ -834,3 +834,95 @@ fn test_closing_signed_reinit_timeout() {
 	do_test_closing_signed_reinit_timeout(TimeoutStep::AfterClosingSigned);
 	do_test_closing_signed_reinit_timeout(TimeoutStep::NoTimeout);
 }
+
+fn do_simple_legacy_shutdown_test(high_initiator_fee: bool) {
+	// A simpe test of the legacy shutdown fee negotiation logic.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	if high_initiator_fee {
+		// If high_initiator_fee is set, set nodes[0]'s feerate significantly higher. This
+		// shouldn't impact the flow at all given nodes[1] will happily accept the higher fee.
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 10;
+	}
+
+	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
+
+	let mut node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	node_0_closing_signed.fee_range = None;
+	if high_initiator_fee {
+		assert!(node_0_closing_signed.fee_satoshis > 500);
+	} else {
+		assert!(node_0_closing_signed.fee_satoshis < 500);
+	}
+
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+	let (_, mut node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	node_1_closing_signed.as_mut().unwrap().fee_range = None;
+
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed.unwrap());
+	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	assert!(node_0_none.is_none());
+}
+
+#[test]
+fn simple_legacy_shutdown_test() {
+	do_simple_legacy_shutdown_test(false);
+	do_simple_legacy_shutdown_test(true);
+}
+
+#[test]
+fn simple_target_feerate_shutdown() {
+	// Simple test of target in `close_channel_with_target_feerate`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_id = OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id();
+
+	nodes[0].node.close_channel_with_target_feerate(&chan_id, 253 * 10).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.close_channel_with_target_feerate(&chan_id, 253 * 5).unwrap();
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_1_shutdown);
+
+	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+	let (_, node_1_closing_signed_opt) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	let node_1_closing_signed = node_1_closing_signed_opt.unwrap();
+
+	// nodes[1] was passed a target which was larger than the current channel feerate, which it
+	// should ignore in favor of the channel fee, as there is no use demanding a minimum higher
+	// than what will be paid on a force-close transaction. Note that we have to consider rounding,
+	// so only check that we're within 10 sats.
+	assert!(node_0_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis >=
+	        node_1_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis * 10 - 5);
+	assert!(node_0_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis <=
+	        node_1_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis * 10 + 5);
+
+	// Further, because nodes[0]'s target fee is larger than the `Normal` fee estimation plus our
+	// force-closure-avoidance buffer, min should equal max, and the nodes[1]-selected fee should
+	// be the nodes[0] only available fee.
+	assert_eq!(node_0_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis,
+	           node_0_closing_signed.fee_range.as_ref().unwrap().max_fee_satoshis);
+	assert_eq!(node_0_closing_signed.fee_range.as_ref().unwrap().min_fee_satoshis,
+	           node_0_closing_signed.fee_satoshis);
+	assert_eq!(node_0_closing_signed.fee_satoshis, node_1_closing_signed.fee_satoshis);
+
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+	let (_, node_0_none) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	assert!(node_0_none.is_none());
+}
