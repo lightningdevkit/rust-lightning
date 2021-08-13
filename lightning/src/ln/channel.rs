@@ -63,6 +63,21 @@ pub struct ChannelValueStat {
 	pub counterparty_dust_limit_msat: u64,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum FeeUpdateState {
+	// Inbound states mirroring InboundHTLCState
+	RemoteAnnounced,
+	AwaitingRemoteRevokeToAnnounce,
+	// Note that we do not have a AwaitingAnnouncedRemoteRevoke variant here as it is universally
+	// handled the same as `Committed`, with the only exception in `InboundHTLCState` being the
+	// distinction of when we allow ourselves to forward the HTLC. Because we aren't "forwarding"
+	// the fee update anywhere, we can simply consider the fee update `Committed` immediately
+	// instead of setting it to AwaitingAnnouncedRemoteRevoke.
+
+	// Outbound state can only be `LocalAnnounced` or `Committed`
+	Outbound,
+}
+
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
@@ -341,6 +356,22 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// If the majority of the channels funds are to the fundee and the initiator holds only just
+/// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
+/// initiator controls the feerate, if they then go to increase the channel fee, they may have no
+/// balance but the fundee is unable to send a payment as the increase in fee more than drains
+/// their reserve value. Thus, neither side can send a new HTLC and the channel becomes useless.
+/// Thus, before sending an HTLC when we are the initiator, we check that the feerate can increase
+/// by this multiple without hitting this case, before sending.
+/// This multiple is effectively the maximum feerate "jump" we expect until more HTLCs flow over
+/// the channel. Sadly, there isn't really a good number for this - if we expect to have no new
+/// HTLCs for days we may need this to suffice for feerate increases across days, but that may
+/// leave the channel less usable as we hold a bigger reserve.
+#[cfg(fuzzing)]
+pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
+#[cfg(not(fuzzing))]
+const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -404,7 +435,7 @@ pub(super) struct Channel<Signer: Sign> {
 	// revoke_and_ack is received and new commitment_signed is generated to be
 	// sent to the funder. Otherwise, the pending value is removed when receiving
 	// commitment_signed.
-	pending_update_fee: Option<u32>,
+	pending_update_fee: Option<(u32, FeeUpdateState)>,
 	// update_fee() during ChannelState::AwaitingRemoteRevoke is hold in
 	// holdina_cell_update_fee then moved to pending_udpate_fee when revoke_and_ack
 	// is received. holding_cell_update_fee is updated when there are additional
@@ -719,7 +750,12 @@ impl<Signer: Sign> Channel<Signer> {
 		if feerate_per_kw < lower_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
 		}
-		let upper_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64  * 2;
+		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
+		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
+		// We generally don't care too much if they set the feerate to something very high, but it
+		// could result in the channel being useless due to everything being dust.
+		let upper_limit = cmp::max(250 * 25,
+			fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
 		if feerate_per_kw as u64 > upper_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
 		}
@@ -987,10 +1023,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	/// Returns (the transaction info, the number of HTLC outputs which were present in the
 	/// transaction, the list of HTLCs which were not ignored when building the transaction).
-	/// Note that below-dust HTLCs are included in the third return value, but not the second, and
-	/// sources are provided only for outbound HTLCs in the third return value.
+	/// Note that below-dust HTLCs are included in the fourth return value, but not the third, and
+	/// sources are provided only for outbound HTLCs in the fourth return value.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, feerate_per_kw: u32, logger: &L) -> (CommitmentTransaction, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> (CommitmentTransaction, u32, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
 		let mut included_non_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(num_htlcs);
@@ -999,6 +1035,19 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut remote_htlc_total_msat = 0;
 		let mut local_htlc_total_msat = 0;
 		let mut value_to_self_msat_offset = 0;
+
+		let mut feerate_per_kw = self.feerate_per_kw;
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			if match update_state {
+				// Note that these match the inclusion criteria when scanning
+				// pending_inbound_htlcs below.
+				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.is_outbound()); !generated_by_local },
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => { debug_assert!(!self.is_outbound()); !generated_by_local },
+				FeeUpdateState::Outbound => { assert!(self.is_outbound());  generated_by_local },
+			} {
+				feerate_per_kw = feerate;
+			}
+		}
 
 		log_trace!(logger, "Building commitment transaction number {} (really {} xor {}) for channel {} for {}, generated by {} with fee {}...",
 			commitment_number, (INITIAL_COMMITMENT_NUMBER - commitment_number),
@@ -1160,7 +1209,7 @@ impl<Signer: Sign> Channel<Signer> {
 		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
 		htlcs_included.append(&mut included_dust_htlcs);
 
-		(tx, num_nondust_htlcs, htlcs_included)
+		(tx, feerate_per_kw, num_nondust_htlcs, htlcs_included)
 	}
 
 	#[inline]
@@ -1213,6 +1262,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		assert!(self.pending_inbound_htlcs.is_empty());
 		assert!(self.pending_outbound_htlcs.is_empty());
+		assert!(self.pending_update_fee.is_none());
 		let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
 		let mut total_fee_satoshis = proposed_total_fee_satoshis;
@@ -1638,7 +1688,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_script = self.get_funding_redeemscript();
 
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, self.feerate_per_kw, logger).0;
+		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, logger).0;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
@@ -1652,7 +1702,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let counterparty_keys = self.build_remote_transaction_keys()?;
-		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).0;
 
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -1760,7 +1810,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_script = self.get_funding_redeemscript();
 
 		let counterparty_keys = self.build_remote_transaction_keys()?;
-		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).0;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
@@ -1768,7 +1818,7 @@ impl<Signer: Sign> Channel<Signer> {
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
 		let holder_signer = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_signer, true, false, self.feerate_per_kw, logger).0;
+		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).0;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
@@ -2339,16 +2389,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number).map_err(|e| (None, e))?;
 
-		let mut update_fee = false;
-		let feerate_per_kw = if !self.is_outbound() && self.pending_update_fee.is_some() {
-			update_fee = true;
-			self.pending_update_fee.unwrap()
-		} else {
-			self.feerate_per_kw
-		};
-
-		let (num_htlcs, mut htlcs_cloned, commitment_tx, commitment_txid) = {
-			let commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, feerate_per_kw, logger);
+		let (num_htlcs, mut htlcs_cloned, commitment_tx, commitment_txid, feerate_per_kw) = {
+			let commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, logger);
 			let commitment_txid = {
 				let trusted_tx = commitment_tx.0.trust();
 				let bitcoin_tx = trusted_tx.built_transaction();
@@ -2363,12 +2405,17 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 				bitcoin_tx.txid
 			};
-			let htlcs_cloned: Vec<_> = commitment_tx.2.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
-			(commitment_tx.1, htlcs_cloned, commitment_tx.0, commitment_txid)
+			let htlcs_cloned: Vec<_> = commitment_tx.3.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
+			(commitment_tx.2, htlcs_cloned, commitment_tx.0, commitment_txid, commitment_tx.1)
 		};
 
+		// If our counterparty updated the channel fee in this commitment transaction, check that
+		// they can actually afford the new fee now.
+		let update_fee = if let Some((_, update_state)) = self.pending_update_fee {
+			update_state == FeeUpdateState::RemoteAnnounced
+		} else { false };
+		if update_fee { debug_assert!(!self.is_outbound()); }
 		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
-		//If channel fee was updated by funder confirm funder can afford the new fee rate when applied to the current local commitment transaction
 		if update_fee {
 			let counterparty_reserve_we_require = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
 			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + counterparty_reserve_we_require {
@@ -2432,16 +2479,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
-		if !self.is_outbound() {
-			if let Some(fee_update) = self.pending_update_fee {
-				self.feerate_per_kw = fee_update;
-				// We later use the presence of pending_update_fee to indicate we should generate a
-				// commitment_signed upon receipt of revoke_and_ack, so we can only set it to None
-				// if we're not awaiting a revoke (ie will send a commitment_signed now).
-				if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) == 0 {
-					need_commitment = true;
-					self.pending_update_fee = None;
-				}
+		if let &mut Some((_, ref mut update_state)) = &mut self.pending_update_fee {
+			if *update_state == FeeUpdateState::RemoteAnnounced {
+				*update_state = FeeUpdateState::AwaitingRemoteRevokeToAnnounce;
+				need_commitment = true;
 			}
 		}
 
@@ -2622,8 +2663,9 @@ impl<Signer: Sign> Channel<Signer> {
 			if update_add_htlcs.is_empty() && update_fulfill_htlcs.is_empty() && update_fail_htlcs.is_empty() && self.holding_cell_update_fee.is_none() {
 				return Ok((None, htlcs_to_fail));
 			}
-			let update_fee = if let Some(feerate) = self.holding_cell_update_fee {
-				self.pending_update_fee = self.holding_cell_update_fee.take();
+			let update_fee = if let Some(feerate) = self.holding_cell_update_fee.take() {
+				assert!(self.is_outbound());
+				self.pending_update_fee = Some((feerate, FeeUpdateState::Outbound));
 				Some(msgs::UpdateFee {
 					channel_id: self.channel_id,
 					feerate_per_kw: feerate as u32,
@@ -2807,21 +2849,22 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		self.value_to_self_msat = (self.value_to_self_msat as i64 + value_to_self_msat_diff) as u64;
 
-		if self.is_outbound() {
-			if let Some(feerate) = self.pending_update_fee.take() {
-				self.feerate_per_kw = feerate;
-			}
-		} else {
-			if let Some(feerate) = self.pending_update_fee {
-				// Because a node cannot send two commitment_signeds in a row without getting a
-				// revoke_and_ack from us (as it would otherwise not know the per_commitment_point
-				// it should use to create keys with) and because a node can't send a
-				// commitment_signed without changes, checking if the feerate is equal to the
-				// pending feerate update is sufficient to detect require_commitment.
-				if feerate == self.feerate_per_kw {
-					require_commitment = true;
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			match update_state {
+				FeeUpdateState::Outbound => {
+					debug_assert!(self.is_outbound());
+					log_trace!(logger, " ...promoting outbound fee update {} to Committed", feerate);
+					self.feerate_per_kw = feerate;
 					self.pending_update_fee = None;
-				}
+				},
+				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.is_outbound()); },
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
+					debug_assert!(!self.is_outbound());
+					log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
+					require_commitment = true;
+					self.feerate_per_kw = feerate;
+					self.pending_update_fee = None;
+				},
 			}
 		}
 
@@ -2905,13 +2948,13 @@ impl<Signer: Sign> Channel<Signer> {
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
 		}
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
 			self.holding_cell_update_fee = Some(feerate_per_kw);
 			return None;
 		}
 
 		debug_assert!(self.pending_update_fee.is_none());
-		self.pending_update_fee = Some(feerate_per_kw);
+		self.pending_update_fee = Some((feerate_per_kw, FeeUpdateState::Outbound));
 
 		Some(msgs::UpdateFee {
 			channel_id: self.channel_id,
@@ -2971,6 +3014,13 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		});
 		self.next_counterparty_htlc_id -= inbound_drop_count;
+
+		if let Some((_, update_state)) = self.pending_update_fee {
+			if update_state == FeeUpdateState::RemoteAnnounced {
+				debug_assert!(!self.is_outbound());
+				self.pending_update_fee = None;
+			}
+		}
 
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if let OutboundHTLCState::RemoteRemoved(_) = htlc.state {
@@ -3066,8 +3116,27 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
-		self.pending_update_fee = Some(msg.feerate_per_kw);
+		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate();
+
+		self.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.update_time_counter += 1;
+		// If the feerate has increased over the previous dust buffer (note that
+		// `get_dust_buffer_feerate` considers the `pending_update_fee` status), check that we
+		// won't be pushed over our dust exposure limit by the feerate increase.
+		if feerate_over_dust_buffer {
+			let inbound_stats = self.get_inbound_pending_htlc_stats();
+			let outbound_stats = self.get_outbound_pending_htlc_stats();
+			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+			if holder_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+					msg.feerate_per_kw, holder_tx_dust_exposure)));
+			}
+			if counterparty_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+					msg.feerate_per_kw, counterparty_tx_dust_exposure)));
+			}
+		}
 		Ok(())
 	}
 
@@ -3129,11 +3198,18 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		log_trace!(logger, "Regenerated latest commitment update in channel {} with {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
-				log_bytes!(self.channel_id()), update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
+		let update_fee = if self.is_outbound() && self.pending_update_fee.is_some() {
+			Some(msgs::UpdateFee {
+				channel_id: self.channel_id(),
+				feerate_per_kw: self.pending_update_fee.unwrap().0,
+			})
+		} else { None };
+
+		log_trace!(logger, "Regenerated latest commitment update in channel {} with{} {} update_adds, {} update_fulfills, {} update_fails, and {} update_fail_malformeds",
+				log_bytes!(self.channel_id()), if update_fee.is_some() { " update_fee," } else { "" },
+				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
-			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs,
-			update_fee: None,
+			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
 			commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 		}
 	}
@@ -3622,7 +3698,6 @@ impl<Signer: Sign> Channel<Signer> {
 		self.config.max_dust_htlc_exposure_msat
 	}
 
-	#[cfg(test)]
 	pub fn get_feerate(&self) -> u32 {
 		self.feerate_per_kw
 	}
@@ -3633,7 +3708,11 @@ impl<Signer: Sign> Channel<Signer> {
 		// whichever is higher. This ensures that we aren't suddenly exposed to significantly
 		// more dust balance if the feerate increases when we have several HTLCs pending
 		// which are near the dust limit.
-		cmp::max(2530, self.feerate_per_kw * 1250 / 1000)
+		let mut feerate_per_kw = self.feerate_per_kw;
+		if let Some((feerate, _)) = self.pending_update_fee {
+			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
+		}
+		cmp::max(2530, feerate_per_kw * 1250 / 1000)
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
@@ -4034,7 +4113,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
-		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, self.feerate_per_kw, logger).0;
+		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).0;
 		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
@@ -4327,7 +4406,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// `2 *` and extra HTLC are for the fee spike buffer.
 		let commit_tx_fee_msat = if self.is_outbound() {
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
-			2 * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
+			FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
 		} else { 0 };
 		if pending_value_to_self_msat - amount_msat < commit_tx_fee_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", pending_value_to_self_msat, commit_tx_fee_msat)));
@@ -4391,7 +4470,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32)) == (ChannelState::MonitorUpdateFailed as u32) {
 			panic!("Cannot create commitment tx while awaiting monitor update unfreeze, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
-		let mut have_updates = self.pending_update_fee.is_some();
+		let mut have_updates = self.is_outbound() && self.pending_update_fee.is_some();
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				have_updates = true;
@@ -4411,6 +4490,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 	/// Only fails in case of bad keys
 	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
 		// is acceptable.
@@ -4419,6 +4499,7 @@ impl<Signer: Sign> Channel<Signer> {
 				Some(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info.clone()))
 			} else { None };
 			if let Some(state) = new_state {
+				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 				htlc.state = state;
 			}
 		}
@@ -4426,7 +4507,16 @@ impl<Signer: Sign> Channel<Signer> {
 			if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
 				Some(fail_reason.take())
 			} else { None } {
+				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
 				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
+			}
+		}
+		if let Some((feerate, update_state)) = self.pending_update_fee {
+			if update_state == FeeUpdateState::AwaitingRemoteRevokeToAnnounce {
+				debug_assert!(!self.is_outbound());
+				log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce fee update {} to Committed", feerate);
+				self.feerate_per_kw = feerate;
+				self.pending_update_fee = None;
 			}
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
@@ -4458,15 +4548,9 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
 	/// when we shouldn't change HTLC/channel state.
 	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
-		let mut feerate_per_kw = self.feerate_per_kw;
-		if let Some(feerate) = self.pending_update_fee {
-			if self.is_outbound() {
-				feerate_per_kw = feerate;
-			}
-		}
-
 		let counterparty_keys = self.build_remote_transaction_keys()?;
-		let counterparty_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, feerate_per_kw, logger);
+		let counterparty_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
+		let feerate_per_kw = counterparty_commitment_tx.1;
 		let counterparty_commitment_txid = counterparty_commitment_tx.0.trust().txid();
 		let (signature, htlc_signatures);
 
@@ -4481,7 +4565,7 @@ impl<Signer: Sign> Channel<Signer> {
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
-							let actual_fee = self.commit_tx_fee_msat(counterparty_commitment_tx.1);
+							let actual_fee = self.commit_tx_fee_msat(counterparty_commitment_tx.2);
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -4489,8 +4573,8 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		{
-			let mut htlcs = Vec::with_capacity(counterparty_commitment_tx.2.len());
-			for &(ref htlc, _) in counterparty_commitment_tx.2.iter() {
+			let mut htlcs = Vec::with_capacity(counterparty_commitment_tx.3.len());
+			for &(ref htlc, _) in counterparty_commitment_tx.3.iter() {
 				htlcs.push(htlc);
 			}
 
@@ -4517,7 +4601,7 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			signature,
 			htlc_signatures,
-		}, (counterparty_commitment_txid, counterparty_commitment_tx.2)))
+		}, (counterparty_commitment_txid, counterparty_commitment_tx.3)))
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and creates a signed commitment transaction
@@ -4858,7 +4942,14 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			fail_reason.write(writer)?;
 		}
 
-		self.pending_update_fee.write(writer)?;
+		if self.is_outbound() {
+			self.pending_update_fee.map(|(a, _)| a).write(writer)?;
+		} else if let Some((feerate, FeeUpdateState::AwaitingRemoteRevokeToAnnounce)) = self.pending_update_fee {
+			// As for inbound HTLCs, if the update was only announced and never committed, drop it.
+			Some(feerate).write(writer)?;
+		} else {
+			None::<u32>.write(writer)?;
+		}
 		self.holding_cell_update_fee.write(writer)?;
 
 		self.next_holder_htlc_id.write(writer)?;
@@ -5073,7 +5164,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			monitor_pending_failures.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
 		}
 
-		let pending_update_fee = Readable::read(reader)?;
+		let pending_update_fee_value: Option<u32> = Readable::read(reader)?;
+
 		let holding_cell_update_fee = Readable::read(reader)?;
 
 		let next_holder_htlc_id = Readable::read(reader)?;
@@ -5125,7 +5217,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let channel_parameters = Readable::read(reader)?;
+		let channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
 		let funding_transaction = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -5147,6 +5239,16 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 				assert!(historical_inbound_htlc_fulfills.insert(Readable::read(reader)?));
 			}
 		}
+
+		let pending_update_fee = if let Some(feerate) = pending_update_fee_value {
+			Some((feerate, if channel_parameters.is_outbound_from_holder {
+				FeeUpdateState::Outbound
+			} else {
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce
+			}))
+		} else {
+			None
+		};
 
 		let mut announcement_sigs = None;
 		read_tlv_fields!(reader, {
@@ -5686,9 +5788,9 @@ mod tests {
 				$( { $htlc_idx: expr, $counterparty_htlc_sig_hex: expr, $htlc_sig_hex: expr, $htlc_tx_hex: expr } ), *
 			} ) => { {
 				let (commitment_tx, htlcs): (_, Vec<HTLCOutputInCommitment>) = {
-					let mut res = chan.build_commitment_transaction(0xffffffffffff - 42, &keys, true, false, chan.feerate_per_kw, &logger);
+					let mut res = chan.build_commitment_transaction(0xffffffffffff - 42, &keys, true, false, &logger);
 
-					let htlcs = res.2.drain(..)
+					let htlcs = res.3.drain(..)
 						.filter_map(|(htlc, _)| if htlc.transaction_output_index.is_some() { Some(htlc) } else { None })
 						.collect();
 					(res.0, htlcs)

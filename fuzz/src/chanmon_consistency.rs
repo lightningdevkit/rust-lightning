@@ -37,6 +37,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget,
 use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
@@ -58,16 +59,27 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
-use std::cmp::Ordering;
+use std::cmp::{self, Ordering};
 use std::collections::{HashSet, hash_map, HashMap};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
 
-struct FuzzEstimator {}
+const MAX_FEE: u32 = 10_000;
+struct FuzzEstimator {
+	ret_val: atomic::AtomicU32,
+}
 impl FeeEstimator for FuzzEstimator {
-	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
-		253
+	fn get_est_sat_per_1000_weight(&self, conf_target: ConfirmationTarget) -> u32 {
+		// We force-close channels if our counterparty sends us a feerate which is a small multiple
+		// of our HighPriority fee estimate or smaller than our Background fee estimate. Thus, we
+		// always return a HighPriority feerate here which is >= the maximum Normal feerate and a
+		// Background feerate which is <= the minimum Normal feerate.
+		match conf_target {
+			ConfirmationTarget::HighPriority => MAX_FEE,
+			ConfirmationTarget::Background => 253,
+			ConfirmationTarget::Normal => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
+		}
 	}
 }
 
@@ -132,7 +144,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		};
 		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
 			read(&mut Cursor::new(&map_entry.get().1), &*self.keys).unwrap().1;
-		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &&FuzzEstimator{}, &self.logger).unwrap();
+		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
@@ -334,14 +346,13 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let fee_est = Arc::new(FuzzEstimator{});
 	let broadcast = Arc::new(TestBroadcaster{});
 
 	macro_rules! make_node {
-		($node_id: expr) => { {
+		($node_id: expr, $fee_estimator: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), revoked_commitments: Mutex::new(HashMap::new()) });
-			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{}), Arc::clone(&keys_manager)));
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(), Arc::new(TestPersister{}), Arc::clone(&keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
@@ -351,16 +362,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				network,
 				best_block: BestBlock::from_genesis(network),
 			};
-			(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params),
 			monitor, keys_manager)
 		} }
 	}
 
 	macro_rules! reload_node {
-		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr) => { {
+		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr, $fee_estimator: expr) => { {
 		    let keys_manager = Arc::clone(& $keys_manager);
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), fee_est.clone(), Arc::new(TestPersister{}), Arc::clone(& $keys_manager)));
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(), Arc::new(TestPersister{}), Arc::clone(& $keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
@@ -379,7 +390,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 			let read_args = ChannelManagerReadArgs {
 				keys_manager,
-				fee_estimator: fee_est.clone(),
+				fee_estimator: $fee_estimator.clone(),
 				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
 				logger,
@@ -497,11 +508,18 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		} }
 	}
 
+	let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
+	let mut last_htlc_clear_fee_a =  253;
+	let fee_est_b = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
+	let mut last_htlc_clear_fee_b =  253;
+	let fee_est_c = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
+	let mut last_htlc_clear_fee_c =  253;
+
 	// 3 nodes is enough to hit all the possible cases, notably unknown-source-unknown-dest
 	// forwarding.
-	let (node_a, mut monitor_a, keys_manager_a) = make_node!(0);
-	let (node_b, mut monitor_b, keys_manager_b) = make_node!(1);
-	let (node_c, mut monitor_c, keys_manager_c) = make_node!(2);
+	let (node_a, mut monitor_a, keys_manager_a) = make_node!(0, fee_est_a);
+	let (node_b, mut monitor_b, keys_manager_b) = make_node!(1, fee_est_b);
+	let (node_c, mut monitor_c, keys_manager_c) = make_node!(2, fee_est_c);
 
 	let mut nodes = [node_a, node_b, node_c];
 
@@ -637,10 +655,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					had_events = true;
 					match event {
 						events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
-									assert!(update_fee.is_none());
 									for update_add in update_add_htlcs.iter() {
+										out.locked_write(format!("Delivering update_add_htlc to node {}.\n", idx).as_bytes());
 										if !$corrupt_forward {
 											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), update_add);
 										} else {
@@ -655,13 +673,20 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fulfill_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), update_fulfill);
 									}
 									for update_fail in update_fail_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fail_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
+										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {}.\n", idx).as_bytes());
 										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), update_fail_malformed);
+									}
+									if let Some(msg) = update_fee {
+										out.locked_write(format!("Delivering update_fee to node {}.\n", idx).as_bytes());
+										dest.handle_update_fee(&nodes[$node].get_our_node_id(), &msg);
 									}
 									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
 										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
@@ -677,21 +702,24 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 										} });
 										break;
 									}
+									out.locked_write(format!("Delivering commitment_signed to node {}.\n", idx).as_bytes());
 									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
 							}
 						},
 						events::MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering revoke_and_ack to node {}.\n", idx).as_bytes());
 									dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
 						events::MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
-							for dest in nodes.iter() {
+							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
+									out.locked_write(format!("Delivering channel_reestablish to node {}.\n", idx).as_bytes());
 									dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg);
 								}
 							}
@@ -824,7 +852,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			} }
 		}
 
-		match get_slice!(1)[0] {
+		let v = get_slice!(1)[0];
+		out.locked_write(format!("READ A BYTE! HANDLING INPUT {:x}...........\n", v).as_bytes());
+		match v {
 			// In general, we keep related message groups close together in binary form, allowing
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
@@ -928,7 +958,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					node_a_ser.0.clear();
 					nodes[0].write(&mut node_a_ser).unwrap();
 				}
-				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a, keys_manager_a);
+				let (new_node_a, new_monitor_a) = reload_node!(node_a_ser, 0, monitor_a, keys_manager_a, fee_est_a);
 				nodes[0] = new_node_a;
 				monitor_a = new_monitor_a;
 			},
@@ -947,7 +977,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					bc_events.clear();
 					cb_events.clear();
 				}
-				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b, keys_manager_b);
+				let (new_node_b, new_monitor_b) = reload_node!(node_b_ser, 1, monitor_b, keys_manager_b, fee_est_b);
 				nodes[1] = new_node_b;
 				monitor_b = new_monitor_b;
 			},
@@ -961,7 +991,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					node_c_ser.0.clear();
 					nodes[2].write(&mut node_c_ser).unwrap();
 				}
-				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c, keys_manager_c);
+				let (new_node_c, new_monitor_c) = reload_node!(node_c_ser, 2, monitor_c, keys_manager_c, fee_est_c);
 				nodes[2] = new_node_c;
 				monitor_c = new_monitor_c;
 			},
@@ -1023,6 +1053,33 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
 			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
 
+			0x80 => {
+				let max_feerate = last_htlc_clear_fee_a * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				if fee_est_a.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
+					fee_est_a.ret_val.store(max_feerate, atomic::Ordering::Release);
+				}
+				nodes[0].maybe_update_chan_fees();
+			},
+			0x81 => { fee_est_a.ret_val.store(253, atomic::Ordering::Release); nodes[0].maybe_update_chan_fees(); },
+
+			0x84 => {
+				let max_feerate = last_htlc_clear_fee_b * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				if fee_est_b.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
+					fee_est_b.ret_val.store(max_feerate, atomic::Ordering::Release);
+				}
+				nodes[1].maybe_update_chan_fees();
+			},
+			0x85 => { fee_est_b.ret_val.store(253, atomic::Ordering::Release); nodes[1].maybe_update_chan_fees(); },
+
+			0x88 => {
+				let max_feerate = last_htlc_clear_fee_c * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+				if fee_est_c.ret_val.fetch_add(250, atomic::Ordering::AcqRel) + 250 > max_feerate {
+					fee_est_c.ret_val.store(max_feerate, atomic::Ordering::Release);
+				}
+				nodes[2].maybe_update_chan_fees();
+			},
+			0x89 => { fee_est_c.ret_val.store(253, atomic::Ordering::Release); nodes[2].maybe_update_chan_fees(); },
+
 			0xff => {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
@@ -1078,6 +1135,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				assert!(
 					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id) ||
 					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id));
+
+				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
+				last_htlc_clear_fee_b = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
+				last_htlc_clear_fee_c = fee_est_c.ret_val.load(atomic::Ordering::Acquire);
 			},
 			_ => test_return!(),
 		}

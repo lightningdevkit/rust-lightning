@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 
 use chain;
 use chain::{Confirm, Watch, BestBlock};
-use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, ChannelMonitorUpdateErr, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
@@ -71,7 +71,6 @@ use core::time::Duration;
 #[cfg(any(test, feature = "allow_wallclock_use"))]
 use std::time::Instant;
 use core::ops::Deref;
-use bitcoin::hashes::hex::ToHex;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2561,46 +2560,151 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.process_background_events();
 	}
 
-	/// If a peer is disconnected we mark any channels with that peer as 'disabled'.
-	/// After some time, if channels are still disabled we need to broadcast a ChannelUpdate
-	/// to inform the network about the uselessness of these channels.
+	fn update_channel_fee(&self, short_to_id: &mut HashMap<u64, [u8; 32]>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
+		if !chan.is_outbound() { return (true, NotifyOption::SkipPersist, Ok(())); }
+		// If the feerate has decreased by less than half, don't bother
+		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
+			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
+				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+			return (true, NotifyOption::SkipPersist, Ok(()));
+		}
+		if !chan.is_live() {
+			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
+				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+			return (true, NotifyOption::SkipPersist, Ok(()));
+		}
+		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
+			log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+
+		let mut retain_channel = true;
+		let res = match chan.send_update_fee_and_commit(new_feerate, &self.logger) {
+			Ok(res) => Ok(res),
+			Err(e) => {
+				let (drop, res) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+				if drop { retain_channel = false; }
+				Err(res)
+			}
+		};
+		let ret_err = match res {
+			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
+				if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+					let (res, drop) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, false, true, Vec::new(), Vec::new(), chan_id);
+					if drop { retain_channel = false; }
+					res
+				} else {
+					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						node_id: chan.get_counterparty_node_id(),
+						updates: msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs: Vec::new(),
+							update_fail_malformed_htlcs: Vec::new(),
+							update_fee: Some(update_fee),
+							commitment_signed,
+						},
+					});
+					Ok(())
+				}
+			},
+			Ok(None) => Ok(()),
+			Err(e) => Err(e),
+		};
+		(retain_channel, NotifyOption::DoPersist, ret_err)
+	}
+
+	#[cfg(fuzzing)]
+	/// In chanmon_consistency we want to sometimes do the channel fee updates done in
+	/// timer_tick_occurred, but we can't generate the disabled channel updates as it considers
+	/// these a fuzz failure (as they usually indicate a channel force-close, which is exactly what
+	/// it wants to detect). Thus, we have a variant exposed here for its benefit.
+	pub fn maybe_update_chan_fees(&self) {
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			let mut should_persist = NotifyOption::SkipPersist;
+
+			let new_feerate = self.fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+
+			let mut handle_errors = Vec::new();
+			{
+				let mut channel_state_lock = self.channel_state.lock().unwrap();
+				let channel_state = &mut *channel_state_lock;
+				let pending_msg_events = &mut channel_state.pending_msg_events;
+				let short_to_id = &mut channel_state.short_to_id;
+				channel_state.by_id.retain(|chan_id, chan| {
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+					if err.is_err() {
+						handle_errors.push(err);
+					}
+					retain_channel
+				});
+			}
+
+			should_persist
+		});
+	}
+
+	/// Performs actions which should happen on startup and roughly once per minute thereafter.
 	///
-	/// This method handles all the details, and must be called roughly once per minute.
+	/// This currently includes:
+	///  * Increasing or decreasing the on-chain feerate estimates for our outbound channels,
+	///  * Broadcasting `ChannelUpdate` messages if we've been disconnected from our peer for more
+	///    than a minute, informing the network that they should no longer attempt to route over
+	///    the channel.
 	///
-	/// Note that in some rare cases this may generate a `chain::Watch::update_channel` call.
+	/// Note that this may cause reentrancy through `chain::Watch::update_channel` calls or feerate
+	/// estimate fetches.
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut should_persist = NotifyOption::SkipPersist;
 			if self.process_background_events() { should_persist = NotifyOption::DoPersist; }
 
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			for (_, chan) in channel_state.by_id.iter_mut() {
-				match chan.channel_update_status() {
-					ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
-					ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
-					ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
-					ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
-					ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
-						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: update
-							});
-						}
-						should_persist = NotifyOption::DoPersist;
-						chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
-					},
-					ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
-						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: update
-							});
-						}
-						should_persist = NotifyOption::DoPersist;
-						chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
-					},
-					_ => {},
-				}
+			let new_feerate = self.fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+
+			let mut handle_errors = Vec::new();
+			{
+				let mut channel_state_lock = self.channel_state.lock().unwrap();
+				let channel_state = &mut *channel_state_lock;
+				let pending_msg_events = &mut channel_state.pending_msg_events;
+				let short_to_id = &mut channel_state.short_to_id;
+				channel_state.by_id.retain(|chan_id, chan| {
+					match chan.channel_update_status() {
+						ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
+						ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
+						ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
+						ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
+						ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
+							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+							should_persist = NotifyOption::DoPersist;
+							chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
+						},
+						ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
+							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+							should_persist = NotifyOption::DoPersist;
+							chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
+						},
+						_ => {},
+					}
+
+					let counterparty_node_id = chan.get_counterparty_node_id();
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+					if err.is_err() {
+						handle_errors.push((err, counterparty_node_id));
+					}
+					retain_channel
+				});
+			}
+
+			for (err, counterparty_node_id) in handle_errors.drain(..) {
+				let _ = handle_error!(self, err, counterparty_node_id);
 			}
 
 			should_persist
@@ -3726,62 +3830,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.internal_funding_locked(counterparty_node_id, &funding_locked_msg)?;
 		}
 		Ok(())
-	}
-
-	/// Begin Update fee process. Allowed only on an outbound channel.
-	/// If successful, will generate a UpdateHTLCs event, so you should probably poll
-	/// PeerManager::process_events afterwards.
-	/// Note: This API is likely to change!
-	/// (C-not exported) Cause its doc(hidden) anyway
-	#[doc(hidden)]
-	pub fn update_fee(&self, channel_id: [u8;32], feerate_per_kw: u32) -> Result<(), APIError> {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let counterparty_node_id;
-		let err: Result<(), _> = loop {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-
-			match channel_state.by_id.entry(channel_id) {
-				hash_map::Entry::Vacant(_) => return Err(APIError::APIMisuseError{err: format!("Failed to find corresponding channel for id {}", channel_id.to_hex())}),
-				hash_map::Entry::Occupied(mut chan) => {
-					if !chan.get().is_outbound() {
-						return Err(APIError::APIMisuseError{err: "update_fee cannot be sent for an inbound channel".to_owned()});
-					}
-					if chan.get().is_awaiting_monitor_update() {
-						return Err(APIError::MonitorUpdateFailed);
-					}
-					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Channel is either not yet fully established or peer is currently disconnected".to_owned()});
-					}
-					counterparty_node_id = chan.get().get_counterparty_node_id();
-					if let Some((update_fee, commitment_signed, monitor_update)) =
-							break_chan_entry!(self, chan.get_mut().send_update_fee_and_commit(feerate_per_kw, &self.logger), channel_state, chan)
-					{
-						if let Err(_e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-							unimplemented!();
-						}
-						log_debug!(self.logger, "Updating fee resulted in a commitment_signed for channel {}", log_bytes!(chan.get().channel_id()));
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get().get_counterparty_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: Vec::new(),
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: Some(update_fee),
-								commitment_signed,
-							},
-						});
-					}
-				},
-			}
-			return Ok(())
-		};
-
-		match handle_error!(self, err, counterparty_node_id) {
-			Ok(_) => unreachable!(),
-			Err(e) => { Err(APIError::APIMisuseError { err: e.err })}
-		}
 	}
 
 	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
