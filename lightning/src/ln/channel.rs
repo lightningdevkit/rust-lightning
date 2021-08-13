@@ -3635,7 +3635,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
-			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee greater than the value they can claim. Fee in message: {}", msg.fee_satoshis)));
+			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
 		let mut sighash = hash_to_message!(&bip143::SigHashCache::new(&closing_tx).signature_hash(0, &funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
 
