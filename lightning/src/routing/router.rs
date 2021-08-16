@@ -443,8 +443,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// to use as the A* heuristic beyond just the cost to get one node further than the current
 	// one.
 
-	let network_channels = network.get_channels();
-	let network_nodes = network.get_nodes();
+	let network_graph = network.read_only();
+	let network_channels = network_graph.channels();
+	let network_nodes = network_graph.nodes();
 	let dummy_directional_info = DummyDirectionalChannelInfo { // used for first_hops routes
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
@@ -4213,7 +4214,7 @@ mod tests {
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut seed = random_init_seed() as usize;
-		let nodes = graph.get_nodes();
+		let nodes = graph.read_only().nodes().clone();
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
@@ -4242,7 +4243,7 @@ mod tests {
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut seed = random_init_seed() as usize;
-		let nodes = graph.get_nodes();
+		let nodes = graph.read_only().nodes().clone();
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
@@ -4301,7 +4302,7 @@ mod benches {
 	fn generate_routes(bench: &mut Bencher) {
 		let mut d = test_utils::get_route_file().unwrap();
 		let graph = NetworkGraph::read(&mut d).unwrap();
-		let nodes = graph.get_nodes();
+		let nodes = graph.read_only().nodes().clone();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut path_endpoints = Vec::new();
@@ -4333,7 +4334,7 @@ mod benches {
 	fn generate_mpp_routes(bench: &mut Bencher) {
 		let mut d = test_utils::get_route_file().unwrap();
 		let graph = NetworkGraph::read(&mut d).unwrap();
-		let nodes = graph.get_nodes();
+		let nodes = graph.read_only().nodes().clone();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut path_endpoints = Vec::new();

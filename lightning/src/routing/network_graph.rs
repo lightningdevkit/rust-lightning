@@ -58,6 +58,12 @@ pub struct NetworkGraph {
 	nodes: RwLock<BTreeMap<PublicKey, NodeInfo>>,
 }
 
+/// A read-only view of [`NetworkGraph`].
+pub struct ReadOnlyNetworkGraph<'a> {
+	channels: RwLockReadGuard<'a, BTreeMap<u64, ChannelInfo>>,
+	nodes: RwLockReadGuard<'a, BTreeMap<PublicKey, NodeInfo>>,
+}
+
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
 /// This network graph is then used for routing payments.
@@ -171,7 +177,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let mut result = Vec::with_capacity(batch_amount as usize);
-		let channels = self.network_graph.get_channels();
+		let channels = self.network_graph.channels.read().unwrap();
 		let mut iter = channels.range(starting_point..);
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref chan)) = iter.next() {
@@ -199,7 +205,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 
 	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
 		let mut result = Vec::with_capacity(batch_amount as usize);
-		let nodes = self.network_graph.get_nodes();
+		let nodes = self.network_graph.nodes.read().unwrap();
 		let mut iter = if let Some(pubkey) = starting_point {
 				let mut iter = nodes.range((*pubkey)..);
 				iter.next();
@@ -340,7 +346,8 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
 		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
-		for (_, ref chan) in self.network_graph.get_channels().range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
+		let channels = self.network_graph.channels.read().unwrap();
+		for (_, ref chan) in channels.range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
 				if batches.last().unwrap().len() == batches.last().unwrap().capacity() {
@@ -351,6 +358,7 @@ impl<C: Deref , L: Deref > RoutingMessageHandler for NetGraphMsgHandler<C, L> wh
 				batch.push(chan_announcement.contents.short_channel_id);
 			}
 		}
+		drop(channels);
 
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let batch_count = batches.len();
@@ -662,40 +670,22 @@ impl PartialEq for NetworkGraph {
 }
 
 impl NetworkGraph {
-	/// Returns all known valid channels' short ids along with announced channel info.
-	///
-	/// (C-not exported) because we have no mapping for `BTreeMap`s
-	pub fn get_channels(&self) -> RwLockReadGuard<'_, BTreeMap<u64, ChannelInfo>> {
-		self.channels.read().unwrap()
-	}
-
-	/// Returns all known nodes' public keys along with announced node info.
-	///
-	/// (C-not exported) because we have no mapping for `BTreeMap`s
-	pub fn get_nodes(&self) -> RwLockReadGuard<'_, BTreeMap<PublicKey, NodeInfo>> {
-		self.nodes.read().unwrap()
-	}
-
-	/// Get network addresses by node id.
-	/// Returns None if the requested node is completely unknown,
-	/// or if node announcement for the node was never received.
-	///
-	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
-	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
-		if let Some(node) = self.nodes.read().unwrap().get(pubkey) {
-			if let Some(node_info) = node.announcement_info.as_ref() {
-				return Some(node_info.addresses.clone())
-			}
-		}
-		None
-	}
-
 	/// Creates a new, empty, network graph.
 	pub fn new(genesis_hash: BlockHash) -> NetworkGraph {
 		Self {
 			genesis_hash,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
+		}
+	}
+
+	/// Returns a read-only view of the network graph.
+	pub fn read_only(&'_ self) -> ReadOnlyNetworkGraph<'_> {
+		let channels = self.channels.read().unwrap();
+		let nodes = self.nodes.read().unwrap();
+		ReadOnlyNetworkGraph {
+			channels,
+			nodes,
 		}
 	}
 
@@ -1064,6 +1054,36 @@ impl NetworkGraph {
 	}
 }
 
+impl ReadOnlyNetworkGraph<'_> {
+	/// Returns all known valid channels' short ids along with announced channel info.
+	///
+	/// (C-not exported) because we have no mapping for `BTreeMap`s
+	pub fn channels(&self) -> &BTreeMap<u64, ChannelInfo> {
+		&*self.channels
+	}
+
+	/// Returns all known nodes' public keys along with announced node info.
+	///
+	/// (C-not exported) because we have no mapping for `BTreeMap`s
+	pub fn nodes(&self) -> &BTreeMap<PublicKey, NodeInfo> {
+		&*self.nodes
+	}
+
+	/// Get network addresses by node id.
+	/// Returns None if the requested node is completely unknown,
+	/// or if node announcement for the node was never received.
+	///
+	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
+	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<&Vec<NetAddress>> {
+		if let Some(node) = self.nodes.get(pubkey) {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				return Some(&node_info.addresses)
+			}
+		}
+		None
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use chain;
@@ -1268,7 +1288,7 @@ mod tests {
 
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
+			match network.read_only().channels().get(&unsigned_announcement.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
 			};
@@ -1320,7 +1340,7 @@ mod tests {
 
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
+			match network.read_only().channels().get(&unsigned_announcement.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
 			};
@@ -1351,7 +1371,7 @@ mod tests {
 		};
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&unsigned_announcement.short_channel_id) {
+			match network.read_only().channels().get(&unsigned_announcement.short_channel_id) {
 				Some(channel_entry) => {
 					assert_eq!(channel_entry.features, ChannelFeatures::empty());
 				},
@@ -1481,7 +1501,7 @@ mod tests {
 
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&short_channel_id) {
+			match network.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert_eq!(channel_info.one_to_two.as_ref().unwrap().cltv_expiry_delta, 144);
@@ -1587,7 +1607,7 @@ mod tests {
 		{
 			// There is no nodes in the table at the beginning.
 			let network = &net_graph_msg_handler.network_graph;
-			assert_eq!(network.get_nodes().len(), 0);
+			assert_eq!(network.read_only().nodes().len(), 0);
 		}
 
 		{
@@ -1643,7 +1663,7 @@ mod tests {
 		// Non-permanent closing just disables a channel
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&short_channel_id) {
+			match network.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert!(channel_info.one_to_two.is_some());
@@ -1661,7 +1681,7 @@ mod tests {
 		// Non-permanent closing just disables a channel
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			match network.get_channels().get(&short_channel_id) {
+			match network.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert!(!channel_info.one_to_two.as_ref().unwrap().enabled);
@@ -1679,9 +1699,9 @@ mod tests {
 		// Permanent closing deletes a channel
 		{
 			let network = &net_graph_msg_handler.network_graph;
-			assert_eq!(network.get_channels().len(), 0);
+			assert_eq!(network.read_only().channels().len(), 0);
 			// Nodes are also deleted because there are no associated channels anymore
-			assert_eq!(network.get_nodes().len(), 0);
+			assert_eq!(network.read_only().nodes().len(), 0);
 		}
 		// TODO: Test HTLCFailChannelUpdate::NodeFailure, which is not implemented yet.
 	}
@@ -1998,8 +2018,8 @@ mod tests {
 
 		let network = &net_graph_msg_handler.network_graph;
 		let mut w = test_utils::TestVecWriter(Vec::new());
-		assert!(!network.get_nodes().is_empty());
-		assert!(!network.get_channels().is_empty());
+		assert!(!network.read_only().nodes().is_empty());
+		assert!(!network.read_only().channels().is_empty());
 		network.write(&mut w).unwrap();
 		assert!(<NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap() == *network);
 	}
