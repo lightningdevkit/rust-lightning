@@ -3705,6 +3705,8 @@ impl<Signer: Sign> Channel<Signer> {
 		// more dust balance if the feerate increases when we have several HTLCs pending
 		// which are near the dust limit.
 		let mut feerate_per_kw = self.feerate_per_kw;
+		// If there's a pending update fee, use it to ensure we aren't under-estimating
+		// potential feerate updates coming soon.
 		if let Some((feerate, _)) = self.pending_update_fee {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
@@ -4941,9 +4943,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		if self.is_outbound() {
 			self.pending_update_fee.map(|(a, _)| a).write(writer)?;
 		} else if let Some((feerate, FeeUpdateState::AwaitingRemoteRevokeToAnnounce)) = self.pending_update_fee {
-			// As for inbound HTLCs, if the update was only announced and never committed, drop it.
 			Some(feerate).write(writer)?;
 		} else {
+			// As for inbound HTLCs, if the update was only announced and never committed in a
+			// commitment_signed, drop it.
 			None::<u32>.write(writer)?;
 		}
 		self.holding_cell_update_fee.write(writer)?;
