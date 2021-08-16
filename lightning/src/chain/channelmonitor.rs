@@ -106,7 +106,9 @@ impl Readable for ChannelMonitorUpdate {
 		let len: u64 = Readable::read(r)?;
 		let mut updates = Vec::with_capacity(cmp::min(len as usize, MAX_ALLOC_SIZE / ::core::mem::size_of::<ChannelMonitorUpdateStep>()));
 		for _ in 0..len {
-			updates.push(Readable::read(r)?);
+			if let Some(upd) = MaybeReadable::read(r)? {
+				updates.push(upd);
+			}
 		}
 		read_tlv_fields!(r, {});
 		Ok(Self { update_id, updates })
@@ -394,13 +396,36 @@ enum OnchainEvent {
 	},
 }
 
-impl_writeable_tlv_based!(OnchainEventEntry, {
-	(0, txid, required),
-	(2, height, required),
-	(4, event, required),
-});
+impl Writeable for OnchainEventEntry {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.txid, required),
+			(2, self.height, required),
+			(4, self.event, required),
+		});
+		Ok(())
+	}
+}
 
-impl_writeable_tlv_based_enum!(OnchainEvent,
+impl MaybeReadable for OnchainEventEntry {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let mut txid = Default::default();
+		let mut height = 0;
+		let mut event = None;
+		read_tlv_fields!(reader, {
+			(0, txid, required),
+			(2, height, required),
+			(4, event, ignorable),
+		});
+		if let Some(ev) = event {
+			Ok(Some(Self { txid, height, event: ev }))
+		} else {
+			Ok(None)
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(0, HTLCUpdate) => {
 		(0, source, required),
 		(1, onchain_value_satoshis, option),
@@ -409,7 +434,7 @@ impl_writeable_tlv_based_enum!(OnchainEvent,
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
 	},
-;);
+);
 
 #[cfg_attr(any(test, feature = "fuzztarget", feature = "_test_utils"), derive(PartialEq))]
 #[derive(Clone)]
@@ -443,7 +468,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	},
 }
 
-impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
+impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(0, LatestHolderCommitmentTXInfo) => {
 		(0, commitment_tx, required),
 		(2, htlc_outputs, vec_type),
@@ -467,7 +492,7 @@ impl_writeable_tlv_based_enum!(ChannelMonitorUpdateStep,
 	(5, ShutdownScript) => {
 		(0, scriptpubkey, required),
 	},
-;);
+);
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
@@ -2731,7 +2756,9 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
 		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..waiting_threshold_conf_len {
-			onchain_events_awaiting_threshold_conf.push(Readable::read(reader)?);
+			if let Some(val) = MaybeReadable::read(reader)? {
+				onchain_events_awaiting_threshold_conf.push(val);
+			}
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;

@@ -1477,8 +1477,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
 		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&msg.onion_routing_packet.hop_data[..]) };
-		let (next_hop_data, next_hop_hmac) = {
-			match msgs::OnionHopData::read(&mut chacha_stream) {
+		let (next_hop_data, next_hop_hmac): (msgs::OnionHopData, _) = {
+			match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
 				Err(err) => {
 					let error_code = match err {
 						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
