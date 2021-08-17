@@ -11,7 +11,6 @@ use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitment
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
-use io;
 use prelude::*;
 use core::cmp;
 use sync::{Mutex, Arc};
@@ -23,9 +22,8 @@ use bitcoin::util::bip143;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::key::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, Signature};
-use util::ser::{Writeable, Writer, Readable};
+use util::ser::{Writeable, Writer};
 use io::Error;
-use ln::msgs::DecodeError;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -199,21 +197,12 @@ impl Sign for EnforcingSigner {}
 
 impl Writeable for EnforcingSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		// EnforcingSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
+		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
+		// [`KeysInterface::read_chan_signer`]. `state` is managed by [`KeysInterface`]
+		// and will be serialized as needed by the implementation of that trait.
 		self.inner.write(writer)?;
-		// NOTE - the commitment state is maintained by KeysInterface, so we don't persist it
 		Ok(())
-	}
-}
-
-impl Readable for EnforcingSigner {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let inner = Readable::read(reader)?;
-		let state = Arc::new(Mutex::new(EnforcementState::new()));
-		Ok(EnforcingSigner {
-			inner,
-			state,
-			disable_revocation_policy_check: false,
-		})
 	}
 }
 

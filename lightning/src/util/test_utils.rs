@@ -76,8 +76,15 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		EnforcingSigner::read(&mut io::Cursor::new(reader))
+	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
+		let state = Arc::new(Mutex::new(EnforcementState::new()));
+
+		Ok(EnforcingSigner::new_with_revoked(
+			inner,
+			state,
+			false
+		))
 	}
 	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
@@ -499,11 +506,11 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(EnforcingSigner {
+		Ok(EnforcingSigner::new_with_revoked(
 			inner,
 			state,
-			disable_revocation_policy_check: self.disable_revocation_policy_check,
-		})
+			self.disable_revocation_policy_check
+		))
 	}
 
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
