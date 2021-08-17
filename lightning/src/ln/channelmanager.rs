@@ -4167,7 +4167,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event| events.borrow_mut().push(event);
+		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -4244,7 +4244,7 @@ where
 			}
 
 			for event in pending_events.drain(..) {
-				handler.handle_event(event);
+				handler.handle_event(&event);
 			}
 
 			result

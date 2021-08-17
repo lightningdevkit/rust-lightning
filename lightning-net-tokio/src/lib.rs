@@ -43,13 +43,12 @@
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
 //! 	lightning_net_tokio::connect_outbound(peer_manager, their_node_id, addr).await;
 //! 	loop {
+//! 		let event_handler = |event: &Event| {
+//! 			// Handle the event!
+//! 		};
 //! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
-//! 		chain_monitor.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
+//! 		channel_manager.process_pending_events(&event_handler);
+//! 		chain_monitor.process_pending_events(&event_handler);
 //! 	}
 //! }
 //!
@@ -57,13 +56,12 @@
 //! async fn accept_socket(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
 //! 	lightning_net_tokio::setup_inbound(peer_manager, socket);
 //! 	loop {
+//! 		let event_handler = |event: &Event| {
+//! 			// Handle the event!
+//! 		};
 //! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
-//! 		chain_monitor.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
+//! 		channel_manager.process_pending_events(&event_handler);
+//! 		chain_monitor.process_pending_events(&event_handler);
 //! 	}
 //! }
 //! ```
