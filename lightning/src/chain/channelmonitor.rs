@@ -1913,7 +1913,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					L::Target: Logger,
 	{
 		let block_hash = header.block_hash();
-		log_trace!(logger, "New best block {} at height {}", block_hash, height);
 		self.best_block = BestBlock::new(block_hash, height);
 
 		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
@@ -1933,7 +1932,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		L::Target: Logger,
 	{
 		let block_hash = header.block_hash();
-		log_trace!(logger, "New best block {} at height {}", block_hash, height);
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
@@ -1971,7 +1969,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 
 		let block_hash = header.block_hash();
-		log_trace!(logger, "Block {} at height {} connected with {} txn matched", block_hash, height, txn_matched.len());
 
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
@@ -2044,6 +2041,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height() >= conf_height);
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
