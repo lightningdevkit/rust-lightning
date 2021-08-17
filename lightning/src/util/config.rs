@@ -223,6 +223,29 @@ pub struct ChannelConfig {
 	///
 	/// Default value: 5_000_000 msat.
 	pub max_dust_htlc_exposure_msat: u64,
+	/// The additional fee we're willing to pay to avoid waiting for the counterparty's
+	/// `to_self_delay` to reclaim funds.
+	///
+	/// When we close a channel cooperatively with our counterparty, we negotiate a fee for the
+	/// closing transaction which both sides find acceptable, ultimately paid by the channel
+	/// funder/initiator.
+	///
+	/// When we are the funder, because we have to pay the channel closing fee, we bound the
+	/// acceptable fee by our [`Background`] and [`Normal`] fees, with the upper bound increased by
+	/// this value. Because the on-chain fee we'd pay to force-close the channel is kept near our
+	/// [`Normal`] feerate during normal operation, this value represents the additional fee we're
+	/// willing to pay in order to avoid waiting for our counterparty's to_self_delay to reclaim our
+	/// funds.
+	///
+	/// When we are not the funder, we require the closing transaction fee pay at least our
+	/// [`Background`] fee estimate, but allow our counterparty to pay as much fee as they like.
+	/// Thus, this value is ignored when we are not the funder.
+	///
+	/// Default value: 1000 satoshis.
+	///
+	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	pub force_close_avoidance_max_fee_satoshis: u64,
 }
 
 impl Default for ChannelConfig {
@@ -235,6 +258,7 @@ impl Default for ChannelConfig {
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 			max_dust_htlc_exposure_msat: 5_000_000,
+			force_close_avoidance_max_fee_satoshis: 1000,
 		}
 	}
 }
@@ -243,6 +267,7 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	(0, forwarding_fee_proportional_millionths, required),
 	(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
 	(2, cltv_expiry_delta, required),
+	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),
 	(8, forwarding_fee_base_msat, required),

@@ -417,11 +417,21 @@ macro_rules! get_htlc_update_msgs {
 }
 
 #[cfg(test)]
+macro_rules! get_channel_ref {
+	($node: expr, $lock: ident, $channel_id: expr) => {
+		{
+			$lock = $node.node.channel_state.lock().unwrap();
+			$lock.by_id.get_mut(&$channel_id).unwrap()
+		}
+	}
+}
+
+#[cfg(test)]
 macro_rules! get_feerate {
 	($node: expr, $channel_id: expr) => {
 		{
-			let chan_lock = $node.node.channel_state.lock().unwrap();
-			let chan = chan_lock.by_id.get(&$channel_id).unwrap();
+			let mut lock;
+			let chan = get_channel_ref!($node, lock, $channel_id);
 			chan.get_feerate()
 		}
 	}
@@ -755,7 +765,7 @@ macro_rules! check_closed_broadcast {
 
 pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node: &Node<'a, 'b, 'c>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
 	let (node_a, broadcaster_a, struct_a) = if close_inbound_first { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) } else { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) };
-	let (node_b, broadcaster_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster) } else { (&inbound_node.node, &inbound_node.tx_broadcaster) };
+	let (node_b, broadcaster_b, struct_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) } else { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) };
 	let (tx_a, tx_b);
 
 	node_a.close_channel(channel_id).unwrap();
@@ -788,20 +798,8 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 	let (as_update, bs_update) = if close_inbound_first {
 		assert!(node_a.get_and_clear_pending_msg_events().is_empty());
 		node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap());
-		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
-		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
-		let (as_update, closing_signed_a) = get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
 
-		node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a.unwrap());
-		let (bs_update, none_b) = get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
-		assert!(none_b.is_none());
-		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
-		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
-		(as_update, bs_update)
-	} else {
-		let closing_signed_a = get_event_msg!(struct_a, MessageSendEvent::SendClosingSigned, node_b.get_our_node_id());
-
-		node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a);
+		node_b.handle_closing_signed(&node_a.get_our_node_id(), &get_event_msg!(struct_a, MessageSendEvent::SendClosingSigned, node_b.get_our_node_id()));
 		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
 		let (bs_update, closing_signed_b) = get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
@@ -811,6 +809,22 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 		assert!(none_a.is_none());
 		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
 		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
+		(as_update, bs_update)
+	} else {
+		let closing_signed_a = get_event_msg!(struct_a, MessageSendEvent::SendClosingSigned, node_b.get_our_node_id());
+
+		node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a);
+		node_a.handle_closing_signed(&node_b.get_our_node_id(), &get_event_msg!(struct_b, MessageSendEvent::SendClosingSigned, node_a.get_our_node_id()));
+
+		assert_eq!(broadcaster_a.txn_broadcasted.lock().unwrap().len(), 1);
+		tx_a = broadcaster_a.txn_broadcasted.lock().unwrap().remove(0);
+		let (as_update, closing_signed_a) = get_closing_signed_broadcast!(node_a, node_b.get_our_node_id());
+
+		node_b.handle_closing_signed(&node_a.get_our_node_id(), &closing_signed_a.unwrap());
+		let (bs_update, none_b) = get_closing_signed_broadcast!(node_b, node_a.get_our_node_id());
+		assert!(none_b.is_none());
+		assert_eq!(broadcaster_b.txn_broadcasted.lock().unwrap().len(), 1);
+		tx_b = broadcaster_b.txn_broadcasted.lock().unwrap().remove(0);
 		(as_update, bs_update)
 	};
 	assert_eq!(tx_a, tx_b);

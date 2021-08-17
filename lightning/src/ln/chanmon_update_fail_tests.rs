@@ -142,7 +142,7 @@ fn test_monitor_and_persister_update_fail() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2) {
-		if let Ok((_, _, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].fee_estimator, &node_cfgs[0].logger) {
+		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Check that even though the persister is returning a TemporaryFailure,
 			// because the update is bogus, ultimately the error that's returned
 			// should be a PermanentFailure.
@@ -2561,8 +2561,8 @@ fn test_reconnect_dup_htlc_claims() {
 
 #[test]
 fn test_temporary_error_during_shutdown() {
-	// Test that temporary failures when updating the monitor's shutdown script do not prevent
-	// cooperative close.
+	// Test that temporary failures when updating the monitor's shutdown script delay cooperative
+	// close.
 	let mut config = test_default_channel_config();
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 
@@ -2575,9 +2575,41 @@ fn test_temporary_error_during_shutdown() {
 
 	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, false);
-	check_added_monitors!(nodes[0], 1);
+
+	nodes[0].node.close_channel(&channel_id).unwrap();
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id()));
+	check_added_monitors!(nodes[0], 1);
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	*nodes[0].chain_monitor.update_ret.lock().unwrap() = None;
+	*nodes[1].chain_monitor.update_ret.lock().unwrap() = None;
+
+	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
+	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id()));
+
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	*nodes[1].chain_monitor.update_ret.lock().unwrap() = None;
+	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
+	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
+
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id()));
+	let (_, closing_signed_a) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+	let txn_a = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_a.unwrap());
+	let (_, none_b) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	assert!(none_b.is_none());
+	let txn_b = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+	assert_eq!(txn_a, txn_b);
+	assert_eq!(txn_a.len(), 1);
+	check_spends!(txn_a[0], funding_tx);
 }
 
 #[test]

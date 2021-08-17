@@ -276,6 +276,10 @@ impl MsgHandleErrInternal {
 	fn from_chan_no_close(err: ChannelError, channel_id: [u8; 32]) -> Self {
 		Self {
 			err: match err {
+				ChannelError::Warn(msg) =>  LightningError {
+					err: msg,
+					action: msgs::ErrorAction::IgnoreError,
+				},
 				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
@@ -819,6 +823,11 @@ macro_rules! handle_error {
 macro_rules! convert_chan_err {
 	($self: ident, $err: expr, $short_to_id: expr, $channel: expr, $channel_id: expr) => {
 		match $err {
+			ChannelError::Warn(msg) => {
+				//TODO: Once warning messages are merged, we should send a `warning` message to our
+				//peer here.
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
+			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
 			},
@@ -1275,12 +1284,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
 	}
 
-	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
-	/// will be accepted on the given channel, and after additional timeout/the closing of all
-	/// pending HTLCs, the channel will be closed on chain.
-	///
-	/// May generate a SendShutdown message event on success, which should be relayed.
-	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let counterparty_node_id;
@@ -1296,7 +1300,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						Some(peer_state) => {
 							let peer_state = peer_state.lock().unwrap();
 							let their_features = &peer_state.latest_features;
-							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features)?
+							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
 						},
 						None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
 					};
@@ -1339,6 +1343,50 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let _ = handle_error!(self, result, counterparty_node_id);
 		Ok(())
+	}
+
+	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
+	/// will be accepted on the given channel, and after additional timeout/the closing of all
+	/// pending HTLCs, the channel will be closed on chain.
+	///
+	///  * If we are the channel initiator, we will pay between our [`Background`] and
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
+	///    estimate.
+	///  * If our counterparty is the channel initiator, we will require a channel closing
+	///    transaction feerate of at least our [`Background`] feerate or the feerate which
+	///    would appear on a force-closure transaction, whichever is lower. We will allow our
+	///    counterparty to pay as much fee as they'd like, however.
+	///
+	/// May generate a SendShutdown message event on success, which should be relayed.
+	///
+	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
+	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, None)
+	}
+
+	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
+	/// will be accepted on the given channel, and after additional timeout/the closing of all
+	/// pending HTLCs, the channel will be closed on chain.
+	///
+	/// `target_feerate_sat_per_1000_weight` has different meanings depending on if we initiated
+	/// the channel being closed or not:
+	///  * If we are the channel initiator, we will pay at least this feerate on the closing
+	///    transaction. The upper-bound is set by
+	///    [`ChannelConfig::force_close_avoidance_max_fee_satoshis`] plus our [`Normal`] fee
+	///    estimate (or `target_feerate_sat_per_1000_weight`, if it is greater).
+	///  * If our counterparty is the channel initiator, we will refuse to accept a channel closure
+	///    transaction feerate below `target_feerate_sat_per_1000_weight` (or the feerate which
+	///    will appear on a force-closure transaction, whichever is lower).
+	///
+	/// May generate a SendShutdown message event on success, which should be relayed.
+	///
+	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
+	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
+	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, Some(target_feerate_sats_per_1000_weight))
 	}
 
 	#[inline]
@@ -2322,9 +2370,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									// close channel and then send error message to peer.
 									let counterparty_node_id = chan.get().get_counterparty_node_id();
 									let err: Result<(), _>  = match e {
-										ChannelError::Ignore(_) => {
+										ChannelError::Ignore(_) | ChannelError::Warn(_) => {
 											panic!("Stated return value requirements in send_commitment() were not met");
-										},
+										}
 										ChannelError::Close(msg) => {
 											log_trace!(self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
 											let (channel_id, mut channel) = chan.remove_entry();
@@ -2667,6 +2715,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let pending_msg_events = &mut channel_state.pending_msg_events;
 				let short_to_id = &mut channel_state.short_to_id;
 				channel_state.by_id.retain(|chan_id, chan| {
+					let counterparty_node_id = chan.get_counterparty_node_id();
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+					if err.is_err() {
+						handle_errors.push((err, counterparty_node_id));
+					}
+					if !retain_channel { return false; }
+
+					if let Err(e) = chan.timer_check_closing_negotiation_progress() {
+						let (needs_close, err) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+						handle_errors.push((Err(err), chan.get_counterparty_node_id()));
+						if needs_close { return false; }
+					}
+
 					match chan.channel_update_status() {
 						ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
 						ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
@@ -2693,20 +2755,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						_ => {},
 					}
 
-					let counterparty_node_id = chan.get_counterparty_node_id();
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
-					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
-					if err.is_err() {
-						handle_errors.push((err, counterparty_node_id));
-					}
-					retain_channel
+					true
 				});
 			}
 
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
-
 			should_persist
 		});
 	}
@@ -3357,7 +3412,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 
-					let (shutdown, closing_signed, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.fee_estimator, &self.keys_manager, &their_features, &msg), channel_state, chan_entry);
+					if !chan_entry.get().received_shutdown() {
+						log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
+							log_bytes!(msg.channel_id),
+							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
+					}
+
+					let (shutdown, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.keys_manager, &their_features, &msg), channel_state, chan_entry);
 					dropped_htlcs = htlcs;
 
 					// Update the monitor with the shutdown script if necessary.
@@ -3374,13 +3435,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 					if let Some(msg) = shutdown {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-							node_id: *counterparty_node_id,
-							msg,
-						});
-					}
-					if let Some(msg) = closing_signed {
-						// TODO: Do not send this if the monitor update failed.
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: *counterparty_node_id,
 							msg,
 						});
@@ -3570,8 +3624,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, closing_signed, monitor_update) =
-					match chan.get_mut().commitment_signed(&msg, &self.fee_estimator, &self.logger) {
+				let (revoke_and_ack, commitment_signed, monitor_update) =
+					match chan.get_mut().commitment_signed(&msg, &self.logger) {
 						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
 						Err((Some(update), e)) => {
 							assert!(chan.get().is_awaiting_monitor_update());
@@ -3583,7 +3637,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					};
 				if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 					return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some());
-					//TODO: Rebroadcast closing_signed if present on monitor update restoration
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 					node_id: counterparty_node_id.clone(),
@@ -3600,12 +3653,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							update_fee: None,
 							commitment_signed: msg,
 						},
-					});
-				}
-				if let Some(msg) = closing_signed {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-						node_id: counterparty_node_id.clone(),
-						msg,
 					});
 				}
 				Ok(())
@@ -3663,12 +3710,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, closing_signed, monitor_update, htlcs_to_fail_in) =
-						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.fee_estimator, &self.logger), channel_state, chan);
+					let (commitment_update, pending_forwards, pending_failures, monitor_update, htlcs_to_fail_in) =
+						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), channel_state, chan);
 					htlcs_to_fail = htlcs_to_fail_in;
 					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						if was_frozen_for_monitor {
-							assert!(commitment_update.is_none() && closing_signed.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
+							assert!(commitment_update.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
 							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
 							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures) {
@@ -3680,12 +3727,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: counterparty_node_id.clone(),
 							updates,
-						});
-					}
-					if let Some(msg) = closing_signed {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-							node_id: counterparty_node_id.clone(),
-							msg,
 						});
 					}
 					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"), chan.get().get_funding_txo().unwrap()))
@@ -3931,9 +3972,66 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			});
 		}
 
-		let has_update = has_monitor_update || !failed_htlcs.is_empty();
+		let has_update = has_monitor_update || !failed_htlcs.is_empty() || !handle_errors.is_empty();
 		for (failures, channel_id) in failed_htlcs.drain(..) {
 			self.fail_holding_cell_htlcs(failures, channel_id);
+		}
+
+		for (counterparty_node_id, err) in handle_errors.drain(..) {
+			let _ = handle_error!(self, err, counterparty_node_id);
+		}
+
+		has_update
+	}
+
+	/// Check whether any channels have finished removing all pending updates after a shutdown
+	/// exchange and can now send a closing_signed.
+	/// Returns whether any closing_signed messages were generated.
+	fn maybe_generate_initial_closing_signed(&self) -> bool {
+		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
+		let mut has_update = false;
+		{
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
+			let by_id = &mut channel_state.by_id;
+			let short_to_id = &mut channel_state.short_to_id;
+			let pending_msg_events = &mut channel_state.pending_msg_events;
+
+			by_id.retain(|channel_id, chan| {
+				match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
+					Ok((msg_opt, tx_opt)) => {
+						if let Some(msg) = msg_opt {
+							has_update = true;
+							pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+								node_id: chan.get_counterparty_node_id(), msg,
+							});
+						}
+						if let Some(tx) = tx_opt {
+							// We're done with this channel. We got a closing_signed and sent back
+							// a closing_signed with a closing transaction to broadcast.
+							if let Some(short_id) = chan.get_short_channel_id() {
+								short_to_id.remove(&short_id);
+							}
+
+							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+
+							log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
+							self.tx_broadcaster.broadcast_transaction(&tx);
+							false
+						} else { true }
+					},
+					Err(e) => {
+						has_update = true;
+						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, chan, channel_id);
+						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
+						!close_channel
+					}
+				}
+			});
 		}
 
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
@@ -4094,6 +4192,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 			}
 
 			if self.check_free_holding_cells() {
+				result = NotifyOption::DoPersist;
+			}
+			if self.maybe_generate_initial_closing_signed() {
 				result = NotifyOption::DoPersist;
 			}
 
