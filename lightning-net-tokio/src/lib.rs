@@ -141,30 +141,23 @@ impl Connection {
 			PeerDisconnected
 		}
 		let disconnect_type = loop {
-			macro_rules! shutdown_socket {
-				($err: expr, $need_disconnect: expr) => { {
-					println!("Disconnecting peer due to {}!", $err);
-					break $need_disconnect;
-				} }
-			}
-
 			let read_paused = {
 				let us_lock = us.lock().unwrap();
 				if us_lock.rl_requested_disconnect {
-					shutdown_socket!("disconnect_socket() call from RL", Disconnect::CloseConnection);
+					break Disconnect::CloseConnection;
 				}
 				us_lock.read_paused
 			};
 			tokio::select! {
 				v = write_avail_receiver.recv() => {
 					assert!(v.is_some()); // We can't have dropped the sending end, its in the us Arc!
-					if let Err(e) = peer_manager.write_buffer_space_avail(&mut our_descriptor) {
-						shutdown_socket!(e, Disconnect::CloseConnection);
+					if let Err(_) = peer_manager.write_buffer_space_avail(&mut our_descriptor) {
+						break Disconnect::CloseConnection;
 					}
 				},
 				_ = read_wake_receiver.recv() => {},
 				read = reader.read(&mut buf), if !read_paused => match read {
-					Ok(0) => shutdown_socket!("Connection closed", Disconnect::PeerDisconnected),
+					Ok(0) => break Disconnect::PeerDisconnected,
 					Ok(len) => {
 						let read_res = peer_manager.read_event(&mut our_descriptor, &buf[0..len]);
 						let mut us_lock = us.lock().unwrap();
@@ -174,10 +167,10 @@ impl Connection {
 									us_lock.read_paused = true;
 								}
 							},
-							Err(e) => shutdown_socket!(e, Disconnect::CloseConnection),
+							Err(_) => break Disconnect::CloseConnection,
 						}
 					},
-					Err(e) => shutdown_socket!(e, Disconnect::PeerDisconnected),
+					Err(_) => break Disconnect::PeerDisconnected,
 				},
 			}
 			peer_manager.process_events();
