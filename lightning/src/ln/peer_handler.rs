@@ -667,6 +667,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
 			Err(e) => {
+				log_trace!(self.logger, "Peer sent invalid data or we decided to disconnect due to a protocol error");
 				self.disconnect_event_internal(peer_descriptor, e.no_connection_possible);
 				Err(e)
 			}
@@ -1344,6 +1345,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 			Some(peer) => {
 				match peer.their_node_id {
 					Some(node_id) => {
+						log_trace!(self.logger,
+							"Handling disconnection of peer {}, with {}future connection to the peer possible.",
+							log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
 						peers.node_id_to_descriptor.remove(&node_id);
 						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
 					},
