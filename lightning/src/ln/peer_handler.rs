@@ -739,7 +739,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref> PeerManager<D
 												},
 											}
 										}
-									};
+									}
 								}
 							}
 

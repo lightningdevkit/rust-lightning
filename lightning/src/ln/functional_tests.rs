@@ -4048,7 +4048,7 @@ fn test_invalid_channel_announcement() {
 				bitcoin_key_1: if were_node_one { as_bitcoin_key } else { bs_bitcoin_key },
 				bitcoin_key_2: if were_node_one { bs_bitcoin_key } else { as_bitcoin_key },
 				excess_data: Vec::new(),
-			};
+			}
 		}
 	}
 
