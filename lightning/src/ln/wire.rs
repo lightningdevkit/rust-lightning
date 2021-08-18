@@ -62,20 +62,15 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type {
 	ReplyChannelRange(msgs::ReplyChannelRange),
 	GossipTimestampFilter(msgs::GossipTimestampFilter),
 	/// A message that could not be decoded because its type is unknown.
-	Unknown(MessageType),
+	Unknown(u16),
 	/// A message that was produced by a [`CustomMessageReader`] and is to be handled by a
 	/// [`::ln::peer_handler::CustomMessageHandler`].
 	Custom(T),
 }
 
-/// A number identifying a message to determine how it is encoded on the wire.
-#[derive(Clone, Copy, Debug)]
-pub struct MessageType(u16);
-
 impl<T> Message<T> where T: core::fmt::Debug + Type {
-	#[allow(dead_code)] // This method is only used in tests
 	/// Returns the type that was used to decode the message payload.
-	pub fn type_id(&self) -> MessageType {
+	pub fn type_id(&self) -> u16 {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
@@ -109,18 +104,10 @@ impl<T> Message<T> where T: core::fmt::Debug + Type {
 			&Message::Custom(ref msg) => msg.type_id(),
 		}
 	}
-}
 
-impl MessageType {
-	/// Returns whether the message type is even, indicating both endpoints must support it.
+	/// Returns whether the message's type is even, indicating both endpoints must support it.
 	pub fn is_even(&self) -> bool {
-		(self.0 & 1) == 0
-	}
-}
-
-impl ::core::fmt::Display for MessageType {
-	fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
-		write!(f, "{}", self.0)
+		(self.type_id() & 1) == 0
 	}
 }
 
@@ -228,7 +215,7 @@ where
 			if let Some(custom) = custom_reader.read(message_type, buffer)? {
 				Ok(Message::Custom(custom))
 			} else {
-				Ok(Message::Unknown(MessageType(message_type)))
+				Ok(Message::Unknown(message_type))
 			}
 		},
 	}
@@ -241,7 +228,7 @@ where
 ///
 /// Returns an I/O error if the write could not be completed.
 pub(crate) fn write<M: Type + Writeable, W: Writer>(message: &M, buffer: &mut W) -> Result<(), io::Error> {
-	message.type_id().0.write(buffer)?;
+	message.type_id().write(buffer)?;
 	message.write(buffer)
 }
 
@@ -260,12 +247,12 @@ pub(crate) use self::encode::Encode;
 /// Messages implementing this trait specify a type and must be [`Writeable`].
 pub trait Type {
 	/// Returns the type identifying the message payload.
-	fn type_id(&self) -> MessageType;
+	fn type_id(&self) -> u16;
 }
 
 impl<T> Type for T where T: Encode {
-	fn type_id(&self) -> MessageType {
-		MessageType(T::TYPE)
+	fn type_id(&self) -> u16 {
+		T::TYPE
 	}
 }
 
@@ -436,7 +423,7 @@ mod tests {
 		let mut reader = io::Cursor::new(buffer);
 		let message = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
 		match message {
-			Message::Unknown(MessageType(::core::u16::MAX)) => (),
+			Message::Unknown(::core::u16::MAX) => (),
 			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
 		}
 	}
@@ -472,14 +459,14 @@ mod tests {
 
 	#[test]
 	fn is_even_message_type() {
-		let message = Message::<()>::Unknown(MessageType(42));
-		assert!(message.type_id().is_even());
+		let message = Message::<()>::Unknown(42);
+		assert!(message.is_even());
 	}
 
 	#[test]
 	fn is_odd_message_type() {
-		let message = Message::<()>::Unknown(MessageType(43));
-		assert!(!message.type_id().is_even());
+		let message = Message::<()>::Unknown(43);
+		assert!(!message.is_even());
 	}
 
 	#[test]
@@ -549,8 +536,8 @@ mod tests {
 	const CUSTOM_MESSAGE_TYPE : u16 = 9000;
 
 	impl Type for TestCustomMessage {
-		fn type_id(&self) -> MessageType {
-			MessageType(CUSTOM_MESSAGE_TYPE)
+		fn type_id(&self) -> u16 {
+			CUSTOM_MESSAGE_TYPE
 		}
 	}
 
@@ -584,7 +571,7 @@ mod tests {
 		let decoded_msg = read(&mut reader, &TestCustomMessageReader{}).unwrap();
 		match decoded_msg {
 			Message::Custom(custom) => {
-				assert_eq!(custom.type_id().0, CUSTOM_MESSAGE_TYPE);
+				assert_eq!(custom.type_id(), CUSTOM_MESSAGE_TYPE);
 				assert_eq!(custom, TestCustomMessage {});
 			},
 			_ => panic!("Expected custom message, found message type: {}", decoded_msg.type_id()),
