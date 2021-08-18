@@ -162,6 +162,7 @@ where
 	fn block_connected(&self, block: &Block, height: u32) {
 		let header = &block.header;
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		log_debug!(self.logger, "New best block {} at height {} provided via block_connected", header.block_hash(), height);
 		self.process_chain_data(header, &txdata, |monitor, txdata| {
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
@@ -170,6 +171,7 @@ where
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
 		let monitors = self.monitors.read().unwrap();
+		log_debug!(self.logger, "Latest block {} at height {} removed via block_disconnected", header.block_hash(), height);
 		for monitor in monitors.values() {
 			monitor.block_disconnected(
 				header, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
@@ -187,6 +189,7 @@ where
 	P::Target: channelmonitor::Persist<ChannelSigner>,
 {
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		log_debug!(self.logger, "{} provided transactions confirmed at height {} in block {}", txdata.len(), height, header.block_hash());
 		self.process_chain_data(header, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &*self.logger)
@@ -194,6 +197,7 @@ where
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
+		log_debug!(self.logger, "Transaction {} reorganized out of chain", txid);
 		let monitors = self.monitors.read().unwrap();
 		for monitor in monitors.values() {
 			monitor.transaction_unconfirmed(txid, &*self.broadcaster, &*self.fee_estimator, &*self.logger);
@@ -201,6 +205,7 @@ where
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
+		log_debug!(self.logger, "New best block {} at height {} provided via best_block_updated", header.block_hash(), height);
 		self.process_chain_data(header, &[], |monitor, txdata| {
 			// While in practice there shouldn't be any recursive calls when given empty txdata,
 			// it's still possible if a chain::Filter implementation returns a transaction.
