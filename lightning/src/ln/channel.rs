@@ -5525,7 +5525,7 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use hex;
 	use ln::{PaymentPreimage, PaymentHash};
-	use ln::channelmanager::HTLCSource;
+	use ln::channelmanager::{HTLCSource, MppId};
 	use ln::channel::{Channel,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
@@ -5699,6 +5699,7 @@ mod tests {
 				path: Vec::new(),
 				session_priv: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
+				mpp_id: MppId([42; 32]),
 			}
 		});
 
