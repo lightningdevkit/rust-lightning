@@ -216,6 +216,8 @@ pub trait BaseSign {
 	///
 	/// This is required in order for the signer to make sure that releasing a commitment
 	/// secret won't leave us without a broadcastable holder transaction.
+	/// Policy checks should be implemented in this function, including checking the amount
+	/// sent to us and checking the HTLCs.
 	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction);
 	/// Gets the holder's channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
@@ -227,6 +229,9 @@ pub trait BaseSign {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
+	///
+	/// Policy checks should be implemented in this function, including checking the amount
+	/// sent to us and checking the HTLCs.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
