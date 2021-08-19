@@ -26,20 +26,28 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::ops::Deref;
 
-/// BackgroundProcessor takes care of tasks that (1) need to happen periodically to keep
+/// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
 /// responsibilities are:
-/// * Monitoring whether the ChannelManager needs to be re-persisted to disk, and if so,
+/// * Processing [`Event`]s with a user-provided [`EventHandler`].
+/// * Monitoring whether the [`ChannelManager`] needs to be re-persisted to disk, and if so,
 ///   writing it to disk/backups by invoking the callback given to it at startup.
-///   ChannelManager persistence should be done in the background.
-/// * Calling `ChannelManager::timer_tick_occurred()` and
-///   `PeerManager::timer_tick_occurred()` every minute (can be done in the
-///   background).
+///   [`ChannelManager`] persistence should be done in the background.
+/// * Calling [`ChannelManager::timer_tick_occurred`] and [`PeerManager::timer_tick_occurred`]
+///   at the appropriate intervals.
 ///
-/// Note that if ChannelManager persistence fails and the persisted manager becomes out-of-date,
-/// then there is a risk of channels force-closing on startup when the manager realizes it's
-/// outdated. However, as long as `ChannelMonitor` backups are sound, no funds besides those used
-/// for unilateral chain closure fees are at risk.
+/// It will also call [`PeerManager::process_events`] periodically though this shouldn't be relied
+/// upon as doing so may result in high latency.
+///
+/// # Note
+///
+/// If [`ChannelManager`] persistence fails and the persisted manager becomes out-of-date, then
+/// there is a risk of channels force-closing on startup when the manager realizes it's outdated.
+/// However, as long as [`ChannelMonitor`] backups are sound, no funds besides those used for
+/// unilateral chain closure fees are at risk.
+///
+/// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
+/// [`Event`]: lightning::util::events::Event
 #[must_use = "BackgroundProcessor will immediately stop on drop. It should be stored until shutdown."]
 pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
@@ -99,14 +107,22 @@ impl BackgroundProcessor {
 	/// `persist_manager` returns an error. In case of an error, the error is retrieved by calling
 	/// either [`join`] or [`stop`].
 	///
-	/// Typically, users should either implement [`ChannelManagerPersister`] to never return an
-	/// error or call [`join`] and handle any error that may arise. For the latter case, the
-	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
+	/// # Data Persistence
 	///
 	/// `persist_manager` is responsible for writing out the [`ChannelManager`] to disk, and/or
 	/// uploading to one or more backup services. See [`ChannelManager::write`] for writing out a
 	/// [`ChannelManager`]. See [`FilesystemPersister::persist_manager`] for Rust-Lightning's
 	/// provided implementation.
+	///
+	/// Typically, users should either implement [`ChannelManagerPersister`] to never return an
+	/// error or call [`join`] and handle any error that may arise. For the latter case,
+	/// `BackgroundProcessor` must be restarted by calling `start` again after handling the error.
+	///
+	/// # Event Handling
+	///
+	/// `event_handler` is responsible for handling events that users should be notified of (e.g.,
+	/// payment failed). A user's [`EventHandler`] may be decorated with other handlers to implement
+	/// common functionality. See individual [`Event`]s for further details.
 	///
 	/// [top-level documentation]: Self
 	/// [`join`]: Self::join
@@ -114,6 +130,7 @@ impl BackgroundProcessor {
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
 	/// [`FilesystemPersister::persist_manager`]: lightning_persister::FilesystemPersister::persist_manager
+	/// [`Event`]: lightning::util::events::Event
 	pub fn start<
 		Signer: 'static + Sign,
 		CF: 'static + Deref + Send + Sync,
