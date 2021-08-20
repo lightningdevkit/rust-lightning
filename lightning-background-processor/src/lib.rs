@@ -50,7 +50,13 @@ const FRESHNESS_TIMER: u64 = 60;
 #[cfg(test)]
 const FRESHNESS_TIMER: u64 = 1;
 
+#[cfg(not(debug_assertions))]
 const PING_TIMER: u64 = 5;
+/// Signature operations take a lot longer without compiler optimisations.
+/// Increasing the ping timer allows for this but slower devices will be disconnected if the
+/// timeout is reached.
+#[cfg(debug_assertions)]
+const PING_TIMER: u64 = 30;
 
 /// Trait which handles persisting a [`ChannelManager`] to disk.
 ///
