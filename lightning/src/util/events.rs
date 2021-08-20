@@ -112,8 +112,11 @@ pub enum Event {
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
 	},
-	/// Indicates an outbound payment we made succeeded (ie it made it all the way to its target
+	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
+	///
+	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentFailed` event.
+	/// In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must

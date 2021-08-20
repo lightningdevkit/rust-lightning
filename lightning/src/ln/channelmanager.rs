@@ -3140,17 +3140,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-				if let Some(sessions) = outbounds.get_mut(&mpp_id) {
-					if sessions.remove(&session_priv_bytes) {
-						self.pending_events.lock().unwrap().push(
-							events::Event::PaymentSent { payment_preimage }
-						);
-						if sessions.len() == 0 {
-							outbounds.remove(&mpp_id);
-						}
-					} else {
-						log_trace!(self.logger, "Received duplicative fulfill for HTLC with payment_preimage {}", log_bytes!(payment_preimage.0));
-					}
+				let found_payment = if let Some(mut sessions) = outbounds.remove(&mpp_id) {
+					sessions.remove(&session_priv_bytes)
+				} else { false };
+				if found_payment {
+					self.pending_events.lock().unwrap().push(
+						events::Event::PaymentSent { payment_preimage }
+					);
 				} else {
 					log_trace!(self.logger, "Received duplicative fulfill for HTLC with payment_preimage {}", log_bytes!(payment_preimage.0));
 				}
@@ -5691,15 +5687,10 @@ mod tests {
 		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
 		check_added_monitors!(nodes[0], 1);
 
-		// There's an existing bug that generates a PaymentSent event for each MPP path, so handle that here.
+		// Note that successful MPP payments will generate 1 event upon the first path's success. No
+		// further events will be generated for subsequence path successes.
 		let events = nodes[0].node.get_and_clear_pending_events();
 		match events[0] {
-			Event::PaymentSent { payment_preimage: ref preimage } => {
-				assert_eq!(payment_preimage, *preimage);
-			},
-			_ => panic!("Unexpected event"),
-		}
-		match events[1] {
 			Event::PaymentSent { payment_preimage: ref preimage } => {
 				assert_eq!(payment_preimage, *preimage);
 			},

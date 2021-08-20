@@ -1242,8 +1242,10 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 
 		if !skip_last {
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
-			expect_payment_sent!(origin_node, our_payment_preimage);
 		}
+	}
+	if !skip_last {
+		expect_payment_sent!(origin_node, our_payment_preimage);
 	}
 }
 
