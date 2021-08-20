@@ -1791,7 +1791,8 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx);
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Now that we're past error-generating stuff, update our local state:
 
@@ -1867,7 +1868,9 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx);
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
+
 
 		let funding_redeemscript = self.get_funding_redeemscript();
 		let funding_txo = self.get_funding_txo().unwrap();
@@ -2505,7 +2508,8 @@ impl<Signer: Sign> Channel<Signer> {
 		);
 
 		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx);
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| (None, ChannelError::Close("Failed to validate our commitment".to_owned())))?;
 		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
@@ -2770,7 +2774,8 @@ impl<Signer: Sign> Channel<Signer> {
 		self.holder_signer.validate_counterparty_revocation(
 			self.cur_counterparty_commitment_transaction_number + 1,
 			&secret
-		);
+		).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
+
 		self.commitment_secrets.provide_secret(self.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|_| ChannelError::Close("Previous secrets did not match new one".to_owned()))?;
 		self.latest_monitor_update_id += 1;

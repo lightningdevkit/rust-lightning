@@ -100,11 +100,12 @@ impl BaseSign for EnforcingSigner {
 		self.inner.release_commitment_secret(idx)
 	}
 
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) {
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
 		assert!(idx == state.last_holder_commitment || idx == state.last_holder_commitment - 1, "expecting to validate the current or next holder commitment - trying {}, current {}", idx, state.last_holder_commitment);
 		state.last_holder_commitment = idx;
+		Ok(())
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
@@ -129,10 +130,11 @@ impl BaseSign for EnforcingSigner {
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
-	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) {
+	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
 		state.last_counterparty_revoked_commitment = idx;
+		Ok(())
 	}
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {

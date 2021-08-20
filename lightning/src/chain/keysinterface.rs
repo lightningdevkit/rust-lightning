@@ -218,7 +218,7 @@ pub trait BaseSign {
 	/// secret won't leave us without a broadcastable holder transaction.
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction);
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) -> Result<(), ()>;
 	/// Gets the holder's channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
@@ -239,7 +239,7 @@ pub trait BaseSign {
 	///
 	/// This is required in order for the signer to make sure that the state has moved
 	/// forward and it is safe to sign the next counterparty commitment.
-	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey);
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
 	/// Create a signatures for a holder's commitment transaction and its claiming HTLC transactions.
 	/// This will only ever be called with a non-revoked commitment_tx.  This will be called with the
@@ -573,7 +573,8 @@ impl BaseSign for InMemorySigner {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 
-	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction) {
+	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction) -> Result<(), ()> {
+		Ok(())
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }
@@ -602,7 +603,8 @@ impl BaseSign for InMemorySigner {
 		Ok((commitment_sig, htlc_sigs))
 	}
 
-	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) {
+	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		Ok(())
 	}
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
