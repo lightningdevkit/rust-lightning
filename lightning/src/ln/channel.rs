@@ -1998,7 +1998,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Returns a HTLCStats about inbound pending htlcs
-	fn get_inbound_pending_htlc_stats(&self) -> HTLCStats {
+	fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let mut stats = HTLCStats {
 			pending_htlcs: self.pending_inbound_htlcs.len() as u32,
 			pending_htlcs_value_msat: 0,
@@ -2007,8 +2007,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holding_cell_msat: 0,
 		};
 
-		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_success_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
@@ -2022,7 +2022,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
-	fn get_outbound_pending_htlc_stats(&self) -> HTLCStats {
+	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let mut stats = HTLCStats {
 			pending_htlcs: self.pending_outbound_htlcs.len() as u32,
 			pending_htlcs_value_msat: 0,
@@ -2031,8 +2031,8 @@ impl<Signer: Sign> Channel<Signer> {
 			holding_cell_msat: 0,
 		};
 
-		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_timeout_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
@@ -2068,11 +2068,11 @@ impl<Signer: Sign> Channel<Signer> {
 		(
 			cmp::max(self.channel_value_satoshis as i64 * 1000
 				- self.value_to_self_msat as i64
-				- self.get_inbound_pending_htlc_stats().pending_htlcs_value_msat as i64
+				- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
 				- Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) as i64 * 1000,
 			0) as u64,
 			cmp::max(self.value_to_self_msat as i64
-				- self.get_outbound_pending_htlc_stats().pending_htlcs_value_msat as i64
+				- self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
 				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
 			0) as u64
 		)
@@ -2291,8 +2291,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 
-		let inbound_stats = self.get_inbound_pending_htlc_stats();
-		let outbound_stats = self.get_outbound_pending_htlc_stats();
+		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
 		if inbound_stats.pending_htlcs + 1 > OUR_MAX_HTLCS as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", OUR_MAX_HTLCS)));
 		}
@@ -2321,7 +2321,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
 			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
 			if on_counterparty_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -2331,7 +2331,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -3080,8 +3080,8 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let inbound_stats = self.get_inbound_pending_htlc_stats();
-		let outbound_stats = self.get_outbound_pending_htlc_stats();
+		let inbound_stats = self.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
+		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = if let Ok(keys) = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number) { keys } else { return None; };
 		let (_, _, num_htlcs, _, holder_balance_msat, _) = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, num_htlcs + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize);
@@ -3089,6 +3089,18 @@ impl<Signer: Sign> Channel<Signer> {
 		if holder_balance_msat < total_fee_sat * 1000 + self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
+			return None;
+		}
+
+		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
+		let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
+		let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+		if holder_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
+			return None;
+		}
+		if counterparty_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
+			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
 			return None;
 		}
 
@@ -3271,7 +3283,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
-		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate();
+		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate(None);
 
 		self.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
 		self.update_time_counter += 1;
@@ -3279,8 +3291,8 @@ impl<Signer: Sign> Channel<Signer> {
 		// `get_dust_buffer_feerate` considers the `pending_update_fee` status), check that we
 		// won't be pushed over our dust exposure limit by the feerate increase.
 		if feerate_over_dust_buffer {
-			let inbound_stats = self.get_inbound_pending_htlc_stats();
-			let outbound_stats = self.get_outbound_pending_htlc_stats();
+			let inbound_stats = self.get_inbound_pending_htlc_stats(None);
+			let outbound_stats = self.get_outbound_pending_htlc_stats(None);
 			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
 			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
 			if holder_tx_dust_exposure > self.get_max_dust_htlc_exposure_msat() {
@@ -3981,7 +3993,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.feerate_per_kw
 	}
 
-	pub fn get_dust_buffer_feerate(&self) -> u32 {
+	pub fn get_dust_buffer_feerate(&self, outbound_feerate_update: Option<u32>) -> u32 {
 		// When calculating our exposure to dust HTLCs, we assume that the channel feerate
 		// may, at any point, increase by at least 10 sat/vB (i.e 2530 sat/kWU) or 25%,
 		// whichever is higher. This ensures that we aren't suddenly exposed to significantly
@@ -3991,6 +4003,9 @@ impl<Signer: Sign> Channel<Signer> {
 		// If there's a pending update fee, use it to ensure we aren't under-estimating
 		// potential feerate updates coming soon.
 		if let Some((feerate, _)) = self.pending_update_fee {
+			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
+		}
+		if let Some(feerate) = outbound_feerate_update {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
 		cmp::max(2530, feerate_per_kw * 1250 / 1000)
@@ -4655,8 +4670,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
-		let inbound_stats = self.get_inbound_pending_htlc_stats();
-		let outbound_stats = self.get_outbound_pending_htlc_stats();
+		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
 		if outbound_stats.pending_htlcs + 1 > self.counterparty_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Ignore(format!("Cannot push more than their max accepted HTLCs ({})", self.counterparty_max_accepted_htlcs)));
 		}
@@ -4677,7 +4692,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
+		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
 		if amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
 			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -4686,7 +4701,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.holder_dust_limit_satoshis;
 		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
 			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
 			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
