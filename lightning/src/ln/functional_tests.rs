@@ -22,7 +22,7 @@ use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
-use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
+use ln::chan_utils::{HTLC_SUCCESS_TX_WEIGHT, HTLCOutputInCommitment};
 use routing::network_graph::{NetworkUpdate, RoutingFees};
 use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -584,9 +584,10 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1888;
+	let channel_value = 1977;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
+	let secp_ctx = Secp256k1::new();
 
 	let feerate = 260;
 	{
@@ -621,16 +622,70 @@ fn test_update_fee_that_funder_cannot_afford() {
 		*feerate_lock = feerate + 2;
 	}
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors!(nodes[0], 1);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 2), 1);
+	check_added_monitors!(nodes[0], 0);
 
-	let update2_msg = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
 
-	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update2_msg.update_fee.unwrap());
+	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
+	// needed to sign the new commitment tx and (2) sign the new commitment tx.
+	let (local_revocation_basepoint, local_htlc_basepoint, local_funding) = {
+		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let chan_signer = local_chan.get_signer();
+		let pubkeys = chan_signer.pubkeys();
+		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
+		 pubkeys.funding_pubkey)
+	};
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point, remote_funding) = {
+		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
+		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let chan_signer = remote_chan.get_signer();
+		let pubkeys = chan_signer.pubkeys();
+		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 pubkeys.funding_pubkey)
+	};
+
+	// Assemble the set of keys we can use for signatures for our commitment_signed message.
+	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
+		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
+
+	let res = {
+		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
+		let local_chan_signer = local_chan.get_signer();
+		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
+		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+			INITIAL_COMMITMENT_NUMBER - 1,
+			700,
+			999,
+			false, local_funding, remote_funding,
+			commit_tx_keys.clone(),
+			feerate + 124,
+			&mut htlcs,
+			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
+		);
+		local_chan_signer.sign_counterparty_commitment(&commitment_tx, &secp_ctx).unwrap()
+	};
+
+	let commit_signed_msg = msgs::CommitmentSigned {
+		channel_id: chan.2,
+		signature: res.0,
+		htlc_signatures: res.1
+	};
+
+	let update_fee = msgs::UpdateFee {
+		channel_id: chan.2,
+		feerate_per_kw: feerate + 124,
+	};
+
+	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);
 
 	//While producing the commitment_signed response after handling a received update_fee request the
 	//check to see if the funder, who sent the update_fee request, can afford the new fee (funder_balance >= fee+channel_reserve)
 	//Should produce and error.
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &update2_msg.commitment_signed);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commit_signed_msg);
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Funding remote cannot afford proposed new fee".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);

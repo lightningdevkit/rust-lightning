@@ -62,7 +62,7 @@ pub struct ChannelValueStat {
 	pub counterparty_dust_limit_msat: u64,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum FeeUpdateState {
 	// Inbound states mirroring InboundHTLCState
 	RemoteAnnounced,
@@ -293,6 +293,7 @@ struct HTLCStats {
 	pending_htlcs_value_msat: u64,
 	on_counterparty_tx_dust_exposure_msat: u64,
 	on_holder_tx_dust_exposure_msat: u64,
+	holding_cell_msat: u64,
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -383,6 +384,17 @@ const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 /// channel creation on an inbound channel, we simply force-close and move on.
 /// This constant is the one suggested in BOLT 2.
 pub(crate) const FUNDING_CONF_DEADLINE_BLOCKS: u32 = 2016;
+
+/// In case of a concurrent update_add_htlc proposed by our counterparty, we might
+/// not have enough balance value remaining to cover the onchain cost of this new
+/// HTLC weight. If this happens, our counterparty fails the reception of our
+/// commitment_signed including this new HTLC due to infringement on the channel
+/// reserve.
+/// To prevent this case, we compute our outbound update_fee with an HTLC buffer of
+/// size 2. However, if the number of concurrent update_add_htlc is higher, this still
+/// leads to a channel force-close. Ultimately, this is an issue coming from the
+/// design of LN state machines, allowing asynchronous updates.
+const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
@@ -1110,8 +1122,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// transaction, the list of HTLCs which were not ignored when building the transaction).
 	/// Note that below-dust HTLCs are included in the fourth return value, but not the third, and
 	/// sources are provided only for outbound HTLCs in the fourth return value.
+	/// Note that fifth and sixth return values are respectively anticipated holder and counterparty
+	/// balance, not the value actually paid on-chain, which may be zero if it got rounded to dust.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> (CommitmentTransaction, u32, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
+	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> (CommitmentTransaction, u32, usize, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, u64, u64) where L::Target: Logger {
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
 		let mut included_non_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(num_htlcs);
@@ -1302,7 +1316,7 @@ impl<Signer: Sign> Channel<Signer> {
 		htlcs_included.sort_unstable_by_key(|h| h.0.transaction_output_index.unwrap());
 		htlcs_included.append(&mut included_dust_htlcs);
 
-		(tx, feerate_per_kw, num_nondust_htlcs, htlcs_included)
+		(tx, feerate_per_kw, num_nondust_htlcs, htlcs_included, value_to_self_msat as u64, value_to_remote_msat as u64)
 	}
 
 	#[inline]
@@ -1990,6 +2004,7 @@ impl<Signer: Sign> Channel<Signer> {
 			pending_htlcs_value_msat: 0,
 			on_counterparty_tx_dust_exposure_msat: 0,
 			on_holder_tx_dust_exposure_msat: 0,
+			holding_cell_msat: 0,
 		};
 
 		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
@@ -2013,6 +2028,7 @@ impl<Signer: Sign> Channel<Signer> {
 			pending_htlcs_value_msat: 0,
 			on_counterparty_tx_dust_exposure_msat: 0,
 			on_holder_tx_dust_exposure_msat: 0,
+			holding_cell_msat: 0,
 		};
 
 		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate() as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
@@ -2031,6 +2047,7 @@ impl<Signer: Sign> Channel<Signer> {
 			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
 				stats.pending_htlcs += 1;
 				stats.pending_htlcs_value_msat += amount_msat;
+				stats.holding_cell_msat += amount_msat;
 				if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
 					stats.on_counterparty_tx_dust_exposure_msat += amount_msat;
 				}
@@ -2478,7 +2495,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number).map_err(|e| (None, e))?;
 
-		let (num_htlcs, mut htlcs_cloned, commitment_tx, commitment_txid, feerate_per_kw) = {
+		let (num_htlcs, mut htlcs_cloned, commitment_tx, commitment_txid, feerate_per_kw, _, counterparty_balance_msat) = {
 			let commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, logger);
 			let commitment_txid = {
 				let trusted_tx = commitment_tx.0.trust();
@@ -2495,7 +2512,7 @@ impl<Signer: Sign> Channel<Signer> {
 				bitcoin_tx.txid
 			};
 			let htlcs_cloned: Vec<_> = commitment_tx.3.iter().map(|htlc| (htlc.0.clone(), htlc.1.map(|h| h.clone()))).collect();
-			(commitment_tx.2, htlcs_cloned, commitment_tx.0, commitment_txid, commitment_tx.1)
+			(commitment_tx.2, htlcs_cloned, commitment_tx.0, commitment_txid, commitment_tx.1, commitment_tx.4, commitment_tx.5)
 		};
 
 		// If our counterparty updated the channel fee in this commitment transaction, check that
@@ -2507,7 +2524,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, num_htlcs);
 		if update_fee {
 			let counterparty_reserve_we_require = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
-			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee_sat + counterparty_reserve_we_require {
+			if counterparty_balance_msat < total_fee_sat * 1000 + counterparty_reserve_we_require * 1000 {
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee".to_owned())));
 			}
 		}
@@ -2692,7 +2709,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// to rebalance channels.
 				match &htlc_update {
 					&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
-						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone()) {
+						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone(), logger) {
 							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 							Err(e) => {
 								match e {
@@ -2751,12 +2768,7 @@ impl<Signer: Sign> Channel<Signer> {
 				return Ok((None, htlcs_to_fail));
 			}
 			let update_fee = if let Some(feerate) = self.holding_cell_update_fee.take() {
-				assert!(self.is_outbound());
-				self.pending_update_fee = Some((feerate, FeeUpdateState::Outbound));
-				Some(msgs::UpdateFee {
-					channel_id: self.channel_id,
-					feerate_per_kw: feerate as u32,
-				})
+				self.send_update_fee(feerate, logger)
 			} else {
 				None
 			};
@@ -3053,8 +3065,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Adds a pending update to this channel. See the doc for send_htlc for
 	/// further details on the optionness of the return value.
+	/// If our balance is too low to cover the cost of the next commitment transaction at the
+	/// new feerate, the update is cancelled.
 	/// You MUST call send_commitment prior to any other calls on this Channel
-	fn send_update_fee(&mut self, feerate_per_kw: u32) -> Option<msgs::UpdateFee> {
+	fn send_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Option<msgs::UpdateFee> where L::Target: Logger {
 		if !self.is_outbound() {
 			panic!("Cannot send fee from inbound channel");
 		}
@@ -3063,6 +3077,19 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		if !self.is_live() {
 			panic!("Cannot update fee while peer is disconnected/we're awaiting a monitor update (ChannelManager should have caught this)");
+		}
+
+		// Before proposing a feerate update, check that we can actually afford the new fee.
+		let inbound_stats = self.get_inbound_pending_htlc_stats();
+		let outbound_stats = self.get_outbound_pending_htlc_stats();
+		let keys = if let Ok(keys) = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number) { keys } else { return None; };
+		let (_, _, num_htlcs, _, holder_balance_msat, _) = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, num_htlcs + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize);
+		let holder_balance_msat = holder_balance_msat - outbound_stats.holding_cell_msat;
+		if holder_balance_msat < total_fee_sat * 1000 + self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
+			//TODO: auto-close after a number of failures?
+			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
+			return None;
 		}
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
@@ -3080,7 +3107,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn send_update_fee_and_commit<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.send_update_fee(feerate_per_kw) {
+		match self.send_update_fee(feerate_per_kw, logger) {
 			Some(update_fee) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_fee, commitment_signed, monitor_update)))
@@ -4601,7 +4628,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// You MUST call send_commitment prior to calling any other methods on this Channel!
 	///
 	/// If an Err is returned, it's a ChannelError::Ignore!
-	pub fn send_htlc(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> {
+	pub fn send_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
@@ -4638,13 +4665,14 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put us over the max HTLC value in flight our peer will accept ({})", self.counterparty_max_htlc_value_in_flight_msat)));
 		}
 
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
 		if !self.is_outbound() {
 			// Check that we won't violate the remote channel reserve by adding this HTLC.
-			let counterparty_balance_msat = self.channel_value_satoshis * 1000 - self.value_to_self_msat;
-			let holder_selected_chan_reserve_msat = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
+			let counterparty_balance_msat = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger).5;
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
 			let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
-			if counterparty_balance_msat < holder_selected_chan_reserve_msat + counterparty_commit_tx_fee_msat {
+			let holder_selected_chan_reserve_msat = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis) * 1000;
+			if counterparty_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
 				return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
 			}
 		}
@@ -4667,9 +4695,9 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let pending_value_to_self_msat = self.value_to_self_msat - outbound_stats.pending_htlcs_value_msat;
-		if pending_value_to_self_msat < amount_msat {
-			return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, pending_value_to_self_msat)));
+		let holder_balance_msat = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger).4 as u64 - outbound_stats.holding_cell_msat;
+		if holder_balance_msat < amount_msat {
+			return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, holder_balance_msat)));
 		}
 
 		// `2 *` and extra HTLC are for the fee spike buffer.
@@ -4677,14 +4705,14 @@ impl<Signer: Sign> Channel<Signer> {
 			let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
 			FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
 		} else { 0 };
-		if pending_value_to_self_msat - amount_msat < commit_tx_fee_msat {
-			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", pending_value_to_self_msat, commit_tx_fee_msat)));
+		if holder_balance_msat - amount_msat < commit_tx_fee_msat {
+			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", holder_balance_msat, commit_tx_fee_msat)));
 		}
 
 		// Check self.counterparty_selected_channel_reserve_satoshis (the amount we must keep as
 		// reserve for the remote to have something to claim if we misbehave)
 		let chan_reserve_msat = self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000;
-		if pending_value_to_self_msat - amount_msat - commit_tx_fee_msat < chan_reserve_msat {
+		if holder_balance_msat - amount_msat - commit_tx_fee_msat < chan_reserve_msat {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
 
@@ -4878,7 +4906,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Shorthand for calling send_htlc() followed by send_commitment(), see docs on those for
 	/// more info.
 	pub fn send_htlc_and_commit<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet)? {
+		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, logger)? {
 			Some(update_add_htlc) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_add_htlc, commitment_signed, monitor_update)))
