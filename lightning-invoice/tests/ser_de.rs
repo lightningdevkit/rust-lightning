@@ -11,6 +11,7 @@ use secp256k1::Secp256k1;
 use secp256k1::key::SecretKey;
 use secp256k1::recovery::{RecoverableSignature, RecoveryId};
 use std::time::{Duration, UNIX_EPOCH};
+use std::str::FromStr;
 
 // TODO: add more of the examples from BOLT11 and generate ones causing SemanticErrors
 
@@ -148,4 +149,21 @@ fn deserialize() {
 			assert!(validated.is_ok());
 		}
 	}
+}
+
+#[test]
+fn test_bolt_invalid_invoices() {
+	// Tests the BOLT 11 invalid invoice test vectors
+	assert_eq!(Invoice::from_str(
+		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
+		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
+	assert_eq!(Invoice::from_str(
+		"pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
+		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::MissingSeparator))));
+	assert_eq!(Invoice::from_str(
+		"LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
+		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::MixedCase))));
+	assert_eq!(Invoice::from_str(
+		"lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh"
+		), Err(ParseOrSemanticError::ParseError(ParseError::TooShortDataPart)));
 }
