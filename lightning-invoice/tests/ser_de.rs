@@ -49,7 +49,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, Option<SemanticError>)> {
 			k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch\
 			9zw97j25emudupq63nyw24cg27h2rspfj9srp".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_pico_btc(2500000000)
+				.amount_milli_satoshis(250_000_000)
 				.timestamp(UNIX_EPOCH + Duration::from_secs(1496314658))
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
@@ -78,7 +78,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, Option<SemanticError>)> {
 			dhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqscc6gd6ql3jrc5yzme8v4ntcewwz5cnw92tz0pc8qcuufvq7k\
 			hhr8wpald05e92xw006sq94mg8v2ndf4sefvf9sygkshp5zfem29trqq2yxxz7".to_owned(),
 			InvoiceBuilder::new(Currency::Bitcoin)
-				.amount_pico_btc(20000000000)
+				.amount_milli_satoshis(2_000_000_000)
 				.timestamp(UNIX_EPOCH + Duration::from_secs(1496314658))
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
@@ -110,7 +110,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, Option<SemanticError>)> {
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
 				.description("coffee beans".to_string())
-				.amount_pico_btc(20000000000)
+				.amount_milli_satoshis(2_000_000_000)
 				.timestamp(UNIX_EPOCH + Duration::from_secs(1496314658))
 				.payment_secret(PaymentSecret([42; 32]))
 				.build_raw()
@@ -172,4 +172,7 @@ fn test_bolt_invalid_invoices() {
 	assert_eq!(Invoice::from_str(
 		"lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpujr6jxr9gq9pv6g46y7d20jfkegkg4gljz2ea2a3m9lmvvr95tq2s0kvu70u3axgelz3kyvtp2ywwt0y8hkx2869zq5dll9nelr83zzqqpgl2zg"
 		), Err(ParseOrSemanticError::ParseError(ParseError::UnknownSiPrefix)));
+	assert_eq!(Invoice::from_str(
+		"lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu7hqtk93pkf7sw55rdv4k9z2vj050rxdr6za9ekfs3nlt5lr89jqpdmxsmlj9urqumg0h9wzpqecw7th56tdms40p2ny9q4ddvjsedzcplva53s"
+		), Err(ParseOrSemanticError::SemanticError(SemanticError::ImpreciseAmount)));
 }

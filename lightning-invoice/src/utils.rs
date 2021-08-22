@@ -68,7 +68,7 @@ where
 		.basic_mpp()
 		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
 	if let Some(amt) = amt_msat {
-		invoice = invoice.amount_pico_btc(amt * 10);
+		invoice = invoice.amount_milli_satoshis(amt);
 	}
 	for hint in route_hints {
 		invoice = invoice.private_route(hint);

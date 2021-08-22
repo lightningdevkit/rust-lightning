@@ -480,8 +480,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 		}
 	}
 
-	/// Sets the amount in pico BTC. The optimal SI prefix is choosen automatically.
-	pub fn amount_pico_btc(mut self, amount: u64) -> Self {
+	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
+	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
+		let amount = amount_msat * 10; // Invoices are denominated in "pico BTC"
 		let biggest_possible_si_prefix = SiPrefix::values_desc()
 			.iter()
 			.find(|prefix| amount % prefix.multiplier() == 0)
@@ -673,6 +674,7 @@ impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
 
 		invoice.check_field_counts().expect("should be ensured by type signature of builder");
 		invoice.check_feature_bits().expect("should be ensured by type signature of builder");
+		invoice.check_amount().expect("should be ensured by type signature of builder");
 
 		Ok(invoice)
 	}
@@ -1019,6 +1021,16 @@ impl Invoice {
 		Ok(())
 	}
 
+	/// Check that amount is a whole number of millisatoshis
+	fn check_amount(&self) -> Result<(), SemanticError> {
+		if let Some(amount_pico_btc) = self.amount_pico_btc() {
+			if amount_pico_btc % 10 != 0 {
+				return Err(SemanticError::ImpreciseAmount);
+			}
+		}
+		Ok(())
+	}
+
 	/// Check that feature bits are set as required
 	fn check_feature_bits(&self) -> Result<(), SemanticError> {
 		// "If the payment_secret feature is set, MUST include exactly one s field."
@@ -1099,6 +1111,7 @@ impl Invoice {
 		invoice.check_field_counts()?;
 		invoice.check_feature_bits()?;
 		invoice.check_signature()?;
+		invoice.check_amount()?;
 
 		Ok(invoice)
 	}
@@ -1408,6 +1421,9 @@ pub enum SemanticError {
 
 	/// The invoice's signature is invalid
 	InvalidSignature,
+
+	/// The invoice's amount was not a whole number of millisatoshis
+	ImpreciseAmount,
 }
 
 impl Display for SemanticError {
@@ -1421,6 +1437,7 @@ impl Display for SemanticError {
 			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
 			SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
+			SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
 		}
 	}
 }
@@ -1670,7 +1687,7 @@ mod test {
 			.current_timestamp();
 
 		let invoice = builder.clone()
-			.amount_pico_btc(15000)
+			.amount_milli_satoshis(1500)
 			.build_raw()
 			.unwrap();
 
@@ -1679,7 +1696,7 @@ mod test {
 
 
 		let invoice = builder.clone()
-			.amount_pico_btc(1500)
+			.amount_milli_satoshis(150)
 			.build_raw()
 			.unwrap();
 
@@ -1810,7 +1827,7 @@ mod test {
 		]);
 
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
-			.amount_pico_btc(123)
+			.amount_milli_satoshis(123)
 			.timestamp(UNIX_EPOCH + Duration::from_secs(1234567))
 			.payee_pub_key(public_key.clone())
 			.expiry_time(Duration::from_secs(54321))
@@ -1830,7 +1847,7 @@ mod test {
 		assert!(invoice.check_signature().is_ok());
 		assert_eq!(invoice.tagged_fields().count(), 10);
 
-		assert_eq!(invoice.amount_pico_btc(), Some(123));
+		assert_eq!(invoice.amount_pico_btc(), Some(1230));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		assert_eq!(
 			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
