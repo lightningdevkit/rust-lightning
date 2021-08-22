@@ -861,3 +861,9 @@ impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
 		self.2.write(w)
 	}
 }
+
+impl Readable for () {
+	fn read<R: Read>(_r: &mut R) -> Result<Self, DecodeError> {
+		Ok(())
+	}
+}
