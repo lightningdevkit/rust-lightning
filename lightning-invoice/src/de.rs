@@ -77,7 +77,7 @@ mod hrp_sm {
 					} else if ['m', 'u', 'n', 'p'].contains(&read_symbol) {
 						Ok(States::ParseAmountSiPrefix)
 					} else {
-						Err(super::ParseError::MalformedHRP)
+						Err(super::ParseError::UnknownSiPrefix)
 					}
 				},
 				States::ParseAmountSiPrefix => Err(super::ParseError::MalformedHRP),

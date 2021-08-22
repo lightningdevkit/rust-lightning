@@ -1059,7 +1059,9 @@ impl Invoice {
 		match self.signed_invoice.recover_payee_pub_key() {
 			Err(secp256k1::Error::InvalidRecoveryId) =>
 				return Err(SemanticError::InvalidRecoveryId),
-			Err(_) => panic!("no other error may occur"),
+			Err(secp256k1::Error::InvalidSignature) =>
+				return Err(SemanticError::InvalidSignature),
+			Err(e) => panic!("no other error may occur, got {:?}", e),
 			Ok(_) => {},
 		}
 
