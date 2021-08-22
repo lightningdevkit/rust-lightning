@@ -1052,7 +1052,9 @@ impl Invoice {
 			None if has_payment_secret => Err(SemanticError::InvalidFeatures),
 			None => Ok(()),
 			Some(TaggedField::Features(features)) => {
-				if features.supports_payment_secret() && has_payment_secret {
+				if features.requires_unknown_bits() {
+					Err(SemanticError::InvalidFeatures)
+				} else if features.supports_payment_secret() && has_payment_secret {
 					Ok(())
 				} else if has_payment_secret {
 					Err(SemanticError::InvalidFeatures)

@@ -155,6 +155,9 @@ fn deserialize() {
 fn test_bolt_invalid_invoices() {
 	// Tests the BOLT 11 invalid invoice test vectors
 	assert_eq!(Invoice::from_str(
+		"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqpqsqq40wa3khl49yue3zsgm26jrepqr2eghqlx86rttutve3ugd05em86nsefzh4pfurpd9ek9w2vp95zxqnfe2u7ckudyahsa52q66tgzcp6t2dyk"
+		), Err(ParseOrSemanticError::SemanticError(SemanticError::InvalidFeatures)));
+	assert_eq!(Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
 		), Err(ParseOrSemanticError::ParseError(ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
 	assert_eq!(Invoice::from_str(

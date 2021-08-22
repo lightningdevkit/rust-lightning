@@ -548,7 +548,9 @@ impl<T: sealed::Context> Features<T> {
 		&self.flags
 	}
 
-	pub(crate) fn requires_unknown_bits(&self) -> bool {
+	/// Returns true if this `Features` object contains unknown feature flags which are set as
+	/// "required".
+	pub fn requires_unknown_bits(&self) -> bool {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
