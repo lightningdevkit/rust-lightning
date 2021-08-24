@@ -120,6 +120,18 @@ pub trait Logger {
 	fn log(&self, record: &Record);
 }
 
+/// Wrapper for logging byte slices in hex format.
+#[doc(hidden)]
+pub struct DebugBytes<'a>(pub &'a [u8]);
+impl<'a> core::fmt::Display for DebugBytes<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		for i in self.0 {
+			write!(f, "{:02x}", i)?;
+		}
+		Ok(())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use util::logger::{Logger, Level};
