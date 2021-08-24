@@ -419,7 +419,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, ParseError> {
 			Ok(field) => {
 				parts.push(RawTaggedField::KnownSemantics(field))
 			},
-			Err(ParseError::Skip) => {
+			Err(ParseError::Skip)|Err(ParseError::Bech32Error(bech32::Error::InvalidLength)) => {
 				parts.push(RawTaggedField::UnknownSemantics(field.into()))
 			},
 			Err(e) => {return Err(e)}
