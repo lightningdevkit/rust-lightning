@@ -16,4 +16,4 @@ lightning-persister = { version = "0.0.102", path = "../lightning-persister" }
 
 [dev-dependencies]
 lightning = { version = "0.0.102", path = "../lightning", features = ["_test_utils"] }
-
+lightning-invoice = { version = "0.10.0", path = "../lightning-invoice" }

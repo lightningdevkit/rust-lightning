@@ -174,7 +174,7 @@ impl BackgroundProcessor {
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
 		CMH: 'static + Deref + Send + Sync,
 		RMH: 'static + Deref + Send + Sync,
-		EH: 'static + EventHandler + Send + Sync,
+		EH: 'static + EventHandler + Send,
 		CMP: 'static + Send + ChannelManagerPersister<Signer, CW, T, K, F, L>,
 		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
@@ -317,6 +317,8 @@ mod tests {
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
+	use lightning_invoice::payment::{InvoicePayer, RetryAttempts};
+	use lightning_invoice::utils::DefaultRouter;
 	use lightning_persister::FilesystemPersister;
 	use std::fs;
 	use std::path::PathBuf;
@@ -620,6 +622,22 @@ mod tests {
 			_ => panic!("Unexpected event: {:?}", event),
 		}
 
+		assert!(bg_processor.stop().is_ok());
+	}
+
+	#[test]
+	fn test_invoice_payer() {
+		let nodes = create_nodes(2, "test_invoice_payer".to_string());
+
+		// Initiate the background processors to watch each node.
+		let data_dir = nodes[0].persister.get_data_dir();
+		let persister = move |node: &ChannelManager<InMemorySigner, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
+		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let router = DefaultRouter::new(network_graph, Arc::clone(&nodes[0].logger));
+		let scorer = Arc::new(Mutex::new(Scorer::default()));
+		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, scorer, Arc::clone(&nodes[0].logger), |_: &_| {}, RetryAttempts(2)));
+		let event_handler = Arc::clone(&invoice_payer);
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
 		assert!(bg_processor.stop().is_ok());
 	}
 }
