@@ -25,6 +25,7 @@
 use io;
 use prelude::*;
 use core::{cmp, fmt};
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use bitcoin::bech32;
@@ -360,6 +361,11 @@ impl<T: sealed::Context> Clone for Features<T> {
 			flags: self.flags.clone(),
 			mark: PhantomData,
 		}
+	}
+}
+impl<T: sealed::Context> Hash for Features<T> {
+	fn hash<H: Hasher>(&self, hasher: &mut H) {
+		self.flags.hash(hasher);
 	}
 }
 impl<T: sealed::Context> PartialEq for Features<T> {

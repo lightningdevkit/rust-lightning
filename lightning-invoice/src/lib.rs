@@ -321,7 +321,7 @@ impl SiPrefix {
 }
 
 /// Enum representing the crypto currencies (or networks) supported by this library
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum Currency {
 	/// Bitcoin mainnet
 	Bitcoin,
@@ -342,7 +342,7 @@ pub enum Currency {
 /// Tagged field which may have an unknown tag
 ///
 /// (C-not exported) as we don't currently support TaggedField
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
@@ -357,7 +357,7 @@ pub enum RawTaggedField {
 /// (C-not exported) As we don't yet support enum variants with the same name the struct contained
 /// in the variant.
 #[allow(missing_docs)]
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum TaggedField {
 	PaymentHash(Sha256),
 	Description(Description),
@@ -372,18 +372,18 @@ pub enum TaggedField {
 }
 
 /// SHA-256 hash
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Sha256(pub sha256::Hash);
 
 /// Description string
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Description(String);
 
 /// Payee public key
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PayeePubKey(pub PublicKey);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
@@ -393,17 +393,17 @@ pub struct PayeePubKey(pub PublicKey);
 /// The number of seconds this expiry time represents has to be in the range
 /// `0...(SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME)` to avoid overflows when adding it to a
 /// timestamp
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct ExpiryTime(Duration);
 
 /// `min_final_cltv_expiry` to use for the last HTLC in the route
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct MinFinalCltvExpiry(pub u64);
 
 // TODO: better types instead onf byte arrays
 /// Fallback address in case no LN payment is possible
 #[allow(missing_docs)]
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum Fallback {
 	SegWitProgram {
 		version: u5,
@@ -414,7 +414,7 @@ pub enum Fallback {
 }
 
 /// Recoverable signature
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvoiceSignature(pub RecoverableSignature);
 
 /// Private routing information
@@ -422,7 +422,7 @@ pub struct InvoiceSignature(pub RecoverableSignature);
 /// # Invariants
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11

@@ -28,7 +28,7 @@ use core::cmp;
 use core::ops::Deref;
 
 /// A hop in a route
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
@@ -60,7 +60,7 @@ impl_writeable_tlv_based!(RouteHop, {
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Route {
 	/// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
 	/// last RouteHop in each path must be the same.
@@ -108,11 +108,11 @@ impl Readable for Route {
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct RouteHint(pub Vec<RouteHintHop>);
 
 /// A channel descriptor for a hop along a payment path.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct RouteHintHop {
 	/// The node_id of the non-target end of the route
 	pub src_node_id: PublicKey,
