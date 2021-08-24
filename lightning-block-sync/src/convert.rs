@@ -4,7 +4,7 @@ use crate::utils::hex_to_uint256;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
-use bitcoin::hash_types::{BlockHash, TxMerkleNode};
+use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hashes::hex::{ToHex, FromHex};
 
 use serde::Deserialize;
@@ -156,11 +156,37 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 	}
 }
 
+impl TryInto<Txid> for JsonResponse {
+	type Error = std::io::Error;
+	fn try_into(self) -> std::io::Result<Txid> {
+		match self.0.as_str() {
+			None => Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				"expected JSON string",
+			)),
+			Some(hex_data) => match Vec::<u8>::from_hex(hex_data) {
+				Err(_) => Err(std::io::Error::new(
+					std::io::ErrorKind::InvalidData,
+					"invalid hex data",
+				)),
+				Ok(txid_data) => match encode::deserialize(&txid_data) {
+					Err(_) => Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						"invalid txid",
+					)),
+					Ok(txid) => Ok(txid),
+				},
+			},
+		}
+	}
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
 	use super::*;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::consensus::encode;
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 
 	/// Converts from `BlockHeaderData` into a `GetHeaderResponse` JSON value.
@@ -467,6 +493,52 @@ pub(crate) mod tests {
 				assert_eq!(hash, block.block_hash());
 				assert_eq!(height.unwrap(), 1);
 			},
+		}
+	}
+
+	#[test]
+	fn into_txid_from_json_response_with_unexpected_type() {
+		let response = JsonResponse(serde_json::json!({ "result": "foo" }));
+		match TryInto::<Txid>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txid_from_json_response_with_invalid_hex_data() {
+		let response = JsonResponse(serde_json::json!("foobar"));
+		match TryInto::<Txid>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txid_from_json_response_with_invalid_txid_data() {
+		let response = JsonResponse(serde_json::json!("abcd"));
+		match TryInto::<Txid>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid txid");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txid_from_json_response_with_valid_txid_data() {
+		let target_txid = Txid::from_slice(&[1; 32]).unwrap();
+		let response = JsonResponse(serde_json::json!(encode::serialize_hex(&target_txid)));
+		match TryInto::<Txid>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(txid) => assert_eq!(txid, target_txid),
 		}
 	}
 }
