@@ -303,7 +303,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
 						blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
 					},
-					logger: &test_utils::TestLogger::new(),
+					logger: &self.logger,
 					channel_monitors,
 				}).unwrap();
 			}
@@ -1250,11 +1250,10 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let logger = test_utils::TestLogger::new();
 	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
 		&expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()),
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()), &[],
-		recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+		recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1265,9 +1264,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let logger = test_utils::TestLogger::new();
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, &logger).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
