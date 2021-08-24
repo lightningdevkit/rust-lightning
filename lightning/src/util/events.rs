@@ -23,6 +23,7 @@ use routing::network_graph::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 use routing::router::{RouteHop, RouteParameters};
 
+use bitcoin::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -32,7 +33,7 @@ use io;
 use prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
-use bitcoin::Transaction;
+use sync::Arc;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -779,5 +780,11 @@ pub trait EventHandler {
 impl<F> EventHandler for F where F: Fn(&Event) {
 	fn handle_event(&self, event: &Event) {
 		self(event)
+	}
+}
+
+impl<T: EventHandler> EventHandler for Arc<T> {
+	fn handle_event(&self, event: &Event) {
+		self.deref().handle_event(event)
 	}
 }

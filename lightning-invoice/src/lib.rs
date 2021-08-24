@@ -15,11 +15,12 @@
 //!   * For parsing use `str::parse::<Invoice>(&self)` (see the docs of `impl FromStr for Invoice`)
 //!   * For constructing invoices use the `InvoiceBuilder`
 //!   * For serializing invoices use the `Display`/`ToString` traits
+pub mod payment;
 pub mod utils;
 
 extern crate bech32;
 extern crate bitcoin_hashes;
-extern crate lightning;
+#[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
 
