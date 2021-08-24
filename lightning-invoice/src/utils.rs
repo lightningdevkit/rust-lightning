@@ -1,14 +1,21 @@
 //! Convenient utilities to create an invoice.
+
 use {Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
+use payment::{Payer, Router};
+
 use bech32::ToBase32;
 use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
-use lightning::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY};
-use lightning::routing::network_graph::RoutingFees;
-use lightning::routing::router::{RouteHint, RouteHintHop};
+use lightning::ln::{PaymentHash, PaymentSecret};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::msgs::LightningError;
+use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
+use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
+use lightning::routing::scorer::Scorer;
 use lightning::util::logger::Logger;
+use secp256k1::key::PublicKey;
 use std::convert::TryInto;
 use std::ops::Deref;
 
@@ -86,6 +93,58 @@ where
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
+	}
+}
+
+/// A [`Router`] implemented using [`find_route`].
+pub struct DefaultRouter<G, L: Deref> where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+	network_graph: G,
+	logger: L,
+}
+
+impl<G, L: Deref> DefaultRouter<G, L> where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+	/// Creates a new router using the given [`NetworkGraph`] and  [`Logger`].
+	pub fn new(network_graph: G, logger: L) -> Self {
+		Self { network_graph, logger }
+	}
+}
+
+impl<G, L: Deref> Router for DefaultRouter<G, L>
+where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+	fn find_route(
+		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
+	) -> Result<Route, LightningError> {
+		let scorer = Scorer::default();
+		find_route(payer, params, &*self.network_graph, first_hops, &*self.logger, &scorer)
+	}
+}
+
+impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	fn node_id(&self) -> PublicKey {
+		self.get_our_node_id()
+	}
+
+	fn first_hops(&self) -> Vec<ChannelDetails> {
+		self.list_usable_channels()
+	}
+
+	fn send_payment(
+		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
+	) -> Result<PaymentId, PaymentSendFailure> {
+		self.send_payment(route, payment_hash, payment_secret)
+	}
+
+	fn retry_payment(
+		&self, route: &Route, payment_id: PaymentId
+	) -> Result<(), PaymentSendFailure> {
+		self.retry_payment(route, payment_id)
 	}
 }
 
