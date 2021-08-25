@@ -2460,7 +2460,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								// resolve the source HTLC with the original sender.
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash, htlc_output.amount_msat));
 							} else if !$holder_tx {
-									check_htlc_valid_counterparty!(self.current_counterparty_commitment_txid, htlc_output);
+								check_htlc_valid_counterparty!(self.current_counterparty_commitment_txid, htlc_output);
 								if payment_data.is_none() {
 									check_htlc_valid_counterparty!(self.prev_counterparty_commitment_txid, htlc_output);
 								}
