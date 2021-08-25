@@ -3519,33 +3519,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 
 				let create_pending_htlc_status = |chan: &Channel<Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
-					// Ensure error_code has the UPDATE flag set, since by default we send a
-					// channel update along as part of failing the HTLC.
-					assert!((error_code & 0x1000) != 0);
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					match pending_forward_info {
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-							let reason = if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
-									let mut res = Vec::with_capacity(8 + 128);
-									// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-									res.extend_from_slice(&byte_utils::be16_to_array(0));
-									res.extend_from_slice(&upd.encode_with_len()[..]);
-									res
-								}[..])
+							let reason = if (error_code & 0x1000) != 0 {
+								if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
+									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
+										let mut res = Vec::with_capacity(8 + 128);
+										// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+										res.extend_from_slice(&byte_utils::be16_to_array(0));
+										res.extend_from_slice(&upd.encode_with_len()[..]);
+										res
+									}[..])
+								} else {
+									// The only case where we'd be unable to
+									// successfully get a channel update is if the
+									// channel isn't in the fully-funded state yet,
+									// implying our counterparty is trying to route
+									// payments over the channel back to themselves
+									// (because no one else should know the short_id
+									// is a lightning channel yet). We should have
+									// no problem just calling this
+									// unknown_next_peer (0x4000|10).
+									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+								}
 							} else {
-								// The only case where we'd be unable to
-								// successfully get a channel update is if the
-								// channel isn't in the fully-funded state yet,
-								// implying our counterparty is trying to route
-								// payments over the channel back to themselves
-								// (cause no one else should know the short_id
-								// is a lightning channel yet). We should have
-								// no problem just calling this
-								// unknown_next_peer (0x4000|10).
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
 							};
 							let msg = msgs::UpdateFailHTLC {
 								channel_id: msg.channel_id,

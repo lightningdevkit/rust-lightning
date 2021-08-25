@@ -197,8 +197,9 @@ fn htlc_fail_async_shutdown() {
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2);
 	match msg_events[0] {
-		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg }} => {
-			assert_eq!(msg.contents.short_channel_id, chan_1.0.contents.short_channel_id);
+		MessageSendEvent::PaymentFailureNetworkUpdate { update: msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent }} => {
+			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
+			assert!(is_permanent);
 		},
 		_ => panic!("Unexpected event"),
 	}
