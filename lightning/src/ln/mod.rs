@@ -40,7 +40,7 @@ pub mod channel;
 mod channel;
 
 mod onion_utils;
-mod wire;
+pub mod wire;
 
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
