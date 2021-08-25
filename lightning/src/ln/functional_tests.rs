@@ -16,7 +16,7 @@ use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
-use chain::keysinterface::{KeysInterface, BaseSign};
+use chain::keysinterface::BaseSign;
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
@@ -35,7 +35,6 @@ use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
 
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
@@ -46,7 +45,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 
-use bitcoin::secp256k1::{Secp256k1, Message};
+use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 
 use regex;
@@ -4013,83 +4012,6 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 fn test_holding_cell_htlc_add_timeouts() {
 	do_test_holding_cell_htlc_add_timeouts(false);
 	do_test_holding_cell_htlc_add_timeouts(true);
-}
-
-#[test]
-fn test_invalid_channel_announcement() {
-	//Test BOLT 7 channel_announcement msg requirement for final node, gather data to build customed channel_announcement msgs
-	let secp_ctx = Secp256k1::new();
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let chan_announcement = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-
-	let a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-	let b_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-	let as_chan = a_channel_lock.by_id.get(&chan_announcement.3).unwrap();
-	let bs_chan = b_channel_lock.by_id.get(&chan_announcement.3).unwrap();
-
-	nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
-
-	let as_bitcoin_key = as_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
-	let bs_bitcoin_key = bs_chan.get_signer().inner.holder_channel_pubkeys.funding_pubkey;
-
-	let as_network_key = nodes[0].node.get_our_node_id();
-	let bs_network_key = nodes[1].node.get_our_node_id();
-
-	let were_node_one = as_bitcoin_key.serialize()[..] < bs_bitcoin_key.serialize()[..];
-
-	let mut chan_announcement;
-
-	macro_rules! dummy_unsigned_msg {
-		() => {
-			msgs::UnsignedChannelAnnouncement {
-				features: ChannelFeatures::known(),
-				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
-				short_channel_id: as_chan.get_short_channel_id().unwrap(),
-				node_id_1: if were_node_one { as_network_key } else { bs_network_key },
-				node_id_2: if were_node_one { bs_network_key } else { as_network_key },
-				bitcoin_key_1: if were_node_one { as_bitcoin_key } else { bs_bitcoin_key },
-				bitcoin_key_2: if were_node_one { bs_bitcoin_key } else { as_bitcoin_key },
-				excess_data: Vec::new(),
-			}
-		}
-	}
-
-	macro_rules! sign_msg {
-		($unsigned_msg: expr) => {
-			let msghash = Message::from_slice(&Sha256dHash::hash(&$unsigned_msg.encode()[..])[..]).unwrap();
-			let as_bitcoin_sig = secp_ctx.sign(&msghash, &as_chan.get_signer().inner.funding_key);
-			let bs_bitcoin_sig = secp_ctx.sign(&msghash, &bs_chan.get_signer().inner.funding_key);
-			let as_node_sig = secp_ctx.sign(&msghash, &nodes[0].keys_manager.get_node_secret());
-			let bs_node_sig = secp_ctx.sign(&msghash, &nodes[1].keys_manager.get_node_secret());
-			chan_announcement = msgs::ChannelAnnouncement {
-				node_signature_1 : if were_node_one { as_node_sig } else { bs_node_sig},
-				node_signature_2 : if were_node_one { bs_node_sig } else { as_node_sig},
-				bitcoin_signature_1: if were_node_one { as_bitcoin_sig } else { bs_bitcoin_sig },
-				bitcoin_signature_2 : if were_node_one { bs_bitcoin_sig } else { as_bitcoin_sig },
-				contents: $unsigned_msg
-			}
-		}
-	}
-
-	let unsigned_msg = dummy_unsigned_msg!();
-	sign_msg!(unsigned_msg);
-	assert_eq!(nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).unwrap(), true);
-	let _ = nodes[0].net_graph_msg_handler.handle_htlc_fail_channel_update(&msgs::HTLCFailChannelUpdate::ChannelClosed { short_channel_id : as_chan.get_short_channel_id().unwrap(), is_permanent: false } );
-
-	// Configured with Network::Testnet
-	let mut unsigned_msg = dummy_unsigned_msg!();
-	unsigned_msg.chain_hash = genesis_block(Network::Bitcoin).header.block_hash();
-	sign_msg!(unsigned_msg);
-	assert!(nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).is_err());
-
-	let mut unsigned_msg = dummy_unsigned_msg!();
-	unsigned_msg.chain_hash = BlockHash::hash(&[1,2,3,4,5,6,7,8,9]);
-	sign_msg!(unsigned_msg);
-	assert!(nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).is_err());
 }
 
 #[test]
