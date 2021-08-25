@@ -30,12 +30,13 @@ use chain;
 use chain::{Filter, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::channelmonitor;
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, MonitorEvent, Persist, TransactionOutputs};
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr, Balance, MonitorEvent, Persist, TransactionOutputs};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::Sign;
 use util::logger::Logger;
 use util::events;
 use util::events::EventHandler;
+use ln::channelmanager::ChannelDetails;
 
 use prelude::*;
 use sync::RwLock;
@@ -138,6 +139,31 @@ where C::Target: chain::Filter,
 			fee_estimator: feeest,
 			persister,
 		}
+	}
+
+	/// Gets the balances in the contained [`ChannelMonitor`]s which are claimable on-chain or
+	/// claims which are awaiting confirmation.
+	///
+	/// Includes the balances from each [`ChannelMonitor`] *except* those included in
+	/// `ignored_channels`, allowing you to filter out balances from channels which are still open
+	/// (and whose balance should likely be pulled from the [`ChannelDetails`]).
+	///
+	/// See [`ChannelMonitor::get_claimable_balances`] for more details on the exact criteria for
+	/// inclusion in the return value.
+	pub fn get_claimable_balances(&self, ignored_channels: &[ChannelDetails]) -> Vec<Balance> {
+		let mut ret = Vec::new();
+		let monitors = self.monitors.read().unwrap();
+		for (_, monitor) in monitors.iter().filter(|(funding_outpoint, _)| {
+			for chan in ignored_channels {
+				if chan.funding_txo.as_ref() == Some(funding_outpoint) {
+					return false;
+				}
+			}
+			true
+		}) {
+			ret.append(&mut monitor.get_claimable_balances());
+		}
+		ret
 	}
 
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
