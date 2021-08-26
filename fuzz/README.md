@@ -80,6 +80,7 @@ mkdir -p ./test_cases/$TARGET
 echo $HEX | xxd -r -p > ./test_cases/$TARGET/any_filename_works
 
 export RUST_BACKTRACE=1
+export RUSTFLAGS="--cfg=fuzzing"
 cargo test
 ```
 
