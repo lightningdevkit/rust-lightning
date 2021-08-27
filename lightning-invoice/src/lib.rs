@@ -127,6 +127,7 @@ pub fn check_platform() {
 ///
 /// ```
 /// extern crate secp256k1;
+/// extern crate lightning;
 /// extern crate lightning_invoice;
 /// extern crate bitcoin_hashes;
 ///
@@ -135,6 +136,8 @@ pub fn check_platform() {
 ///
 /// use secp256k1::Secp256k1;
 /// use secp256k1::key::SecretKey;
+///
+/// use lightning::ln::PaymentSecret;
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
@@ -148,10 +151,12 @@ pub fn check_platform() {
 ///	).unwrap();
 ///
 /// let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
+/// let payment_secret = PaymentSecret([42u8; 32]);
 ///
 /// let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 /// 	.description("Coins pls!".into())
 /// 	.payment_hash(payment_hash)
+/// 	.payment_secret(payment_secret)
 /// 	.current_timestamp()
 /// 	.min_final_cltv_expiry(144)
 /// 	.build_signed(|hash| {
@@ -634,7 +639,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 	}
 }
 
-impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
+impl InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::True> {
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for
 	/// the included payee public key.
@@ -1018,6 +1023,24 @@ impl Invoice {
 			return  Err(SemanticError::MultipleDescriptions);
 		}
 
+		self.check_payment_secret()?;
+
+		Ok(())
+	}
+
+	/// Checks that there is exactly one payment secret field
+	fn check_payment_secret(&self) -> Result<(), SemanticError> {
+		// "A writer MUST include exactly one `s` field."
+		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
+			TaggedField::PaymentSecret(_) => true,
+			_ => false,
+		}).count();
+		if payment_secret_count < 1 {
+			return Err(SemanticError::NoPaymentSecret);
+		} else if payment_secret_count > 1 {
+			return Err(SemanticError::MultiplePaymentSecrets);
+		}
+
 		Ok(())
 	}
 
@@ -1033,32 +1056,21 @@ impl Invoice {
 
 	/// Check that feature bits are set as required
 	fn check_feature_bits(&self) -> Result<(), SemanticError> {
-		// "If the payment_secret feature is set, MUST include exactly one s field."
-		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
-			TaggedField::PaymentSecret(_) => true,
-			_ => false,
-		}).count();
-		if payment_secret_count > 1 {
-			return Err(SemanticError::MultiplePaymentSecrets);
-		}
+		self.check_payment_secret()?;
 
 		// "A writer MUST set an s field if and only if the payment_secret feature is set."
-		let has_payment_secret = payment_secret_count == 1;
+		// (this requirement has been since removed, and we now require the payment secret
+		// feature bit always).
 		let features = self.tagged_fields().find(|&tf| match *tf {
 			TaggedField::Features(_) => true,
 			_ => false,
 		});
 		match features {
-			None if has_payment_secret => Err(SemanticError::InvalidFeatures),
-			None => Ok(()),
+			None => Err(SemanticError::InvalidFeatures),
 			Some(TaggedField::Features(features)) => {
 				if features.requires_unknown_bits() {
 					Err(SemanticError::InvalidFeatures)
-				} else if features.supports_payment_secret() && has_payment_secret {
-					Ok(())
-				} else if has_payment_secret {
-					Err(SemanticError::InvalidFeatures)
-				} else if features.supports_payment_secret() {
+				} else if !features.supports_payment_secret() {
 					Err(SemanticError::InvalidFeatures)
 				} else {
 					Ok(())
@@ -1154,8 +1166,8 @@ impl Invoice {
 	}
 
 	/// Get the payment secret if one was included in the invoice
-	pub fn payment_secret(&self) -> Option<&PaymentSecret> {
-		self.signed_invoice.payment_secret()
+	pub fn payment_secret(&self) -> &PaymentSecret {
+		self.signed_invoice.payment_secret().expect("was checked by constructor")
 	}
 
 	/// Get the invoice features if they were included in the invoice
@@ -1412,6 +1424,10 @@ pub enum SemanticError {
 	/// The invoice contains multiple descriptions and/or description hashes which isn't allowed
 	MultipleDescriptions,
 
+	/// The invoice is missing the mandatory payment secret, which all modern lightning nodes
+	/// should provide.
+	NoPaymentSecret,
+
 	/// The invoice contains multiple payment secrets
 	MultiplePaymentSecrets,
 
@@ -1435,6 +1451,7 @@ impl Display for SemanticError {
 			SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
 			SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
 			SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
+			SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
 			SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
 			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
@@ -1651,7 +1668,7 @@ mod test {
 			let invoice = invoice_template.clone();
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert!(Invoice::from_signed(invoice).is_ok());
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// No payment secret or feature bits
 		let invoice = {
@@ -1659,7 +1676,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert!(Invoice::from_signed(invoice).is_ok());
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// Missing payment secret
 		let invoice = {
@@ -1667,7 +1684,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// Multiple payment secrets
 		let invoice = {
@@ -1753,6 +1770,7 @@ mod test {
 
 		let sign_error_res = builder.clone()
 			.description("Test".into())
+			.payment_secret(PaymentSecret([0; 32]))
 			.try_build_signed(|_| {
 				Err("ImaginaryError")
 			});
@@ -1865,7 +1883,7 @@ mod test {
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
-		assert_eq!(invoice.payment_secret(), Some(&PaymentSecret([42; 32])));
+		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
 		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
 
 		let raw_invoice = builder.build_raw().unwrap();
@@ -1881,6 +1899,7 @@ mod test {
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
+			.payment_secret(PaymentSecret([0; 32]))
 			.current_timestamp()
 			.build_raw()
 			.unwrap()
