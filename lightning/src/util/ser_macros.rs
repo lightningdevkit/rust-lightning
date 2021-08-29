@@ -231,39 +231,18 @@ macro_rules! decode_tlv_stream {
 }
 
 macro_rules! impl_writeable {
-	($st:ident, $len: expr, {$($field:ident),*}) => {
+	($st:ident, {$($field:ident),*}) => {
 		impl ::util::ser::Writeable for $st {
 			fn write<W: ::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
-				if $len != 0 {
-					w.size_hint($len);
-				}
-				#[cfg(any(test, feature = "fuzztarget"))]
-				{
-					// In tests, assert that the hard-coded length matches the actual one
-					if $len != 0 {
-						let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
-						$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
-						assert_eq!(len_calc.0, $len);
-						assert_eq!(self.serialized_length(), $len);
-					}
-				}
 				$( self.$field.write(w)?; )*
 				Ok(())
 			}
 
 			#[inline]
 			fn serialized_length(&self) -> usize {
-				if $len == 0 || cfg!(any(test, feature = "fuzztarget")) {
-					let mut len_calc = 0;
-					$( len_calc += self.$field.serialized_length(); )*
-					if $len != 0 {
-						// In tests, assert that the hard-coded length matches the actual one
-						assert_eq!(len_calc, $len);
-					} else {
-						return len_calc;
-					}
-				}
-				$len
+				let mut len_calc = 0;
+				$( len_calc += self.$field.serialized_length(); )*
+				return len_calc;
 			}
 		}
 
@@ -274,59 +253,6 @@ macro_rules! impl_writeable {
 				})
 			}
 		}
-	}
-}
-macro_rules! impl_writeable_len_match {
-	($struct: ident, $cmp: tt, ($calc_len: expr), {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
-		impl Writeable for $struct {
-			fn write<W: Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
-				let len = match *self {
-					$($match => $length,)*
-				};
-				w.size_hint(len);
-				#[cfg(any(test, feature = "fuzztarget"))]
-				{
-					// In tests, assert that the hard-coded length matches the actual one
-					let mut len_calc = ::util::ser::LengthCalculatingWriter(0);
-					$( self.$field.write(&mut len_calc).expect("No in-memory data may fail to serialize"); )*
-					assert!(len_calc.0 $cmp len);
-					assert_eq!(len_calc.0, self.serialized_length());
-				}
-				$( self.$field.write(w)?; )*
-				Ok(())
-			}
-
-			#[inline]
-			fn serialized_length(&self) -> usize {
-				if $calc_len || cfg!(any(test, feature = "fuzztarget")) {
-					let mut len_calc = 0;
-					$( len_calc += self.$field.serialized_length(); )*
-					if !$calc_len {
-						assert_eq!(len_calc, match *self {
-							$($match => $length,)*
-						});
-					}
-					return len_calc
-				}
-				match *self {
-					$($match => $length,)*
-				}
-			}
-		}
-
-		impl ::util::ser::Readable for $struct {
-			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-				Ok(Self {
-					$($field: Readable::read(r)?),*
-				})
-			}
-		}
-	};
-	($struct: ident, $cmp: tt, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
-		impl_writeable_len_match!($struct, $cmp, (true), { $({ $match, $length }),* }, { $($field),* });
-	};
-	($struct: ident, {$({$match: pat, $length: expr}),*}, {$($field:ident),*}) => {
-		impl_writeable_len_match!($struct, ==, (false), { $({ $match, $length }),* }, { $($field),* });
 	}
 }
 

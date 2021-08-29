@@ -35,18 +35,13 @@ use util::byte_utils::{be48_to_array, slice_to_be48};
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
 
-/// A trait that is similar to std::io::Write but has one extra function which can be used to size
-/// buffers being written into.
-/// An impl is provided for any type that also impls std::io::Write which simply ignores size
-/// hints.
+/// A simplified version of std::io::Write that exists largely for backwards compatibility.
+/// An impl is provided for any type that also impls std::io::Write.
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Writer {
 	/// Writes the given buf out. See std::io::Write::write_all for more
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error>;
-	/// Hints that data of the given size is about the be written. This may not always be called
-	/// prior to data being written and may be safely ignored.
-	fn size_hint(&mut self, size: usize);
 }
 
 impl<W: Write> Writer for W {
@@ -54,8 +49,6 @@ impl<W: Write> Writer for W {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
 		<Self as io::Write>::write_all(self, buf)
 	}
-	#[inline]
-	fn size_hint(&mut self, _size: usize) { }
 }
 
 pub(crate) struct WriterWriteAdaptor<'a, W: Writer + 'a>(pub &'a mut W);
@@ -82,10 +75,6 @@ impl Writer for VecWriter {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
-	#[inline]
-	fn size_hint(&mut self, size: usize) {
-		self.0.reserve_exact(size);
-	}
 }
 
 /// Writer that only tracks the amount of data written - useful if you need to calculate the length
@@ -97,8 +86,6 @@ impl Writer for LengthCalculatingWriter {
 		self.0 += buf.len();
 		Ok(())
 	}
-	#[inline]
-	fn size_hint(&mut self, _size: usize) {}
 }
 
 /// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream

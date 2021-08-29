@@ -18,9 +18,6 @@ impl Writer for VecWriter {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
-	fn size_hint(&mut self, size: usize) {
-		self.0.reserve_exact(size);
-	}
 }
 
 #[inline]

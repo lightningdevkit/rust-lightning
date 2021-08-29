@@ -392,7 +392,6 @@ impl InitFeatures {
 	/// Writes all features present up to, and including, 13.
 	pub(crate) fn write_up_to_13<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let len = cmp::min(2, self.flags.len());
-		w.size_hint(len + 2);
 		(len as u16).write(w)?;
 		for i in (0..len).rev() {
 			if i == 0 {
@@ -584,12 +583,6 @@ impl<T: sealed::Context> Features<T> {
 			(byte & unknown_features) != 0
 		})
 	}
-
-	/// The number of bytes required to represent the feature flags present. This does not include
-	/// the length bytes which are included in the serialized form.
-	pub(crate) fn byte_count(&self) -> usize {
-		self.flags.len()
-	}
 }
 
 impl<T: sealed::DataLossProtect> Features<T> {
@@ -702,7 +695,6 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 
 impl<T: sealed::Context> Writeable for Features<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(self.flags.len() + 2);
 		(self.flags.len() as u16).write(w)?;
 		for f in self.flags.iter().rev() { // Swap back to big-endian
 			f.write(w)?;
@@ -835,7 +827,7 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(InvoiceFeatures::known().byte_count() < NodeFeatures::known().byte_count());
+		assert!(InvoiceFeatures::known().flags.len() < NodeFeatures::known().flags.len());
 		let invoice_features = InvoiceFeatures::known().set_unknown_feature_optional();
 		assert!(invoice_features.supports_unknown_bits());
 		let node_features: NodeFeatures = invoice_features.to_context();

@@ -1053,10 +1053,7 @@ impl Readable for OptionalField<u64> {
 }
 
 
-impl_writeable_len_match!(AcceptChannel, {
-		{AcceptChannel{ shutdown_scriptpubkey: OptionalField::Present(ref script), .. }, 270 + 2 + script.len()},
-		{_, 270}
-	}, {
+impl_writeable!(AcceptChannel, {
 	temporary_channel_id,
 	dust_limit_satoshis,
 	max_htlc_value_in_flight_msat,
@@ -1074,7 +1071,7 @@ impl_writeable_len_match!(AcceptChannel, {
 	shutdown_scriptpubkey
 });
 
-impl_writeable!(AnnouncementSignatures, 32+8+64*2, {
+impl_writeable!(AnnouncementSignatures, {
 	channel_id,
 	short_channel_id,
 	node_signature,
@@ -1083,7 +1080,6 @@ impl_writeable!(AnnouncementSignatures, 32+8+64*2, {
 
 impl Writeable for ChannelReestablish {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(if let OptionalField::Present(..) = self.data_loss_protect { 32+2*8+33+32 } else { 32+2*8 });
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
 		self.next_remote_commitment_number.write(w)?;
@@ -1121,7 +1117,6 @@ impl Readable for ChannelReestablish{
 
 impl Writeable for ClosingSigned {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 8 + 64 + if self.fee_range.is_some() { 1+1+ 2*8 } else { 0 });
 		self.channel_id.write(w)?;
 		self.fee_satoshis.write(w)?;
 		self.signature.write(w)?;
@@ -1145,40 +1140,36 @@ impl Readable for ClosingSigned {
 	}
 }
 
-impl_writeable!(ClosingSignedFeeRange, 2*8, {
+impl_writeable!(ClosingSignedFeeRange, {
 	min_fee_satoshis,
 	max_fee_satoshis
 });
 
-impl_writeable_len_match!(CommitmentSigned, {
-		{ CommitmentSigned { ref htlc_signatures, .. }, 32+64+2+htlc_signatures.len()*64 }
-	}, {
+impl_writeable!(CommitmentSigned, {
 	channel_id,
 	signature,
 	htlc_signatures
 });
 
-impl_writeable_len_match!(DecodedOnionErrorPacket, {
-		{ DecodedOnionErrorPacket { ref failuremsg, ref pad, .. }, 32 + 4 + failuremsg.len() + pad.len() }
-	}, {
+impl_writeable!(DecodedOnionErrorPacket, {
 	hmac,
 	failuremsg,
 	pad
 });
 
-impl_writeable!(FundingCreated, 32+32+2+64, {
+impl_writeable!(FundingCreated, {
 	temporary_channel_id,
 	funding_txid,
 	funding_output_index,
 	signature
 });
 
-impl_writeable!(FundingSigned, 32+64, {
+impl_writeable!(FundingSigned, {
 	channel_id,
 	signature
 });
 
-impl_writeable!(FundingLocked, 32+33, {
+impl_writeable!(FundingLocked, {
 	channel_id,
 	next_per_commitment_point
 });
@@ -1202,10 +1193,7 @@ impl Readable for Init {
 	}
 }
 
-impl_writeable_len_match!(OpenChannel, {
-		{ OpenChannel { shutdown_scriptpubkey: OptionalField::Present(ref script), .. }, 319 + 2 + script.len() },
-		{ _, 319 }
-	}, {
+impl_writeable!(OpenChannel, {
 	chain_hash,
 	temporary_channel_id,
 	funding_satoshis,
@@ -1227,54 +1215,47 @@ impl_writeable_len_match!(OpenChannel, {
 	shutdown_scriptpubkey
 });
 
-impl_writeable!(RevokeAndACK, 32+32+33, {
+impl_writeable!(RevokeAndACK, {
 	channel_id,
 	per_commitment_secret,
 	next_per_commitment_point
 });
 
-impl_writeable_len_match!(Shutdown, {
-		{ Shutdown { ref scriptpubkey, .. }, 32 + 2 + scriptpubkey.len() }
-	}, {
+impl_writeable!(Shutdown, {
 	channel_id,
 	scriptpubkey
 });
 
-impl_writeable_len_match!(UpdateFailHTLC, {
-		{ UpdateFailHTLC { ref reason, .. }, 32 + 10 + reason.data.len() }
-	}, {
+impl_writeable!(UpdateFailHTLC, {
 	channel_id,
 	htlc_id,
 	reason
 });
 
-impl_writeable!(UpdateFailMalformedHTLC, 32+8+32+2, {
+impl_writeable!(UpdateFailMalformedHTLC, {
 	channel_id,
 	htlc_id,
 	sha256_of_onion,
 	failure_code
 });
 
-impl_writeable!(UpdateFee, 32+4, {
+impl_writeable!(UpdateFee, {
 	channel_id,
 	feerate_per_kw
 });
 
-impl_writeable!(UpdateFulfillHTLC, 32+8+32, {
+impl_writeable!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
 });
 
-impl_writeable_len_match!(OnionErrorPacket, {
-		{ OnionErrorPacket { ref data, .. }, 2 + data.len() }
-	}, {
+impl_writeable!(OnionErrorPacket, {
 	data
 });
 
 impl Writeable for OnionPacket {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(1 + 33 + 20*65 + 32);
 		self.version.write(w)?;
 		match self.public_key {
 			Ok(pubkey) => pubkey.write(w)?,
@@ -1301,7 +1282,7 @@ impl Readable for OnionPacket {
 	}
 }
 
-impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
+impl_writeable!(UpdateAddHTLC, {
 	channel_id,
 	htlc_id,
 	amount_msat,
@@ -1312,7 +1293,6 @@ impl_writeable!(UpdateAddHTLC, 32+8+8+32+4+1366, {
 
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 8 - (self.total_msat.leading_zeros()/8) as usize);
 		self.payment_secret.0.write(w)?;
 		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
 	}
@@ -1328,7 +1308,6 @@ impl Readable for FinalOnionHopData {
 
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(33);
 		// Note that this should never be reachable if Rust-Lightning generated the message, as we
 		// check values are sane long before we get here, though its possible in the future
 		// user-generated messages may hit this.
@@ -1429,7 +1408,6 @@ impl Readable for OnionHopData {
 
 impl Writeable for Ping {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(self.byteslen as usize + 4);
 		self.ponglen.write(w)?;
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
@@ -1451,7 +1429,6 @@ impl Readable for Ping {
 
 impl Writeable for Pong {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(self.byteslen as usize + 2);
 		vec![0u8; self.byteslen as usize].write(w)?; // size-unchecked write
 		Ok(())
 	}
@@ -1471,7 +1448,6 @@ impl Readable for Pong {
 
 impl Writeable for UnsignedChannelAnnouncement {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(2 + 32 + 8 + 4*33 + self.features.byte_count() + self.excess_data.len());
 		self.features.write(w)?;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
@@ -1499,10 +1475,7 @@ impl Readable for UnsignedChannelAnnouncement {
 	}
 }
 
-impl_writeable_len_match!(ChannelAnnouncement, {
-		{ ChannelAnnouncement { contents: UnsignedChannelAnnouncement {ref features, ref excess_data, ..}, .. },
-			2 + 32 + 8 + 4*33 + features.byte_count() + excess_data.len() + 4*64 }
-	}, {
+impl_writeable!(ChannelAnnouncement, {
 	node_signature_1,
 	node_signature_2,
 	bitcoin_signature_1,
@@ -1512,13 +1485,10 @@ impl_writeable_len_match!(ChannelAnnouncement, {
 
 impl Writeable for UnsignedChannelUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let mut size = 64 + self.excess_data.len();
 		let mut message_flags: u8 = 0;
 		if let OptionalField::Present(_) = self.htlc_maximum_msat {
-			size += 8;
 			message_flags = 1;
 		}
-		w.size_hint(size);
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
@@ -1557,17 +1527,13 @@ impl Readable for UnsignedChannelUpdate {
 	}
 }
 
-impl_writeable_len_match!(ChannelUpdate, {
-		{ ChannelUpdate { contents: UnsignedChannelUpdate {ref excess_data, ref htlc_maximum_msat, ..}, .. },
-			64 + 64 + excess_data.len() + if let OptionalField::Present(_) = htlc_maximum_msat { 8 } else { 0 } }
-	}, {
+impl_writeable!(ChannelUpdate, {
 	signature,
 	contents
 });
 
 impl Writeable for ErrorMessage {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 2 + self.data.len());
 		self.channel_id.write(w)?;
 		(self.data.len() as u16).write(w)?;
 		w.write_all(self.data.as_bytes())?;
@@ -1594,7 +1560,6 @@ impl Readable for ErrorMessage {
 
 impl Writeable for UnsignedNodeAnnouncement {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(76 + self.features.byte_count() + self.addresses.len()*38 + self.excess_address_data.len() + self.excess_data.len());
 		self.features.write(w)?;
 		self.timestamp.write(w)?;
 		self.node_id.write(w)?;
@@ -1677,10 +1642,7 @@ impl Readable for UnsignedNodeAnnouncement {
 	}
 }
 
-impl_writeable_len_match!(NodeAnnouncement, <=, {
-		{ NodeAnnouncement { contents: UnsignedNodeAnnouncement { ref features, ref addresses, ref excess_address_data, ref excess_data, ..}, .. },
-			64 + 76 + features.byte_count() + addresses.len()*(NetAddress::MAX_LEN as usize + 1) + excess_address_data.len() + excess_data.len() }
-	}, {
+impl_writeable!(NodeAnnouncement, {
 	signature,
 	contents
 });
@@ -1724,7 +1686,6 @@ impl Writeable for QueryShortChannelIds {
 		// Calculated from 1-byte encoding_type plus 8-bytes per short_channel_id
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
 
-		w.size_hint(32 + 2 + encoding_len as usize);
 		self.chain_hash.write(w)?;
 		encoding_len.write(w)?;
 
@@ -1752,7 +1713,6 @@ impl Readable for ReplyShortChannelIdsEnd {
 
 impl Writeable for ReplyShortChannelIdsEnd {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 1);
 		self.chain_hash.write(w)?;
 		self.full_information.write(w)?;
 		Ok(())
@@ -1787,7 +1747,6 @@ impl Readable for QueryChannelRange {
 
 impl Writeable for QueryChannelRange {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 4 + 4);
 		self.chain_hash.write(w)?;
 		self.first_blocknum.write(w)?;
 		self.number_of_blocks.write(w)?;
@@ -1838,7 +1797,6 @@ impl Readable for ReplyChannelRange {
 impl Writeable for ReplyChannelRange {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let encoding_len: u16 = 1 + self.short_channel_ids.len() as u16 * 8;
-		w.size_hint(32 + 4 + 4 + 1 + 2 + encoding_len as usize);
 		self.chain_hash.write(w)?;
 		self.first_blocknum.write(w)?;
 		self.number_of_blocks.write(w)?;
@@ -1869,7 +1827,6 @@ impl Readable for GossipTimestampFilter {
 
 impl Writeable for GossipTimestampFilter {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.size_hint(32 + 4 + 4);
 		self.chain_hash.write(w)?;
 		self.first_timestamp.write(w)?;
 		self.timestamp_range.write(w)?;
