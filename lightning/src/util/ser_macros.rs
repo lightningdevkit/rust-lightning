@@ -230,6 +230,29 @@ macro_rules! decode_tlv_stream {
 	} }
 }
 
+macro_rules! impl_writeable_msg {
+	($st:ident, {$($field:ident),* $(,)*}, {$(($type: expr, $tlvfield: ident, $fieldty: tt)),* $(,)*}) => {
+		impl ::util::ser::Writeable for $st {
+			fn write<W: ::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
+				$( self.$field.write(w)?; )*
+				encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
+				Ok(())
+			}
+		}
+		impl ::util::ser::Readable for $st {
+			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+				$(let $field = ::util::ser::Readable::read(r)?;)*
+				$(init_tlv_field_var!($tlvfield, $fieldty);)*
+				decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
+				Ok(Self {
+					$($field),*,
+					$($tlvfield),*
+				})
+			}
+		}
+	}
+}
+
 macro_rules! impl_writeable {
 	($st:ident, {$($field:ident),*}) => {
 		impl ::util::ser::Writeable for $st {

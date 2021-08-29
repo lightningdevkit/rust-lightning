@@ -1053,7 +1053,7 @@ impl Readable for OptionalField<u64> {
 }
 
 
-impl_writeable!(AcceptChannel, {
+impl_writeable_msg!(AcceptChannel, {
 	temporary_channel_id,
 	dust_limit_satoshis,
 	max_htlc_value_in_flight_msat,
@@ -1069,14 +1069,14 @@ impl_writeable!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 	shutdown_scriptpubkey
-});
+}, {});
 
-impl_writeable!(AnnouncementSignatures, {
+impl_writeable_msg!(AnnouncementSignatures, {
 	channel_id,
 	short_channel_id,
 	node_signature,
 	bitcoin_signature
-});
+}, {});
 
 impl Writeable for ChannelReestablish {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1115,41 +1115,21 @@ impl Readable for ChannelReestablish{
 	}
 }
 
-impl Writeable for ClosingSigned {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.channel_id.write(w)?;
-		self.fee_satoshis.write(w)?;
-		self.signature.write(w)?;
-		encode_tlv_stream!(w, {
-			(1, self.fee_range, option),
-		});
-		Ok(())
-	}
-}
-
-impl Readable for ClosingSigned {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let channel_id = Readable::read(r)?;
-		let fee_satoshis = Readable::read(r)?;
-		let signature = Readable::read(r)?;
-		let mut fee_range = None;
-		decode_tlv_stream!(r, {
-			(1, fee_range, option),
-		});
-		Ok(Self { channel_id, fee_satoshis, signature, fee_range })
-	}
-}
+impl_writeable_msg!(ClosingSigned,
+	{ channel_id, fee_satoshis, signature },
+	{ (1, fee_range, option) }
+);
 
 impl_writeable!(ClosingSignedFeeRange, {
 	min_fee_satoshis,
 	max_fee_satoshis
 });
 
-impl_writeable!(CommitmentSigned, {
+impl_writeable_msg!(CommitmentSigned, {
 	channel_id,
 	signature,
 	htlc_signatures
-});
+}, {});
 
 impl_writeable!(DecodedOnionErrorPacket, {
 	hmac,
@@ -1157,22 +1137,22 @@ impl_writeable!(DecodedOnionErrorPacket, {
 	pad
 });
 
-impl_writeable!(FundingCreated, {
+impl_writeable_msg!(FundingCreated, {
 	temporary_channel_id,
 	funding_txid,
 	funding_output_index,
 	signature
-});
+}, {});
 
-impl_writeable!(FundingSigned, {
+impl_writeable_msg!(FundingSigned, {
 	channel_id,
 	signature
-});
+}, {});
 
-impl_writeable!(FundingLocked, {
+impl_writeable_msg!(FundingLocked, {
 	channel_id,
-	next_per_commitment_point
-});
+	next_per_commitment_point,
+}, {});
 
 impl Writeable for Init {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1193,7 +1173,7 @@ impl Readable for Init {
 	}
 }
 
-impl_writeable!(OpenChannel, {
+impl_writeable_msg!(OpenChannel, {
 	chain_hash,
 	temporary_channel_id,
 	funding_satoshis,
@@ -1213,47 +1193,53 @@ impl_writeable!(OpenChannel, {
 	first_per_commitment_point,
 	channel_flags,
 	shutdown_scriptpubkey
-});
+}, {});
 
-impl_writeable!(RevokeAndACK, {
+impl_writeable_msg!(RevokeAndACK, {
 	channel_id,
 	per_commitment_secret,
 	next_per_commitment_point
-});
+}, {});
 
-impl_writeable!(Shutdown, {
+impl_writeable_msg!(Shutdown, {
 	channel_id,
 	scriptpubkey
-});
+}, {});
 
-impl_writeable!(UpdateFailHTLC, {
+impl_writeable_msg!(UpdateFailHTLC, {
 	channel_id,
 	htlc_id,
 	reason
-});
+}, {});
 
-impl_writeable!(UpdateFailMalformedHTLC, {
+impl_writeable_msg!(UpdateFailMalformedHTLC, {
 	channel_id,
 	htlc_id,
 	sha256_of_onion,
 	failure_code
-});
+}, {});
 
-impl_writeable!(UpdateFee, {
+impl_writeable_msg!(UpdateFee, {
 	channel_id,
 	feerate_per_kw
-});
+}, {});
 
-impl_writeable!(UpdateFulfillHTLC, {
+impl_writeable_msg!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
-});
+}, {});
 
+// Note that this is written as a part of ChannelManager objects, and thus cannot change its
+// serialization format in a way which assumes we know the total serialized length/message end
+// position.
 impl_writeable!(OnionErrorPacket, {
 	data
 });
 
+// Note that this is written as a part of ChannelManager objects, and thus cannot change its
+// serialization format in a way which assumes we know the total serialized length/message end
+// position.
 impl Writeable for OnionPacket {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.version.write(w)?;
@@ -1282,14 +1268,14 @@ impl Readable for OnionPacket {
 	}
 }
 
-impl_writeable!(UpdateAddHTLC, {
+impl_writeable_msg!(UpdateAddHTLC, {
 	channel_id,
 	htlc_id,
 	amount_msat,
 	payment_hash,
 	cltv_expiry,
 	onion_routing_packet
-});
+}, {});
 
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1700,24 +1686,10 @@ impl Writeable for QueryShortChannelIds {
 	}
 }
 
-impl Readable for ReplyShortChannelIdsEnd {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let chain_hash: BlockHash = Readable::read(r)?;
-		let full_information: bool = Readable::read(r)?;
-		Ok(ReplyShortChannelIdsEnd {
-			chain_hash,
-			full_information,
-		})
-	}
-}
-
-impl Writeable for ReplyShortChannelIdsEnd {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.chain_hash.write(w)?;
-		self.full_information.write(w)?;
-		Ok(())
-	}
-}
+impl_writeable_msg!(ReplyShortChannelIdsEnd, {
+	chain_hash,
+	full_information,
+}, {});
 
 impl QueryChannelRange {
 	/**
@@ -1732,27 +1704,11 @@ impl QueryChannelRange {
 	}
 }
 
-impl Readable for QueryChannelRange {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let chain_hash: BlockHash = Readable::read(r)?;
-		let first_blocknum: u32 = Readable::read(r)?;
-		let number_of_blocks: u32 = Readable::read(r)?;
-		Ok(QueryChannelRange {
-			chain_hash,
-			first_blocknum,
-			number_of_blocks
-		})
-	}
-}
-
-impl Writeable for QueryChannelRange {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.chain_hash.write(w)?;
-		self.first_blocknum.write(w)?;
-		self.number_of_blocks.write(w)?;
-		Ok(())
-	}
-}
+impl_writeable_msg!(QueryChannelRange, {
+	chain_hash,
+	first_blocknum,
+	number_of_blocks
+}, {});
 
 impl Readable for ReplyChannelRange {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
@@ -1812,28 +1768,11 @@ impl Writeable for ReplyChannelRange {
 	}
 }
 
-impl Readable for GossipTimestampFilter {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let chain_hash: BlockHash = Readable::read(r)?;
-		let first_timestamp: u32 = Readable::read(r)?;
-		let timestamp_range: u32 = Readable::read(r)?;
-		Ok(GossipTimestampFilter {
-			chain_hash,
-			first_timestamp,
-			timestamp_range,
-		})
-	}
-}
-
-impl Writeable for GossipTimestampFilter {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.chain_hash.write(w)?;
-		self.first_timestamp.write(w)?;
-		self.timestamp_range.write(w)?;
-		Ok(())
-	}
-}
-
+impl_writeable_msg!(GossipTimestampFilter, {
+	chain_hash,
+	first_timestamp,
+	timestamp_range,
+}, {});
 
 #[cfg(test)]
 mod tests {
