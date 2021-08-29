@@ -232,8 +232,13 @@ pub(crate) const CLTV_CLAIM_BUFFER: u32 = 18;
 /// with at worst this delay, so we are not only using this value as a mercy for them but also
 /// us as a safeguard to delay with enough time.
 pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
-/// Number of blocks we wait on seeing a HTLC output being solved before we fail corresponding inbound
-/// HTLCs. This prevents us from failing backwards and then getting a reorg resulting in us losing money.
+/// Number of blocks we wait on seeing a HTLC output being solved before we fail corresponding
+/// inbound HTLCs. This prevents us from failing backwards and then getting a reorg resulting in us
+/// losing money.
+///
+/// Note that this is a library-wide security assumption. If a reorg deeper than this number of
+/// blocks occurs, counterparties may be able to steal funds or claims made by and balances exposed
+/// by a  [`ChannelMonitor`] may be incorrect.
 // We also use this delay to be sure we can remove our in-flight claim txn from bump candidates buffer.
 // It may cause spurious generation of bumped claim txn but that's alright given the outpoint is already
 // solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
