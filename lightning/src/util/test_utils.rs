@@ -20,7 +20,7 @@ use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
 use ln::script::ShutdownScript;
-use util::enforcing_trait_impls::{EnforcingSigner, INITIAL_REVOKED_COMMITMENT_NUMBER};
+use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use util::events;
 use util::logger::{Logger, Level, Record};
 use util::ser::{Readable, ReadableArgs, Writer, Writeable};
@@ -76,8 +76,15 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
-	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		EnforcingSigner::read(&mut io::Cursor::new(reader))
+	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
+		let state = Arc::new(Mutex::new(EnforcementState::new()));
+
+		Ok(EnforcingSigner::new_with_revoked(
+			inner,
+			state,
+			false
+		))
 	}
 	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
@@ -452,7 +459,7 @@ pub struct TestKeysInterface {
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
-	revoked_commitments: Mutex<HashMap<[u8;32], Arc<Mutex<u64>>>>,
+	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 }
 
@@ -474,8 +481,8 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
 		let keys = self.backing.get_channel_signer(inbound, channel_value_satoshis);
-		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
+		let state = self.make_enforcement_state_cell(keys.commitment_seed);
+		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -497,16 +504,13 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		let mut reader = io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = Readable::read(&mut reader)?;
-		let revoked_commitment = self.make_revoked_commitment_cell(inner.commitment_seed);
+		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		let last_commitment_number = Readable::read(&mut reader)?;
-
-		Ok(EnforcingSigner {
+		Ok(EnforcingSigner::new_with_revoked(
 			inner,
-			last_commitment_number: Arc::new(Mutex::new(last_commitment_number)),
-			revoked_commitment,
-			disable_revocation_policy_check: self.disable_revocation_policy_check,
-		})
+			state,
+			self.disable_revocation_policy_check
+		))
 	}
 
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
@@ -522,7 +526,7 @@ impl TestKeysInterface {
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 			disable_revocation_policy_check: false,
-			revoked_commitments: Mutex::new(HashMap::new()),
+			enforcement_states: Mutex::new(HashMap::new()),
 			expectations: Mutex::new(None),
 		}
 	}
@@ -538,16 +542,17 @@ impl TestKeysInterface {
 
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> EnforcingSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
-		let revoked_commitment = self.make_revoked_commitment_cell(keys.commitment_seed);
-		EnforcingSigner::new_with_revoked(keys, revoked_commitment, self.disable_revocation_policy_check)
+		let state = self.make_enforcement_state_cell(keys.commitment_seed);
+		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
-	fn make_revoked_commitment_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<u64>> {
-		let mut revoked_commitments = self.revoked_commitments.lock().unwrap();
-		if !revoked_commitments.contains_key(&commitment_seed) {
-			revoked_commitments.insert(commitment_seed, Arc::new(Mutex::new(INITIAL_REVOKED_COMMITMENT_NUMBER)));
+	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
+		let mut states = self.enforcement_states.lock().unwrap();
+		if !states.contains_key(&commitment_seed) {
+			let state = EnforcementState::new();
+			states.insert(commitment_seed, Arc::new(Mutex::new(state)));
 		}
-		let cell = revoked_commitments.get(&commitment_seed).unwrap();
+		let cell = states.get(&commitment_seed).unwrap();
 		Arc::clone(cell)
 	}
 }

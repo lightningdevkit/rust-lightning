@@ -212,6 +212,13 @@ pub trait BaseSign {
 	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
 	// TODO: return a Result so we can signal a validation error
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
+	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
+	///
+	/// This is required in order for the signer to make sure that releasing a commitment
+	/// secret won't leave us without a broadcastable holder transaction.
+	/// Policy checks should be implemented in this function, including checking the amount
+	/// sent to us and checking the HTLCs.
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) -> Result<(), ()>;
 	/// Gets the holder's channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
@@ -222,9 +229,17 @@ pub trait BaseSign {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
+	///
+	/// Policy checks should be implemented in this function, including checking the amount
+	/// sent to us and checking the HTLCs.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	/// Validate the counterparty's revocation.
+	///
+	/// This is required in order for the signer to make sure that the state has moved
+	/// forward and it is safe to sign the next counterparty commitment.
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
 
 	/// Create a signatures for a holder's commitment transaction and its claiming HTLC transactions.
 	/// This will only ever be called with a non-revoked commitment_tx.  This will be called with the
@@ -558,6 +573,10 @@ impl BaseSign for InMemorySigner {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 
+	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction) -> Result<(), ()> {
+		Ok(())
+	}
+
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }
 	fn channel_keys_id(&self) -> [u8; 32] { self.channel_keys_id }
 
@@ -582,6 +601,10 @@ impl BaseSign for InMemorySigner {
 		}
 
 		Ok((commitment_sig, htlc_sigs))
+	}
+
+	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		Ok(())
 	}
 
 	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {

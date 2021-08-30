@@ -1301,6 +1301,9 @@ fn test_fee_spike_violation_fails_htlc() {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
+		// Make the signer believe we validated another commitment, so we can release the secret
+		chan_signer.get_enforcement_state().last_holder_commitment -= 1;
+
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
@@ -7981,7 +7984,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	// commitment transaction, we would have happily carried on and provided them the next
 	// commitment transaction based on one RAA forward. This would probably eventually have led to
 	// channel closure, but it would not have resulted in funds loss. Still, our
-	// EnforcingSigner would have paniced as it doesn't like jumps into the future. Here, we
+	// EnforcingSigner would have panicked as it doesn't like jumps into the future. Here, we
 	// check simply that the channel is closed in response to such an RAA, but don't check whether
 	// we decide to punish our counterparty for revoking their funds (as we don't currently
 	// implement that).
@@ -7992,11 +7995,19 @@ fn test_counterparty_raa_skip_no_crash() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	let mut guard = nodes[0].node.channel_state.lock().unwrap();
-	let keys = &guard.by_id.get_mut(&channel_id).unwrap().get_signer();
+	let keys = guard.by_id.get_mut(&channel_id).unwrap().get_signer();
+
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
+	// Make signer believe we got a counterparty signature, so that it allows the revocation
+	keys.get_enforcement_state().last_holder_commitment -= 1;
 	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+
 	// Must revoke without gaps
+	keys.get_enforcement_state().last_holder_commitment -= 1;
 	keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
+
+	keys.get_enforcement_state().last_holder_commitment -= 1;
 	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
 		&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
 

@@ -42,7 +42,7 @@ use lightning::routing::network_graph::NetGraphMsgHandler;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::events::Event;
-use lightning::util::enforcing_trait_impls::EnforcingSigner;
+use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
@@ -315,8 +315,15 @@ impl KeysInterface for KeyProvider {
 		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
 	}
 
-	fn read_chan_signer(&self, data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
-		EnforcingSigner::read(&mut std::io::Cursor::new(data))
+	fn read_chan_signer(&self, mut data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
+		let inner: InMemorySigner = Readable::read(&mut data)?;
+		let state = Arc::new(Mutex::new(EnforcementState::new()));
+
+		Ok(EnforcingSigner::new_with_revoked(
+			inner,
+			state,
+			false
+		))
 	}
 
 	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {

@@ -1791,6 +1791,9 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
+
 		// Now that we're past error-generating stuff, update our local state:
 
 		let funding_redeemscript = self.get_funding_redeemscript();
@@ -1864,6 +1867,9 @@ impl<Signer: Sign> Channel<Signer> {
 			&self.get_holder_pubkeys().funding_pubkey,
 			self.counterparty_funding_pubkey()
 		);
+
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 
 		let funding_redeemscript = self.get_funding_redeemscript();
@@ -2502,6 +2508,8 @@ impl<Signer: Sign> Channel<Signer> {
 		);
 
 		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+			.map_err(|_| (None, ChannelError::Close("Failed to validate our commitment".to_owned())))?;
 		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
 
 		// Update state now that we've passed all the can-fail calls...
@@ -2738,8 +2746,10 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
 		}
 
+		let secret = secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned());
+
 		if let Some(counterparty_prev_commitment_point) = self.counterparty_prev_commitment_point {
-			if PublicKey::from_secret_key(&self.secp_ctx, &secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned())) != counterparty_prev_commitment_point {
+			if PublicKey::from_secret_key(&self.secp_ctx, &secret) != counterparty_prev_commitment_point {
 				return Err(ChannelError::Close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
 			}
 		}
@@ -2760,6 +2770,11 @@ impl<Signer: Sign> Channel<Signer> {
 			*self.next_local_commitment_tx_fee_info_cached.lock().unwrap() = None;
 			*self.next_remote_commitment_tx_fee_info_cached.lock().unwrap() = None;
 		}
+
+		self.holder_signer.validate_counterparty_revocation(
+			self.cur_counterparty_commitment_transaction_number + 1,
+			&secret
+		).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
 
 		self.commitment_secrets.provide_secret(self.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
 			.map_err(|_| ChannelError::Close("Previous secrets did not match new one".to_owned()))?;
