@@ -565,11 +565,14 @@ pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
 /// upper bound to avoid negotiation conflicts with other implementations.
 pub const MAX_DUST_LIMIT_SATOSHIS: u64 = 2 * 330;
 
-/// A typical p2wsh output is 43 bytes to which Core's `GetDustThreshold()` sums up a minimal
-/// spend of 67 bytes (even if a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee`
-/// is set to 3000sat/kb, thus 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs
-/// are p2wsh, a value of 330 sats is the lower bound desired to ensure good propagation of transactions.
-pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 330;
+/// The dust limit is used for both the commitment transaction outputs as well as the closing
+/// transactions. For cooperative closing transactions, we require segwit outputs, though accept
+/// *any* segwit scripts, which are allowed to be up to 42 bytes in length.
+/// In order to avoid having to concern ourselves with standardness during the closing process, we
+/// simply require our counterparty to use a dust limit which will leave any segwit output
+/// standard.
+/// See https://github.com/lightningnetwork/lightning-rfc/issues/905 for more details.
+pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 354;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
