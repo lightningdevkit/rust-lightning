@@ -308,7 +308,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	let logger = test_utils::TestLogger::new();
 
-	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now try to send a second payment which will fail to send
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
@@ -344,8 +344,9 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				let events_3 = nodes[0].node.get_and_clear_pending_events();
 				assert_eq!(events_3.len(), 1);
 				match events_3[0] {
-					Event::PaymentSent { ref payment_preimage } => {
+					Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 						assert_eq!(*payment_preimage, payment_preimage_1);
+						assert_eq!(*payment_hash, payment_hash_1);
 					},
 					_ => panic!("Unexpected event"),
 				}
@@ -436,8 +437,9 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			let events_3 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_3.len(), 1);
 			match events_3[0] {
-				Event::PaymentSent { ref payment_preimage } => {
+				Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 					assert_eq!(*payment_preimage, payment_preimage_1);
+					assert_eq!(*payment_hash, payment_hash_1);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -1362,7 +1364,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -1463,8 +1465,9 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
+			assert_eq!(*payment_hash, payment_hash_1);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1845,7 +1848,7 @@ fn monitor_update_claim_fail_no_response() {
 	let logger = test_utils::TestLogger::new();
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
@@ -1887,8 +1890,9 @@ fn monitor_update_claim_fail_no_response() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
+			assert_eq!(*payment_hash, payment_hash_1);
 		},
 		_ => panic!("Unexpected event"),
 	}

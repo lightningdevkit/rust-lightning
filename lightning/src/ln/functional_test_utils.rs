@@ -1011,10 +1011,12 @@ macro_rules! expect_payment_received {
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
+		let expected_payment_hash = PaymentHash(Sha256::hash(&$expected_payment_preimage.0).into_inner());
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentSent { ref payment_preimage } => {
+			Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
+				assert_eq!(expected_payment_hash, *payment_hash);
 			},
 			_ => panic!("Unexpected event"),
 		}

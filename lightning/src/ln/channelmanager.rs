@@ -3161,8 +3161,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					sessions.remove(&session_priv_bytes)
 				} else { false };
 				if found_payment {
+					let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 					self.pending_events.lock().unwrap().push(
-						events::Event::PaymentSent { payment_preimage }
+						events::Event::PaymentSent {
+							payment_preimage,
+							payment_hash: payment_hash
+						}
 					);
 				} else {
 					log_trace!(self.logger, "Received duplicative fulfill for HTLC with payment_preimage {}", log_bytes!(payment_preimage.0));
@@ -5772,8 +5776,9 @@ mod tests {
 		// further events will be generated for subsequence path successes.
 		let events = nodes[0].node.get_and_clear_pending_events();
 		match events[0] {
-			Event::PaymentSent { payment_preimage: ref preimage } => {
+			Event::PaymentSent { payment_preimage: ref preimage, payment_hash: ref hash } => {
 				assert_eq!(payment_preimage, *preimage);
+				assert_eq!(our_payment_hash, *hash);
 			},
 			_ => panic!("Unexpected event"),
 		}
