@@ -23,7 +23,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
-use util::byte_utils;
+use util::{byte_utils, transaction_utils};
 
 use bitcoin::hash_types::WPubkeyHash;
 use bitcoin::secp256k1::key::{SecretKey, PublicKey};
@@ -78,6 +78,50 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 		}
 	}
 	res
+}
+
+/// Build a closing transaction
+pub fn build_closing_transaction(value_to_holder: u64, value_to_counterparty: u64, holder_shutdown_script: Script, counterparty_shutdown_script: Script, funding_outpoint: OutPoint) -> Transaction {
+	let txins = {
+		let mut ins: Vec<TxIn> = Vec::new();
+		ins.push(TxIn {
+			previous_output: funding_outpoint,
+			script_sig: Script::new(),
+			sequence: 0xffffffff,
+			witness: Vec::new(),
+		});
+		ins
+	};
+
+	let mut txouts: Vec<(TxOut, ())> = Vec::new();
+
+	if value_to_counterparty > 0 {
+		txouts.push((TxOut {
+			script_pubkey: counterparty_shutdown_script,
+			value: value_to_counterparty
+		}, ()));
+	}
+
+	if value_to_holder > 0 {
+		txouts.push((TxOut {
+			script_pubkey: holder_shutdown_script,
+			value: value_to_holder
+		}, ()));
+	}
+
+	transaction_utils::sort_outputs(&mut txouts, |_, _| { cmp::Ordering::Equal }); // Ordering doesnt matter if they used our pubkey...
+
+	let mut outputs: Vec<TxOut> = Vec::new();
+	for out in txouts.drain(..) {
+		outputs.push(out.0);
+	}
+
+	Transaction {
+		version: 2,
+		lock_time: 0,
+		input: txins,
+		output: outputs,
+	}
 }
 
 /// Implements the per-commitment secret storage scheme from

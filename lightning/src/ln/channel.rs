@@ -8,7 +8,7 @@
 // licenses.
 
 use bitcoin::blockdata::script::{Script,Builder};
-use bitcoin::blockdata::transaction::{TxIn, TxOut, Transaction, SigHashType};
+use bitcoin::blockdata::transaction::{Transaction, SigHashType};
 use bitcoin::util::bip143;
 use bitcoin::consensus::encode;
 
@@ -28,14 +28,13 @@ use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::script::ShutdownScript;
 use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, build_closing_transaction};
 use ln::chan_utils;
 use chain::BestBlock;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{Sign, KeysInterface};
-use util::transaction_utils;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
@@ -1287,62 +1286,36 @@ impl<Signer: Sign> Channel<Signer> {
 
 	#[inline]
 	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> (Transaction, u64) {
-		let txins = {
-			let mut ins: Vec<TxIn> = Vec::new();
-			ins.push(TxIn {
-				previous_output: self.funding_outpoint().into_bitcoin_outpoint(),
-				script_sig: Script::new(),
-				sequence: 0xffffffff,
-				witness: Vec::new(),
-			});
-			ins
-		};
-
 		assert!(self.pending_inbound_htlcs.is_empty());
 		assert!(self.pending_outbound_htlcs.is_empty());
 		assert!(self.pending_update_fee.is_none());
-		let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
 		let mut total_fee_satoshis = proposed_total_fee_satoshis;
-		let value_to_self: i64 = (self.value_to_self_msat as i64) / 1000 - if self.is_outbound() { total_fee_satoshis as i64 } else { 0 };
-		let value_to_remote: i64 = ((self.channel_value_satoshis * 1000 - self.value_to_self_msat) as i64 / 1000) - if self.is_outbound() { 0 } else { total_fee_satoshis as i64 };
+		let mut value_to_holder: i64 = (self.value_to_self_msat as i64) / 1000 - if self.is_outbound() { total_fee_satoshis as i64 } else { 0 };
+		let mut value_to_counterparty: i64 = ((self.channel_value_satoshis * 1000 - self.value_to_self_msat) as i64 / 1000) - if self.is_outbound() { 0 } else { total_fee_satoshis as i64 };
 
-		if value_to_self < 0 {
+		if value_to_holder < 0 {
 			assert!(self.is_outbound());
-			total_fee_satoshis += (-value_to_self) as u64;
-		} else if value_to_remote < 0 {
+			total_fee_satoshis += (-value_to_holder) as u64;
+		} else if value_to_counterparty < 0 {
 			assert!(!self.is_outbound());
-			total_fee_satoshis += (-value_to_remote) as u64;
+			total_fee_satoshis += (-value_to_counterparty) as u64;
 		}
 
-		if !skip_remote_output && value_to_remote as u64 > self.holder_dust_limit_satoshis {
-			txouts.push((TxOut {
-				script_pubkey: self.counterparty_shutdown_scriptpubkey.clone().unwrap(),
-				value: value_to_remote as u64
-			}, ()));
+		if skip_remote_output || value_to_counterparty as u64 <= self.holder_dust_limit_satoshis {
+			value_to_counterparty = 0;
+		}
+
+		if value_to_holder as u64 <= self.holder_dust_limit_satoshis {
+			value_to_holder = 0;
 		}
 
 		assert!(self.shutdown_scriptpubkey.is_some());
-		if value_to_self as u64 > self.holder_dust_limit_satoshis {
-			txouts.push((TxOut {
-				script_pubkey: self.get_closing_scriptpubkey(),
-				value: value_to_self as u64
-			}, ()));
-		}
+		let holder_shutdown_script = self.get_closing_scriptpubkey();
+		let counterparty_shutdown_script = self.counterparty_shutdown_scriptpubkey.clone().unwrap();
+		let funding_outpoint = self.funding_outpoint().into_bitcoin_outpoint();
 
-		transaction_utils::sort_outputs(&mut txouts, |_, _| { cmp::Ordering::Equal }); // Ordering doesnt matter if they used our pubkey...
-
-		let mut outputs: Vec<TxOut> = Vec::new();
-		for out in txouts.drain(..) {
-			outputs.push(out.0);
-		}
-
-		(Transaction {
-			version: 2,
-			lock_time: 0,
-			input: txins,
-			output: outputs,
-		}, total_fee_satoshis)
+		(build_closing_transaction(value_to_holder as u64, value_to_counterparty as u64, holder_shutdown_script, counterparty_shutdown_script, funding_outpoint), total_fee_satoshis)
 	}
 
 	fn funding_outpoint(&self) -> OutPoint {
