@@ -68,7 +68,7 @@ where
 		.basic_mpp()
 		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
 	if let Some(amt) = amt_msat {
-		invoice = invoice.amount_pico_btc(amt * 10);
+		invoice = invoice.amount_milli_satoshis(amt);
 	}
 	for hint in route_hints {
 		invoice = invoice.private_route(hint);
@@ -132,7 +132,7 @@ mod test {
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().unwrap().clone())).unwrap();
+			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone())).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();

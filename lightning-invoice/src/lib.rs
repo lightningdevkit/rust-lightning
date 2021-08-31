@@ -127,6 +127,7 @@ pub fn check_platform() {
 ///
 /// ```
 /// extern crate secp256k1;
+/// extern crate lightning;
 /// extern crate lightning_invoice;
 /// extern crate bitcoin_hashes;
 ///
@@ -135,6 +136,8 @@ pub fn check_platform() {
 ///
 /// use secp256k1::Secp256k1;
 /// use secp256k1::key::SecretKey;
+///
+/// use lightning::ln::PaymentSecret;
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
@@ -148,10 +151,12 @@ pub fn check_platform() {
 ///	).unwrap();
 ///
 /// let payment_hash = sha256::Hash::from_slice(&[0; 32][..]).unwrap();
+/// let payment_secret = PaymentSecret([42u8; 32]);
 ///
 /// let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 /// 	.description("Coins pls!".into())
 /// 	.payment_hash(payment_hash)
+/// 	.payment_secret(payment_secret)
 /// 	.current_timestamp()
 /// 	.min_final_cltv_expiry(144)
 /// 	.build_signed(|hash| {
@@ -321,7 +326,7 @@ impl SiPrefix {
 }
 
 /// Enum representing the crypto currencies (or networks) supported by this library
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum Currency {
 	/// Bitcoin mainnet
 	Bitcoin,
@@ -342,7 +347,7 @@ pub enum Currency {
 /// Tagged field which may have an unknown tag
 ///
 /// (C-not exported) as we don't currently support TaggedField
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
@@ -357,7 +362,7 @@ pub enum RawTaggedField {
 /// (C-not exported) As we don't yet support enum variants with the same name the struct contained
 /// in the variant.
 #[allow(missing_docs)]
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum TaggedField {
 	PaymentHash(Sha256),
 	Description(Description),
@@ -372,18 +377,18 @@ pub enum TaggedField {
 }
 
 /// SHA-256 hash
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Sha256(pub sha256::Hash);
 
 /// Description string
 ///
 /// # Invariants
 /// The description can be at most 639 __bytes__ long
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Description(String);
 
 /// Payee public key
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PayeePubKey(pub PublicKey);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
@@ -393,17 +398,17 @@ pub struct PayeePubKey(pub PublicKey);
 /// The number of seconds this expiry time represents has to be in the range
 /// `0...(SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME)` to avoid overflows when adding it to a
 /// timestamp
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct ExpiryTime(Duration);
 
 /// `min_final_cltv_expiry` to use for the last HTLC in the route
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct MinFinalCltvExpiry(pub u64);
 
 // TODO: better types instead onf byte arrays
 /// Fallback address in case no LN payment is possible
 #[allow(missing_docs)]
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum Fallback {
 	SegWitProgram {
 		version: u5,
@@ -414,7 +419,7 @@ pub enum Fallback {
 }
 
 /// Recoverable signature
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvoiceSignature(pub RecoverableSignature);
 
 /// Private routing information
@@ -422,7 +427,7 @@ pub struct InvoiceSignature(pub RecoverableSignature);
 /// # Invariants
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
@@ -480,8 +485,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 		}
 	}
 
-	/// Sets the amount in pico BTC. The optimal SI prefix is choosen automatically.
-	pub fn amount_pico_btc(mut self, amount: u64) -> Self {
+	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
+	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
+		let amount = amount_msat * 10; // Invoices are denominated in "pico BTC"
 		let biggest_possible_si_prefix = SiPrefix::values_desc()
 			.iter()
 			.find(|prefix| amount % prefix.multiplier() == 0)
@@ -633,7 +639,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 	}
 }
 
-impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
+impl InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::True> {
 	/// Builds and signs an invoice using the supplied `sign_function`. This function MAY NOT fail
 	/// and MUST produce a recoverable signature valid for the given hash and if applicable also for
 	/// the included payee public key.
@@ -673,6 +679,7 @@ impl<S: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, S> {
 
 		invoice.check_field_counts().expect("should be ensured by type signature of builder");
 		invoice.check_feature_bits().expect("should be ensured by type signature of builder");
+		invoice.check_amount().expect("should be ensured by type signature of builder");
 
 		Ok(invoice)
 	}
@@ -1016,35 +1023,54 @@ impl Invoice {
 			return  Err(SemanticError::MultipleDescriptions);
 		}
 
+		self.check_payment_secret()?;
+
+		Ok(())
+	}
+
+	/// Checks that there is exactly one payment secret field
+	fn check_payment_secret(&self) -> Result<(), SemanticError> {
+		// "A writer MUST include exactly one `s` field."
+		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
+			TaggedField::PaymentSecret(_) => true,
+			_ => false,
+		}).count();
+		if payment_secret_count < 1 {
+			return Err(SemanticError::NoPaymentSecret);
+		} else if payment_secret_count > 1 {
+			return Err(SemanticError::MultiplePaymentSecrets);
+		}
+
+		Ok(())
+	}
+
+	/// Check that amount is a whole number of millisatoshis
+	fn check_amount(&self) -> Result<(), SemanticError> {
+		if let Some(amount_pico_btc) = self.amount_pico_btc() {
+			if amount_pico_btc % 10 != 0 {
+				return Err(SemanticError::ImpreciseAmount);
+			}
+		}
 		Ok(())
 	}
 
 	/// Check that feature bits are set as required
 	fn check_feature_bits(&self) -> Result<(), SemanticError> {
-		// "If the payment_secret feature is set, MUST include exactly one s field."
-		let payment_secret_count = self.tagged_fields().filter(|&tf| match *tf {
-			TaggedField::PaymentSecret(_) => true,
-			_ => false,
-		}).count();
-		if payment_secret_count > 1 {
-			return Err(SemanticError::MultiplePaymentSecrets);
-		}
+		self.check_payment_secret()?;
 
 		// "A writer MUST set an s field if and only if the payment_secret feature is set."
-		let has_payment_secret = payment_secret_count == 1;
+		// (this requirement has been since removed, and we now require the payment secret
+		// feature bit always).
 		let features = self.tagged_fields().find(|&tf| match *tf {
 			TaggedField::Features(_) => true,
 			_ => false,
 		});
 		match features {
-			None if has_payment_secret => Err(SemanticError::InvalidFeatures),
-			None => Ok(()),
+			None => Err(SemanticError::InvalidFeatures),
 			Some(TaggedField::Features(features)) => {
-				if features.supports_payment_secret() && has_payment_secret {
-					Ok(())
-				} else if has_payment_secret {
+				if features.requires_unknown_bits() {
 					Err(SemanticError::InvalidFeatures)
-				} else if features.supports_payment_secret() {
+				} else if !features.supports_payment_secret() {
 					Err(SemanticError::InvalidFeatures)
 				} else {
 					Ok(())
@@ -1059,7 +1085,9 @@ impl Invoice {
 		match self.signed_invoice.recover_payee_pub_key() {
 			Err(secp256k1::Error::InvalidRecoveryId) =>
 				return Err(SemanticError::InvalidRecoveryId),
-			Err(_) => panic!("no other error may occur"),
+			Err(secp256k1::Error::InvalidSignature) =>
+				return Err(SemanticError::InvalidSignature),
+			Err(e) => panic!("no other error may occur, got {:?}", e),
 			Ok(_) => {},
 		}
 
@@ -1074,10 +1102,17 @@ impl Invoice {
 	/// ```
 	/// use lightning_invoice::*;
 	///
-	/// let invoice = "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp\
-	/// 	l2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq8rkx3yf5tcsyz3d7\
-	/// 	3gafnh3cax9rn449d9p5uxz9ezhhypd0elx87sjle52x86fux2ypatgddc6k63n7erqz25le42c4u4ec\
-	/// 	ky03ylcqca784w";
+	/// let invoice = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcs\
+	/// h2pu5qc7lgq0xs578ngs6s0s68ua4h7cvspp5q6rmq35js88zp5dvwrv9m459tnk2zunwj5jalqtyxqulh0l\
+	/// 5gflssp5nf55ny5gcrfl30xuhzj3nphgj27rstekmr9fw3ny5989s300gyus9qyysgqcqpcrzjqw2sxwe993\
+	/// h5pcm4dxzpvttgza8zhkqxpgffcrf5v25nwpr3cmfg7z54kuqq8rgqqqqqqqq2qqqqq9qq9qrzjqd0ylaqcl\
+	/// j9424x9m8h2vcukcgnm6s56xfgu3j78zyqzhgs4hlpzvznlugqq9vsqqqqqqqlgqqqqqeqq9qrzjqwldmj9d\
+	/// ha74df76zhx6l9we0vjdquygcdt3kssupehe64g6yyp5yz5rhuqqwccqqyqqqqlgqqqqjcqq9qrzjqf9e58a\
+	/// guqr0rcun0ajlvmzq3ek63cw2w282gv3z5uupmuwvgjtq2z55qsqqg6qqqyqqqrtnqqqzq3cqygrzjqvphms\
+	/// ywntrrhqjcraumvc4y6r8v4z5v593trte429v4hredj7ms5z52usqq9ngqqqqqqqlgqqqqqqgq9qrzjq2v0v\
+	/// p62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh3\
+	/// 8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
+	/// j5r6drg6k6zcqj0fcwg";
 	///
 	/// let signed = invoice.parse::<SignedRawInvoice>().unwrap();
 	///
@@ -1090,6 +1125,7 @@ impl Invoice {
 		invoice.check_field_counts()?;
 		invoice.check_feature_bits()?;
 		invoice.check_signature()?;
+		invoice.check_amount()?;
 
 		Ok(invoice)
 	}
@@ -1130,8 +1166,8 @@ impl Invoice {
 	}
 
 	/// Get the payment secret if one was included in the invoice
-	pub fn payment_secret(&self) -> Option<&PaymentSecret> {
-		self.signed_invoice.payment_secret()
+	pub fn payment_secret(&self) -> &PaymentSecret {
+		self.signed_invoice.payment_secret().expect("was checked by constructor")
 	}
 
 	/// Get the invoice features if they were included in the invoice
@@ -1388,6 +1424,10 @@ pub enum SemanticError {
 	/// The invoice contains multiple descriptions and/or description hashes which isn't allowed
 	MultipleDescriptions,
 
+	/// The invoice is missing the mandatory payment secret, which all modern lightning nodes
+	/// should provide.
+	NoPaymentSecret,
+
 	/// The invoice contains multiple payment secrets
 	MultiplePaymentSecrets,
 
@@ -1399,6 +1439,9 @@ pub enum SemanticError {
 
 	/// The invoice's signature is invalid
 	InvalidSignature,
+
+	/// The invoice's amount was not a whole number of millisatoshis
+	ImpreciseAmount,
 }
 
 impl Display for SemanticError {
@@ -1408,10 +1451,12 @@ impl Display for SemanticError {
 			SemanticError::MultiplePaymentHashes => f.write_str("The invoice has multiple payment hashes which isn't allowed"),
 			SemanticError::NoDescription => f.write_str("No description or description hash are part of the invoice"),
 			SemanticError::MultipleDescriptions => f.write_str("The invoice contains multiple descriptions and/or description hashes which isn't allowed"),
+			SemanticError::NoPaymentSecret => f.write_str("The invoice is missing the mandatory payment secret"),
 			SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
 			SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
 			SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
+			SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
 		}
 	}
 }
@@ -1623,7 +1668,7 @@ mod test {
 			let invoice = invoice_template.clone();
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert!(Invoice::from_signed(invoice).is_ok());
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// No payment secret or feature bits
 		let invoice = {
@@ -1631,7 +1676,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert!(Invoice::from_signed(invoice).is_ok());
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// Missing payment secret
 		let invoice = {
@@ -1639,7 +1684,7 @@ mod test {
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
 		}.unwrap();
-		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
+		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
 		// Multiple payment secrets
 		let invoice = {
@@ -1661,7 +1706,7 @@ mod test {
 			.current_timestamp();
 
 		let invoice = builder.clone()
-			.amount_pico_btc(15000)
+			.amount_milli_satoshis(1500)
 			.build_raw()
 			.unwrap();
 
@@ -1670,7 +1715,7 @@ mod test {
 
 
 		let invoice = builder.clone()
-			.amount_pico_btc(1500)
+			.amount_milli_satoshis(150)
 			.build_raw()
 			.unwrap();
 
@@ -1725,6 +1770,7 @@ mod test {
 
 		let sign_error_res = builder.clone()
 			.description("Test".into())
+			.payment_secret(PaymentSecret([0; 32]))
 			.try_build_signed(|_| {
 				Err("ImaginaryError")
 			});
@@ -1801,7 +1847,7 @@ mod test {
 		]);
 
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
-			.amount_pico_btc(123)
+			.amount_milli_satoshis(123)
 			.timestamp(UNIX_EPOCH + Duration::from_secs(1234567))
 			.payee_pub_key(public_key.clone())
 			.expiry_time(Duration::from_secs(54321))
@@ -1821,7 +1867,7 @@ mod test {
 		assert!(invoice.check_signature().is_ok());
 		assert_eq!(invoice.tagged_fields().count(), 10);
 
-		assert_eq!(invoice.amount_pico_btc(), Some(123));
+		assert_eq!(invoice.amount_pico_btc(), Some(1230));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		assert_eq!(
 			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
@@ -1837,7 +1883,7 @@ mod test {
 			InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
-		assert_eq!(invoice.payment_secret(), Some(&PaymentSecret([42; 32])));
+		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
 		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
 
 		let raw_invoice = builder.build_raw().unwrap();
@@ -1853,6 +1899,7 @@ mod test {
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
+			.payment_secret(PaymentSecret([0; 32]))
 			.current_timestamp()
 			.build_raw()
 			.unwrap()

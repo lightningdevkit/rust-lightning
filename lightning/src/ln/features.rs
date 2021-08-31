@@ -25,6 +25,7 @@
 use io;
 use prelude::*;
 use core::{cmp, fmt};
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use bitcoin::bech32;
@@ -362,6 +363,11 @@ impl<T: sealed::Context> Clone for Features<T> {
 		}
 	}
 }
+impl<T: sealed::Context> Hash for Features<T> {
+	fn hash<H: Hasher>(&self, hasher: &mut H) {
+		self.flags.hash(hasher);
+	}
+}
 impl<T: sealed::Context> PartialEq for Features<T> {
 	fn eq(&self, o: &Self) -> bool {
 		self.flags.eq(&o.flags)
@@ -548,7 +554,9 @@ impl<T: sealed::Context> Features<T> {
 		&self.flags
 	}
 
-	pub(crate) fn requires_unknown_bits(&self) -> bool {
+	/// Returns true if this `Features` object contains unknown feature flags which are set as
+	/// "required".
+	pub fn requires_unknown_bits(&self) -> bool {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();

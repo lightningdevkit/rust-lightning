@@ -16,4 +16,5 @@ num-traits = "0.2.8"
 bitcoin_hashes = "0.10"
 
 [dev-dependencies]
+hex = "0.3"
 lightning = { version = "0.0.100", path = "../lightning", features = ["_test_utils"] }

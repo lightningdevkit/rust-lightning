@@ -533,7 +533,7 @@ impl_writeable_tlv_based!(ChannelInfo, {
 
 
 /// Fees for routing via a given channel or a node
-#[derive(Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct RoutingFees {
 	/// Flat routing fee in satoshis
 	pub base_msat: u32,
