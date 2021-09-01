@@ -34,7 +34,7 @@ use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
 use ln::chan_utils;
-use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction};
+use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
 use ln::script::ShutdownScript;
 
@@ -322,7 +322,7 @@ pub trait BaseSign {
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
-	fn sign_closing_transaction(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
 	/// Signs a channel announcement message with our funding key, proving it comes from one
 	/// of the channel participants.
@@ -671,17 +671,10 @@ impl BaseSign for InMemorySigner {
 		Err(())
 	}
 
-	fn sign_closing_transaction(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		if closing_tx.input.len() != 1 { return Err(()); }
-		if closing_tx.input[0].witness.len() != 0 { return Err(()); }
-		if closing_tx.output.len() > 2 { return Err(()); }
-
+	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
-
-		let sighash = hash_to_message!(&bip143::SigHashCache::new(closing_tx)
-			.signature_hash(0, &channel_funding_redeemscript, self.channel_value_satoshis, SigHashType::All)[..]);
-		Ok(secp_ctx.sign(&sighash, &self.funding_key))
+		Ok(closing_tx.trust().sign(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {

@@ -81,7 +81,7 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 }
 
 /// Build a closing transaction
-pub fn build_closing_transaction(value_to_holder: u64, value_to_counterparty: u64, holder_shutdown_script: Script, counterparty_shutdown_script: Script, funding_outpoint: OutPoint) -> Transaction {
+pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value_sat: u64, to_holder_script: Script, to_counterparty_script: Script, funding_outpoint: OutPoint) -> Transaction {
 	let txins = {
 		let mut ins: Vec<TxIn> = Vec::new();
 		ins.push(TxIn {
@@ -95,17 +95,17 @@ pub fn build_closing_transaction(value_to_holder: u64, value_to_counterparty: u6
 
 	let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
-	if value_to_counterparty > 0 {
+	if to_counterparty_value_sat > 0 {
 		txouts.push((TxOut {
-			script_pubkey: counterparty_shutdown_script,
-			value: value_to_counterparty
+			script_pubkey: to_counterparty_script,
+			value: to_counterparty_value_sat
 		}, ()));
 	}
 
-	if value_to_holder > 0 {
+	if to_holder_value_sat > 0 {
 		txouts.push((TxOut {
-			script_pubkey: holder_shutdown_script,
-			value: value_to_holder
+			script_pubkey: to_holder_script,
+			value: to_holder_value_sat
 		}, ()));
 	}
 
