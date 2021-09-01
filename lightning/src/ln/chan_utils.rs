@@ -890,7 +890,130 @@ impl BuiltCommitmentTransaction {
 	}
 }
 
-/// This class tracks the per-transaction information needed to build a commitment transaction and to
+/// This class tracks the per-transaction information needed to build a closing transaction and will
+/// actually build it and sign.
+///
+/// This class can be used inside a signer implementation to generate a signature given the relevant
+/// secret key.
+pub struct ClosingTransaction {
+	to_holder_value_sat: u64,
+	to_counterparty_value_sat: u64,
+	to_holder_script: Script,
+	to_counterparty_script: Script,
+	built: Transaction,
+}
+
+impl ClosingTransaction {
+	/// Construct an object of the class
+	pub fn new(
+		to_holder_value_sat: u64,
+		to_counterparty_value_sat: u64,
+		to_holder_script: Script,
+		to_counterparty_script: Script,
+		funding_outpoint: OutPoint,
+	) -> Self {
+		let built = build_closing_transaction(
+			to_holder_value_sat, to_counterparty_value_sat,
+			to_holder_script.clone(), to_counterparty_script.clone(),
+			funding_outpoint
+		);
+		ClosingTransaction {
+			to_holder_value_sat,
+			to_counterparty_value_sat,
+			to_holder_script,
+			to_counterparty_script,
+			built
+		}
+	}
+
+	/// Trust our pre-built transaction.
+	///
+	/// Applies a wrapper which allows access to the transaction.
+	///
+	/// This should only be used if you fully trust the builder of this object. It should not
+	/// be used by an external signer - instead use the verify function.
+	pub fn trust(&self) -> TrustedClosingTransaction {
+		TrustedClosingTransaction { inner: self }
+	}
+
+	/// Verify our pre-built transaction.
+	///
+	/// Applies a wrapper which allows access to the transaction.
+	///
+	/// An external validating signer must call this method before signing
+	/// or using the built transaction.
+	pub fn verify(&self, funding_outpoint: OutPoint) -> Result<TrustedClosingTransaction, ()> {
+		let built = build_closing_transaction(
+			self.to_holder_value_sat, self.to_counterparty_value_sat,
+			self.to_holder_script.clone(), self.to_counterparty_script.clone(),
+			funding_outpoint
+		);
+		if self.built != built {
+			return Err(())
+		}
+		Ok(TrustedClosingTransaction { inner: self })
+	}
+
+	/// The value to be sent to the holder, or zero if the output will be omitted
+	pub fn to_holder_value_sat(&self) -> u64 {
+		self.to_holder_value_sat
+	}
+
+	/// The value to be sent to the counterparty, or zero if the output will be omitted
+	pub fn to_counterparty_value_sat(&self) -> u64 {
+		self.to_counterparty_value_sat
+	}
+
+	/// The destination of the holder's output
+	pub fn to_holder_script(&self) -> &Script {
+		&self.to_holder_script
+	}
+
+	/// The destination of the counterparty's output
+	pub fn to_counterparty_script(&self) -> &Script {
+		&self.to_counterparty_script
+	}
+}
+
+/// A wrapper on ClosingTransaction indicating that the built bitcoin
+/// transaction is trusted.
+///
+/// See trust() and verify() functions on CommitmentTransaction.
+///
+/// This structure implements Deref.
+pub struct TrustedClosingTransaction<'a> {
+	inner: &'a ClosingTransaction,
+}
+
+impl<'a> Deref for TrustedClosingTransaction<'a> {
+	type Target = ClosingTransaction;
+
+	fn deref(&self) -> &Self::Target { self.inner }
+}
+
+impl<'a> TrustedClosingTransaction<'a> {
+	/// The pre-built Bitcoin commitment transaction
+	pub fn built_transaction(&self) -> &Transaction {
+		&self.inner.built
+	}
+
+	/// Get the SIGHASH_ALL sighash value of the transaction.
+	///
+	/// This can be used to verify a signature.
+	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
+		let sighash = &bip143::SigHashCache::new(&self.inner.built).signature_hash(0, funding_redeemscript, channel_value_satoshis, SigHashType::All)[..];
+		hash_to_message!(sighash)
+	}
+
+	/// Sign a transaction, either because we are counter-signing the counterparty's transaction or
+	/// because we are about to broadcast a holder transaction.
+	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
+		secp_ctx.sign(&sighash, funding_key)
+	}
+}
+
+/// This class tracks the per-transaction information needed to build a commitment transaction and will
 /// actually build it and sign.  It is used for holder transactions that we sign only when needed
 /// and for transactions we sign for the counterparty.
 ///
@@ -1154,7 +1277,7 @@ impl CommitmentTransaction {
 	/// Applies a wrapper which allows access to these fields.
 	///
 	/// This should only be used if you fully trust the builder of this object.  It should not
-	///	be used by an external signer - instead use the verify function.
+	/// be used by an external signer - instead use the verify function.
 	pub fn trust(&self) -> TrustedCommitmentTransaction {
 		TrustedCommitmentTransaction { inner: self }
 	}
