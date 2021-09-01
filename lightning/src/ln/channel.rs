@@ -26,7 +26,7 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::script::ShutdownScript;
+use ln::script::{self, ShutdownScript};
 use ln::channelmanager::{CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use ln::chan_utils;
@@ -44,7 +44,6 @@ use util::scid_utils::scid_from_parts;
 use io;
 use prelude::*;
 use core::{cmp,mem,fmt};
-use core::convert::TryFrom;
 use core::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget", debug_assertions))]
 use sync::Mutex;
@@ -896,10 +895,10 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), their_features)) {
-							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
-							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
 						}
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -1641,10 +1640,10 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), their_features)) {
-							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
-							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
 						}
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -3494,17 +3493,16 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		let shutdown_scriptpubkey = match ShutdownScript::try_from((msg.scriptpubkey.clone(), their_features)) {
-			Ok(script) => script.into_inner(),
-			Err(_) => return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex()))),
-		};
+		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
+			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
+		}
 
 		if self.counterparty_shutdown_scriptpubkey.is_some() {
-			if Some(&shutdown_scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", shutdown_scriptpubkey.to_bytes().to_hex())));
+			if Some(&msg.scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
+				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
 			}
 		} else {
-			self.counterparty_shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
+			self.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
 		}
 
 		// If we have any LocalAnnounced updates we'll probably just get back an update_fail_htlc
