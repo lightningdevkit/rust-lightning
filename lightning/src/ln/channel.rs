@@ -555,15 +555,15 @@ pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
 
-/// Maximum counterparty `dust_limit_satoshis` allowed. 2 * standard dust threshold on p2wsh output
-/// Scales up on Bitcoin Core's proceeding policy with dust outputs. A typical p2wsh output is 43
-/// bytes to which Core's `GetDustThreshold()` sums up a minimal spend of 67 bytes (even if
-/// a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee` is set to 3000sat/kb, thus
-/// 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs are p2wsh, a value of
-/// 330 sats is the lower bound desired to ensure good propagation of transactions. We give a bit
-/// of margin to our counterparty and pick up 660 satoshis as an accepted `dust_limit_satoshis`
-/// upper bound to avoid negotiation conflicts with other implementations.
-pub const MAX_DUST_LIMIT_SATOSHIS: u64 = 2 * 330;
+/// The maximum network dust limit for standard script formats. This currently represents the
+/// minimum output value for a P2SH output before Bitcoin Core 22 considers the entire
+/// transaction non-standard and thus refuses to relay it.
+/// We also use this as the maximum counterparty `dust_limit_satoshis` allowed, given many
+/// implementations use this value for their dust limit today.
+pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
+
+/// The maximum channel dust limit we will accept from our counterparty.
+pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
 
 /// The dust limit is used for both the commitment transaction outputs as well as the closing
 /// transactions. For cooperative closing transactions, we require segwit outputs, though accept
@@ -847,8 +847,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis >  MAX_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -1621,8 +1621,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis > MAX_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));

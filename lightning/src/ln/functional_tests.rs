@@ -5830,7 +5830,7 @@ fn bolt2_open_channel_sane_dust_limit() {
 	let push_msat=10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).unwrap();
 	let mut node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	node0_to_1_send_open_channel.dust_limit_satoshis = 661;
+	node0_to_1_send_open_channel.dust_limit_satoshis = 547;
 	node0_to_1_send_open_channel.channel_reserve_satoshis = 100001;
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &node0_to_1_send_open_channel);
@@ -5841,7 +5841,7 @@ fn bolt2_open_channel_sane_dust_limit() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	assert_eq!(err_msg.data, "dust_limit_satoshis (661) is greater than the implementation limit (660)");
+	assert_eq!(err_msg.data, "dust_limit_satoshis (547) is greater than the implementation limit (546)");
 }
 
 // Test that if we fail to send an HTLC that is being freed from the holding cell, and the HTLC
