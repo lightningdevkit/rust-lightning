@@ -3308,7 +3308,7 @@ fn test_simple_peer_disconnect() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
-	fail_payment_along_route(&nodes[0], &[&nodes[1], &nodes[2]], true, payment_hash_5);
+	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
 	{
