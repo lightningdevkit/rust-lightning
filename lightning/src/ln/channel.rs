@@ -3629,6 +3629,12 @@ impl<Signer: Sign> Channel<Signer> {
 			},
 		};
 
+		for outp in closing_tx.trust().built_transaction().output.iter() {
+			if !outp.script_pubkey.is_witness_program() && outp.value < MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS {
+				return Err(ChannelError::Close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
+			}
+		}
+
 		assert!(self.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
