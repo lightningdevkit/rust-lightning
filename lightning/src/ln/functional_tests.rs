@@ -1297,7 +1297,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
-	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point) = {
+	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point, local_funding) = {
 		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
 		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
@@ -1307,15 +1307,17 @@ fn test_fee_spike_violation_fails_htlc() {
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER),
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx))
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx),
+		 chan_signer.pubkeys().funding_pubkey)
 	};
-	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point) = {
+	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
 		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
-		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx))
+		 chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx),
+		 chan_signer.pubkeys().funding_pubkey)
 	};
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
@@ -1344,6 +1346,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			commitment_number,
 			95000,
 			local_chan_balance,
+			false, local_funding, remote_funding,
 			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
