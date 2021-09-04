@@ -17,11 +17,11 @@ use utils::test_logger;
 
 #[inline]
 pub fn msg_update_add_htlc_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg_hole!(msgs::UpdateAddHTLC, data, 85, 33);
+	test_msg_simple!(msgs::UpdateAddHTLC, data);
 }
 
 #[no_mangle]
 pub extern "C" fn msg_update_add_htlc_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg_hole!(msgs::UpdateAddHTLC, data, 85, 33);
+	test_msg_simple!(msgs::UpdateAddHTLC, data);
 }
