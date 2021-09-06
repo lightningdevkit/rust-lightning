@@ -43,7 +43,6 @@ use chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-pub use ln::channel::CounterpartyForwardingInfo;
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
 use ln::features::{InitFeatures, NodeFeatures};
 use routing::router::{Route, RouteHop};
@@ -625,6 +624,19 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRA
 #[deny(const_err)]
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
+
+/// Information needed for constructing an invoice route hint for this channel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CounterpartyForwardingInfo {
+	/// Base routing fee in millisatoshis.
+	pub fee_base_msat: u32,
+	/// Amount in millionths of a satoshi the channel will charge per transferred satoshi.
+	pub fee_proportional_millionths: u32,
+	/// The minimum difference in cltv_expiry between an ingoing HTLC and its outgoing counterpart,
+	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
+	/// `cltv_expiry_delta` for more details.
+	pub cltv_expiry_delta: u16,
+}
 
 /// Channel parameters which apply to our counterparty. These are split out from [`ChannelDetails`]
 /// to better separate parameters.
