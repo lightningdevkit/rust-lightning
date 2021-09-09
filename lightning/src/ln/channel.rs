@@ -422,22 +422,18 @@ pub(super) struct Channel<Signer: Sign> {
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 
-	// pending_update_fee is filled when sending and receiving update_fee
-	// For outbound channel, feerate_per_kw is updated with the value from
-	// pending_update_fee when revoke_and_ack is received
+	// pending_update_fee is filled when sending and receiving update_fee.
 	//
-	// For inbound channel, feerate_per_kw is updated when it receives
-	// commitment_signed and revoke_and_ack is generated
-	// The pending value is kept when another pair of update_fee and commitment_signed
-	// is received during AwaitingRemoteRevoke and relieved when the expected
-	// revoke_and_ack is received and new commitment_signed is generated to be
-	// sent to the funder. Otherwise, the pending value is removed when receiving
-	// commitment_signed.
+	// Because it follows the same commitment flow as HTLCs, `FeeUpdateState` is either `Outbound`
+	// or matches a subset of the `InboundHTLCOutput` variants. It is then updated/used when
+	// generating new commitment transactions with exactly the same criteria as inbound/outbound
+	// HTLCs with similar state.
 	pending_update_fee: Option<(u32, FeeUpdateState)>,
-	// update_fee() during ChannelState::AwaitingRemoteRevoke is hold in
-	// holdina_cell_update_fee then moved to pending_udpate_fee when revoke_and_ack
-	// is received. holding_cell_update_fee is updated when there are additional
-	// update_fee() during ChannelState::AwaitingRemoteRevoke.
+	// If a `send_update_fee()` call is made with ChannelState::AwaitingRemoteRevoke set, we place
+	// it here instead of `pending_update_fee` in the same way as we place outbound HTLC updates in
+	// `holding_cell_htlc_updates` instead of `pending_outbound_htlcs`. It is released into
+	// `pending_update_fee` with the same criteria as outbound HTLC updates but can be updated by
+	// further `send_update_fee` calls, dropping the previous holding cell update entirely.
 	holding_cell_update_fee: Option<u32>,
 	next_holder_htlc_id: u64,
 	next_counterparty_htlc_id: u64,
@@ -3876,6 +3872,8 @@ impl<Signer: Sign> Channel<Signer> {
 		// more dust balance if the feerate increases when we have several HTLCs pending
 		// which are near the dust limit.
 		let mut feerate_per_kw = self.feerate_per_kw;
+		// If there's a pending update fee, use it to ensure we aren't under-estimating
+		// potential feerate updates coming soon.
 		if let Some((feerate, _)) = self.pending_update_fee {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
@@ -5124,9 +5122,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		if self.is_outbound() {
 			self.pending_update_fee.map(|(a, _)| a).write(writer)?;
 		} else if let Some((feerate, FeeUpdateState::AwaitingRemoteRevokeToAnnounce)) = self.pending_update_fee {
-			// As for inbound HTLCs, if the update was only announced and never committed, drop it.
 			Some(feerate).write(writer)?;
 		} else {
+			// As for inbound HTLCs, if the update was only announced and never committed in a
+			// commitment_signed, drop it.
 			None::<u32>.write(writer)?;
 		}
 		self.holding_cell_update_fee.write(writer)?;
