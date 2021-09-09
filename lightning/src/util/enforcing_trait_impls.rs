@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction};
+use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use ln::{chan_utils, msgs};
 use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
@@ -182,7 +182,9 @@ impl BaseSign for EnforcingSigner {
 		Ok(self.inner.sign_counterparty_htlc_transaction(htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx).unwrap())
 	}
 
-	fn sign_closing_transaction(&self, closing_tx: &Transaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		closing_tx.verify(self.inner.funding_outpoint().into_bitcoin_outpoint())
+			.expect("derived different closing transaction");
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
