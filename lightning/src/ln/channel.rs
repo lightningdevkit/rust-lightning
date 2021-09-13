@@ -454,8 +454,8 @@ pub(super) struct Channel<Signer: Sign> {
 	/// closing_signed message and handling it in `maybe_propose_closing_signed`.
 	pending_counterparty_closing_signed: Option<msgs::ClosingSigned>,
 
-	/// The minimum and maximum absolute fee we are willing to place on the closing transaction.
-	/// These are set once we reach `closing_negotiation_ready`.
+	/// The minimum and maximum absolute fee, in satoshis, we are willing to place on the closing
+	/// transaction. These are set once we reach `closing_negotiation_ready`.
 	#[cfg(test)]
 	pub(crate) closing_fee_limits: Option<(u64, u64)>,
 	#[cfg(not(test))]
@@ -3414,7 +3414,7 @@ impl<Signer: Sign> Channel<Signer> {
 				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.config.force_close_avoidance_max_fee_satoshis,
 					proposed_max_feerate as u64 * tx_weight / 1000)
 			} else {
-				u64::max_value()
+				self.channel_value_satoshis - (self.value_to_self_msat + 999) / 1000
 			};
 
 		self.closing_fee_limits = Some((proposed_total_fee_satoshis, proposed_max_total_fee_satoshis));
@@ -3701,7 +3701,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			if !self.is_outbound() {
 				// They have to pay, so pick the highest fee in the overlapping range.
-				debug_assert_eq!(our_max_fee, u64::max_value()); // We should never set an upper bound
+				// We should never set an upper bound aside from their full balance
+				debug_assert_eq!(our_max_fee, self.channel_value_satoshis - (self.value_to_self_msat + 999) / 1000);
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
 				if msg.fee_satoshis < our_min_fee || msg.fee_satoshis > our_max_fee {
