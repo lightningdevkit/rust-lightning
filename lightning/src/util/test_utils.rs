@@ -349,7 +349,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_htlc_fail_channel_update(&self, _update: &msgs::HTLCFailChannelUpdate) {}
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		let mut chan_anns = Vec::new();
 		const TOTAL_UPDS: u64 = 100;

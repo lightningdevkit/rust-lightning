@@ -43,13 +43,12 @@
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
 //! 	lightning_net_tokio::connect_outbound(peer_manager, their_node_id, addr).await;
 //! 	loop {
+//! 		let event_handler = |event: &Event| {
+//! 			// Handle the event!
+//! 		};
 //! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
-//! 		chain_monitor.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
+//! 		channel_manager.process_pending_events(&event_handler);
+//! 		chain_monitor.process_pending_events(&event_handler);
 //! 	}
 //! }
 //!
@@ -57,13 +56,12 @@
 //! async fn accept_socket(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
 //! 	lightning_net_tokio::setup_inbound(peer_manager, socket);
 //! 	loop {
+//! 		let event_handler = |event: &Event| {
+//! 			// Handle the event!
+//! 		};
 //! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
-//! 		chain_monitor.process_pending_events(&|event| {
-//! 			// Handle the event!
-//! 		});
+//! 		channel_manager.process_pending_events(&event_handler);
+//! 		chain_monitor.process_pending_events(&event_handler);
 //! 	}
 //! }
 //! ```
@@ -494,7 +492,6 @@ mod tests {
 		fn handle_node_announcement(&self, _msg: &NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 		fn handle_channel_announcement(&self, _msg: &ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
-		fn handle_htlc_fail_channel_update(&self, _update: &HTLCFailChannelUpdate) { }
 		fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> { Vec::new() }
 		fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<NodeAnnouncement> { Vec::new() }
 		fn sync_routing_table(&self, _their_node_id: &PublicKey, _init_msg: &Init) { }

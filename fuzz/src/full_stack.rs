@@ -38,7 +38,7 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,Ig
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::router::get_route;
-use lightning::routing::network_graph::NetGraphMsgHandler;
+use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::events::Event;
@@ -378,7 +378,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params));
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
-	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(genesis_block(network).block_hash(), None, Arc::clone(&logger)));
+	let network_graph = NetworkGraph::new(genesis_block(network).block_hash());
+	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
@@ -434,7 +435,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -451,7 +452,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph.read().unwrap(), &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
 					Ok(route) => route,
 					Err(_) => return,
 				};

@@ -2178,7 +2178,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
 		if local_sent_shutdown {
-			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|20);
+			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x4000|8);
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
 		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);

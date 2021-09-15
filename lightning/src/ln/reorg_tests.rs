@@ -14,7 +14,8 @@ use chain::transaction::OutPoint;
 use chain::{Confirm, Watch};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
-use ln::msgs::{ChannelMessageHandler, ErrorAction, HTLCFailChannelUpdate};
+use ln::msgs::{ChannelMessageHandler, ErrorAction};
+use routing::network_graph::NetworkUpdate;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
@@ -163,12 +164,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	if claim {
 		expect_payment_sent!(nodes[0], our_payment_preimage);
 	} else {
-		let events = nodes[0].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		if let MessageSendEvent::PaymentFailureNetworkUpdate { update: HTLCFailChannelUpdate::ChannelClosed { ref is_permanent, .. } } = events[0] {
-			assert!(is_permanent);
-		} else { panic!("Unexpected event!"); }
-		expect_payment_failed!(nodes[0], our_payment_hash, false);
+		expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 	}
 }
 

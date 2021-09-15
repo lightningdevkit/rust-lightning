@@ -239,12 +239,12 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
-				let network_graph_ser = self.net_graph_msg_handler.network_graph.read().unwrap();
+				let network_graph_ser = &self.net_graph_msg_handler.network_graph;
 				network_graph_ser.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
-				assert!(network_graph_deser == *self.net_graph_msg_handler.network_graph.read().unwrap());
-				let net_graph_msg_handler = NetGraphMsgHandler::from_net_graph(
-					Some(self.chain_source), self.logger, network_graph_deser
+				assert!(network_graph_deser == self.net_graph_msg_handler.network_graph);
+				let net_graph_msg_handler = NetGraphMsgHandler::new(
+					network_graph_deser, Some(self.chain_source), self.logger
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -962,7 +962,7 @@ macro_rules! get_route_and_payment_hash {
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node);
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
 		let route = get_route(&$send_node.node.get_our_node_id(),
-			&net_graph_msg_handler.network_graph.read().unwrap(),
+			&net_graph_msg_handler.network_graph,
 			&$recv_node.node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
@@ -1036,22 +1036,27 @@ macro_rules! expect_payment_forwarded {
 }
 
 #[cfg(test)]
-macro_rules! expect_payment_failure_chan_update {
-	($node: expr, $scid: expr, $chan_closed: expr) => {
-		let events = $node.node.get_and_clear_pending_msg_events();
+macro_rules! expect_payment_failed_with_update {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $scid: expr, $chan_closed: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			MessageSendEvent::PaymentFailureNetworkUpdate { ref update } => {
-				match update {
-					&HTLCFailChannelUpdate::ChannelUpdateMessage { ref msg } if !$chan_closed => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
+				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
+				assert!(error_code.is_some(), "expected error_code.is_some() = true");
+				assert!(error_data.is_some(), "expected error_data.is_some() = true");
+				match network_update {
+					&Some(NetworkUpdate::ChannelUpdateMessage { ref msg }) if !$chan_closed => {
 						assert_eq!(msg.contents.short_channel_id, $scid);
 						assert_eq!(msg.contents.flags & 2, 0);
 					},
-					&HTLCFailChannelUpdate::ChannelClosed { short_channel_id, is_permanent } if $chan_closed => {
+					&Some(NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if $chan_closed => {
 						assert_eq!(short_channel_id, $scid);
 						assert!(is_permanent);
 					},
-					_ => panic!("Unexpected update type"),
+					Some(_) => panic!("Unexpected update type"),
+					None => panic!("Expected update"),
 				}
 			},
 			_ => panic!("Unexpected event"),
@@ -1065,7 +1070,7 @@ macro_rules! expect_payment_failed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -1250,7 +1255,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(),
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph,
 		&expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()),
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()), &[],
 		recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
@@ -1265,7 +1270,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1435,7 +1440,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
 
 	for i in 0..node_count {
-		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].chain_source.genesis_hash, None, cfgs[i].logger);
+		let network_graph = NetworkGraph::new(cfgs[i].chain_source.genesis_hash);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, cfgs[i].logger);
 		nodes.push(Node{ chain_source: cfgs[i].chain_source,
 		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
 		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,

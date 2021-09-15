@@ -2822,6 +2822,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash,
 								rejected_by_dest: false,
+								network_update: None,
 #[cfg(test)]
 								error_code: None,
 #[cfg(test)]
@@ -2866,23 +2867,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
-						let (channel_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (channel_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
-						if let Some(update) = channel_update {
-							self.channel_state.lock().unwrap().pending_msg_events.push(
-								events::MessageSendEvent::PaymentFailureNetworkUpdate {
-									update,
-								}
-							);
-						}
 						self.pending_events.lock().unwrap().push(
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
+								network_update,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2897,7 +2892,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							ref data,
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
-						// TODO: We'd like to generate a PaymentFailureNetworkUpdate for temporary
+						// TODO: We'd like to generate a NetworkUpdate for temporary
 						// failures here, but that would be insufficient as get_route
 						// generally ignores its view of our own channels as we provide them via
 						// ChannelDetails.
@@ -2907,6 +2902,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
+								network_update: None,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
@@ -3519,33 +3515,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 
 				let create_pending_htlc_status = |chan: &Channel<Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
-					// Ensure error_code has the UPDATE flag set, since by default we send a
-					// channel update along as part of failing the HTLC.
-					assert!((error_code & 0x1000) != 0);
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
 					match pending_forward_info {
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
-							let reason = if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
-									let mut res = Vec::with_capacity(8 + 128);
-									// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-									res.extend_from_slice(&byte_utils::be16_to_array(0));
-									res.extend_from_slice(&upd.encode_with_len()[..]);
-									res
-								}[..])
+							let reason = if (error_code & 0x1000) != 0 {
+								if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
+									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
+										let mut res = Vec::with_capacity(8 + 128);
+										// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+										res.extend_from_slice(&byte_utils::be16_to_array(0));
+										res.extend_from_slice(&upd.encode_with_len()[..]);
+										res
+									}[..])
+								} else {
+									// The only case where we'd be unable to
+									// successfully get a channel update is if the
+									// channel isn't in the fully-funded state yet,
+									// implying our counterparty is trying to route
+									// payments over the channel back to themselves
+									// (because no one else should know the short_id
+									// is a lightning channel yet). We should have
+									// no problem just calling this
+									// unknown_next_peer (0x4000|10).
+									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+								}
 							} else {
-								// The only case where we'd be unable to
-								// successfully get a channel update is if the
-								// channel isn't in the fully-funded state yet,
-								// implying our counterparty is trying to route
-								// payments over the channel back to themselves
-								// (cause no one else should know the short_id
-								// is a lightning channel yet). We should have
-								// no problem just calling this
-								// unknown_next_peer (0x4000|10).
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
 							};
 							let msg = msgs::UpdateFailHTLC {
 								channel_id: msg.channel_id,
@@ -4167,7 +4164,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event| events.borrow_mut().push(event);
+		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -4244,7 +4241,7 @@ where
 			}
 
 			for event in pending_events.drain(..) {
-				handler.handle_event(event);
+				handler.handle_event(&event);
 			}
 
 			result
@@ -4669,7 +4666,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::PaymentFailureNetworkUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
@@ -5517,7 +5513,7 @@ mod tests {
 
 		// First, send a partial MPP payment.
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let (payment_preimage, our_payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
@@ -5624,7 +5620,7 @@ mod tests {
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -5652,7 +5648,7 @@ mod tests {
 
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph.read().unwrap(), &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -5704,9 +5700,9 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
                                   nodes[0].logger).unwrap();
 
@@ -5740,9 +5736,9 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-		let network_graph = nodes[0].net_graph_msg_handler.network_graph.read().unwrap();
+		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let route = get_keysend_route(&payer_pubkey, &network_graph, &payee_pubkey,
+		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
                                   nodes[0].logger).unwrap();
 
@@ -5779,7 +5775,7 @@ mod tests {
 		// Marshall an MPP route.
 		let (_, payment_hash, _) = get_payment_preimage_hash!(&nodes[3]);
 		let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-		let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph.read().unwrap(), &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
+		let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
 		let path = route.paths[0].clone();
 		route.paths.push(path);
 		route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();

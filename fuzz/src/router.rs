@@ -160,7 +160,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 
 	let our_pubkey = get_pubkey!();
-	let mut net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash());
+	let net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash());
 
 	let mut node_pks = HashSet::new();
 	let mut scid = 42;
