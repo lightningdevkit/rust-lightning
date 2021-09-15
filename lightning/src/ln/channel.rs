@@ -3060,13 +3060,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
 	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
-		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
-		self.monitor_pending_revoke_and_ack = resend_raa;
-		self.monitor_pending_commitment_signed = resend_commitment;
-		assert!(self.monitor_pending_forwards.is_empty());
-		mem::swap(&mut pending_forwards, &mut self.monitor_pending_forwards);
-		assert!(self.monitor_pending_failures.is_empty());
-		mem::swap(&mut pending_fails, &mut self.monitor_pending_failures);
+		self.monitor_pending_revoke_and_ack |= resend_raa;
+		self.monitor_pending_commitment_signed |= resend_commitment;
+		self.monitor_pending_forwards.append(&mut pending_forwards);
+		self.monitor_pending_failures.append(&mut pending_fails);
 		self.channel_state |= ChannelState::MonitorUpdateFailed as u32;
 	}
 
