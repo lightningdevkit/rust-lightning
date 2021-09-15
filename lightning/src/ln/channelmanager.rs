@@ -5276,6 +5276,16 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				None => continue,
 			}
 		}
+		if forward_htlcs_count > 0 {
+			// If we have pending HTLCs to forward, assume we either dropped a
+			// `PendingHTLCsForwardable` or the user received it but never processed it as they
+			// shut down before the timer hit. Either way, set the time_forwardable to a small
+			// constant as enough time has likely passed that we should simply handle the forwards
+			// now, or at least after the user gets a chance to reconnect to our peers.
+			pending_events_read.push(events::Event::PendingHTLCsForwardable {
+				time_forwardable: Duration::from_secs(2),
+			});
+		}
 
 		let background_event_count: u64 = Readable::read(reader)?;
 		let mut pending_background_events_read: Vec<BackgroundEvent> = Vec::with_capacity(cmp::min(background_event_count as usize, MAX_ALLOC_SIZE/mem::size_of::<BackgroundEvent>()));

@@ -240,9 +240,8 @@ impl Writeable for Event {
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
 				4u8.write(writer)?;
-				write_tlv_fields!(writer, {});
-				// We don't write the time_fordwardable out at all, as we presume when the user
-				// deserializes us at least that much time has elapsed.
+				// Note that we now ignore these on the read end as we'll re-generate them in
+				// ChannelManager, we write them here only for backwards compatibility.
 			},
 			&Event::SpendableOutputs { ref outputs } => {
 				5u8.write(writer)?;
@@ -336,15 +335,7 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			4u8 => {
-				let f = || {
-					read_tlv_fields!(reader, {});
-					Ok(Some(Event::PendingHTLCsForwardable {
-						time_forwardable: Duration::from_secs(0)
-					}))
-				};
-				f()
-			},
+			4u8 => Ok(None),
 			5u8 => {
 				let f = || {
 					let mut outputs = VecReadWrapper(Vec::new());
