@@ -203,6 +203,11 @@ pub enum Event {
 		all_paths_failed: bool,
 		/// The payment path that failed.
 		path: Vec<RouteHop>,
+		/// The channel responsible for the failed payment path.
+		///
+		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
+		/// retried. May be `None` for older [`Event`] serializations.
+		short_channel_id: Option<u64>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -295,7 +300,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
-			                            ref all_paths_failed, ref path,
+			                            ref all_paths_failed, ref path, ref short_channel_id,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -312,6 +317,7 @@ impl Writeable for Event {
 					(2, rejected_by_dest, required),
 					(3, all_paths_failed, required),
 					(5, path, vec_type),
+					(7, short_channel_id, option),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -409,12 +415,14 @@ impl MaybeReadable for Event {
 					let mut network_update = None;
 					let mut all_paths_failed = Some(true);
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
+					let mut short_channel_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
 						(2, rejected_by_dest, required),
 						(3, all_paths_failed, option),
 						(5, path, vec_type),
+						(7, short_channel_id, ignorable),
 					});
 					Ok(Some(Event::PaymentPathFailed {
 						payment_hash,
@@ -422,6 +430,7 @@ impl MaybeReadable for Event {
 						network_update,
 						all_paths_failed: all_paths_failed.unwrap(),
 						path: path.unwrap(),
+						short_channel_id,
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]

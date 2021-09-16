@@ -1745,6 +1745,7 @@ mod tests {
 				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
 					msg: valid_channel_update,
 				}),
+				short_channel_id: None,
 				error_code: None,
 				error_data: None,
 			});
@@ -1770,6 +1771,7 @@ mod tests {
 					short_channel_id,
 					is_permanent: false,
 				}),
+				short_channel_id: None,
 				error_code: None,
 				error_data: None,
 			});
@@ -1793,6 +1795,7 @@ mod tests {
 					short_channel_id,
 					is_permanent: true,
 				}),
+				short_channel_id: None,
 				error_code: None,
 				error_data: None,
 			});

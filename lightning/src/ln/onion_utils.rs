@@ -329,9 +329,10 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-/// Returns update, a boolean indicating that the payment itself failed, and the error code.
+/// Returns update, a boolean indicating that the payment itself failed, the short channel id of
+/// the responsible channel, and the error code.
 #[inline]
-pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
+pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
 	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat, .. } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
@@ -354,7 +355,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 			packet_decrypted = decryption_tmp;
 
+			// The failing hop includes either the inbound channel to the recipient or the outbound
+			// channel from the current hop (i.e., the next hop's inbound channel).
 			is_from_final_node = route_hop_idx + 1 == path.len();
+			let failing_route_hop = if is_from_final_node { route_hop } else { &path[route_hop_idx + 1] };
 
 			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 				let um = gen_um_from_shared_secret(&shared_secret[..]);
@@ -381,18 +385,21 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
 
 						let mut network_update = None;
+						let mut short_channel_id = None;
 
 						if error_code & NODE == NODE {
-							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent: error_code & PERM == PERM });
+							let is_permanent = error_code & PERM == PERM;
+							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
+							short_channel_id = Some(route_hop.short_channel_id);
 						}
 						else if error_code & PERM == PERM {
-							network_update = if payment_failed { None } else {
-								let failing_route_hop = if is_from_final_node { route_hop } else { &path[route_hop_idx + 1] };
-								Some(NetworkUpdate::ChannelClosed {
+							if !payment_failed {
+								network_update = Some(NetworkUpdate::ChannelClosed {
 									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: true,
-								})
-							};
+								});
+								short_channel_id = Some(failing_route_hop.short_channel_id);
+							}
 						}
 						else if error_code & UPDATE == UPDATE {
 							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
@@ -415,15 +422,20 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 											20 => chan_update.contents.flags & 2 == 0,
 											_ => false, // unknown error code; take channel_update as valid
 										};
-										network_update = if is_chan_update_invalid {
+										if is_chan_update_invalid {
 											// This probably indicates the node which forwarded
 											// to the node in question corrupted something.
-											Some(NetworkUpdate::ChannelClosed {
+											network_update = Some(NetworkUpdate::ChannelClosed {
 												short_channel_id: route_hop.short_channel_id,
 												is_permanent: true,
-											})
+											});
 										} else {
-											Some(NetworkUpdate::ChannelUpdateMessage {
+											// Make sure the ChannelUpdate contains the expected
+											// short channel id.
+											if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
+												short_channel_id = Some(failing_route_hop.short_channel_id);
+											}
+											network_update = Some(NetworkUpdate::ChannelUpdateMessage {
 												msg: chan_update,
 											})
 										};
@@ -438,7 +450,17 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 									is_permanent: true,
 								});
 							}
-						} else if !payment_failed {
+							if short_channel_id.is_none() {
+								short_channel_id = Some(route_hop.short_channel_id);
+							}
+						} else if payment_failed {
+							// Only blame the hop when a value in the HTLC doesn't match the
+							// corresponding value in the onion.
+							short_channel_id = match error_code & 0xff {
+								18|19 => Some(route_hop.short_channel_id),
+								_ => None,
+							};
+						} else {
 							// We can't understand their error messages and they failed to
 							// forward...they probably can't understand our forwards so its
 							// really not worth trying any further.
@@ -446,12 +468,13 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 								node_id: route_hop.pubkey,
 								is_permanent: true,
 							});
+							short_channel_id = Some(route_hop.short_channel_id);
 						}
 
 						// TODO: Here (and a few other places) we assume that BADONION errors
 						// are always "sourced" from the node previous to the one which failed
 						// to decode the onion.
-						res = Some((network_update, !(error_code & PERM == PERM && is_from_final_node)));
+						res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
 
 						let (description, title) = errors::get_onion_error_description(error_code);
 						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -463,20 +486,22 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 					} else {
 						// Useless packet that we can't use but it passed HMAC, so it
 						// definitely came from the peer in question
-						res = Some((Some(NetworkUpdate::NodeFailure {
+						let network_update = Some(NetworkUpdate::NodeFailure {
 							node_id: route_hop.pubkey,
 							is_permanent: true,
-						}), !is_from_final_node));
+						});
+						let short_channel_id = Some(route_hop.short_channel_id);
+						res = Some((network_update, short_channel_id, !is_from_final_node));
 					}
 				}
 			}
 		}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-		if let Some((channel_update, payment_retryable)) = res {
-			(channel_update, payment_retryable, error_code_ret, error_packet_ret)
+		if let Some((channel_update, short_channel_id, payment_retryable)) = res {
+			(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
 		} else {
 			// only not set either packet unparseable or hmac does not match with any
 			// payment not retryable only when garbage is from the final node
-			(None, !is_from_final_node, None, None)
+			(None, None, !is_from_final_node, None, None)
 		}
 	} else { unreachable!(); }
 }
