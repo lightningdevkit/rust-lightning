@@ -203,6 +203,9 @@ pub trait Watch<ChannelSigner: Sign> {
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
 	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
+	/// Note: this interface MUST error with `ChannelMonitorUpdateErr::PermanentFailure` if
+	/// the given `funding_txo` has previously been registered via `watch_channel`.
+	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
