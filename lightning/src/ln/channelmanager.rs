@@ -3352,7 +3352,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
 					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
-						return_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
+						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
+						if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
+							// We weren't able to watch the channel to begin with, so no updates should be made on
+							// it. Previously, full_stack_target found an (unreachable) panic when the
+							// monitor update contained within `shutdown_finish` was applied.
+							if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
+								shutdown_finish.0.take();
+							}
+						}
+						return res
 					}
 					funding_tx
 				},
