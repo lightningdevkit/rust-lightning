@@ -528,6 +528,36 @@ impl<K, V> Readable for HashMap<K, V>
 	}
 }
 
+// HashSet
+impl<T> Writeable for HashSet<T>
+where T: Writeable + Eq + Hash
+{
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.len() as u16).write(w)?;
+		for item in self.iter() {
+			item.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl<T> Readable for HashSet<T>
+where T: Readable + Eq + Hash
+{
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: u16 = Readable::read(r)?;
+		let mut ret = HashSet::with_capacity(len as usize);
+		for _ in 0..len {
+			if !ret.insert(T::read(r)?) {
+				return Err(DecodeError::InvalidValue)
+			}
+		}
+		Ok(ret)
+	}
+}
+
 // Vectors
 impl Writeable for Vec<u8> {
 	#[inline]

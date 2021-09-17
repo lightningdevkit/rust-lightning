@@ -332,7 +332,7 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 /// Returns update, a boolean indicating that the payment itself failed, and the error code.
 #[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
-	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat } = htlc_source {
+	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat, .. } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
 		let mut error_code_ret = None;

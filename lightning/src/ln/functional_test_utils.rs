@@ -1041,7 +1041,7 @@ macro_rules! expect_payment_failed_with_update {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -1070,7 +1070,7 @@ macro_rules! expect_payment_failed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -1242,8 +1242,10 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 
 		if !skip_last {
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
-			expect_payment_sent!(origin_node, our_payment_preimage);
 		}
+	}
+	if !skip_last {
+		expect_payment_sent!(origin_node, our_payment_preimage);
 	}
 }
 
@@ -1287,77 +1289,97 @@ pub fn send_payment<'a, 'b, 'c>(origin: &Node<'a, 'b, 'c>, expected_route: &[&No
 	claim_payment(&origin, expected_route, our_payment_preimage);
 }
 
-pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], skip_last: bool, our_payment_hash: PaymentHash)  {
-	assert!(expected_route.last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
-	expect_pending_htlcs_forwardable!(expected_route.last().unwrap());
-	check_added_monitors!(expected_route.last().unwrap(), 1);
+pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths_slice: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_hash: PaymentHash)  {
+	let mut expected_paths: Vec<_> = expected_paths_slice.iter().collect();
+	for path in expected_paths.iter() {
+		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
+	}
+	assert!(expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
+	expect_pending_htlcs_forwardable!(expected_paths[0].last().unwrap());
+	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
-	let mut next_msgs: Option<(msgs::UpdateFailHTLC, msgs::CommitmentSigned)> = None;
-	macro_rules! update_fail_dance {
-		($node: expr, $prev_node: expr, $last_node: expr) => {
-			{
-				$node.node.handle_update_fail_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
-				commitment_signed_dance!($node, $prev_node, next_msgs.as_ref().unwrap().1, !$last_node);
-				if skip_last && $last_node {
-					expect_pending_htlcs_forwardable!($node);
+	let mut per_path_msgs: Vec<((msgs::UpdateFailHTLC, msgs::CommitmentSigned), PublicKey)> = Vec::with_capacity(expected_paths.len());
+	let events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), expected_paths.len());
+	for ev in events.iter() {
+		let (update_fail, commitment_signed, node_id) = match ev {
+			&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+				assert!(update_add_htlcs.is_empty());
+				assert!(update_fulfill_htlcs.is_empty());
+				assert_eq!(update_fail_htlcs.len(), 1);
+				assert!(update_fail_malformed_htlcs.is_empty());
+				assert!(update_fee.is_none());
+				(update_fail_htlcs[0].clone(), commitment_signed.clone(), node_id.clone())
+			},
+			_ => panic!("Unexpected event"),
+		};
+		per_path_msgs.push(((update_fail, commitment_signed), node_id));
+	}
+	per_path_msgs.sort_unstable_by(|(_, node_id_a), (_, node_id_b)| node_id_a.cmp(node_id_b));
+	expected_paths.sort_unstable_by(|path_a, path_b| path_a[path_a.len() - 2].node.get_our_node_id().cmp(&path_b[path_b.len() - 2].node.get_our_node_id()));
+
+	for (i, (expected_route, (path_msgs, next_hop))) in expected_paths.iter().zip(per_path_msgs.drain(..)).enumerate() {
+		let mut next_msgs = Some(path_msgs);
+		let mut expected_next_node = next_hop;
+		let mut prev_node = expected_route.last().unwrap();
+
+		for (idx, node) in expected_route.iter().rev().enumerate().skip(1) {
+			assert_eq!(expected_next_node, node.node.get_our_node_id());
+			let update_next_node = !skip_last || idx != expected_route.len() - 1;
+			if next_msgs.is_some() {
+				node.node.handle_update_fail_htlc(&prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
+				commitment_signed_dance!(node, prev_node, next_msgs.as_ref().unwrap().1, update_next_node);
+				if !update_next_node {
+					expect_pending_htlcs_forwardable!(node);
 				}
 			}
-		}
-	}
+			let events = node.node.get_and_clear_pending_msg_events();
+			if update_next_node {
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+						assert!(update_add_htlcs.is_empty());
+						assert!(update_fulfill_htlcs.is_empty());
+						assert_eq!(update_fail_htlcs.len(), 1);
+						assert!(update_fail_malformed_htlcs.is_empty());
+						assert!(update_fee.is_none());
+						expected_next_node = node_id.clone();
+						next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
+					},
+					_ => panic!("Unexpected event"),
+				}
+			} else {
+				assert!(events.is_empty());
+			}
+			if !skip_last && idx == expected_route.len() - 1 {
+				assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
+			}
 
-	let mut expected_next_node = expected_route.last().unwrap().node.get_our_node_id();
-	let mut prev_node = expected_route.last().unwrap();
-	for (idx, node) in expected_route.iter().rev().enumerate() {
-		assert_eq!(expected_next_node, node.node.get_our_node_id());
-		if next_msgs.is_some() {
-			// We may be the "last node" for the purpose of the commitment dance if we're
-			// skipping the last node (implying it is disconnected) and we're the
-			// second-to-last node!
-			update_fail_dance!(node, prev_node, skip_last && idx == expected_route.len() - 1);
+			prev_node = node;
 		}
 
-		let events = node.node.get_and_clear_pending_msg_events();
-		if !skip_last || idx != expected_route.len() - 1 {
+		if !skip_last {
+			let prev_node = expected_route.first().unwrap();
+			origin_node.node.handle_update_fail_htlc(&prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
+			check_added_monitors!(origin_node, 0);
+			assert!(origin_node.node.get_and_clear_pending_msg_events().is_empty());
+			commitment_signed_dance!(origin_node, prev_node, next_msgs.as_ref().unwrap().1, false);
+			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-					assert!(update_add_htlcs.is_empty());
-					assert!(update_fulfill_htlcs.is_empty());
-					assert_eq!(update_fail_htlcs.len(), 1);
-					assert!(update_fail_malformed_htlcs.is_empty());
-					assert!(update_fee.is_none());
-					expected_next_node = node_id.clone();
-					next_msgs = Some((update_fail_htlcs[0].clone(), commitment_signed.clone()));
+				Event::PaymentFailed { payment_hash, rejected_by_dest, all_paths_failed, .. } => {
+					assert_eq!(payment_hash, our_payment_hash);
+					assert!(rejected_by_dest);
+					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 				},
 				_ => panic!("Unexpected event"),
 			}
-		} else {
-			assert!(events.is_empty());
-		}
-		if !skip_last && idx == expected_route.len() - 1 {
-			assert_eq!(expected_next_node, origin_node.node.get_our_node_id());
-		}
-
-		prev_node = node;
-	}
-
-	if !skip_last {
-		update_fail_dance!(origin_node, expected_route.first().unwrap(), true);
-
-		let events = origin_node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentFailed { payment_hash, rejected_by_dest, .. } => {
-				assert_eq!(payment_hash, our_payment_hash);
-				assert!(rejected_by_dest);
-			},
-			_ => panic!("Unexpected event"),
 		}
 	}
 }
 
-pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_hash: PaymentHash)  {
-	fail_payment_along_route(origin_node, expected_route, false, our_payment_hash);
+pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], our_payment_hash: PaymentHash)  {
+	fail_payment_along_route(origin_node, &[&expected_path[..]], false, our_payment_hash);
 }
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
