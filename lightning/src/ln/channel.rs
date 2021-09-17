@@ -27,7 +27,7 @@ use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::script::ShutdownScript;
-use ln::channelmanager::{PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use ln::chan_utils;
 use chain::BestBlock;
@@ -308,19 +308,6 @@ impl HTLCCandidate {
 			origin,
 		}
 	}
-}
-
-/// Information needed for constructing an invoice route hint for this channel.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CounterpartyForwardingInfo {
-	/// Base routing fee in millisatoshis.
-	pub fee_base_msat: u32,
-	/// Amount in millionths of a satoshi the channel will charge per transferred satoshi.
-	pub fee_proportional_millionths: u32,
-	/// The minimum difference in cltv_expiry between an ingoing HTLC and its outgoing counterpart,
-	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
-	/// `cltv_expiry_delta` for more details.
-	pub cltv_expiry_delta: u16,
 }
 
 /// A return value enum for get_update_fulfill_htlc. See UpdateFulfillCommitFetch variants for
