@@ -4085,6 +4085,34 @@ fn test_no_txn_manager_serialize_deserialize() {
 }
 
 #[test]
+fn mpp_failure() {
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let logger = test_utils::TestLogger::new();
+
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger).unwrap();
+	let path = route.paths[0].clone();
+	route.paths.push(path);
+	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0][0].short_channel_id = chan_1_id;
+	route.paths[0][1].short_channel_id = chan_3_id;
+	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1][0].short_channel_id = chan_2_id;
+	route.paths[1][1].short_channel_id = chan_4_id;
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
+	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
+}
+
+#[test]
 fn test_dup_htlc_onchain_fails_on_reload() {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
@@ -5914,9 +5942,10 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);
@@ -6000,9 +6029,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
+			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
 			assert_eq!(*error_code, None);
 			assert_eq!(*error_data, None);

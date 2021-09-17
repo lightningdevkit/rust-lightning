@@ -2848,6 +2848,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									payment_hash,
 									rejected_by_dest: false,
 									network_update: None,
+									all_paths_failed: sessions.get().len() == 0,
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -2886,12 +2887,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+				let mut all_paths_failed = false;
 				if let hash_map::Entry::Occupied(mut sessions) = outbounds.entry(mpp_id) {
 					if !sessions.get_mut().remove(&session_priv_bytes) {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 						return;
 					}
 					if sessions.get().len() == 0 {
+						all_paths_failed = true;
 						sessions.remove();
 					}
 				} else {
@@ -2914,6 +2917,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
 								network_update,
+								all_paths_failed,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2939,6 +2943,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
 								network_update: None,
+								all_paths_failed,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]

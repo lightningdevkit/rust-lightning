@@ -1041,7 +1041,7 @@ macro_rules! expect_payment_failed_with_update {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -1070,7 +1070,7 @@ macro_rules! expect_payment_failed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data } => {
+			Event::PaymentFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -1367,9 +1367,10 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentFailed { payment_hash, rejected_by_dest, .. } => {
+				Event::PaymentFailed { payment_hash, rejected_by_dest, all_paths_failed, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(rejected_by_dest);
+					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 				},
 				_ => panic!("Unexpected event"),
 			}

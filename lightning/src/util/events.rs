@@ -141,6 +141,10 @@ pub enum Event {
 		/// [`NetworkGraph`]: crate::routing::network_graph::NetworkGraph
 		/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
 		network_update: Option<NetworkUpdate>,
+		/// For both single-path and multi-path payments, this is set if all paths of the payment have
+		/// failed. This will be set to false if (1) this is an MPP payment and (2) other parts of the
+		/// larger MPP payment were still in flight when this event was generated.
+		all_paths_failed: bool,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -224,7 +228,7 @@ impl Writeable for Event {
 					(0, payment_preimage, required),
 				});
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
+			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -239,6 +243,7 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(1, network_update, option),
 					(2, rejected_by_dest, required),
+					(3, all_paths_failed, required),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -322,15 +327,18 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut rejected_by_dest = false;
 					let mut network_update = None;
+					let mut all_paths_failed = Some(true);
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
 						(2, rejected_by_dest, required),
+						(3, all_paths_failed, option),
 					});
 					Ok(Some(Event::PaymentFailed {
 						payment_hash,
 						rejected_by_dest,
 						network_update,
+						all_paths_failed: all_paths_failed.unwrap(),
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]
