@@ -4283,6 +4283,7 @@ impl<Signer: Sign> Channel<Signer> {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
+			channel_type: None,
 		}
 	}
 

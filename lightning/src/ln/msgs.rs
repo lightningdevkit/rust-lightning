@@ -30,7 +30,7 @@ use bitcoin::secp256k1;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
-use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 
 use prelude::*;
 use core::{cmp, fmt};
@@ -148,6 +148,10 @@ pub struct OpenChannel {
 	pub channel_flags: u8,
 	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
 	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// The channel type that this channel will represent. If none is set, we derive the channel
+	/// type from the intersection of our feature bits with our counterparty's feature bits from
+	/// the Init message.
+	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
 /// An accept_channel message to be sent or received from a peer
@@ -1162,7 +1166,9 @@ impl_writeable_msg!(OpenChannel, {
 	first_per_commitment_point,
 	channel_flags,
 	shutdown_scriptpubkey
-}, {});
+}, {
+	(1, channel_type, option),
+});
 
 impl_writeable_msg!(RevokeAndACK, {
 	channel_id,
@@ -1747,8 +1753,9 @@ impl_writeable_msg!(GossipTimestampFilter, {
 mod tests {
 	use hex;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs;
-	use ln::msgs::{ChannelFeatures, FinalOnionHopData, InitFeatures, NodeFeatures, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
 	use util::ser::{Writeable, Readable};
 
 	use bitcoin::hashes::hex::FromHex;
@@ -2052,7 +2059,7 @@ mod tests {
 		do_encoding_channel_update(true, true, true, true);
 	}
 
-	fn do_encoding_open_channel(random_bit: bool, shutdown: bool) {
+	fn do_encoding_open_channel(random_bit: bool, shutdown: bool, incl_chan_type: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
@@ -2079,7 +2086,8 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent }
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
@@ -2093,15 +2101,22 @@ mod tests {
 		if shutdown {
 			target_value.append(&mut hex::decode("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
+		if incl_chan_type {
+			target_value.append(&mut hex::decode("0100").unwrap());
+		}
 		assert_eq!(encoded_value, target_value);
 	}
 
 	#[test]
 	fn encoding_open_channel() {
-		do_encoding_open_channel(false, false);
-		do_encoding_open_channel(true, false);
-		do_encoding_open_channel(false, true);
-		do_encoding_open_channel(true, true);
+		do_encoding_open_channel(false, false, false);
+		do_encoding_open_channel(false, false, true);
+		do_encoding_open_channel(false, true, false);
+		do_encoding_open_channel(false, true, true);
+		do_encoding_open_channel(true, false, false);
+		do_encoding_open_channel(true, false, true);
+		do_encoding_open_channel(true, true, false);
+		do_encoding_open_channel(true, true, true);
 	}
 
 	fn do_encoding_accept_channel(shutdown: bool) {
