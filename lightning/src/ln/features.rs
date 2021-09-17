@@ -22,7 +22,7 @@
 //! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use io;
+use {io, io_extras};
 use prelude::*;
 use core::{cmp, fmt};
 use core::hash::{Hash, Hasher};
@@ -194,6 +194,30 @@ mod sealed {
 			BasicMPP,
 		],
 	});
+	// This isn't a "real" feature context, and is only used in the channel_type field in an
+	// `OpenChannel` message.
+	define_context!(ChannelTypeContext {
+		required_features: [
+			// Byte 0
+			,
+			// Byte 1
+			StaticRemoteKey,
+			// Byte 2
+			,
+			// Byte 3
+			,
+		],
+		optional_features: [
+			// Byte 0
+			,
+			// Byte 1
+			,
+			// Byte 2
+			,
+			// Byte 3
+			,
+		],
+	});
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
@@ -325,7 +349,7 @@ mod sealed {
 	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
 		set_variable_length_onion_required);
-	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext],
+	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
 		set_static_remote_key_required);
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
@@ -388,6 +412,18 @@ pub type ChannelFeatures = Features<sealed::ChannelContext>;
 /// Features used within an invoice.
 pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
 
+/// Features used within the channel_type field in an OpenChannel message.
+///
+/// A channel is always of some known "type", describing the transaction formats used and the exact
+/// semantics of our interaction with our peer.
+///
+/// Note that because a channel is a specific type which is proposed by the opener and accepted by
+/// the counterparty, only required features are allowed here.
+///
+/// This is serialized differently from other feature types - it is not prefixed by a length, and
+/// thus must only appear inside a TLV where its length is known in advance.
+pub type ChannelTypeFeatures = Features<sealed::ChannelTypeContext>;
+
 impl InitFeatures {
 	/// Writes all features present up to, and including, 13.
 	pub(crate) fn write_up_to_13<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -439,6 +475,28 @@ impl InvoiceFeatures {
 	/// [`get_route`]: crate::routing::router::get_route
 	pub(crate) fn for_keysend() -> InvoiceFeatures {
 		InvoiceFeatures::empty().set_variable_length_onion_optional()
+	}
+}
+
+impl ChannelTypeFeatures {
+	/// Constructs the implicit channel type based on the common supported types between us and our
+	/// counterparty
+	pub(crate) fn from_counterparty_init(counterparty_init: &InitFeatures) -> Self {
+		let mut ret = counterparty_init.to_context_internal();
+		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
+		// optional bits and then AND out the optional ones.
+		for byte in ret.flags.iter_mut() {
+			*byte |= (*byte & 0b10_10_10_10) >> 1;
+			*byte &= 0b01_01_01_01;
+		}
+		ret
+	}
+
+	/// Constructs a ChannelTypeFeatures with only static_remotekey set
+	pub(crate) fn only_static_remote_key() -> Self {
+		let mut ret = Self::empty();
+		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
+		ret
 	}
 }
 
@@ -551,6 +609,25 @@ impl<T: sealed::Context> Features<T> {
 	/// Gets the underlying flags set, in LE.
 	pub fn le_flags(&self) -> &Vec<u8> {
 		&self.flags
+	}
+
+	fn write_be<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		for f in self.flags.iter().rev() { // Swap back to big-endian
+			f.write(w)?;
+		}
+		Ok(())
+	}
+
+	fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
+		flags.reverse(); // Swap to little-endian
+		Self {
+			flags,
+			mark: PhantomData,
+		}
+	}
+
+	pub(crate) fn supports_any_optional_bits(&self) -> bool {
+		self.flags.iter().any(|&byte| (byte & 0b10_10_10_10) != 0)
 	}
 
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
@@ -692,31 +769,44 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 		self
 	}
 }
-
-impl<T: sealed::Context> Writeable for Features<T> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.flags.len() as u16).write(w)?;
-		for f in self.flags.iter().rev() { // Swap back to big-endian
-			f.write(w)?;
+macro_rules! impl_feature_len_prefixed_write {
+	($features: ident) => {
+		impl Writeable for $features {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				(self.flags.len() as u16).write(w)?;
+				self.write_be(w)
+			}
 		}
-		Ok(())
+		impl Readable for $features {
+			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				Ok(Self::from_be_bytes(Vec::<u8>::read(r)?))
+			}
+		}
 	}
 }
+impl_feature_len_prefixed_write!(InitFeatures);
+impl_feature_len_prefixed_write!(ChannelFeatures);
+impl_feature_len_prefixed_write!(NodeFeatures);
+impl_feature_len_prefixed_write!(InvoiceFeatures);
 
-impl<T: sealed::Context> Readable for Features<T> {
+// Because ChannelTypeFeatures only appears inside of TLVs, it doesn't have a length prefix when
+// serialized. Thus, we can't use `impl_feature_len_prefixed_write`, above, and have to write our
+// own serialization.
+impl Writeable for ChannelTypeFeatures {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.write_be(w)
+	}
+}
+impl Readable for ChannelTypeFeatures {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut flags: Vec<u8> = Readable::read(r)?;
-		flags.reverse(); // Swap to little-endian
-		Ok(Self {
-			flags,
-			mark: PhantomData,
-		})
+		let v = io_extras::read_to_end(r)?;
+		Ok(Self::from_be_bytes(v))
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
 
 	#[test]
@@ -874,5 +964,16 @@ mod tests {
 		// Test deserialization.
 		let features_deserialized = InvoiceFeatures::from_base32(&features_as_u5s).unwrap();
 		assert_eq!(features, features_deserialized);
+	}
+
+	#[test]
+	fn test_channel_type_mapping() {
+		// If we map an InvoiceFeatures with StaticRemoteKey optional, it should map into a
+		// required-StaticRemoteKey ChannelTypeFeatures.
+		let init_features = InitFeatures::empty().set_static_remote_key_optional();
+		let converted_features = ChannelTypeFeatures::from_counterparty_init(&init_features);
+		assert_eq!(converted_features, ChannelTypeFeatures::only_static_remote_key());
+		assert!(!converted_features.supports_any_optional_bits());
+		assert!(converted_features.requires_static_remote_key());
 	}
 }
