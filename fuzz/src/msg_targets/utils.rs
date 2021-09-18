@@ -13,12 +13,8 @@ use lightning::util::ser::Writer;
 pub struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
-		assert!(self.0.capacity() >= self.0.len() + buf.len());
 		self.0.extend_from_slice(buf);
 		Ok(())
-	}
-	fn size_hint(&mut self, size: usize) {
-		self.0.reserve_exact(size);
 	}
 }
 
@@ -43,6 +39,7 @@ macro_rules! test_msg {
 				msg.write(&mut w).unwrap();
 
 				assert_eq!(w.0.len(), p);
+				assert_eq!(msg.serialized_length(), p);
 				assert_eq!(&r.into_inner()[..p], &w.0[..p]);
 			}
 		}
@@ -60,6 +57,7 @@ macro_rules! test_msg_simple {
 			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
+				assert_eq!(msg.serialized_length(), w.0.len());
 
 				let msg = <$MsgType as Readable>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
 				let mut w_two = VecWriter(Vec::new());
@@ -82,6 +80,7 @@ macro_rules! test_msg_exact {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
 				assert_eq!(&r.into_inner()[..], &w.0[..]);
+				assert_eq!(msg.serialized_length(), w.0.len());
 			}
 		}
 	}
@@ -99,6 +98,7 @@ macro_rules! test_msg_hole {
 				let mut w = VecWriter(Vec::new());
 				msg.write(&mut w).unwrap();
 				let p = w.0.len() as usize;
+				assert_eq!(msg.serialized_length(), p);
 
 				assert_eq!(w.0.len(), p);
 				assert_eq!(&r.get_ref()[..$hole], &w.0[..$hole]);

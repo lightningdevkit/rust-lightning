@@ -720,7 +720,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
 	fn enqueue_message<M: wire::Type + Writeable + Debug>(&self, peer: &mut Peer, message: &M) {
-		let mut buffer = VecWriter(Vec::new());
+		let mut buffer = VecWriter(Vec::with_capacity(2048));
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
 		let encoded_message = buffer.0;
 

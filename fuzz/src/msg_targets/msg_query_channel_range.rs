@@ -17,11 +17,11 @@ use utils::test_logger;
 
 #[inline]
 pub fn msg_query_channel_range_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg!(msgs::QueryChannelRange, data);
+	test_msg_simple!(msgs::QueryChannelRange, data);
 }
 
 #[no_mangle]
 pub extern "C" fn msg_query_channel_range_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg!(msgs::QueryChannelRange, data);
+	test_msg_simple!(msgs::QueryChannelRange, data);
 }

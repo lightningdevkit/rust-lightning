@@ -54,7 +54,7 @@ use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 use util::{byte_utils, events};
-use util::ser::{Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
+use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::{Logger, Level};
 use util::errors::APIError;
@@ -4891,10 +4891,74 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(8, outgoing_cltv_value, required)
 });
 
-impl_writeable_tlv_based_enum!(HTLCFailureMsg, ;
-	(0, Relay),
-	(1, Malformed),
-);
+
+impl Writeable for HTLCFailureMsg {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			HTLCFailureMsg::Relay(msgs::UpdateFailHTLC { channel_id, htlc_id, reason }) => {
+				0u8.write(writer)?;
+				channel_id.write(writer)?;
+				htlc_id.write(writer)?;
+				reason.write(writer)?;
+			},
+			HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+				channel_id, htlc_id, sha256_of_onion, failure_code
+			}) => {
+				1u8.write(writer)?;
+				channel_id.write(writer)?;
+				htlc_id.write(writer)?;
+				sha256_of_onion.write(writer)?;
+				failure_code.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for HTLCFailureMsg {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let id: u8 = Readable::read(reader)?;
+		match id {
+			0 => {
+				Ok(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+					channel_id: Readable::read(reader)?,
+					htlc_id: Readable::read(reader)?,
+					reason: Readable::read(reader)?,
+				}))
+			},
+			1 => {
+				Ok(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+					channel_id: Readable::read(reader)?,
+					htlc_id: Readable::read(reader)?,
+					sha256_of_onion: Readable::read(reader)?,
+					failure_code: Readable::read(reader)?,
+				}))
+			},
+			// In versions prior to 0.0.101, HTLCFailureMsg objects were written with type 0 or 1 but
+			// weren't length-prefixed and thus didn't support reading the TLV stream suffix of the network
+			// messages contained in the variants.
+			// In version 0.0.101, support for reading the variants with these types was added, and
+			// we should migrate to writing these variants when UpdateFailHTLC or
+			// UpdateFailMalformedHTLC get TLV fields.
+			2 => {
+				let length: BigSize = Readable::read(reader)?;
+				let mut s = FixedLengthReader::new(reader, length.0);
+				let res = Readable::read(&mut s)?;
+				s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
+				Ok(HTLCFailureMsg::Relay(res))
+			},
+			3 => {
+				let length: BigSize = Readable::read(reader)?;
+				let mut s = FixedLengthReader::new(reader, length.0);
+				let res = Readable::read(&mut s)?;
+				s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
+				Ok(HTLCFailureMsg::Malformed(res))
+			},
+			_ => Err(DecodeError::UnknownRequiredFeature),
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
 	(0, Forward),
 	(1, Fail),

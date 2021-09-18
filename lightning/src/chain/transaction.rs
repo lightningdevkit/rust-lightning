@@ -75,7 +75,7 @@ impl OutPoint {
 	}
 }
 
-impl_writeable!(OutPoint, 0, { txid, index });
+impl_writeable!(OutPoint, { txid, index });
 
 #[cfg(test)]
 mod tests {

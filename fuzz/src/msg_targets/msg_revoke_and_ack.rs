@@ -17,11 +17,11 @@ use utils::test_logger;
 
 #[inline]
 pub fn msg_revoke_and_ack_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg!(msgs::RevokeAndACK, data);
+	test_msg_simple!(msgs::RevokeAndACK, data);
 }
 
 #[no_mangle]
 pub extern "C" fn msg_revoke_and_ack_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg!(msgs::RevokeAndACK, data);
+	test_msg_simple!(msgs::RevokeAndACK, data);
 }
