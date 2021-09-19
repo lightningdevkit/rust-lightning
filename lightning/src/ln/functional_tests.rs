@@ -6982,7 +6982,7 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), 1000000, 1000000, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), 1000000, 1000000, 0, &low_our_to_self_config, 0) {
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -6993,7 +6993,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &low_our_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &low_our_to_self_config, 0) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7022,7 +7022,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &high_their_to_self_config) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &high_their_to_self_config, 0) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7905,6 +7905,42 @@ fn test_bump_txn_sanitize_tracking_maps() {
 		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(OutPoint { txid: chan.3.txid(), index: 0 }).unwrap();
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.pending_claim_requests.is_empty());
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints.is_empty());
+	}
+}
+
+#[test]
+fn test_channel_conf_timeout() {
+	// Tests that, for inbound channels, we give up on them if the funding transaction does not
+	// confirm within 2016 blocks, as recommended by BOLT 2.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 100_000, InitFeatures::known(), InitFeatures::known());
+
+	// The outbound node should wait forever for confirmation:
+	// This matches `channel::FUNDING_CONF_DEADLINE_BLOCKS` and BOLT 2's suggested timeout, thus is
+	// copied here instead of directly referencing the constant.
+	connect_blocks(&nodes[0], 2016);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// The inbound node should fail the channel after exactly 2016 blocks
+	connect_blocks(&nodes[1], 2015);
+	check_added_monitors!(nodes[1], 0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	connect_blocks(&nodes[1], 1);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::FundingTimedOut);
+	let close_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(close_ev.len(), 1);
+	match close_ev[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, ref node_id } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(msg.data, "Channel closed because funding transaction failed to confirm within 2016 blocks");
+		},
+		_ => panic!("Unexpected event"),
 	}
 }
 

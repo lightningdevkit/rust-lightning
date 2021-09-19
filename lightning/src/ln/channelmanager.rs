@@ -1398,7 +1398,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let peer_state = peer_state.lock().unwrap();
 					let their_features = &peer_state.latest_features;
 					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_channel_id, config)?
+					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features,
+						channel_value_satoshis, push_msat, user_channel_id, config, self.best_block.read().unwrap().height())?
 				},
 				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
 			}
@@ -3645,7 +3646,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(), &their_features, msg, 0, &self.default_configuration)
+		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(),
+				&their_features, msg, 0, &self.default_configuration, self.best_block.read().unwrap().height())
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -5833,7 +5835,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
-			let mut channel: Channel<Signer> = Channel::read(reader, &args.keys_manager)?;
+			let mut channel: Channel<Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
