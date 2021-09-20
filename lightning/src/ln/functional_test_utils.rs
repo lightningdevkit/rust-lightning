@@ -1399,10 +1399,13 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, .. } => {
+				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(rejected_by_dest);
 					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
+					for (idx, hop) in expected_route.iter().enumerate() {
+						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
+					}
 				},
 				_ => panic!("Unexpected event"),
 			}

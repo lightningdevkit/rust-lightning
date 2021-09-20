@@ -1729,6 +1729,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
+				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
 					msg: valid_channel_update,
 				}),
@@ -1752,6 +1753,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
+				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelClosed {
 					short_channel_id,
 					is_permanent: false,
@@ -1774,6 +1776,7 @@ mod tests {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
+				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelClosed {
 					short_channel_id,
 					is_permanent: true,

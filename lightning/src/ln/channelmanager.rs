@@ -2875,7 +2875,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					self.fail_htlc_backwards_internal(channel_state,
 						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
 				},
-				HTLCSource::OutboundRoute { session_priv, mpp_id, .. } => {
+				HTLCSource::OutboundRoute { session_priv, mpp_id, path, .. } => {
 					let mut session_priv_bytes = [0; 32];
 					session_priv_bytes.copy_from_slice(&session_priv[..]);
 					let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -2887,6 +2887,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									rejected_by_dest: false,
 									network_update: None,
 									all_paths_failed: sessions.get().len() == 0,
+									path: path.clone(),
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -2956,6 +2957,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								rejected_by_dest: !payment_retryable,
 								network_update,
 								all_paths_failed,
+								path: path.clone(),
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2982,6 +2984,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								rejected_by_dest: path.len() == 1,
 								network_update: None,
 								all_paths_failed,
+								path: path.clone(),
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]

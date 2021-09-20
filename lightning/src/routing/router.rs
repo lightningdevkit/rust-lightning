@@ -28,7 +28,7 @@ use core::cmp;
 use core::ops::Deref;
 
 /// A hop in a route
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
 	pub pubkey: PublicKey,
