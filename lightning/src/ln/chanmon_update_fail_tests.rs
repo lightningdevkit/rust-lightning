@@ -78,7 +78,7 @@ fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
 	};
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
-	// PaymentFailed event
+	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
@@ -267,7 +267,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	check_closed_broadcast!(nodes[0], true);
 
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
-	// PaymentFailed event
+	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
@@ -1819,7 +1819,7 @@ fn test_monitor_update_on_pending_forwards() {
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
-	if let Event::PaymentFailed { payment_hash, rejected_by_dest, .. } = events[0] {
+	if let Event::PaymentPathFailed { payment_hash, rejected_by_dest, .. } = events[0] {
 		assert_eq!(payment_hash, payment_hash_1);
 		assert!(rejected_by_dest);
 	} else { panic!("Unexpected event!"); }

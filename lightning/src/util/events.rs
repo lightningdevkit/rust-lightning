@@ -170,8 +170,8 @@ pub enum Event {
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
 	///
-	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentFailed` event.
-	/// In this situation, you SHOULD treat this payment as having succeeded.
+	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentPathFailed`
+	/// event. In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
@@ -180,7 +180,7 @@ pub enum Event {
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
-	PaymentFailed {
+	PaymentPathFailed {
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
@@ -291,7 +291,7 @@ impl Writeable for Event {
 					(0, payment_preimage, required),
 				});
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed,
+			&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -409,7 +409,7 @@ impl MaybeReadable for Event {
 						(2, rejected_by_dest, required),
 						(3, all_paths_failed, option),
 					});
-					Ok(Some(Event::PaymentFailed {
+					Ok(Some(Event::PaymentPathFailed {
 						payment_hash,
 						rejected_by_dest,
 						network_update,

@@ -113,7 +113,7 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 impl<C: Deref, L: Deref> EventHandler for NetGraphMsgHandler<C, L>
 where C::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
-		if let Event::PaymentFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
+		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
 			if let Some(network_update) = network_update {
 				self.handle_network_update(network_update);
 			}
@@ -127,7 +127,7 @@ where C::Target: chain::Access, L::Target: Logger {
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
 ///
-/// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentFailed`] to the
+/// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentPathFailed`] to the
 /// [`NetworkGraph`].
 pub struct NetGraphMsgHandler<C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
@@ -1725,7 +1725,7 @@ mod tests {
 
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
-			net_graph_msg_handler.handle_event(&Event::PaymentFailed {
+			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
@@ -1748,7 +1748,7 @@ mod tests {
 				}
 			};
 
-			net_graph_msg_handler.handle_event(&Event::PaymentFailed {
+			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
@@ -1770,7 +1770,7 @@ mod tests {
 
 		// Permanent closing deletes a channel
 		{
-			net_graph_msg_handler.handle_event(&Event::PaymentFailed {
+			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,

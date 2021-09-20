@@ -3020,7 +3020,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		_ => panic!("Unexepected event"),
 	}
 	match events[1] {
-		Event::PaymentFailed { ref payment_hash, .. } => {
+		Event::PaymentPathFailed { ref payment_hash, .. } => {
 			assert_eq!(*payment_hash, fourth_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
@@ -3076,7 +3076,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 3);
 			match events[0] {
-				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					// If we delivered B's RAA we got an unknown preimage error, not something
 					// that we should update our routing table for.
@@ -3087,14 +3087,14 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
 			match events[2] {
-				Event::PaymentFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, rejected_by_dest: _, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					assert!(network_update.is_some());
 				},
@@ -3190,7 +3190,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	assert_eq!(events.len(), 2);
 	// Check that Alice fails backward the pending HTLC from the second payment.
 	match events[0] {
-		Event::PaymentFailed { payment_hash, .. } => {
+		Event::PaymentPathFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, failed_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
@@ -3392,7 +3392,7 @@ fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
-			Event::PaymentFailed { payment_hash, rejected_by_dest, .. } => {
+			Event::PaymentPathFailed { payment_hash, rejected_by_dest, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 				assert!(rejected_by_dest);
 			},
@@ -4192,7 +4192,7 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	//
 	// If, due to an on-chain event, an HTLC is failed/claimed, and then we serialize the
 	// ChannelManager, we generally expect there not to be a duplicate HTLC fail/claim (eg via a
-	// PaymentFailed event appearing). However, because we may not serialize the relevant
+	// PaymentPathFailed event appearing). However, because we may not serialize the relevant
 	// ChannelMonitor at the same time, this isn't strictly guaranteed. In order to provide this
 	// consistency, the ChannelManager explicitly tracks pending-onchain-resolution outbound HTLCs
 	// and de-duplicates ChannelMonitor events.
@@ -5518,7 +5518,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut as_failds = HashSet::new();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
-		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
 			assert!(as_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_2 {
 				assert_eq!(*rejected_by_dest, deliver_last_raa);
@@ -5543,7 +5543,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut bs_failds = HashSet::new();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
-		if let &Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, .. } = event {
 			assert!(bs_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
 				assert_eq!(*rejected_by_dest, deliver_last_raa);
@@ -6068,7 +6068,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -6155,7 +6155,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref error_code, ref error_data, ref all_paths_failed } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -7107,12 +7107,12 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	// Only 2 PaymentFailed events should show up, over-dust HTLC has to be failed by timeout tx
+	// Only 2 PaymentPathFailed events should show up, over-dust HTLC has to be failed by timeout tx
 	assert_eq!(events.len(), 2);
 	let mut first_failed = false;
 	for event in events {
 		match event {
-			Event::PaymentFailed { payment_hash, .. } => {
+			Event::PaymentPathFailed { payment_hash, .. } => {
 				if payment_hash == payment_hash_1 {
 					assert!(!first_failed);
 					first_failed = true;
@@ -7202,14 +7202,14 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 			assert_eq!(events.len(), 2);
 			let first;
 			match events[0] {
-				Event::PaymentFailed { payment_hash, .. } => {
+				Event::PaymentPathFailed { payment_hash, .. } => {
 					if payment_hash == dust_hash { first = true; }
 					else { first = false; }
 				},
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentFailed { payment_hash, .. } => {
+				Event::PaymentPathFailed { payment_hash, .. } => {
 					if first { assert_eq!(payment_hash, non_dust_hash); }
 					else { assert_eq!(payment_hash, dust_hash); }
 				},
