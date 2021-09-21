@@ -614,6 +614,7 @@ mod tests {
 			.expect("SpendableOutputs not handled within deadline");
 		match event {
 			Event::SpendableOutputs { .. } => {},
+			Event::ChannelClosed { .. } => {},
 			_ => panic!("Unexpected event: {:?}", event),
 		}
 

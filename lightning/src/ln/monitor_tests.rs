@@ -15,7 +15,7 @@ use ln::{channel, PaymentPreimage, PaymentHash};
 use ln::channelmanager::BREAKDOWN_TIMEOUT;
 use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction};
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use routing::network_graph::NetworkUpdate;
 use routing::router::get_route;
 
@@ -74,6 +74,7 @@ fn chanmon_fail_from_stale_commitment() {
 	mine_transaction(&nodes[1], &bs_txn[0]);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -175,6 +176,8 @@ fn chanmon_claim_value_coop_close() {
 			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
 		check_spends!(spend_tx, shutdown_tx[0]);
 	}
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
 }
 
 fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
@@ -314,9 +317,11 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 

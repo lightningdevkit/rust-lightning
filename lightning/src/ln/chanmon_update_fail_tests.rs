@@ -28,7 +28,7 @@ use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
 use routing::router::get_route;
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 use util::test_utils::TestBroadcaster;
@@ -81,6 +81,7 @@ fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
 	// PaymentFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
 }
 
 #[test]
@@ -269,6 +270,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	// PaymentFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 }
 
 #[test]
@@ -1985,6 +1987,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
 }
 
 #[test]
@@ -2610,6 +2614,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
+	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
 }
 
 #[test]
@@ -2630,6 +2636,7 @@ fn test_permanent_error_during_sending_shutdown() {
 	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 2);
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
 }
 
 #[test]
@@ -2652,6 +2659,7 @@ fn test_permanent_error_during_handling_shutdown() {
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &shutdown);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 2);
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
 }
 
 #[test]
