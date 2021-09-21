@@ -3940,7 +3940,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 					}
 				},
-				MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
+				MonitorEvent::CommitmentTxConfirmed(funding_outpoint) => {
 					let mut channel_lock = self.channel_state.lock().unwrap();
 					let channel_state = &mut *channel_lock;
 					let by_id = &mut channel_state.by_id;
