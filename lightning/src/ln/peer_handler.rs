@@ -1169,6 +1169,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	/// May call [`send_data`] on [`SocketDescriptor`]s. Thus, be very careful with reentrancy
 	/// issues!
 	///
+	/// You don't have to call this function explicitly if you are using [`lightning-net-tokio`]
+	/// or one of the other clients provided in our language bindings.
+	///
 	/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
 	/// [`send_data`]: SocketDescriptor::send_data
