@@ -19,7 +19,7 @@ use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
-use util::ser::{Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
+use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 
 use bitcoin::blockdata::script::Script;
 
@@ -335,6 +335,9 @@ impl Writeable for Event {
 					(2, reason, required)
 				});
 			},
+			// Note that, going forward, all new events must only write data inside of
+			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
+			// data via `write_tlv_fields`.
 		}
 		Ok(())
 	}
@@ -342,6 +345,8 @@ impl Writeable for Event {
 impl MaybeReadable for Event {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
+			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events,
+			// unlike all other events, thus we return immediately here.
 			0u8 => Ok(None),
 			1u8 => {
 				let f = || {
@@ -459,7 +464,19 @@ impl MaybeReadable for Event {
 				Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
-			x if x % 2 == 1 => Ok(None),
+			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
+			// reads.
+			x if x % 2 == 1 => {
+				// If the event is of unknown type, assume it was written with `write_tlv_fields`,
+				// which prefixes the whole thing with a length BigSize. Because the event is
+				// odd-type unknown, we should treat it as `Ok(None)` even if it has some TLV
+				// fields that are even. Thus, we avoid using `read_tlv_fields` and simply read
+				// exactly the number of bytes specified, ignoring them entirely.
+				let tlv_len: BigSize = Readable::read(reader)?;
+				FixedLengthReader::new(reader, tlv_len.0)
+					.eat_remaining().map_err(|_| msgs::DecodeError::ShortRead)?;
+				Ok(None)
+			},
 			_ => Err(msgs::DecodeError::InvalidValue)
 		}
 	}
