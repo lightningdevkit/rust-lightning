@@ -743,16 +743,16 @@ macro_rules! get_closing_signed_broadcast {
 #[macro_export]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {{
-		let events = $node.node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), if $with_error_msg { 2 } else { 1 });
-		match events[0] {
+		let msg_events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), if $with_error_msg { 2 } else { 1 });
+		match msg_events[0] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				assert_eq!(msg.contents.flags & 2, 2);
 			},
 			_ => panic!("Unexpected event"),
 		}
 		if $with_error_msg {
-			match events[1] {
+			match msg_events[1] {
 				MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
 					// TODO: Check node_id
 					Some(msg.clone())
@@ -760,6 +760,24 @@ macro_rules! check_closed_broadcast {
 				_ => panic!("Unexpected event"),
 			}
 		} else { None }
+	}}
+}
+
+/// Check that a channel's closing channel event has been issued
+#[macro_export]
+macro_rules! check_closed_event {
+	($node: expr, $events: expr, $reason: expr) => {{
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), $events);
+		let expected_reason = $reason;
+		for event in events {
+			match event {
+				Event::ChannelClosed { ref reason, .. } => {
+					assert_eq!(*reason, expected_reason);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
 	}}
 }
 
@@ -983,6 +1001,20 @@ macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
 		expect_pending_htlcs_forwardable_ignore!($node);
 		$node.node.process_pending_htlc_forwards();
+	}}
+}
+
+#[cfg(test)]
+macro_rules! expect_pending_htlcs_forwardable_from_events {
+	($node: expr, $events: expr, $ignore: expr) => {{
+		assert_eq!($events.len(), 1);
+		match $events[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		if $ignore {
+			$node.node.process_pending_htlc_forwards();
+		}
 	}}
 }
 

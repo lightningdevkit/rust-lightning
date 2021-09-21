@@ -52,7 +52,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -242,6 +242,7 @@ type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource
 
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
+	chan_id: Option<[u8; 32]>, // If Some a channel of ours has been closed
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
@@ -257,6 +258,7 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
+			chan_id: None,
 			shutdown_finish: None,
 		}
 	}
@@ -267,12 +269,13 @@ impl MsgHandleErrInternal {
 				err,
 				action: msgs::ErrorAction::IgnoreError,
 			},
+			chan_id: None,
 			shutdown_finish: None,
 		}
 	}
 	#[inline]
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, shutdown_finish: None }
+		Self { err, chan_id: None, shutdown_finish: None }
 	}
 	#[inline]
 	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
@@ -286,6 +289,7 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
+			chan_id: Some(channel_id),
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
 	}
@@ -320,6 +324,7 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
+			chan_id: None,
 			shutdown_finish: None,
 		}
 	}
@@ -813,12 +818,13 @@ macro_rules! handle_error {
 	($self: ident, $internal: expr, $counterparty_node_id: expr) => {
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish }) => {
+			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
 				#[cfg(debug_assertions)]
 				{
 					// In testing, ensure there are no deadlocks where the lock is already held upon
 					// entering the macro.
 					assert!($self.channel_state.try_lock().is_ok());
+					assert!($self.pending_events.try_lock().is_ok());
 				}
 
 				let mut msg_events = Vec::with_capacity(2);
@@ -829,6 +835,9 @@ macro_rules! handle_error {
 						msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 							msg: update
 						});
+					}
+					if let Some(channel_id) = chan_id {
+						$self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id,  reason: ClosureReason::ProcessingError { err: err.err.clone() } });
 					}
 				}
 
@@ -1363,6 +1372,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: channel_update
 							});
 						}
+						if let Ok(mut pending_events_lock) = self.pending_events.lock() {
+							pending_events_lock.push(events::Event::ChannelClosed {
+								channel_id: *channel_id,
+								reason: ClosureReason::HolderForceClosed
+							});
+						}
 					}
 					break Ok(());
 				},
@@ -1438,7 +1453,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>) -> Result<PublicKey, APIError> {
+	/// `peer_node_id` should be set when we receive a message from a peer, but not set when the
+	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
@@ -1450,6 +1467,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				if let Some(short_id) = chan.get().get_short_channel_id() {
 					channel_state.short_to_id.remove(&short_id);
+				}
+				let mut pending_events_lock = self.pending_events.lock().unwrap();
+				if peer_node_id.is_some() {
+					if let Some(peer_msg) = peer_msg {
+						pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, reason: ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() } });
+					}
+				} else {
+					pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, reason: ClosureReason::HolderForceClosed });
 				}
 				chan.remove_entry().1
 			} else {
@@ -1472,7 +1497,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
 	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		match self.force_close_channel_with_peer(channel_id, None) {
+		match self.force_close_channel_with_peer(channel_id, None, None) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
 					events::MessageSendEvent::HandleError {
@@ -2416,6 +2441,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											if let Some(short_id) = channel.get_short_channel_id() {
 												channel_state.short_to_id.remove(&short_id);
 											}
+											// ChannelClosed event is generated by handle_error for us.
 											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
 										},
 										ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
@@ -3545,6 +3571,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msg: update
 				});
 			}
+			self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: msg.channel_id,  reason: ClosureReason::CooperativeClosure });
 		}
 		Ok(())
 	}
@@ -3940,7 +3967,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 					}
 				},
-				MonitorEvent::CommitmentTxBroadcasted(funding_outpoint) => {
+				MonitorEvent::CommitmentTxConfirmed(funding_outpoint) => {
 					let mut channel_lock = self.channel_state.lock().unwrap();
 					let channel_state = &mut *channel_lock;
 					let by_id = &mut channel_state.by_id;
@@ -3956,6 +3983,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: update
 							});
 						}
+						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::CommitmentTxConfirmed });
 						pending_msg_events.push(events::MessageSendEvent::HandleError {
 							node_id: chan.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
@@ -4017,6 +4045,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					Err(e) => {
 						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, chan, channel_id);
 						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
+						// ChannelClosed event is generated by handle_error for us
 						!close_channel
 					}
 				}
@@ -4067,6 +4096,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 									msg: update
+								});
+							}
+
+							if let Ok(mut pending_events_lock) = self.pending_events.lock() {
+								pending_events_lock.push(events::Event::ChannelClosed {
+									channel_id: *channel_id,
+									reason: ClosureReason::CooperativeClosure
 								});
 							}
 
@@ -4490,6 +4526,7 @@ where
 							msg: update
 						});
 					}
+					self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: channel.channel_id(),  reason: ClosureReason::CommitmentTxConfirmed });
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
@@ -4680,6 +4717,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 								msg: update
 							});
 						}
+						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::DisconnectedPeer });
 						false
 					} else {
 						true
@@ -4694,6 +4732,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 							if let Some(short_id) = chan.get_short_channel_id() {
 								short_to_id.remove(&short_id);
 							}
+							self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::DisconnectedPeer });
 							return false;
 						} else {
 							no_channels_remain = false;
@@ -4784,12 +4823,12 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			for chan in self.list_channels() {
 				if chan.counterparty.node_id == *counterparty_node_id {
 					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id));
+					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id), Some(&msg.data));
 				}
 			}
 		} else {
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id));
+			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id), Some(&msg.data));
 		}
 	}
 }
@@ -5354,6 +5393,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
 			let mut channel: Channel<Signer> = Channel::read(reader, &args.keys_manager)?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
@@ -5384,6 +5424,10 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					let (_, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
 					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
+					channel_closures.push(events::Event::ChannelClosed {
+						channel_id: channel.channel_id(),
+						reason: ClosureReason::OutdatedChannelManager
+					});
 				} else {
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, channel.channel_id());
@@ -5490,6 +5534,10 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
+
+		if !channel_closures.is_empty() {
+			pending_events_read.append(&mut channel_closures);
+		}
 
 		let channel_manager = ChannelManager {
 			genesis_hash,

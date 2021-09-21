@@ -884,3 +884,20 @@ impl Readable for () {
 		Ok(())
 	}
 }
+
+impl Writeable for String {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.len() as u16).write(w)?;
+		w.write_all(self.as_bytes())
+	}
+}
+
+impl Readable for String {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: Vec<u8> = Readable::read(r)?;
+		let ret = String::from_utf8(v).map_err(|_| DecodeError::InvalidValue)?;
+		Ok(ret)
+	}
+}

@@ -190,8 +190,8 @@ pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
 
-	/// A monitor event that the Channel's commitment transaction was broadcasted.
-	CommitmentTxBroadcasted(OutPoint),
+	/// A monitor event that the Channel's commitment transaction was confirmed.
+	CommitmentTxConfirmed(OutPoint),
 }
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
@@ -918,7 +918,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 					0u8.write(writer)?;
 					upd.write(writer)?;
 				},
-				MonitorEvent::CommitmentTxBroadcasted(_) => 1u8.write(writer)?
+				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?
 			}
 		}
 
@@ -1787,7 +1787,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
 			broadcaster.broadcast_transaction(tx);
 		}
-		self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
+		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
 
 	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
@@ -1835,7 +1835,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
 					} else {
-						// If we generated a MonitorEvent::CommitmentTxBroadcasted, the ChannelManager
+						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
 						// will still give us a ChannelForceClosed event with !should_broadcast, but we
 						// shouldn't print the scary warning above.
 						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
@@ -2357,7 +2357,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
 			claimable_outpoints.push(commitment_package);
-			self.pending_monitor_events.push(MonitorEvent::CommitmentTxBroadcasted(self.funding_info.0));
+			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
 			// Because we're broadcasting a commitment transaction, we should construct the package
@@ -3110,7 +3110,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		for _ in 0..pending_monitor_events_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
-				1 => MonitorEvent::CommitmentTxBroadcasted(funding_info.0),
+				1 => MonitorEvent::CommitmentTxConfirmed(funding_info.0),
 				_ => return Err(DecodeError::InvalidValue)
 			};
 			pending_monitor_events.push(ev);
