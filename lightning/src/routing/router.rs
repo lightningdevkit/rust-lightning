@@ -71,6 +71,26 @@ pub struct Route {
 	pub paths: Vec<Vec<RouteHop>>,
 }
 
+impl Route {
+	/// Returns the total amount of fees paid on this Route.
+	/// This doesn't include any extra payment made to the recipient,
+	/// which can happen in excess of the amount passed to `get_route`'s `final_value_msat`.
+	pub fn get_total_fees(&self) -> u64 {
+		// Do not count last hop of each path since that's the full value of the payment
+		return self.paths.iter()
+			.flat_map(|path| path.split_last().unwrap().1)
+			.map(|hop| &hop.fee_msat)
+			.sum();
+	}
+	/// Returns the total amount paid on this Route, excluding the fees.
+	pub fn get_total_amount(&self) -> u64 {
+		return self.paths.iter()
+			.map(|path| path.split_last().unwrap().0)
+			.map(|hop| &hop.fee_msat)
+			.sum();
+	}
+}
+
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
@@ -1245,7 +1265,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 #[cfg(test)]
 mod tests {
-	use routing::router::{get_route, Route, RouteHint, RouteHintHop, RoutingFees};
+	use routing::router::{get_route, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -3791,6 +3811,7 @@ mod tests {
 				total_amount_paid_msat += path.last().unwrap().fee_msat;
 			}
 			assert_eq!(total_amount_paid_msat, 200_000);
+			assert_eq!(route.get_total_fees(), 150_000);
 		}
 
 	}
@@ -4196,6 +4217,64 @@ mod tests {
 			assert_eq!(route.paths[0][1].node_features.le_flags(), InvoiceFeatures::known().le_flags());
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
+	}
+
+	#[test]
+	fn total_fees_single_path() {
+		let route = Route {
+			paths: vec![vec![
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+			]],
+		};
+
+		assert_eq!(route.get_total_fees(), 250);
+		assert_eq!(route.get_total_amount(), 225);
+	}
+
+	#[test]
+	fn total_fees_multi_path() {
+		let route = Route {
+			paths: vec![vec![
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+			],vec![
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 100, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+				RouteHop {
+					pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
+					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
+					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+				},
+			]],
+		};
+
+		assert_eq!(route.get_total_fees(), 200);
+		assert_eq!(route.get_total_amount(), 300);
 	}
 
 	#[cfg(not(feature = "no-std"))]
