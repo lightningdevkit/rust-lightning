@@ -20,6 +20,7 @@ use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
+use routing::router::RouteHop;
 
 use bitcoin::blockdata::script::Script;
 
@@ -170,8 +171,8 @@ pub enum Event {
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
 	///
-	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentFailed` event.
-	/// In this situation, you SHOULD treat this payment as having succeeded.
+	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentPathFailed`
+	/// event. In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
@@ -180,7 +181,7 @@ pub enum Event {
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
-	PaymentFailed {
+	PaymentPathFailed {
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
@@ -200,6 +201,8 @@ pub enum Event {
 		/// failed. This will be set to false if (1) this is an MPP payment and (2) other parts of the
 		/// larger MPP payment were still in flight when this event was generated.
 		all_paths_failed: bool,
+		/// The payment path that failed.
+		path: Vec<RouteHop>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -291,7 +294,8 @@ impl Writeable for Event {
 					(0, payment_preimage, required),
 				});
 			},
-			&Event::PaymentFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed,
+			&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
+			                            ref all_paths_failed, ref path,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -307,6 +311,7 @@ impl Writeable for Event {
 					(1, network_update, option),
 					(2, rejected_by_dest, required),
 					(3, all_paths_failed, required),
+					(5, path, vec_type),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -403,17 +408,20 @@ impl MaybeReadable for Event {
 					let mut rejected_by_dest = false;
 					let mut network_update = None;
 					let mut all_paths_failed = Some(true);
+					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
 						(2, rejected_by_dest, required),
 						(3, all_paths_failed, option),
+						(5, path, vec_type),
 					});
-					Ok(Some(Event::PaymentFailed {
+					Ok(Some(Event::PaymentPathFailed {
 						payment_hash,
 						rejected_by_dest,
 						network_update,
 						all_paths_failed: all_paths_failed.unwrap(),
+						path: path.unwrap(),
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]

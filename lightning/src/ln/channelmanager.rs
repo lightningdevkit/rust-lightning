@@ -489,7 +489,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// The session_priv bytes of outbound payments which are pending resolution.
 	/// The authoritative state of these HTLCs resides either within Channels or ChannelMonitors
 	/// (if the channel has been force-closed), however we track them here to prevent duplicative
-	/// PaymentSent/PaymentFailed events. Specifically, in the case of a duplicative
+	/// PaymentSent/PaymentPathFailed events. Specifically, in the case of a duplicative
 	/// update_fulfill_htlc message after a reconnect, we may "claim" a payment twice.
 	/// Additionally, because ChannelMonitors are often not re-serialized after connecting block(s)
 	/// which may generate a claim event, we may receive similar duplicate claim/fail MonitorEvents
@@ -2875,18 +2875,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					self.fail_htlc_backwards_internal(channel_state,
 						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
 				},
-				HTLCSource::OutboundRoute { session_priv, mpp_id, .. } => {
+				HTLCSource::OutboundRoute { session_priv, mpp_id, path, .. } => {
 					let mut session_priv_bytes = [0; 32];
 					session_priv_bytes.copy_from_slice(&session_priv[..]);
 					let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 					if let hash_map::Entry::Occupied(mut sessions) = outbounds.entry(mpp_id) {
 						if sessions.get_mut().remove(&session_priv_bytes) {
 							self.pending_events.lock().unwrap().push(
-								events::Event::PaymentFailed {
+								events::Event::PaymentPathFailed {
 									payment_hash,
 									rejected_by_dest: false,
 									network_update: None,
 									all_paths_failed: sessions.get().len() == 0,
+									path: path.clone(),
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -2951,11 +2952,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
 						self.pending_events.lock().unwrap().push(
-							events::Event::PaymentFailed {
+							events::Event::PaymentPathFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
 								network_update,
 								all_paths_failed,
+								path: path.clone(),
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -2977,11 +2979,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// TODO: For non-temporary failures, we really should be closing the
 						// channel here as we apparently can't relay through them anyway.
 						self.pending_events.lock().unwrap().push(
-							events::Event::PaymentFailed {
+							events::Event::PaymentPathFailed {
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
 								network_update: None,
 								all_paths_failed,
+								path: path.clone(),
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]

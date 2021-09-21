@@ -827,7 +827,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
-						events::Event::PaymentFailed { .. } => {},
+						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::PendingHTLCsForwardable { .. } => {
 							nodes[$node].process_pending_htlc_forwards();
