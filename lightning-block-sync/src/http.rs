@@ -27,9 +27,10 @@ const TCP_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for reading the first byte of a response. This is separate from the general read
 /// timeout as it is not uncommon for Bitcoin Core to be blocked waiting on UTXO cache flushes for
-/// upwards of a minute or more. Note that we always retry once when we time out, so the maximum
-/// time we allow Bitcoin Core to block for is twice this value.
-const TCP_STREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+/// upwards of 10 minutes on slow devices (e.g. RPis with SSDs over USB). Note that we always retry
+/// once when we time out, so the maximum time we allow Bitcoin Core to block for is twice this
+/// value.
+const TCP_STREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Maximum HTTP message header size in bytes.
 const MAX_HTTP_MESSAGE_HEADER_SIZE: usize = 8192;
