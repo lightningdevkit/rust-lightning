@@ -1,11 +1,12 @@
-use crate::{BlockHeaderData, BlockSourceError};
 use crate::http::{BinaryResponse, JsonResponse};
 use crate::utils::hex_to_uint256;
+use crate::{BlockHeaderData, BlockSourceError};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
-use bitcoin::hashes::hex::{ToHex, FromHex};
+use bitcoin::hashes::hex::{FromHex, ToHex};
+use bitcoin::Transaction;
 
 use serde::Deserialize;
 
@@ -104,7 +105,6 @@ impl TryFrom<GetHeaderResponse> for BlockHeaderData {
 	}
 }
 
-
 /// Converts a JSON value into a block. Assumes the block is hex-encoded in a JSON string.
 impl TryInto<Block> for JsonResponse {
 	type Error = std::io::Error;
@@ -181,13 +181,77 @@ impl TryInto<Txid> for JsonResponse {
 	}
 }
 
+/// Converts a JSON value into a transaction. WATCH OUT! this cannot be used for zero-input transactions
+/// (e.g. createrawtransaction). See https://github.com/rust-bitcoin/rust-bitcoincore-rpc/issues/197
+impl TryInto<Transaction> for JsonResponse {
+	type Error = std::io::Error;
+	fn try_into(self) -> std::io::Result<Transaction> {
+		let hex_tx = if self.0.is_object() {
+			// result is json encoded
+			match &self.0["hex"] {
+				// result has hex field
+				serde_json::Value::String(hex_data) => match self.0["complete"] {
+					// result may or may not be signed (e.g. signrawtransactionwithwallet)
+					serde_json::Value::Bool(x) => {
+						if x == false {
+							let reason = match &self.0["errors"][0]["error"] {
+								serde_json::Value::String(x) => x.as_str(),
+								_ => "Unknown error",
+							};
+
+							return Err(std::io::Error::new(
+								std::io::ErrorKind::InvalidData,
+								format!("transaction couldn't be signed. {}", reason),
+							));
+						} else {
+							hex_data
+						}
+					}
+					// result is a complete transaction (e.g. getrawtranaction verbose)
+					_ => hex_data,
+				},
+				_ => return Err(std::io::Error::new(
+							std::io::ErrorKind::InvalidData,
+							"expected JSON string",
+					)),
+			}
+		} else {
+			// result is plain text (e.g. getrawtransaction no verbose)
+			match self.0.as_str() {
+				Some(hex_tx) => hex_tx,
+				None => {
+					return Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						"expected JSON string",
+					))
+				}
+			}
+		};
+
+		match Vec::<u8>::from_hex(hex_tx) {
+			Err(_) => Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				"invalid hex data",
+			)),
+			Ok(tx_data) => match encode::deserialize(&tx_data) {
+				Err(_) => Err(std::io::Error::new(
+					std::io::ErrorKind::InvalidData,
+					"invalid transaction",
+				)),
+				Ok(tx) => Ok(tx),
+			},
+		}
+	}
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
 	use super::*;
 	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::consensus::encode;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
+	use serde_json::value::Number;
+	use serde_json::Value;
 
 	/// Converts from `BlockHeaderData` into a `GetHeaderResponse` JSON value.
 	impl From<BlockHeaderData> for serde_json::Value {
@@ -539,6 +603,103 @@ pub(crate) mod tests {
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(txid) => assert_eq!(txid, target_txid),
+		}
+	}
+
+	// TryInto<Transaction> can be used in two ways, first with plain hex response where data is
+	// the hex encoded transaction (e.g. as a result of getrawtransaction) or as a JSON object
+	// where the hex encoded transaction can be found in the hex field of the object (if present)
+	// (e.g. as a result of signrawtransactionwithwallet).
+
+	// plain hex transaction
+
+	#[test]
+	fn into_tx_from_json_response_with_invalid_hex_data() {
+		let response = JsonResponse(serde_json::json!("foobar"));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_tx_from_json_response_with_invalid_data_type() {
+		let response = JsonResponse(Value::Number(Number::from_f64(1.0).unwrap()));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "expected JSON string");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_tx_from_json_response_with_invalid_tx_data() {
+		let response = JsonResponse(serde_json::json!("abcd"));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid transaction");
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_tx_from_json_response_with_valid_tx_data_plain() {
+		let genesis_block = genesis_block(Network::Bitcoin);
+		let target_tx = genesis_block.txdata.get(0).unwrap();
+		let response = JsonResponse(serde_json::json!(encode::serialize_hex(&target_tx)));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(tx) => assert_eq!(&tx, target_tx),
+		}
+	}
+
+	#[test]
+	fn into_tx_from_json_response_with_valid_tx_data_hex_field() {
+		let genesis_block = genesis_block(Network::Bitcoin);
+		let target_tx = genesis_block.txdata.get(0).unwrap();
+		let response = JsonResponse(serde_json::json!({"hex": encode::serialize_hex(&target_tx)}));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(tx) => assert_eq!(&tx, target_tx),
+		}
+	}
+
+	// transaction in hex field of JSON object
+
+	#[test]
+	fn into_tx_from_json_response_with_no_hex_field() {
+		let response = JsonResponse(serde_json::json!({ "error": "foo" }));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert_eq!(
+					e.get_ref().unwrap().to_string(),
+					"expected JSON string"
+				);
+			}
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_tx_from_json_response_not_signed() {
+		let response = JsonResponse(serde_json::json!({ "hex": "foo", "complete": false }));
+		match TryInto::<Transaction>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+				assert!(
+					e.get_ref().unwrap().to_string().contains(
+					"transaction couldn't be signed")
+				);
+			}
+			Ok(_) => panic!("Expected error"),
 		}
 	}
 }
