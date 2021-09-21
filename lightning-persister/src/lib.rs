@@ -330,6 +330,7 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 		nodes[1].node.force_close_channel(&chan.2).unwrap();
+		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Create the persister with an invalid directory name and test that the
