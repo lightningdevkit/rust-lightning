@@ -457,6 +457,10 @@ mod tests {
 		}
 	}
 
+	impl Type for () {
+		fn type_id(&self) -> u16 { unreachable!(); }
+	}
+
 	#[test]
 	fn is_even_message_type() {
 		let message = Message::<()>::Unknown(42);

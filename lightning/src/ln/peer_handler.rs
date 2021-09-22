@@ -37,6 +37,7 @@ use sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
+use core::convert::Infallible;
 #[cfg(feature = "std")] use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -80,21 +81,21 @@ impl Deref for IgnoringMessageHandler {
 	fn deref(&self) -> &Self { self }
 }
 
-impl wire::Type for () {
+// Implement Type for Infallible, note that it cannot be constructed, and thus you can never call a
+// method that takes self for it.
+impl wire::Type for Infallible {
 	fn type_id(&self) -> u16 {
-		// We should never call this for `DummyCustomType`
 		unreachable!();
 	}
 }
-
-impl Writeable for () {
+impl Writeable for Infallible {
 	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
 		unreachable!();
 	}
 }
 
 impl wire::CustomMessageReader for IgnoringMessageHandler {
-	type CustomMessage = ();
+	type CustomMessage = Infallible;
 	fn read<R: io::Read>(&self, _message_type: u16, _buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 		Ok(None)
 	}

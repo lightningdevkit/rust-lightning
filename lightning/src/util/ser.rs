@@ -879,6 +879,11 @@ impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
 	}
 }
 
+impl Writeable for () {
+	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
+		Ok(())
+	}
+}
 impl Readable for () {
 	fn read<R: Read>(_r: &mut R) -> Result<Self, DecodeError> {
 		Ok(())
@@ -892,7 +897,6 @@ impl Writeable for String {
 		w.write_all(self.as_bytes())
 	}
 }
-
 impl Readable for String {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
