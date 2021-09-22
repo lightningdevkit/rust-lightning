@@ -150,7 +150,7 @@ where C::Target: chain::Filter,
 	///
 	/// See [`ChannelMonitor::get_claimable_balances`] for more details on the exact criteria for
 	/// inclusion in the return value.
-	pub fn get_claimable_balances(&self, ignored_channels: &[ChannelDetails]) -> Vec<Balance> {
+	pub fn get_claimable_balances(&self, ignored_channels: &[&ChannelDetails]) -> Vec<Balance> {
 		let mut ret = Vec::new();
 		let monitors = self.monitors.read().unwrap();
 		for (_, monitor) in monitors.iter().filter(|(funding_outpoint, _)| {
