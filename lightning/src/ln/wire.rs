@@ -20,7 +20,7 @@ use util::ser::{Readable, Writeable, Writer};
 /// decoders.
 pub trait CustomMessageReader {
 	/// The type of the message decoded by the implementation.
-	type CustomMessage: core::fmt::Debug + Type + Writeable;
+	type CustomMessage: Type;
 	/// Decodes a custom message to `CustomMessageType`. If the given message type is known to the
 	/// implementation and the message could be decoded, must return `Ok(Some(message))`. If the
 	/// message type is unknown to the implementation, must return `Ok(None)`. If a decoding error
@@ -245,12 +245,12 @@ pub(crate) use self::encode::Encode;
 /// Defines a type identifier for sending messages over the wire.
 ///
 /// Messages implementing this trait specify a type and must be [`Writeable`].
-pub trait Type {
+pub trait Type: core::fmt::Debug + Writeable {
 	/// Returns the type identifying the message payload.
 	fn type_id(&self) -> u16;
 }
 
-impl<T> Type for T where T: Encode {
+impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
 	fn type_id(&self) -> u16 {
 		T::TYPE
 	}
