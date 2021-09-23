@@ -101,7 +101,7 @@ impl wire::CustomMessageReader for IgnoringMessageHandler {
 }
 
 impl CustomMessageHandler for IgnoringMessageHandler {
-	fn handle_custom_message(&self, _msg: Self::CustomMessage, _sender_node_id: &PublicKey) -> Result<(), LightningError> {
+	fn handle_custom_message(&self, _msg: Infallible, _sender_node_id: &PublicKey) -> Result<(), LightningError> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
