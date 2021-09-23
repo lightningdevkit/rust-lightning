@@ -1,3 +1,105 @@
+# 0.0.101 - 2021-09-23
+
+## API Updates
+ * Custom message types are now supported directly in the `PeerManager`,
+   allowing you to send and receive messages of any type that is not natively
+   understood by LDK. This requires a new type bound on `PeerManager`, a
+   `CustomMessageHandler`. `IgnoringMessageHandler` provides a simple default
+   for this new bound for ignoring unknown messages (#1031, #1074).
+ * Route graph updates as a result of failed payments are no longer provided as
+   `MessageSendEvent::PaymentFailureNetworkUpdate` but instead included in a
+   new field in the `Event::PaymentFailed` events. Generally, this means route
+   graph updates are no longer handled as a part of the `PeerManager` but
+   instead through the new `EventHandler` implementation for
+   `NetGraphMsgHandler`. To make this easy, a new parameter to
+   `lightning-background-processor::BackgroundProcessor::start` is added, which
+   contains an `Option`al `NetGraphmsgHandler`. If provided as `Some`, relevant
+   events will be processed by the `NetGraphMsgHandler` prior to normal event
+   handling (#1043).
+ * `NetworkGraph` is now, itself, thread-safe. Accordingly, most functions now
+   take `&self` instead of `&mut self` and the graph data can be accessed
+   through `NetworkGraph.read_only` (#1043).
+ * The balances available on-chain to claim after a channel has been closed are
+   now exposed via `ChannelMonitor::get_claimable_balances` and
+   `ChainMonitor::get_claimable_balances`. The second can be used to get
+   information about all closed channels which still have on-chain balances
+   associated with them. See enum variants of `ln::channelmonitor::Balance` and
+   method documentation for the above methods for more information on the types
+   of balances exposed (#1034).
+ * When one HTLC of a multi-path payment fails, the new field `all_paths_failed`
+   in `Event::PaymentFailed` is set to `false`. This implies that the payment
+   has not failed, but only one part. Payment resolution is only indicated by an
+   `Event::PaymentSent` event or an `Event::PaymentFailed` with
+   `all_paths_failed` set to `true`, which is also set for the last remaining
+   part of a multi-path payment (#1053).
+ * To better capture the context described above, `Event::PaymentFailed` has
+   been renamed to `Event::PaymentPathFailed` (#1084).
+ * A new event, `ChannelClosed`, is provided by `ChannelManager` when a channel
+   is closed, including a reason and error message (if relevant, #997).
+ * `lightning-invoice` now considers invoices with sub-millisatoshi precision
+   to be invalid, and requires millisatoshi values during construction (thus
+   you must call `amount_milli_satoshis` instead of `amount_pico_btc`, #1057).
+ * The `BaseSign` interface now includes two new hooks which provide additional
+   information about commitment transaction signatures and revocation secrets
+   provided by our counterparty, allowing additional verification (#1039).
+ * The `BaseSign` interface now includes additional information for cooperative
+   close transactions, making it easier for a signer to verify requests (#1064).
+ * `Route` has two additional helper methods to get fees and amounts (#1063).
+ * `Txid` and `Transaction` objects can now be deserialized from responses when
+   using the HTTP client in the `lightning-block-sync` crate (#1037, #1061).
+
+## Bug Fixes
+ * Fix a panic when reading a lightning invoice with a non-recoverable
+   signature. Further, restrict lightning invoice parsing to require payment
+   secrets and better handle a few edge cases as required by BOLT 11 (#1057).
+ * Fix a panic when receiving multiple messages (such as HTLC fulfill messages)
+   after a call to `chain::Watch::update_channel` returned
+   `Err(ChannelMonitorUpdateErr::TemporaryFailure)` with no
+   `ChannelManager::channel_monitor_updated` call in between (#1066).
+ * For multi-path payments, `Event::PaymentSent` is no longer generated
+   multiple times, once for each independent part (#1053).
+ * Multi-hop route hints in invoices are now considered in the default router
+   provided via `get_route` (#1040).
+ * The time peers have to respond to pings has been increased when building
+   with debug assertions enabled. This avoids peer disconnections on slow hosts
+   when running in debug mode (#1051).
+ * The timeout for the first byte of a response for requests from the
+   `lightning-block-sync` crate has been increased to 300 seconds to better
+   handle the long hangs in Bitcoin Core when it syncs to disk (#1090).
+
+## Serialization Compatibility
+ * Due to a bug in 0.0.100, `Event`s written by 0.0.101 which are of a type not
+   understood by 0.0.100 may lead to `Err(DecodeError::InvalidValue)` or corrupt
+   deserialized objects in 0.100. Such `Event`s will lead to an
+   `Err(DecodeError::InvalidValue)` in versions prior to 0.0.100. The only such
+   new event written by 0.0.101 is `Event::ChannelClosed` (#1087).
+ * Payments that were initiated in versions prior to 0.0.101 may still
+   generate duplicate `PaymentSent` `Event`s or may have spurious values for
+   `Event::PaymentPathFailed::all_paths_failed` (#1053).
+ * The return values of `ChannelMonitor::get_claimable_balances` (and, thus,
+   `ChainMonitor::get_claimable_balances`) may be spurious for channels where
+   the spend of the funding transaction appeared on chain while running a
+   version prior to 0.0.101. `Balance` information should only be relied upon
+   for channels that were closed while running 0.0.101+ (#1034).
+ * Payments failed while running versions prior to 0.0.101 will never have a
+   `Some` for the `network_update` field (#1043).
+
+In total, this release features 67 files changed, 4980 insertions, 1888
+deletions in 89 commits from 12 authors, in alphabetical order:
+ * Antoine Riard
+ * Devrandom
+ * Galder Zamarreño
+ * Giles Cope
+ * Jeffrey Czyz
+ * Joseph Goulden
+ * Matt Corallo
+ * Sergi Delgado Segura
+ * Tibo-lg
+ * Valentine Wallace
+ * abhik-99
+ * vss96
+
+
 # 0.0.100 - 2021-08-17
 
 ## API Updates
