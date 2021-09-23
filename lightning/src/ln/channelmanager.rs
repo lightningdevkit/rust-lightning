@@ -174,7 +174,7 @@ struct ClaimableHTLC {
 
 /// A payment identifier used to uniquely identify a payment to LDK.
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) struct PaymentId(pub [u8; 32]);
+pub struct PaymentId(pub [u8; 32]);
 
 impl Writeable for PaymentId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1997,11 +1997,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
-	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<(), PaymentSendFailure> {
+	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<PaymentId, PaymentSendFailure> {
 		self.send_payment_internal(route, payment_hash, payment_secret, None)
 	}
 
-	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>) -> Result<(), PaymentSendFailure> {
+	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>) -> Result<PaymentId, PaymentSendFailure> {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
@@ -2059,7 +2059,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		} else if has_err {
 			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
-			Ok(())
+			Ok(payment_id)
 		}
 	}
 
@@ -2077,14 +2077,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Note that `route` must have exactly one path.
 	///
 	/// [`send_payment`]: Self::send_payment
-	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>) -> Result<PaymentHash, PaymentSendFailure> {
+	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
 		let preimage = match payment_preimage {
 			Some(p) => p,
 			None => PaymentPreimage(self.keys_manager.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
 		match self.send_payment_internal(route, payment_hash, &None, Some(preimage)) {
-			Ok(()) => Ok(payment_hash),
+			Ok(payment_id) => Ok((payment_hash, payment_id)),
 			Err(e) => Err(e)
 		}
 	}
@@ -5877,7 +5877,7 @@ mod tests {
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
-		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
+		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);

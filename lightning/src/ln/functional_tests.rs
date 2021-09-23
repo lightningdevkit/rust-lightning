@@ -9224,7 +9224,7 @@ fn test_keysend_payments_to_public_node() {
                         nodes[0].logger).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
-	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
+	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -9254,7 +9254,7 @@ fn test_keysend_payments_to_private_node() {
                                 nodes[0].logger).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
-	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
+	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
