@@ -32,11 +32,11 @@ use routing::network_graph::NetGraphMsgHandler;
 use prelude::*;
 use io;
 use alloc::collections::LinkedList;
-use alloc::fmt::Debug;
 use sync::{Arc, Mutex};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
+use core::convert::Infallible;
 #[cfg(feature = "std")] use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -80,28 +80,28 @@ impl Deref for IgnoringMessageHandler {
 	fn deref(&self) -> &Self { self }
 }
 
-impl wire::Type for () {
+// Implement Type for Infallible, note that it cannot be constructed, and thus you can never call a
+// method that takes self for it.
+impl wire::Type for Infallible {
 	fn type_id(&self) -> u16 {
-		// We should never call this for `DummyCustomType`
 		unreachable!();
 	}
 }
-
-impl Writeable for () {
+impl Writeable for Infallible {
 	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
 		unreachable!();
 	}
 }
 
 impl wire::CustomMessageReader for IgnoringMessageHandler {
-	type CustomMessage = ();
+	type CustomMessage = Infallible;
 	fn read<R: io::Read>(&self, _message_type: u16, _buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 		Ok(None)
 	}
 }
 
 impl CustomMessageHandler for IgnoringMessageHandler {
-	fn handle_custom_message(&self, _msg: Self::CustomMessage, _sender_node_id: &PublicKey) -> Result<(), LightningError> {
+	fn handle_custom_message(&self, _msg: Infallible, _sender_node_id: &PublicKey) -> Result<(), LightningError> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
@@ -469,7 +469,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger,
-		CMH::Target: CustomMessageHandler + wire::CustomMessageReader {
+		CMH::Target: CustomMessageHandler {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
@@ -719,7 +719,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
-	fn enqueue_message<M: wire::Type + Writeable + Debug>(&self, peer: &mut Peer, message: &M) {
+	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let mut buffer = VecWriter(Vec::with_capacity(2048));
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
 		let encoded_message = buffer.0;
