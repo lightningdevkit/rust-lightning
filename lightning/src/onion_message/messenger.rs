@@ -121,8 +121,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-
-/// # #[derive(Debug)]
+///
+/// # #[derive(Debug, Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
