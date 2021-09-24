@@ -2129,6 +2129,54 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Retries a payment along the given [`Route`].
+	///
+	/// Errors returned are a superset of those returned from [`send_payment`], so see
+	/// [`send_payment`] documentation for more details on errors. This method will also error if the
+	/// retry amount puts the payment more than 10% over the payment's total amount, or if the payment
+	/// for the given `payment_id` cannot be found (likely due to timeout or success).
+	///
+	/// [`send_payment`]: [`ChannelManager::send_payment`]
+	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+		const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
+		for path in route.paths.iter() {
+			if path.len() == 0 {
+				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+					err: "length-0 path in route".to_string()
+				}))
+			}
+		}
+
+		let (total_msat, payment_hash, payment_secret) = {
+			let outbounds = self.pending_outbound_payments.lock().unwrap();
+			if let Some(payment) = outbounds.get(&payment_id) {
+				match payment {
+					PendingOutboundPayment::Retryable {
+						total_msat, payment_hash, payment_secret, pending_amt_msat, ..
+					} => {
+						let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
+						if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
+							return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+								err: format!("retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat).to_string()
+							}))
+						}
+						(*total_msat, *payment_hash, *payment_secret)
+					},
+					PendingOutboundPayment::Legacy { .. } => {
+						return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+							err: "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102".to_string()
+						}))
+					}
+				}
+			} else {
+				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+					err: "Payment with ID {} not found".to_string()
+				}))
+			}
+		};
+		return self.send_payment_internal(route, payment_hash, &payment_secret, None, Some(payment_id), Some(total_msat)).map(|_| ())
+	}
+
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
 	/// generated an invoice. Optionally, you may specify the preimage. If you do choose to specify
 	/// the preimage, it must be a cryptographically secure random value that no intermediate node
