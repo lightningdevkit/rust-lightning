@@ -147,7 +147,7 @@ impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 }
 
 /// The contents of an onion message.
-pub trait OnionMessageContents: Writeable + core::fmt::Debug {
+pub trait OnionMessageContents: Writeable + core::fmt::Debug + Clone {
 	/// Returns the TLV type identifying the message contents. MUST be >= 64.
 	fn tlv_type(&self) -> u64;
 }

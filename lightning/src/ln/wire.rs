@@ -45,9 +45,9 @@ impl<T> TestEq for T {}
 /// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
+pub(crate) enum Message<T> where T: Clone + core::fmt::Debug + Type + TestEq {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
 	Warning(msgs::WarningMessage),
@@ -419,13 +419,13 @@ pub(crate) use self::encode::Encode;
 /// Defines a type identifier for sending messages over the wire.
 ///
 /// Messages implementing this trait specify a type and must be [`Writeable`].
-pub trait Type: core::fmt::Debug + Writeable {
+pub trait Type: core::fmt::Debug + Writeable + Clone {
 	/// Returns the type identifying the message payload.
 	fn type_id(&self) -> u16;
 }
 
 #[cfg(test)]
-pub trait Type: core::fmt::Debug + Writeable + PartialEq {
+pub trait Type: core::fmt::Debug + Writeable + Clone + PartialEq {
 	fn type_id(&self) -> u16;
 }
 
@@ -435,12 +435,12 @@ impl Type for () {
 }
 
 #[cfg(test)]
-impl<T: core::fmt::Debug + Writeable + PartialEq> Type for T where T: Encode {
+impl<T: core::fmt::Debug + Writeable + Clone + PartialEq> Type for T where T: Encode {
 	fn type_id(&self) -> u16 { T::TYPE }
 }
 
 #[cfg(not(test))]
-impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
+impl<T: core::fmt::Debug + Writeable + Clone> Type for T where T: Encode {
 	fn type_id(&self) -> u16 { T::TYPE }
 }
 
@@ -786,7 +786,7 @@ mod tests {
 		}
 	}
 
-	#[derive(Eq, PartialEq, Debug)]
+	#[derive(Clone, Eq, PartialEq, Debug)]
 	struct TestCustomMessage {}
 
 	const CUSTOM_MESSAGE_TYPE : u16 = 9000;
