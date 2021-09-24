@@ -98,6 +98,7 @@ use crate::prelude::*;
 ///     &custom_message_handler
 /// );
 ///
+/// # #[derive(Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
