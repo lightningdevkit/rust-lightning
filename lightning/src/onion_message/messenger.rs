@@ -243,7 +243,7 @@ where
 ///     &custom_message_handler,
 /// );
 ///
-/// # #[derive(Debug)]
+/// # #[derive(Clone, Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
