@@ -1998,10 +1998,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment_internal(route, payment_hash, payment_secret, None, None)
+		self.send_payment_internal(route, payment_hash, payment_secret, None, None, None)
 	}
 
-	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: Option<PaymentId>) -> Result<PaymentId, PaymentSendFailure> {
+	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: Option<PaymentId>, recv_value_msat: Option<u64>) -> Result<PaymentId, PaymentSendFailure> {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
@@ -2034,6 +2034,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
 			return Err(PaymentSendFailure::PathParameterError(path_errs));
+		}
+		if let Some(amt_msat) = recv_value_msat {
+			debug_assert!(amt_msat >= total_value);
+			total_value = amt_msat;
 		}
 
 		let cur_height = self.best_block.read().unwrap().height() + 1;
@@ -2083,7 +2087,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			None => PaymentPreimage(self.keys_manager.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
-		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), None) {
+		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), None, None) {
 			Ok(payment_id) => Ok((payment_hash, payment_id)),
 			Err(e) => Err(e)
 		}
@@ -5936,7 +5940,7 @@ mod tests {
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let mismatch_payment_hash = PaymentHash([43; 32]);
-		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, Some(test_preimage), None).unwrap();
+		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, Some(test_preimage), None, None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -5973,7 +5977,7 @@ mod tests {
 		let test_preimage = PaymentPreimage([42; 32]);
 		let test_secret = PaymentSecret([43; 32]);
 		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).into_inner());
-		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), Some(test_preimage), None).unwrap();
+		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), Some(test_preimage), None, None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
