@@ -17,7 +17,6 @@ use ln::features::InitFeatures;
 use ln::msgs::{ChannelMessageHandler, ErrorAction};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use routing::network_graph::NetworkUpdate;
-use routing::router::get_route;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
