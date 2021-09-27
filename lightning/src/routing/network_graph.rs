@@ -58,6 +58,18 @@ pub struct NetworkGraph {
 	nodes: RwLock<BTreeMap<PublicKey, NodeInfo>>,
 }
 
+impl Clone for NetworkGraph {
+	fn clone(&self) -> Self {
+		let channels = self.channels.read().unwrap();
+		let nodes = self.nodes.read().unwrap();
+		Self {
+			genesis_hash: self.genesis_hash.clone(),
+			channels: RwLock::new(channels.clone()),
+			nodes: RwLock::new(nodes.clone()),
+		}
+	}
+}
+
 /// A read-only view of [`NetworkGraph`].
 pub struct ReadOnlyNetworkGraph<'a> {
 	channels: RwLockReadGuard<'a, BTreeMap<u64, ChannelInfo>>,
