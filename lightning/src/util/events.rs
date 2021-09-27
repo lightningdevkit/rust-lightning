@@ -30,6 +30,7 @@ use io;
 use prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
+use bitcoin::Transaction;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -254,6 +255,14 @@ pub enum Event {
 		channel_id: [u8; 32],
 		/// The reason the channel was closed.
 		reason: ClosureReason
+	},
+	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
+	/// inputs for another purpose.
+	DiscardFunding {
+		/// The channel_id of the channel which has been closed.
+		channel_id: [u8; 32],
+		/// The full transaction received from the user
+		transaction: Transaction
 	}
 }
 
@@ -339,6 +348,13 @@ impl Writeable for Event {
 					(0, channel_id, required),
 					(2, reason, required)
 				});
+			},
+			&Event::DiscardFunding { ref channel_id, ref transaction } => {
+				11u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, transaction, required)
+				})
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -470,6 +486,15 @@ impl MaybeReadable for Event {
 				});
 				if reason.is_none() { return Ok(None); }
 				Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
+			},
+			11u8 => {
+				let mut channel_id = [0; 32];
+				let mut transaction = Transaction{ version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
+				read_tlv_fields!(reader, {
+					(0, channel_id, required),
+					(2, transaction, required),
+				});
+				Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt

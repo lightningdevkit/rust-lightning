@@ -1326,6 +1326,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
 	}
 
+	/// Helper function that issues the channel close events
+	fn issue_channel_close_events(&self, channel: &Channel<Signer>, closure_reason: ClosureReason) {
+		let mut pending_events_lock = self.pending_events.lock().unwrap();
+		match channel.unbroadcasted_funding() {
+			Some(transaction) => {
+				pending_events_lock.push(events::Event::DiscardFunding { channel_id: channel.channel_id(), transaction })
+			},
+			None => {},
+		}
+		pending_events_lock.push(events::Event::ChannelClosed { channel_id: channel.channel_id(), reason: closure_reason });
+	}
+
 	fn close_channel_internal(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -1372,12 +1384,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: channel_update
 							});
 						}
-						if let Ok(mut pending_events_lock) = self.pending_events.lock() {
-							pending_events_lock.push(events::Event::ChannelClosed {
-								channel_id: *channel_id,
-								reason: ClosureReason::HolderForceClosed
-							});
-						}
+						self.issue_channel_close_events(&channel, ClosureReason::HolderForceClosed);
 					}
 					break Ok(());
 				},
@@ -1468,13 +1475,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if let Some(short_id) = chan.get().get_short_channel_id() {
 					channel_state.short_to_id.remove(&short_id);
 				}
-				let mut pending_events_lock = self.pending_events.lock().unwrap();
 				if peer_node_id.is_some() {
 					if let Some(peer_msg) = peer_msg {
-						pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, reason: ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() } });
+						self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
 					}
 				} else {
-					pending_events_lock.push(events::Event::ChannelClosed { channel_id: *channel_id, reason: ClosureReason::HolderForceClosed });
+					self.issue_channel_close_events(chan.get(),ClosureReason::HolderForceClosed);
 				}
 				chan.remove_entry().1
 			} else {
@@ -3574,7 +3580,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msg: update
 				});
 			}
-			self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: msg.channel_id,  reason: ClosureReason::CooperativeClosure });
+			self.issue_channel_close_events(&chan, ClosureReason::CooperativeClosure);
 		}
 		Ok(())
 	}
@@ -3986,7 +3992,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: update
 							});
 						}
-						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::CommitmentTxConfirmed });
+						self.issue_channel_close_events(&chan, ClosureReason::CommitmentTxConfirmed);
 						pending_msg_events.push(events::MessageSendEvent::HandleError {
 							node_id: chan.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
@@ -4102,12 +4108,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								});
 							}
 
-							if let Ok(mut pending_events_lock) = self.pending_events.lock() {
-								pending_events_lock.push(events::Event::ChannelClosed {
-									channel_id: *channel_id,
-									reason: ClosureReason::CooperativeClosure
-								});
-							}
+							self.issue_channel_close_events(chan, ClosureReason::CooperativeClosure);
 
 							log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 							self.tx_broadcaster.broadcast_transaction(&tx);
@@ -4529,7 +4530,7 @@ where
 							msg: update
 						});
 					}
-					self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: channel.channel_id(),  reason: ClosureReason::CommitmentTxConfirmed });
+					self.issue_channel_close_events(channel, ClosureReason::CommitmentTxConfirmed);
 					pending_msg_events.push(events::MessageSendEvent::HandleError {
 						node_id: channel.get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage { msg: e },
@@ -4720,7 +4721,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 								msg: update
 							});
 						}
-						self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::DisconnectedPeer });
+						self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
 						false
 					} else {
 						true
@@ -4735,7 +4736,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 							if let Some(short_id) = chan.get_short_channel_id() {
 								short_to_id.remove(&short_id);
 							}
-							self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id: chan.channel_id(),  reason: ClosureReason::DisconnectedPeer });
+							self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
 							return false;
 						} else {
 							no_channels_remain = false;

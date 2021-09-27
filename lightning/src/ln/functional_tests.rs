@@ -8632,7 +8632,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	let channel_id = ::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
 	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
-	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Hi".to_string() });
+	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: "Hi".to_string() }, true);
 }
 
 #[test]
