@@ -26,7 +26,7 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::script::ShutdownScript;
+use ln::script::{self, ShutdownScript};
 use ln::channelmanager::{CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use ln::chan_utils;
@@ -44,7 +44,6 @@ use util::scid_utils::scid_from_parts;
 use io;
 use prelude::*;
 use core::{cmp,mem,fmt};
-use core::convert::TryFrom;
 use core::ops::Deref;
 #[cfg(any(test, feature = "fuzztarget", debug_assertions))]
 use sync::Mutex;
@@ -555,21 +554,24 @@ pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 /// it's 2^24.
 pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
 
-/// Maximum counterparty `dust_limit_satoshis` allowed. 2 * standard dust threshold on p2wsh output
-/// Scales up on Bitcoin Core's proceeding policy with dust outputs. A typical p2wsh output is 43
-/// bytes to which Core's `GetDustThreshold()` sums up a minimal spend of 67 bytes (even if
-/// a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee` is set to 3000sat/kb, thus
-/// 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs are p2wsh, a value of
-/// 330 sats is the lower bound desired to ensure good propagation of transactions. We give a bit
-/// of margin to our counterparty and pick up 660 satoshis as an accepted `dust_limit_satoshis`
-/// upper bound to avoid negotiation conflicts with other implementations.
-pub const MAX_DUST_LIMIT_SATOSHIS: u64 = 2 * 330;
+/// The maximum network dust limit for standard script formats. This currently represents the
+/// minimum output value for a P2SH output before Bitcoin Core 22 considers the entire
+/// transaction non-standard and thus refuses to relay it.
+/// We also use this as the maximum counterparty `dust_limit_satoshis` allowed, given many
+/// implementations use this value for their dust limit today.
+pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
 
-/// A typical p2wsh output is 43 bytes to which Core's `GetDustThreshold()` sums up a minimal
-/// spend of 67 bytes (even if a p2wsh witnessScript might be *effectively* smaller), `dustRelayFee`
-/// is set to 3000sat/kb, thus 110 * 3000 / 1000 = 330. Per-protocol rules, all time-sensitive outputs
-/// are p2wsh, a value of 330 sats is the lower bound desired to ensure good propagation of transactions.
-pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 330;
+/// The maximum channel dust limit we will accept from our counterparty.
+pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+
+/// The dust limit is used for both the commitment transaction outputs as well as the closing
+/// transactions. For cooperative closing transactions, we require segwit outputs, though accept
+/// *any* segwit scripts, which are allowed to be up to 42 bytes in length.
+/// In order to avoid having to concern ourselves with standardness during the closing process, we
+/// simply require our counterparty to use a dust limit which will leave any segwit output
+/// standard.
+/// See https://github.com/lightningnetwork/lightning-rfc/issues/905 for more details.
+pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
@@ -636,7 +638,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis);
-		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
@@ -707,7 +709,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
-			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			counterparty_htlc_minimum_msat: 0,
@@ -841,11 +843,11 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis >  MAX_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 
 		// Convert things into internal flags and prep our state:
@@ -862,11 +864,11 @@ impl<Signer: Sign> Channel<Signer> {
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
-		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if holder_selected_channel_reserve_satoshis < msg.dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", msg.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
@@ -893,10 +895,10 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), their_features)) {
-							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
-							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
 						}
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -971,7 +973,7 @@ impl<Signer: Sign> Channel<Signer> {
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
-			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -1615,11 +1617,11 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis > MAX_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));
@@ -1638,10 +1640,10 @@ impl<Signer: Sign> Channel<Signer> {
 					if script.len() == 0 {
 						None
 					} else {
-						match ShutdownScript::try_from((script.clone(), their_features)) {
-							Ok(shutdown_script) => Some(shutdown_script.into_inner()),
-							Err(_) => return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script))),
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
 						}
+						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
@@ -3491,17 +3493,16 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
-		let shutdown_scriptpubkey = match ShutdownScript::try_from((msg.scriptpubkey.clone(), their_features)) {
-			Ok(script) => script.into_inner(),
-			Err(_) => return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex()))),
-		};
+		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
+			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
+		}
 
 		if self.counterparty_shutdown_scriptpubkey.is_some() {
-			if Some(&shutdown_scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", shutdown_scriptpubkey.to_bytes().to_hex())));
+			if Some(&msg.scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
+				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
 			}
 		} else {
-			self.counterparty_shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
+			self.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
 		}
 
 		// If we have any LocalAnnounced updates we'll probably just get back an update_fail_htlc
@@ -3627,6 +3628,12 @@ impl<Signer: Sign> Channel<Signer> {
 				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, self.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
 			},
 		};
+
+		for outp in closing_tx.trust().built_transaction().output.iter() {
+			if !outp.script_pubkey.is_witness_program() && outp.value < MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS {
+				return Err(ChannelError::Close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
+			}
+		}
 
 		assert!(self.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.last_sent_closing_fee {

@@ -3,7 +3,7 @@
 use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::hashes::Hash;
-use bitcoin::hash_types::{PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
+use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::key::PublicKey;
 
 use ln::features::InitFeatures;
@@ -66,16 +66,6 @@ impl ShutdownScript {
 		Self(ShutdownScriptImpl::Legacy(pubkey))
 	}
 
-	/// Generates a P2PKH script pubkey from the given [`PubkeyHash`].
-	pub fn new_p2pkh(pubkey_hash: &PubkeyHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_p2pkh(pubkey_hash)))
-	}
-
-	/// Generates a P2SH script pubkey from the given [`ScriptHash`].
-	pub fn new_p2sh(script_hash: &ScriptHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_p2sh(script_hash)))
-	}
-
 	/// Generates a P2WPKH script pubkey from the given [`WPubkeyHash`].
 	pub fn new_p2wpkh(pubkey_hash: &WPubkeyHash) -> Self {
 		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_wpkh(pubkey_hash)))
@@ -126,7 +116,9 @@ impl ShutdownScript {
 	}
 }
 
-fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bool {
+/// Check if a given script is compliant with BOLT 2's shutdown script requirements for the given
+/// counterparty features.
+pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bool {
 	if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wpkh() || script.is_v0_p2wsh() {
 		true
 	} else if features.supports_shutdown_anysegwit() {
@@ -136,6 +128,8 @@ fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bool {
 	}
 }
 
+// Note that this is only for our own shutdown scripts. Counterparties are still allowed to send us
+// non-witness shutdown scripts which this rejects.
 impl TryFrom<Script> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
@@ -144,11 +138,13 @@ impl TryFrom<Script> for ShutdownScript {
 	}
 }
 
+// Note that this is only for our own shutdown scripts. Counterparties are still allowed to send us
+// non-witness shutdown scripts which this rejects.
 impl TryFrom<(Script, &InitFeatures)> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
 	fn try_from((script, features): (Script, &InitFeatures)) -> Result<Self, Self::Error> {
-		if is_bolt2_compliant(&script, features) {
+		if is_bolt2_compliant(&script, features) && script.is_witness_program() {
 			Ok(Self(ShutdownScriptImpl::Bolt2(script)))
 		} else {
 			Err(InvalidShutdownScript { script })
@@ -214,30 +210,6 @@ mod shutdown_script_tests {
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
 		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
 		assert_eq!(shutdown_script.into_inner(), p2wpkh_script);
-	}
-
-	#[test]
-	fn generates_p2pkh_from_pubkey_hash() {
-		let pubkey_hash = pubkey().pubkey_hash();
-		let p2pkh_script = Script::new_p2pkh(&pubkey_hash);
-
-		let shutdown_script = ShutdownScript::new_p2pkh(&pubkey_hash);
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
-		assert_eq!(shutdown_script.into_inner(), p2pkh_script);
-		assert!(ShutdownScript::try_from(p2pkh_script).is_ok());
-	}
-
-	#[test]
-	fn generates_p2sh_from_script_hash() {
-		let script_hash = redeem_script().script_hash();
-		let p2sh_script = Script::new_p2sh(&script_hash);
-
-		let shutdown_script = ShutdownScript::new_p2sh(&script_hash);
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
-		assert_eq!(shutdown_script.into_inner(), p2sh_script);
-		assert!(ShutdownScript::try_from(p2sh_script).is_ok());
 	}
 
 	#[test]
