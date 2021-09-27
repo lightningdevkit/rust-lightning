@@ -571,7 +571,7 @@ pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS
 /// simply require our counterparty to use a dust limit which will leave any segwit output
 /// standard.
 /// See https://github.com/lightningnetwork/lightning-rfc/issues/905 for more details.
-pub const MIN_DUST_LIMIT_SATOSHIS: u64 = 354;
+pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
 /// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
@@ -638,7 +638,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis);
-		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
@@ -709,7 +709,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
-			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			counterparty_htlc_minimum_msat: 0,
@@ -843,8 +843,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
@@ -864,11 +864,11 @@ impl<Signer: Sign> Channel<Signer> {
 		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
 
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
-		if holder_selected_channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.channel_reserve_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if holder_selected_channel_reserve_satoshis < msg.dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", msg.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
@@ -973,7 +973,7 @@ impl<Signer: Sign> Channel<Signer> {
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
-			holder_dust_limit_satoshis: MIN_DUST_LIMIT_SATOSHIS,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
 			counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -1617,8 +1617,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
 			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < MIN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_DUST_LIMIT_SATOSHIS)));
+		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));

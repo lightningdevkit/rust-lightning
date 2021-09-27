@@ -1480,7 +1480,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt, InitFeatures::known(), InitFeatures::known());
 
-	let dust_amt = crate::ln::channel::MIN_DUST_LIMIT_SATOSHIS * 1000
+	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
 		+ feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000 * 1000 - 1;
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
