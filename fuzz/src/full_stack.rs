@@ -37,8 +37,9 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
-use lightning::routing::router::get_route;
 use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+use lightning::routing::router::get_route;
+use lightning::routing::scorer::Scorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::events::Event;
@@ -380,6 +381,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
 	let network_graph = NetworkGraph::new(genesis_block(network).block_hash());
 	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger)));
+	let scorer = Scorer::new(0);
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
@@ -435,7 +437,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger), &scorer) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -452,7 +454,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger)) {
+				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger), &scorer) {
 					Ok(route) => route,
 					Err(_) => return,
 				};

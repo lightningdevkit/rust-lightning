@@ -15,8 +15,9 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
-use routing::router::{Route, get_route};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+use routing::router::{Route, get_route};
+use routing::scorer::Scorer;
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -996,11 +997,12 @@ macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node, Some($recv_value));
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
+		let scorer = ::routing::scorer::Scorer::new(0);
 		let route = ::routing::router::get_route(
 			&$send_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph,
 			&$recv_node.node.get_our_node_id(), Some(::ln::features::InvoiceFeatures::known()),
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-			&$last_hops, $recv_value, $cltv, $send_node.logger
+			&$last_hops, $recv_value, $cltv, $send_node.logger, &scorer
 		).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
@@ -1311,10 +1313,11 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
+	let scorer = Scorer::new(0);
 	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph,
 		&expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()),
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()), &[],
-		recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
+		recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1326,7 +1329,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger).unwrap();
+	let scorer = Scorer::new(0);
+	let route = get_route(&origin_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
