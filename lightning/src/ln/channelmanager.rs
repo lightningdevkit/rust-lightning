@@ -3008,9 +3008,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									error_data: None,
 								}
 							);
-							if payment.get().remaining_parts() == 0 {
-								payment.remove();
-							}
 						}
 					} else {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -3048,7 +3045,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					if sessions.get().remaining_parts() == 0 {
 						all_paths_failed = true;
-						sessions.remove();
 					}
 				} else {
 					log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));

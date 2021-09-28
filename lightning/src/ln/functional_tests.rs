@@ -4274,6 +4274,59 @@ fn mpp_retry() {
 }
 
 #[test]
+fn retry_single_path_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let _chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
+	// Rebalance to find a route
+	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
+
+	let logger = test_utils::TestLogger::new();
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
+	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
+	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+
+	// Rebalance so that the first hop fails.
+	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
+
+	// Make sure the payment fails on the first hop.
+	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable!(&nodes[1]);
+	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(htlc_updates.update_add_htlcs.is_empty());
+	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
+	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
+	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
+	check_added_monitors!(nodes[1], 1);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
+	expect_payment_failed!(nodes[0], payment_hash, false);
+
+	// Rebalance the channel so the retry succeeds.
+	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
+
+	// Retry the payment and make sure it succeeds.
+	nodes[0].node.retry_payment(&route, payment_id).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 100_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+}
+
+#[test]
 fn test_dup_htlc_onchain_fails_on_reload() {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
