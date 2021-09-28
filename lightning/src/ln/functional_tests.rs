@@ -22,7 +22,7 @@ use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
-use ln::chan_utils::{HTLC_SUCCESS_TX_WEIGHT, HTLCOutputInCommitment};
+use ln::chan_utils::{HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, HTLCOutputInCommitment};
 use routing::network_graph::{NetworkUpdate, RoutingFees};
 use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -9201,4 +9201,176 @@ fn test_keysend_payments_to_private_node() {
 	let path = vec![&nodes[1]];
 	pass_along_path(&nodes[0], &path, 10000, payment_hash, None, event, true, Some(test_preimage));
 	claim_payment(&nodes[0], &path, test_preimage);
+}
+
+/// The possible events which may trigger a `max_dust_htlc_exposure` breach
+#[derive(Clone, Copy, PartialEq)]
+enum ExposureEvent {
+	/// Breach occurs at HTLC forwarding (see `send_htlc`)
+	AtHTLCForward,
+	/// Breach occurs at HTLC reception (see `update_add_htlc`)
+	AtHTLCReception,
+	/// Breach occurs at outbound update_fee (see `send_update_fee`)
+	AtUpdateFeeOutbound,
+}
+
+fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_event: ExposureEvent, on_holder_tx: bool) {
+	// Test that we properly reject dust HTLC violating our `max_dust_htlc_exposure_msat`
+	// policy.
+	//
+	// At HTLC forward (`send_payment()`), if the sum of the trimmed-to-dust HTLC inbound and
+	// trimmed-to-dust HTLC outbound balance and this new payment as included on next
+	// counterparty commitment are above our `max_dust_htlc_exposure_msat`, we'll reject the
+	// update. At HTLC reception (`update_add_htlc()`), if the sum of the trimmed-to-dust HTLC
+	// inbound and trimmed-to-dust HTLC outbound balance and this new received HTLC as included
+	// on next counterparty commitment are above our `max_dust_htlc_exposure_msat`, we'll fail
+	// the update. Note, we return a `temporary_channel_failure` (0x1000 | 7), as the channel
+	// might be available again for HTLC processing once the dust bandwidth has cleared up.
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut config = test_default_channel_config();
+	config.channel_options.max_dust_htlc_exposure_msat = 5_000_000; // default setting value
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	open_channel.max_htlc_value_in_flight_msat = 50_000_000;
+	open_channel.max_accepted_htlcs = 60;
+	if on_holder_tx {
+		open_channel.dust_limit_satoshis = 546;
+	}
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 1_000_000, 42);
+
+	if on_holder_tx {
+		if let Some(mut chan) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&temporary_channel_id) {
+			chan.holder_dust_limit_satoshis = 546;
+		}
+	}
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
+	check_added_monitors!(nodes[0], 1);
+
+	let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+
+	let dust_buffer_feerate = {
+		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
+		let chan = chan_lock.by_id.get(&channel_id).unwrap();
+		chan.get_dust_buffer_feerate(None) as u64
+	};
+	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * HTLC_TIMEOUT_TX_WEIGHT / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_outbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
+
+	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * HTLC_SUCCESS_TX_WEIGHT / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
+
+	let dust_htlc_on_counterparty_tx: u64 = 25;
+	let dust_htlc_on_counterparty_tx_msat: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
+
+	if on_holder_tx {
+		if dust_outbound_balance {
+			// Outbound dust threshold: 2223 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
+			// Outbound dust balance: 4372 sats
+			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2132 sats
+			for i in 0..dust_outbound_htlc_on_holder_tx {
+				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_outbound_htlc_on_holder_tx_msat);
+				if let Err(_) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) { panic!("Unexpected event at dust HTLC {}", i); }
+			}
+		} else {
+			// Inbound dust threshold: 2324 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
+			// Inbound dust balance: 4372 sats
+			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2031 sats
+			for _ in 0..dust_inbound_htlc_on_holder_tx {
+				route_payment(&nodes[1], &[&nodes[0]], dust_inbound_htlc_on_holder_tx_msat);
+			}
+		}
+	} else {
+		if dust_outbound_balance {
+			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
+			// Outbound dust balance: 5000 sats
+			for i in 0..dust_htlc_on_counterparty_tx {
+				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
+				if let Err(_) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) { panic!("Unexpected event at dust HTLC {}", i); }
+			}
+	        } else {
+			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
+			// Inbound dust balance: 5000 sats
+			for _ in 0..dust_htlc_on_counterparty_tx {
+				route_payment(&nodes[1], &[&nodes[0]], dust_htlc_on_counterparty_tx_msat);
+			}
+		}
+	}
+
+	let dust_overflow = dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx + 1);
+	if exposure_breach_event == ExposureEvent::AtHTLCForward {
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], if on_holder_tx { dust_outbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
+		let mut config = UserConfig::default();
+		// With default dust exposure: 5000 sats
+		if on_holder_tx {
+			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * (dust_outbound_htlc_on_holder_tx + 1);
+			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * dust_inbound_htlc_on_holder_tx + dust_outbound_htlc_on_holder_tx_msat;
+			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_options.max_dust_htlc_exposure_msat)));
+		} else {
+			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_options.max_dust_htlc_exposure_msat)));
+		}
+	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
+		nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+		check_added_monitors!(nodes[1], 1);
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.remove(0));
+		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+		// With default dust exposure: 5000 sats
+		if on_holder_tx {
+			// Outbound dust balance: 6399 sats
+			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * (dust_inbound_htlc_on_holder_tx + 1);
+			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * dust_outbound_htlc_on_holder_tx + dust_inbound_htlc_on_holder_tx_msat;
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_options.max_dust_htlc_exposure_msat), 1);
+		} else {
+			// Outbound dust balance: 5200 sats
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_options.max_dust_htlc_exposure_msat), 1);
+		}
+	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 2_500_000);
+		if let Err(_) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) { panic!("Unexpected event at update_fee-swallowed HTLC", ); }
+		{
+			let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+			*feerate_lock = *feerate_lock * 10;
+		}
+		nodes[0].node.timer_tick_occurred();
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].logger.assert_log_contains("lightning::ln::channel".to_string(), "Cannot afford to send new feerate at 2530 without infringing max dust htlc exposure".to_string(), 1);
+	}
+
+	let _ = nodes[0].node.get_and_clear_pending_msg_events();
+	let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
+	added_monitors.clear();
+}
+
+#[test]
+fn test_max_dust_htlc_exposure() {
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, true);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, true);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, true);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, false);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, false);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, false);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, true);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, false);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, true);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, false);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, true);
 }
