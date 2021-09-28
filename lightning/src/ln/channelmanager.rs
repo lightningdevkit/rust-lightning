@@ -413,6 +413,8 @@ enum PendingOutboundPayment {
 		pending_amt_msat: u64,
 		/// The total payment amount across all paths, used to verify that a retry is not overpaying.
 		total_msat: u64,
+		/// Our best known block height at the time this payment was initiated.
+		starting_block_height: u32,
 	},
 }
 
@@ -1955,6 +1957,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			pending_amt_msat: 0,
 			payment_hash: *payment_hash,
 			payment_secret: *payment_secret,
+			starting_block_height: self.best_block.read().unwrap().height(),
 			total_msat: total_value,
 		});
 		assert!(payment.insert(session_priv_bytes, path.last().unwrap().fee_msat));
@@ -4546,6 +4549,16 @@ where
 		payment_secrets.retain(|_, inbound_payment| {
 			inbound_payment.expiry_time > header.time as u64
 		});
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.retain(|_, payment| {
+			const PAYMENT_EXPIRY_BLOCKS: u32 = 3;
+			if payment.remaining_parts() != 0 { return true }
+			if let PendingOutboundPayment::Retryable { starting_block_height, .. } = payment {
+				return *starting_block_height + PAYMENT_EXPIRY_BLOCKS > height
+			}
+			true
+		});
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
@@ -5277,6 +5290,7 @@ impl_writeable_tlv_based_enum!(PendingOutboundPayment,
 		(4, payment_secret, option),
 		(6, total_msat, required),
 		(8, pending_amt_msat, required),
+		(10, starting_block_height, required),
 	},
 ;);
 
