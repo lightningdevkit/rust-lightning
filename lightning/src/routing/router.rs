@@ -1031,19 +1031,20 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							}
 						}
 					}
-					if features_set {
-					} else if let Some(node) = network_nodes.get(&ordered_hops.last().unwrap().0.pubkey) {
-						if let Some(node_info) = node.announcement_info.as_ref() {
-							ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
+					if !features_set {
+						if let Some(node) = network_nodes.get(&ordered_hops.last().unwrap().0.pubkey) {
+							if let Some(node_info) = node.announcement_info.as_ref() {
+								ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
+							} else {
+								ordered_hops.last_mut().unwrap().1 = NodeFeatures::empty();
+							}
 						} else {
-							ordered_hops.last_mut().unwrap().1 = NodeFeatures::empty();
+							// We should be able to fill in features for everything except the last
+							// hop, if the last hop was provided via a BOLT 11 invoice (though we
+							// should be able to extend it further as BOLT 11 does have feature
+							// flags for the last hop node itself).
+							assert!(ordered_hops.last().unwrap().0.pubkey == *payee);
 						}
-					} else {
-						// We should be able to fill in features for everything except the last
-						// hop, if the last hop was provided via a BOLT 11 invoice (though we
-						// should be able to extend it further as BOLT 11 does have feature
-						// flags for the last hop node itself).
-						assert!(ordered_hops.last().unwrap().0.pubkey == *payee);
 					}
 
 					// Means we succesfully traversed from the payer to the payee, now
@@ -4279,7 +4280,6 @@ mod tests {
 			assert_eq!(route.paths[1][0].short_channel_id, 2);
 			assert_eq!(route.paths[1][0].fee_msat, 50_000);
 		}
-
 	}
 
 	#[test]
