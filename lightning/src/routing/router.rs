@@ -897,7 +897,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			},
 		}
 
-		// Step (1).
+		// Step (2).
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
@@ -995,7 +995,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// last hops communicated by the caller, and the payment receiver.
 		let mut found_new_path = false;
 
-		// Step (2).
+		// Step (3).
 		// If this loop terminates due the exhaustion of targets, two situations are possible:
 		// - not enough outgoing liquidity:
 		//   0 < already_collected_value_msat < final_value_msat
@@ -1130,7 +1130,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			break 'paths_collection;
 		}
 
-		// Step (3).
+		// Step (4).
 		// Stop either when the recommended value is reached or if no new path was found in this
 		// iteration.
 		// In the latter case, making another path finding attempt won't help,
@@ -1154,7 +1154,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		}
 	}
 
-	// Step (4).
+	// Step (5).
 	if payment_paths.len() == 0 {
 		return Err(LightningError{err: "Failed to find a path to the given destination".to_owned(), action: ErrorAction::IgnoreError});
 	}
@@ -1175,12 +1175,12 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		let mut cur_route = Vec::<PaymentPath>::new();
 		let mut aggregate_route_value_msat = 0;
 
-		// Step (5).
+		// Step (6).
 		// TODO: real random shuffle
 		// Currently just starts with i_th and goes up to i-1_th in a looped way.
 		let cur_payment_paths = [&payment_paths[i..], &payment_paths[..i]].concat();
 
-		// Step (6).
+		// Step (7).
 		for payment_path in cur_payment_paths {
 			cur_route.push(payment_path.clone());
 			aggregate_route_value_msat += payment_path.get_value_msat();
@@ -1219,7 +1219,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 				assert!(cur_route.len() > 0);
 
-				// Step (7).
+				// Step (8).
 				// Now, substract the overpaid value from the most-expensive path.
 				// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
 				// so that the sender pays less fees overall. And also htlc_minimum_msat.
@@ -1236,7 +1236,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		drawn_routes.push(cur_route);
 	}
 
-	// Step (8).
+	// Step (9).
 	// Select the best route by lowest total fee.
 	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
 	let mut selected_paths = Vec::<Vec<RouteHop>>::new();
