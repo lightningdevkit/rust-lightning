@@ -415,13 +415,17 @@ fn test_upfront_shutdown_script() {
 	let flags = InitFeatures::known();
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
 	nodes[0].node.close_channel(&OutPoint { txid: chan.3.txid(), index: 0 }.to_channel_id()).unwrap();
-	let mut node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	let node_0_orig_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[2].node.get_our_node_id());
+	let mut node_0_shutdown = node_0_orig_shutdown.clone();
 	node_0_shutdown.scriptpubkey = Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script().to_p2sh();
-	// Test we enforce upfront_scriptpbukey if by providing a diffrent one at closing that  we disconnect peer
+	// Test we enforce upfront_scriptpbukey if by providing a different one at closing that we warn
+	// the peer and ignore the message.
 	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
-	assert!(regex::Regex::new(r"Got shutdown request with a scriptpubkey \([A-Fa-f0-9]+\) which did not match their previous scriptpubkey.").unwrap().is_match(check_closed_broadcast!(nodes[2], true).unwrap().data.as_str()));
-	check_closed_event!(nodes[2], 1, ClosureReason::ProcessingError { err: "Got shutdown request with a scriptpubkey (a91441c98a140039816273e50db317422c11c2bfcc8887) which did not match their previous scriptpubkey.".to_string() });
-	check_added_monitors!(nodes[2], 1);
+	assert!(regex::Regex::new(r"Got shutdown request with a scriptpubkey \([A-Fa-f0-9]+\) which did not match their previous scriptpubkey.")
+			.unwrap().is_match(&check_warn_msg!(nodes[2], nodes[0].node.get_our_node_id(), chan.2)));
+	// This allows nodes[2] to retry the shutdown message, which should get a response:
+	nodes[2].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_orig_shutdown);
+	get_event_msg!(nodes[2], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 
 	// We test that in case of peer committing upfront to a script, if it doesn't change at closing, we sign
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1000000, 1000000, flags.clone(), flags.clone());
@@ -668,17 +672,8 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	node_0_shutdown.scriptpubkey = unsupported_shutdown_script.into_inner();
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_cfgs[1].features, &node_0_shutdown);
 
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 2);
-	match events[1] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert_eq!(msg.data, "Got a nonstandard scriptpubkey (60020028) from remote peer".to_owned());
-		},
-		_ => panic!("Unexpected event"),
-	}
-	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Got a nonstandard scriptpubkey (60020028) from remote peer".to_string() });
+	assert_eq!(&check_warn_msg!(nodes[0], nodes[1].node.get_our_node_id(), chan.2),
+			"Got a nonstandard scriptpubkey (60020028) from remote peer");
 }
 
 #[test]
@@ -704,17 +699,8 @@ fn test_invalid_shutdown_script() {
 		.into_script();
 	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 2);
-	match events[1] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
-			assert_eq!(node_id, nodes[1].node.get_our_node_id());
-			assert_eq!(msg.data, "Got a nonstandard scriptpubkey (00020000) from remote peer".to_owned())
-		},
-		_ => panic!("Unexpected event"),
-	}
-	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Got a nonstandard scriptpubkey (00020000) from remote peer".to_string() });
+	assert_eq!(&check_warn_msg!(nodes[0], nodes[1].node.get_our_node_id(), chan.2),
+			"Got a nonstandard scriptpubkey (00020000) from remote peer");
 }
 
 #[derive(PartialEq)]

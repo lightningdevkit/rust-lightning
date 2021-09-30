@@ -3723,12 +3723,12 @@ impl<Signer: Sign> Channel<Signer> {
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 
 		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
-			return Err(ChannelError::Close(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
+			return Err(ChannelError::Warn(format!("Got a nonstandard scriptpubkey ({}) from remote peer", msg.scriptpubkey.to_bytes().to_hex())));
 		}
 
 		if self.counterparty_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Close(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
+				return Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_bytes().to_hex())));
 			}
 		} else {
 			self.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
