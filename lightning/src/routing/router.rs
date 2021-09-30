@@ -180,12 +180,16 @@ pub struct Payee {
 
 	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
 	pub route_hints: Vec<RouteHint>,
+
+	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
+	pub expiry_time: Option<u64>,
 }
 
 impl_writeable_tlv_based!(Payee, {
 	(0, pubkey, required),
 	(2, features, option),
 	(4, route_hints, vec_type),
+	(6, expiry_time, option),
 });
 
 impl Payee {
@@ -195,6 +199,7 @@ impl Payee {
 			pubkey,
 			features: None,
 			route_hints: vec![],
+			expiry_time: None,
 		}
 	}
 
@@ -215,6 +220,11 @@ impl Payee {
 	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
 		Self { route_hints, ..self }
+	}
+
+	/// Includes a payment expiration in seconds relative to the UNIX epoch.
+	pub fn with_expiry_time(self, expiry_time: u64) -> Self {
+		Self { expiry_time: Some(expiry_time), ..self }
 	}
 }
 

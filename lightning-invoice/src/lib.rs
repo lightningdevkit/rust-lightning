@@ -1188,6 +1188,19 @@ impl Invoice {
 			.unwrap_or(Duration::from_secs(DEFAULT_EXPIRY_TIME))
 	}
 
+	/// Returns whether the invoice has expired.
+	pub fn is_expired(&self) -> bool {
+		Self::is_expired_from_epoch(self.timestamp(), self.expiry_time())
+	}
+
+	/// Returns whether the expiry time from the given epoch has passed.
+	pub(crate) fn is_expired_from_epoch(epoch: &SystemTime, expiry_time: Duration) -> bool {
+		match epoch.elapsed() {
+			Ok(elapsed) => elapsed > expiry_time,
+			Err(_) => false,
+		}
+	}
+
 	/// Returns the invoice's `min_final_cltv_expiry` time, if present, otherwise
 	/// [`DEFAULT_MIN_FINAL_CLTV_EXPIRY`].
 	pub fn min_final_cltv_expiry(&self) -> u64 {
@@ -1920,5 +1933,33 @@ mod test {
 
 		assert_eq!(invoice.min_final_cltv_expiry(), DEFAULT_MIN_FINAL_CLTV_EXPIRY);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(DEFAULT_EXPIRY_TIME));
+		assert!(!invoice.is_expired());
+	}
+
+	#[test]
+	fn test_expiration() {
+		use ::*;
+		use secp256k1::Secp256k1;
+		use secp256k1::key::SecretKey;
+
+		let timestamp = SystemTime::now()
+			.checked_sub(Duration::from_secs(DEFAULT_EXPIRY_TIME * 2))
+			.unwrap();
+		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".into())
+			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
+			.payment_secret(PaymentSecret([0; 32]))
+			.timestamp(timestamp)
+			.build_raw()
+			.unwrap()
+			.sign::<_, ()>(|hash| {
+				let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
+				let secp_ctx = Secp256k1::new();
+				Ok(secp_ctx.sign_recoverable(hash, &privkey))
+			})
+			.unwrap();
+		let invoice = Invoice::from_signed(signed_invoice).unwrap();
+
+		assert!(invoice.is_expired());
 	}
 }

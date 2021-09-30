@@ -114,6 +114,7 @@ use secp256k1::key::PublicKey;
 use std::collections::hash_map::{self, HashMap};
 use std::ops::Deref;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 /// A utility for paying [`Invoice]`s.
 pub struct InvoicePayer<P: Deref, R, L: Deref, E>
@@ -226,6 +227,7 @@ where
 			hash_map::Entry::Vacant(entry) => {
 				let payer = self.payer.node_id();
 				let mut payee = Payee::new(invoice.recover_payee_pub_key())
+					.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
 					.with_route_hints(invoice.route_hints());
 				if let Some(features) = invoice.features() {
 					payee = payee.with_features(features.clone());
@@ -273,6 +275,15 @@ where
 	}
 }
 
+fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
+	invoice.timestamp().duration_since(SystemTime::UNIX_EPOCH).unwrap() + invoice.expiry_time()
+}
+
+fn has_expired(params: &RouteParameters) -> bool {
+	let expiry_time = Duration::from_secs(params.payee.expiry_time.unwrap());
+	Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, expiry_time)
+}
+
 impl<P: Deref, R, L: Deref, E> EventHandler for InvoicePayer<P, R, L, E>
 where
 	P::Target: Payer,
@@ -304,6 +315,8 @@ where
 						log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
 					} else if retry.is_none() {
 						log_trace!(self.logger, "Payment {} missing retry params; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+					} else if has_expired(retry.as_ref().unwrap()) {
+						log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
 					} else if self.retry_payment(*payment_id.as_ref().unwrap(), retry.as_ref().unwrap()).is_err() {
 						log_trace!(self.logger, "Error retrying payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
 					} else {
@@ -336,7 +349,7 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{InvoiceBuilder, Currency};
+	use crate::{DEFAULT_EXPIRY_TIME, InvoiceBuilder, Currency};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
@@ -346,6 +359,7 @@ mod tests {
 	use lightning::util::errors::APIError;
 	use lightning::util::events::Event;
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
+	use std::time::{SystemTime, Duration};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
@@ -372,6 +386,25 @@ mod tests {
 			.payment_secret(PaymentSecret([0; 32]))
 			.current_timestamp()
 			.min_final_cltv_expiry(144)
+			.build_signed(|hash| {
+				Secp256k1::new().sign_recoverable(hash, &private_key)
+			})
+			.unwrap()
+	}
+
+	fn expired_invoice(payment_preimage: PaymentPreimage) -> Invoice {
+		let payment_hash = Sha256::hash(&payment_preimage.0);
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let timestamp = SystemTime::now()
+			.checked_sub(Duration::from_secs(DEFAULT_EXPIRY_TIME * 2))
+			.unwrap();
+		InvoiceBuilder::new(Currency::Bitcoin)
+			.description("test".into())
+			.payment_hash(payment_hash)
+			.payment_secret(PaymentSecret([0; 32]))
+			.timestamp(timestamp)
+			.min_final_cltv_expiry(144)
+			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_recoverable(hash, &private_key)
 			})
@@ -568,6 +601,37 @@ mod tests {
 			path: vec![],
 			short_channel_id: None,
 			retry: None,
+		};
+		invoice_payer.handle_event(&event);
+		assert_eq!(*event_handled.borrow(), true);
+		assert_eq!(*payer.attempts.borrow(), 1);
+	}
+
+	#[test]
+	fn fails_paying_invoice_after_expiration() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payer = TestPayer::new();
+		let router = TestRouter {};
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &logger, event_handler, RetryAttempts(2));
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = expired_invoice(payment_preimage);
+		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
+		assert_eq!(*payer.attempts.borrow(), 1);
+
+		let event = Event::PaymentPathFailed {
+			payment_id,
+			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
+			network_update: None,
+			rejected_by_dest: false,
+			all_paths_failed: false,
+			path: vec![],
+			short_channel_id: None,
+			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
 		invoice_payer.handle_event(&event);
 		assert_eq!(*event_handled.borrow(), true);
@@ -795,6 +859,7 @@ mod tests {
 
 		fn retry_for_invoice(invoice: &Invoice) -> RouteParameters {
 			let mut payee = Payee::new(invoice.recover_payee_pub_key())
+				.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 				.with_route_hints(invoice.route_hints());
 			if let Some(features) = invoice.features() {
 				payee = payee.with_features(features.clone());
