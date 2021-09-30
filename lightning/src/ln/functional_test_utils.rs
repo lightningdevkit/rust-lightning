@@ -1737,7 +1737,7 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 }
 
 pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize)  {
-	handle_announce_close_broadcast_events(nodes, a, b, false, "Commitment or closing transaction was confirmed on chain.");
+	handle_announce_close_broadcast_events(nodes, a, b, false, "Channel closed because commitment or closing transaction was confirmed on chain.");
 }
 
 #[cfg(test)]

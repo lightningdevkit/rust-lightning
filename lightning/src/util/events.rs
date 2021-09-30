@@ -118,6 +118,27 @@ pub enum ClosureReason {
 	OutdatedChannelManager
 }
 
+impl core::fmt::Display for ClosureReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		f.write_str("Channel closed because ")?;
+		match self {
+			ClosureReason::CounterpartyForceClosed { peer_msg } => {
+				f.write_str("counterparty force-closed with message ")?;
+				f.write_str(&peer_msg)
+			},
+			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
+			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
+			ClosureReason::ProcessingError { err } => {
+				f.write_str("of an exception: ")?;
+				f.write_str(&err)
+			},
+			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
+			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(0, CounterpartyForceClosed) => { (1, peer_msg, required) },
 	(2, HolderForceClosed) => {},

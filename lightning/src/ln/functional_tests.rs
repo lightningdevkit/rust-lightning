@@ -1207,7 +1207,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 			MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 				assert_eq!(node_id, nodes[1].node.get_our_node_id());
-				assert_eq!(msg.data, "Commitment or closing transaction was confirmed on chain.");
+				assert_eq!(msg.data, "Channel closed because commitment or closing transaction was confirmed on chain.");
 			},
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert!(update_add_htlcs.is_empty());
@@ -3017,7 +3017,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	match events[if deliver_bs_raa { 2 } else { 1 }] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
 			assert_eq!(channel_id, chan_2.2);
-			assert_eq!(data.as_str(), "Commitment or closing transaction was confirmed on chain.");
+			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -8831,15 +8831,16 @@ fn test_invalid_funding_tx() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
+	let expected_err = "funding tx had wrong script/value or output index";
 	confirm_transaction_at(&nodes[1], &tx, 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: expected_err.to_string() });
 	check_added_monitors!(nodes[1], 1);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	if let MessageSendEvent::HandleError { node_id, action } = &events_2[0] {
 		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 		if let msgs::ErrorAction::SendErrorMessage { msg } = action {
-			assert_eq!(msg.data, "funding tx had wrong script/value or output index");
+			assert_eq!(msg.data, "Channel closed because of an exception: ".to_owned() + expected_err);
 		} else { panic!(); }
 	} else { panic!(); }
 	assert_eq!(nodes[1].node.list_channels().len(), 0);

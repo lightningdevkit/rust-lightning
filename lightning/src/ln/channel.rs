@@ -35,6 +35,7 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{Sign, KeysInterface};
+use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
@@ -4117,7 +4118,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
-			-> Result<Option<msgs::FundingLocked>, msgs::ErrorMessage> where L::Target: Logger {
+	-> Result<Option<msgs::FundingLocked>, ClosureReason> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		for &(index_in_block, tx) in txdata.iter() {
 			if let Some(funding_txo) = self.get_funding_txo() {
@@ -4138,10 +4139,8 @@ impl<Signer: Sign> Channel<Signer> {
 								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 							}
 							self.update_time_counter += 1;
-							return Err(msgs::ErrorMessage {
-								channel_id: self.channel_id(),
-								data: "funding tx had wrong script/value or output index".to_owned()
-							});
+							let err_reason = "funding tx had wrong script/value or output index";
+							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						} else {
 							if self.is_outbound() {
 								for input in tx.input.iter() {
@@ -4172,10 +4171,7 @@ impl<Signer: Sign> Channel<Signer> {
 				for inp in tx.input.iter() {
 					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
 						log_info!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(self.channel_id()));
-						return Err(msgs::ErrorMessage {
-							channel_id: self.channel_id(),
-							data: "Commitment or closing transaction was confirmed on chain.".to_owned()
-						});
+						return Err(ClosureReason::CommitmentTxConfirmed);
 					}
 				}
 			}
@@ -4195,7 +4191,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
 	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, logger: &L)
-			-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> where L::Target: Logger {
+	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), ClosureReason> where L::Target: Logger {
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -4236,10 +4232,9 @@ impl<Signer: Sign> Channel<Signer> {
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
 			if funding_tx_confirmations < self.minimum_depth.unwrap() as i64 / 2 {
-				return Err(msgs::ErrorMessage {
-					channel_id: self.channel_id(),
-					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth.unwrap(), funding_tx_confirmations),
-				});
+				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
+					self.minimum_depth.unwrap(), funding_tx_confirmations);
+				return Err(ClosureReason::ProcessingError { err: err_reason });
 			}
 		}
 
@@ -4249,7 +4244,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
 	/// before the channel has reached funding_locked and we can just wait for more blocks.
-	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), msgs::ErrorMessage> where L::Target: Logger {
+	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
 		if self.funding_tx_confirmation_height != 0 {
 			// We handle the funding disconnection by calling best_block_updated with a height one
 			// below where our funding was connected, implying a reorg back to conf_height - 1.
