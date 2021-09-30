@@ -197,6 +197,12 @@ pub enum Event {
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
 	PaymentPathFailed {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: Option<PaymentId>,
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
@@ -338,7 +344,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_hash, ref rejected_by_dest, ref network_update,
+				ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update,
 				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
@@ -358,6 +364,7 @@ impl Writeable for Event {
 					(5, path, vec_type),
 					(7, short_channel_id, option),
 					(9, retry, option),
+					(11, payment_id, option),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -473,6 +480,7 @@ impl MaybeReadable for Event {
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut retry = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
@@ -481,8 +489,10 @@ impl MaybeReadable for Event {
 						(5, path, vec_type),
 						(7, short_channel_id, option),
 						(9, retry, option),
+						(11, payment_id, option),
 					});
 					Ok(Some(Event::PaymentPathFailed {
+						payment_id,
 						payment_hash,
 						rejected_by_dest,
 						network_update,

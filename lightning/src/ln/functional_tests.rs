@@ -5844,7 +5844,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	let our_payment_id = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
@@ -5869,7 +5869,8 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+			assert_eq!(our_payment_id, *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -5927,7 +5928,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	nodes[0].node.send_payment(&route_1, payment_hash_1, &Some(payment_secret_1)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
-	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
+	let payment_id_2 = nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
 
@@ -5953,7 +5954,8 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);

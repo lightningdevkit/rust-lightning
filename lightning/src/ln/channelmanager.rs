@@ -3120,6 +3120,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							} else { None };
 							self.pending_events.lock().unwrap().push(
 								events::Event::PaymentPathFailed {
+									payment_id: Some(payment_id),
 									payment_hash,
 									rejected_by_dest: false,
 									network_update: None,
@@ -3200,6 +3201,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// next-hop is needlessly blaming us!
 						self.pending_events.lock().unwrap().push(
 							events::Event::PaymentPathFailed {
+								payment_id: Some(payment_id),
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: !payment_retryable,
 								network_update,
@@ -3229,6 +3231,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// channel here as we apparently can't relay through them anyway.
 						self.pending_events.lock().unwrap().push(
 							events::Event::PaymentPathFailed {
+								payment_id: Some(payment_id),
 								payment_hash: payment_hash.clone(),
 								rejected_by_dest: path.len() == 1,
 								network_update: None,
