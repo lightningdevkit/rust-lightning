@@ -3930,26 +3930,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
 					let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
-					let (commitment_update, pending_forwards, pending_failures, monitor_update, htlcs_to_fail_in) =
-						break_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), channel_state, chan);
-					htlcs_to_fail = htlcs_to_fail_in;
-					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+					let raa_updates = break_chan_entry!(self,
+						chan.get_mut().revoke_and_ack(&msg, &self.logger), channel_state, chan);
+					htlcs_to_fail = raa_updates.holding_cell_failed_htlcs;
+					if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), raa_updates.monitor_update) {
 						if was_frozen_for_monitor {
-							assert!(commitment_update.is_none() && pending_forwards.is_empty() && pending_failures.is_empty());
+							assert!(raa_updates.commitment_update.is_none());
+							assert!(raa_updates.accepted_htlcs.is_empty());
+							assert!(raa_updates.failed_htlcs.is_empty());
 							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
-							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, commitment_update.is_some(), pending_forwards, pending_failures) {
+							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan,
+									RAACommitmentOrder::CommitmentFirst, false,
+									raa_updates.commitment_update.is_some(),
+									raa_updates.accepted_htlcs, raa_updates.failed_htlcs) {
 								break Err(e);
 							} else { unreachable!(); }
 						}
 					}
-					if let Some(updates) = commitment_update {
+					if let Some(updates) = raa_updates.commitment_update {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: counterparty_node_id.clone(),
 							updates,
 						});
 					}
-					break Ok((pending_forwards, pending_failures, chan.get().get_short_channel_id().expect("RAA should only work on a short-id-available channel"), chan.get().get_funding_txo().unwrap()))
+					break Ok((raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
+							chan.get().get_short_channel_id()
+								.expect("RAA should only work on a short-id-available channel"),
+							chan.get().get_funding_txo().unwrap()))
 				},
 				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}

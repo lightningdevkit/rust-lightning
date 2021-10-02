@@ -339,6 +339,16 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// The return value of `revoke_and_ack` on success, primarily updates to other channels or HTLC
+/// state.
+pub(super) struct RAAUpdates {
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
+	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	pub monitor_update: ChannelMonitorUpdate,
+	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
+}
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -2711,7 +2721,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<RAAUpdates, ChannelError>
 		where L::Target: Logger,
 	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
@@ -2900,7 +2910,12 @@ impl<Signer: Sign> Channel<Signer> {
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
 			log_debug!(logger, "Received a valid revoke_and_ack for channel {} but awaiting a monitor update resolution to reply.", log_bytes!(self.channel_id()));
-			return Ok((None, Vec::new(), Vec::new(), monitor_update, Vec::new()))
+			return Ok(RAAUpdates {
+				commitment_update: None,
+				accepted_htlcs: Vec::new(), failed_htlcs: Vec::new(),
+				monitor_update,
+				holding_cell_failed_htlcs: Vec::new()
+			});
 		}
 
 		match self.free_holding_cell_htlcs(logger)? {
@@ -2919,7 +2934,13 @@ impl<Signer: Sign> Channel<Signer> {
 				self.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
-				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+				Ok(RAAUpdates {
+					commitment_update: Some(commitment_update),
+					accepted_htlcs: to_forward_infos,
+					failed_htlcs: revoked_htlcs,
+					monitor_update,
+					holding_cell_failed_htlcs: htlcs_to_fail
+				})
 			},
 			(None, htlcs_to_fail) => {
 				if require_commitment {
@@ -2932,17 +2953,25 @@ impl<Signer: Sign> Channel<Signer> {
 
 					log_debug!(logger, "Received a valid revoke_and_ack for channel {}. Responding with a commitment update with {} HTLCs failed.",
 						log_bytes!(self.channel_id()), update_fail_htlcs.len() + update_fail_malformed_htlcs.len());
-					Ok((Some(msgs::CommitmentUpdate {
-						update_add_htlcs: Vec::new(),
-						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs,
-						update_fail_malformed_htlcs,
-						update_fee: None,
-						commitment_signed
-					}), to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+					Ok(RAAUpdates {
+						commitment_update: Some(msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs,
+							update_fail_malformed_htlcs,
+							update_fee: None,
+							commitment_signed
+						}),
+						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
+						monitor_update, holding_cell_failed_htlcs: htlcs_to_fail
+					})
 				} else {
 					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary.", log_bytes!(self.channel_id()));
-					Ok((None, to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+					Ok(RAAUpdates {
+						commitment_update: None,
+						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
+						monitor_update, holding_cell_failed_htlcs: htlcs_to_fail
+					})
 				}
 			}
 		}
