@@ -465,6 +465,9 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 					// pause read given we're now waiting on the remote end to ACK (and in
 					// accordance with the send_data() docs).
 					us.read_paused = true;
+					// Further, to avoid any current pending read causing a `read_event` call, wake
+					// up the read_waker and restart its loop.
+					let _ = us.read_waker.try_send(());
 					return written_len;
 				},
 			}
