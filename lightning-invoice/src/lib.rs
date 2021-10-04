@@ -1219,8 +1219,13 @@ impl Invoice {
 		self.signed_invoice.currency()
 	}
 
+	/// Returns the amount if specified in the invoice as millisatoshis.
+	pub fn amount_milli_satoshis(&self) -> Option<u64> {
+		self.signed_invoice.amount_pico_btc().map(|v| v / 10)
+	}
+
 	/// Returns the amount if specified in the invoice as pico <currency>.
-	pub fn amount_pico_btc(&self) -> Option<u64> {
+	fn amount_pico_btc(&self) -> Option<u64> {
 		self.signed_invoice.amount_pico_btc()
 	}
 }
@@ -1867,6 +1872,7 @@ mod test {
 		assert!(invoice.check_signature().is_ok());
 		assert_eq!(invoice.tagged_fields().count(), 10);
 
+		assert_eq!(invoice.amount_milli_satoshis(), Some(123));
 		assert_eq!(invoice.amount_pico_btc(), Some(1230));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		assert_eq!(
