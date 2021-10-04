@@ -5767,6 +5767,7 @@ mod tests {
 				session_priv: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
+				payment_secret: None,
 			}
 		});
 

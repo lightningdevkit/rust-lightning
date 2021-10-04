@@ -199,6 +199,7 @@ pub(crate) enum HTLCSource {
 		/// doing a double-pass on route when we get a failure back
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
+		payment_secret: Option<PaymentSecret>,
 	},
 }
 #[cfg(test)]
@@ -209,6 +210,7 @@ impl HTLCSource {
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
+			payment_secret: None,
 		}
 	}
 }
@@ -2048,6 +2050,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							session_priv: session_priv.clone(),
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
+							payment_secret: payment_secret.clone(),
 						}, onion_packet, &self.logger),
 					channel_state, chan);
 
@@ -5351,10 +5354,12 @@ impl Readable for HTLCSource {
 				let mut first_hop_htlc_msat: u64 = 0;
 				let mut path = Some(Vec::new());
 				let mut payment_id = None;
+				let mut payment_secret = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
+					(3, payment_secret, option),
 					(4, path, vec_type),
 				});
 				if payment_id.is_none() {
@@ -5367,6 +5372,7 @@ impl Readable for HTLCSource {
 					first_hop_htlc_msat: first_hop_htlc_msat,
 					path: path.unwrap(),
 					payment_id: payment_id.unwrap(),
+					payment_secret,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -5378,13 +5384,14 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
 					(0, session_priv, required),
 					(1, payment_id_opt, option),
 					(2, first_hop_htlc_msat, required),
+					(3, payment_secret, option),
 					(4, path, vec_type),
 				 });
 			}
