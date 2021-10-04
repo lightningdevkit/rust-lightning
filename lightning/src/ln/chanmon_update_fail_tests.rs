@@ -137,7 +137,7 @@ fn test_monitor_and_persister_update_fail() {
 			// because the update is bogus, ultimately the error that's returned
 			// should be a PermanentFailure.
 			if let Err(ChannelMonitorUpdateErr::PermanentFailure) = chain_mon.chain_monitor.update_channel(outpoint, update.clone()) {} else { panic!("Expected monitor error to be permanent"); }
-			logger.assert_log_contains("lightning::chain::chainmonitor".to_string(), "Failed to persist channel monitor update: TemporaryFailure".to_string(), 1);
+			logger.assert_log_regex("lightning::chain::chainmonitor".to_string(), regex::Regex::new("Failed to persist ChannelMonitor update for channel [0-9a-f]*: TemporaryFailure").unwrap(), 1);
 			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
 	} else { assert!(false); };

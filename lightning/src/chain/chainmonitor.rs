@@ -592,24 +592,22 @@ where C::Target: chain::Filter,
 				return Err(ChannelMonitorUpdateErr::PermanentFailure)},
 			hash_map::Entry::Vacant(e) => e,
 		};
+		log_trace!(self.logger, "Got new ChannelMonitor for channel {}", log_funding_info!(monitor));
 		let update_id = MonitorUpdateId::from_new_monitor(&monitor);
 		let mut pending_monitor_updates = Vec::new();
 		let persist_res = self.persister.persist_new_channel(funding_outpoint, &monitor, update_id);
 		if persist_res.is_err() {
-			log_error!(self.logger, "Failed to persist new channel data: {:?}", persist_res);
+			log_error!(self.logger, "Failed to persist new ChannelMonitor for channel {}: {:?}", log_funding_info!(monitor), persist_res);
+		} else {
+			log_trace!(self.logger, "Finished persisting new ChannelMonitor for channel {}", log_funding_info!(monitor));
 		}
 		if persist_res == Err(ChannelMonitorUpdateErr::PermanentFailure) {
 			return persist_res;
 		} else if persist_res.is_err() {
 			pending_monitor_updates.push(update_id);
 		}
-		{
-			let funding_txo = monitor.get_funding_txo();
-			log_trace!(self.logger, "Got new Channel Monitor for channel {}", log_bytes!(funding_txo.0.to_channel_id()[..]));
-
-			if let Some(ref chain_source) = self.chain_source {
-				monitor.load_outputs_to_watch(chain_source);
-			}
+		if let Some(ref chain_source) = self.chain_source {
+			monitor.load_outputs_to_watch(chain_source);
 		}
 		entry.insert(MonitorHolder {
 			monitor,
@@ -639,10 +637,10 @@ where C::Target: chain::Filter,
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
-				log_trace!(self.logger, "Updating Channel Monitor for channel {}", log_funding_info!(monitor));
+				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
 				if let Err(e) = &update_res {
-					log_error!(self.logger, "Failed to update channel monitor: {:?}", e);
+					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}: {:?}", log_funding_info!(monitor), e);
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
@@ -655,7 +653,9 @@ where C::Target: chain::Filter,
 					} else {
 						monitor_state.channel_perm_failed.store(true, Ordering::Release);
 					}
-					log_error!(self.logger, "Failed to persist channel monitor update: {:?}", e);
+					log_error!(self.logger, "Failed to persist ChannelMonitor update for channel {}: {:?}", log_funding_info!(monitor), e);
+				} else {
+					log_trace!(self.logger, "Finished persisting ChannelMonitor update for channel {}", log_funding_info!(monitor));
 				}
 				if update_res.is_err() {
 					Err(ChannelMonitorUpdateErr::PermanentFailure)
