@@ -225,3 +225,30 @@ fn retry_expired_payment() {
 		panic!("Unexpected error");
 	}
 }
+
+#[test]
+fn no_pending_leak_on_initial_send_failure() {
+	// In an earlier version of our payment tracking, we'd have a retry entry even when the initial
+	// HTLC for payment failed to send due to local channel errors (e.g. peer disconnected). In this
+	// case, the user wouldn't have a PaymentId to retry the payment with, but we'd think we have a
+	// pending payment forever and never time it out.
+	// Here we test exactly that - retrying a payment when a peer was disconnected on the first
+	// try, and then check that no pending payment is being tracked.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+
+	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)),
+		true, APIError::ChannelUnavailable { ref err },
+		assert_eq!(err, "Peer for first hop currently disconnected/pending monitor update!"));
+
+	assert!(!nodes[0].node.has_pending_payments());
+}
