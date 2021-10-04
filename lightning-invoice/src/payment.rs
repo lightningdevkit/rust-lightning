@@ -197,6 +197,29 @@ where
 
 	/// Pays the given [`Invoice`], caching it for later use in case a retry is needed.
 	pub fn pay_invoice(&self, invoice: &Invoice) -> Result<PaymentId, PaymentError> {
+		if invoice.amount_milli_satoshis().is_none() {
+			Err(PaymentError::Invoice("amount missing"))
+		} else {
+			self.pay_invoice_internal(invoice, None)
+		}
+	}
+
+	/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
+	/// case a retry is needed.
+	pub fn pay_zero_value_invoice(
+		&self, invoice: &Invoice, amount_msats: u64
+	) -> Result<PaymentId, PaymentError> {
+		if invoice.amount_milli_satoshis().is_some() {
+			Err(PaymentError::Invoice("amount unexpected"))
+		} else {
+			self.pay_invoice_internal(invoice, Some(amount_msats))
+		}
+	}
+
+	fn pay_invoice_internal(
+		&self, invoice: &Invoice, amount_msats: Option<u64>
+	) -> Result<PaymentId, PaymentError> {
+		debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
 		let mut payment_cache = self.payment_cache.lock().unwrap();
 		match payment_cache.entry(payment_hash) {
@@ -207,11 +230,9 @@ where
 				if let Some(features) = invoice.features() {
 					payee = payee.with_features(features.clone());
 				}
-				let final_value_msat = invoice.amount_milli_satoshis()
-					.ok_or(PaymentError::Invoice("amount missing"))?;
 				let params = RouteParameters {
 					payee,
-					final_value_msat,
+					final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
 					final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 				};
 				let first_hops = self.payer.first_hops();
@@ -336,6 +357,21 @@ mod tests {
 			.current_timestamp()
 			.min_final_cltv_expiry(144)
 			.amount_milli_satoshis(128)
+			.build_signed(|hash| {
+				Secp256k1::new().sign_recoverable(hash, &private_key)
+			})
+			.unwrap()
+	}
+
+	fn zero_value_invoice(payment_preimage: PaymentPreimage) -> Invoice {
+		let payment_hash = Sha256::hash(&payment_preimage.0);
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		InvoiceBuilder::new(Currency::Bitcoin)
+			.description("test".into())
+			.payment_hash(payment_hash)
+			.payment_secret(PaymentSecret([0; 32]))
+			.current_timestamp()
+			.min_final_cltv_expiry(144)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_recoverable(hash, &private_key)
 			})
@@ -678,6 +714,55 @@ mod tests {
 			Err(PaymentError::Sending(_)) => {},
 			Err(_) => panic!("unexpected error"),
 			Ok(_) => panic!("expected sending error"),
+		}
+	}
+
+	#[test]
+	fn pays_zero_value_invoice_using_amount() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = zero_value_invoice(payment_preimage);
+		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
+		let final_value_msat = 100;
+
+		let payer = TestPayer::new().expect_value_msat(final_value_msat);
+		let router = TestRouter {};
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &logger, event_handler, RetryAttempts(0));
+
+		let payment_id =
+			Some(invoice_payer.pay_zero_value_invoice(&invoice, final_value_msat).unwrap());
+		assert_eq!(*payer.attempts.borrow(), 1);
+
+		invoice_payer.handle_event(&Event::PaymentSent {
+			payment_id, payment_preimage, payment_hash
+		});
+		assert_eq!(*event_handled.borrow(), true);
+		assert_eq!(*payer.attempts.borrow(), 1);
+	}
+
+	#[test]
+	fn fails_paying_zero_value_invoice_with_amount() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payer = TestPayer::new();
+		let router = TestRouter {};
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &logger, event_handler, RetryAttempts(0));
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+
+		// Cannot repay an invoice pending payment.
+		match invoice_payer.pay_zero_value_invoice(&invoice, 100) {
+			Err(PaymentError::Invoice("amount unexpected")) => {},
+			Err(_) => panic!("unexpected error"),
+			Ok(_) => panic!("expected invoice error"),
 		}
 	}
 
