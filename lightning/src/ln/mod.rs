@@ -51,6 +51,9 @@ pub mod wire;
 mod functional_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod payment_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod chanmon_update_fail_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
