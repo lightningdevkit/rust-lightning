@@ -9,6 +9,7 @@
 
 //! The top-level network map tracking logic lives here.
 
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::key::PublicKey;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1;
@@ -50,12 +51,75 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 /// This value ensures a reply fits within the 65k payload limit and is consistent with other implementations.
 const MAX_SCIDS_PER_REPLY: usize = 8000;
 
+/// Represents the compressed public key of a node
+#[derive(Clone, Copy)]
+pub struct NodeId([u8; PUBLIC_KEY_SIZE]);
+
+impl NodeId {
+	/// Create a new NodeId from a public key
+	pub fn from_pubkey(pubkey: &PublicKey) -> Self {
+		NodeId(pubkey.serialize())
+	}
+	
+	/// Get the public key slice from this NodeId
+	pub fn as_slice(&self) -> &[u8] {
+		&self.0
+	}
+}
+
+impl fmt::Debug for NodeId {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "NodeId({})", log_bytes!(self.0))
+	}
+}
+
+impl core::hash::Hash for NodeId {
+	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
+		self.0.hash(hasher);
+	}
+}
+
+impl Eq for NodeId {}
+
+impl PartialEq for NodeId {
+	fn eq(&self, other: &Self) -> bool {
+		self.0[..] == other.0[..]
+	}
+}
+
+impl cmp::PartialOrd for NodeId {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl Ord for NodeId {
+	fn cmp(&self, other: &Self) -> cmp::Ordering {
+		self.0[..].cmp(&other.0[..])
+	}
+}
+
+impl Writeable for NodeId {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		writer.write_all(&self.0)?;
+		Ok(())
+	}
+}
+
+impl Readable for NodeId {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut buf = [0; PUBLIC_KEY_SIZE];
+		reader.read_exact(&mut buf)?;
+		Ok(Self(buf))
+	}
+}
+
 /// Represents the network as nodes and channels between them
 pub struct NetworkGraph {
 	genesis_hash: BlockHash,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
-	nodes: RwLock<BTreeMap<PublicKey, NodeInfo>>,
+	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
 }
 
 impl Clone for NetworkGraph {
@@ -73,7 +137,7 @@ impl Clone for NetworkGraph {
 /// A read-only view of [`NetworkGraph`].
 pub struct ReadOnlyNetworkGraph<'a> {
 	channels: RwLockReadGuard<'a, BTreeMap<u64, ChannelInfo>>,
-	nodes: RwLockReadGuard<'a, BTreeMap<PublicKey, NodeInfo>>,
+	nodes: RwLockReadGuard<'a, BTreeMap<NodeId, NodeInfo>>,
 }
 
 /// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
@@ -277,11 +341,11 @@ where C::Target: chain::Access, L::Target: Logger
 		let mut result = Vec::with_capacity(batch_amount as usize);
 		let nodes = self.network_graph.nodes.read().unwrap();
 		let mut iter = if let Some(pubkey) = starting_point {
-				let mut iter = nodes.range((*pubkey)..);
+				let mut iter = nodes.range(NodeId::from_pubkey(pubkey)..);
 				iter.next();
 				iter
 			} else {
-				nodes.range(..)
+				nodes.range::<NodeId, _>(..)
 			};
 		while result.len() < batch_amount as usize {
 			if let Some((_, ref node)) = iter.next() {
@@ -314,7 +378,7 @@ where C::Target: chain::Access, L::Target: Logger
 		}
 
 		// Check if we need to perform a full synchronization with this peer
-		if !self.should_request_full_sync(their_node_id) {
+		if !self.should_request_full_sync(&their_node_id) {
 			return ();
 		}
 
@@ -551,11 +615,11 @@ pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
 	/// Source node of the first direction of a channel
-	pub node_one: PublicKey,
+	pub node_one: NodeId,
 	/// Details about the first direction of a channel
 	pub one_to_two: Option<DirectionalChannelInfo>,
 	/// Source node of the second direction of a channel
-	pub node_two: PublicKey,
+	pub node_two: NodeId,
 	/// Details about the second direction of a channel
 	pub two_to_one: Option<DirectionalChannelInfo>,
 	/// The channel capacity as seen on-chain, if chain lookup is available.
@@ -570,7 +634,7 @@ pub struct ChannelInfo {
 impl fmt::Display for ChannelInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
-		   log_bytes!(self.features.encode()), log_pubkey!(self.node_one), self.one_to_two, log_pubkey!(self.node_two), self.two_to_one)?;
+		   log_bytes!(self.features.encode()), log_bytes!(self.node_one.as_slice()), self.one_to_two, log_bytes!(self.node_two.as_slice()), self.two_to_one)?;
 		Ok(())
 	}
 }
@@ -724,8 +788,8 @@ impl fmt::Display for NetworkGraph {
 			writeln!(f, " {}: {}", key, val)?;
 		}
 		writeln!(f, "[Nodes]")?;
-		for (key, val) in self.nodes.read().unwrap().iter() {
-			writeln!(f, " {}: {}", log_pubkey!(key), val)?;
+		for (&node_id, val) in self.nodes.read().unwrap().iter() {
+			writeln!(f, " {}: {}", log_bytes!(node_id.as_slice()), val)?;
 		}
 		Ok(())
 	}
@@ -780,7 +844,7 @@ impl NetworkGraph {
 	}
 
 	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
-		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
+		match self.nodes.write().unwrap().get_mut(&NodeId::from_pubkey(&msg.node_id)) {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
@@ -886,9 +950,9 @@ impl NetworkGraph {
 
 		let chan_info = ChannelInfo {
 				features: msg.features.clone(),
-				node_one: msg.node_id_1.clone(),
+				node_one: NodeId::from_pubkey(&msg.node_id_1),
 				one_to_two: None,
-				node_two: msg.node_id_2.clone(),
+				node_two: NodeId::from_pubkey(&msg.node_id_2),
 				two_to_one: None,
 				capacity_sats: utxo_value,
 				announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
@@ -939,8 +1003,8 @@ impl NetworkGraph {
 			};
 		}
 
-		add_channel_to_node!(msg.node_id_1);
-		add_channel_to_node!(msg.node_id_2);
+		add_channel_to_node!(NodeId::from_pubkey(&msg.node_id_1));
+		add_channel_to_node!(NodeId::from_pubkey(&msg.node_id_2));
 
 		Ok(())
 	}
@@ -1050,13 +1114,19 @@ impl NetworkGraph {
 				if msg.flags & 1 == 1 {
 					dest_node_id = channel.node_one.clone();
 					if let Some((sig, ctx)) = sig_info {
-						secp_verify_sig!(ctx, &msg_hash, &sig, &channel.node_two);
+						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
+							err: "Couldn't parse source node pubkey".to_owned(),
+							action: ErrorAction::IgnoreAndLog(Level::Debug)
+						})?);
 					}
 					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
 				} else {
 					dest_node_id = channel.node_two.clone();
 					if let Some((sig, ctx)) = sig_info {
-						secp_verify_sig!(ctx, &msg_hash, &sig, &channel.node_one);
+						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
+							err: "Couldn't parse destination node pubkey".to_owned(),
+							action: ErrorAction::IgnoreAndLog(Level::Debug)
+						})?);
 					}
 					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
 				}
@@ -1104,7 +1174,7 @@ impl NetworkGraph {
 		Ok(())
 	}
 
-	fn remove_channel_in_nodes(nodes: &mut BTreeMap<PublicKey, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+	fn remove_channel_in_nodes(nodes: &mut BTreeMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
 				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
@@ -1136,7 +1206,7 @@ impl ReadOnlyNetworkGraph<'_> {
 	/// Returns all known nodes' public keys along with announced node info.
 	///
 	/// (C-not exported) because we have no mapping for `BTreeMap`s
-	pub fn nodes(&self) -> &BTreeMap<PublicKey, NodeInfo> {
+	pub fn nodes(&self) -> &BTreeMap<NodeId, NodeInfo> {
 		&*self.nodes
 	}
 
@@ -1146,7 +1216,7 @@ impl ReadOnlyNetworkGraph<'_> {
 	///
 	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<&Vec<NetAddress>> {
-		if let Some(node) = self.nodes.get(pubkey) {
+		if let Some(node) = self.nodes.get(&NodeId::from_pubkey(&pubkey)) {
 			if let Some(node_info) = node.announcement_info.as_ref() {
 				return Some(&node_info.addresses)
 			}
