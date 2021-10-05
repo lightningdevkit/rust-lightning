@@ -148,21 +148,20 @@ pub enum Event {
 		user_channel_id: u64,
 	},
 	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
-	/// ChannelManager::claim_funds to get it....
-	/// Note that if the preimage is not known or the amount paid is incorrect, you should call
-	/// ChannelManager::fail_htlc_backwards to free up resources for this HTLC and avoid
+	/// [`ChannelManager::claim_funds`] to get it....
+	/// Note that if the preimage is not known, you should call
+	/// [`ChannelManager::fail_htlc_backwards`] to free up resources for this HTLC and avoid
 	/// network congestion.
-	/// The amount paid should be considered 'incorrect' when it is less than or more than twice
-	/// the amount expected.
-	/// If you fail to call either ChannelManager::claim_funds or
-	/// ChannelManager::fail_htlc_backwards within the HTLC's timeout, the HTLC will be
+	/// If you fail to call either [`ChannelManager::claim_funds`] or
+	/// [`ChannelManager::fail_htlc_backwards`] within the HTLC's timeout, the HTLC will be
 	/// automatically failed.
+	///
+	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
 	PaymentReceived {
 		/// The hash for which the preimage should be handed to the ChannelManager.
 		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for. Note that you must
-		/// compare this to the expected value before accepting the payment (as otherwise you are
-		/// providing proof-of-payment for less than the value you expected!).
+		/// The value, in thousandths of a satoshi, that this payment is for.
 		amt: u64,
 		/// Information for claiming this received payment, based on whether the purpose of the
 		/// payment is to pay an invoice or to send a spontaneous payment.
