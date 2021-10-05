@@ -194,61 +194,67 @@ pub enum ChannelMonitorUpdateErr {
 	/// our state failed, but is expected to succeed at some point in the future).
 	///
 	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the counterparty. Once the update(s) that failed
-	/// have been successfully applied, a [`MonitorEvent::UpdateCompleted`] event should be returned
-	/// via [`Watch::release_pending_monitor_events`] which will then restore the channel to an
-	/// operational state.
+	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
+	/// have been successfully applied, a [`MonitorEvent::UpdateCompleted`] can be used to restore
+	/// the channel to an operational state.
 	///
-	/// Note that a given ChannelManager will *never* re-generate a given ChannelMonitorUpdate. If
-	/// you return a TemporaryFailure you must ensure that it is written to disk safely before
-	/// writing out the latest ChannelManager state.
+	/// Note that a given [`ChannelManager`] will *never* re-generate a [`ChannelMonitorUpdate`].
+	/// If you return this error you must ensure that it is written to disk safely before writing
+	/// the latest [`ChannelManager`] state, or you should return [`PermanentFailure`] instead.
 	///
-	/// Even when a channel has been "frozen" updates to the ChannelMonitor can continue to occur
-	/// (eg if an inbound HTLC which we forwarded was claimed upstream resulting in us attempting
-	/// to claim it on this channel) and those updates must be applied wherever they can be. At
-	/// least one such updated ChannelMonitor must be persisted otherwise PermanentFailure should
-	/// be returned to get things on-chain ASAP using only the in-memory copy. Obviously updates to
-	/// the channel which would invalidate previous ChannelMonitors are not made when a channel has
-	/// been "frozen".
+	/// Even when a channel has been "frozen", updates to the [`ChannelMonitor`] can continue to
+	/// occur (e.g. if an inbound HTLC which we forwarded was claimed upstream, resulting in us
+	/// attempting to claim it on this channel) and those updates must still be persisted.
 	///
-	/// Note that even if updates made after TemporaryFailure succeed you must still provide a
-	/// [`MonitorEvent::UpdateCompleted`] to ensure you have the latest monitor and re-enable
-	/// normal channel operation. Note that this is normally generated through a call to
-	/// [`ChainMonitor::channel_monitor_updated`].
-	///
-	/// Note that the update being processed here will not be replayed for you when you return a
-	/// [`MonitorEvent::UpdateCompleted`] event via [`Watch::release_pending_monitor_events`], so
-	/// you must store the update itself on your own local disk prior to returning a
-	/// TemporaryFailure. You may, of course, employ a journaling approach, storing only the
-	/// ChannelMonitorUpdate on disk without updating the monitor itself, replaying the journal at
-	/// reload-time.
+	/// No updates to the channel will be made which could invalidate other [`ChannelMonitor`]s
+	/// until a [`MonitorEvent::UpdateCompleted`] is provided, even if you return no error on a
+	/// later monitor update for the same channel.
 	///
 	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
 	/// remote location (with local copies persisted immediately), it is anticipated that all
 	/// updates will return TemporaryFailure until the remote copies could be updated.
 	///
-	/// [`ChainMonitor::channel_monitor_updated`]: chainmonitor::ChainMonitor::channel_monitor_updated
+	/// [`PermanentFailure`]: ChannelMonitorUpdateErr::PermanentFailure
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	TemporaryFailure,
-	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
-	/// different watchtower and cannot update with all watchtowers that were previously informed
-	/// of this channel).
+	/// Used to indicate no further channel monitor updates will be allowed (likely a disk failure
+	/// or a remote copy of this [`ChannelMonitor`] is no longer reachable and thus not updatable).
 	///
-	/// At reception of this error, ChannelManager will force-close the channel and return at
-	/// least a final ChannelMonitorUpdate::ChannelForceClosed which must be delivered to at
-	/// least one ChannelMonitor copy. Revocation secret MUST NOT be released and offchain channel
-	/// update must be rejected.
+	/// When this is returned, [`ChannelManager`] will force-close the channel but *not* broadcast
+	/// our current commitment transaction. This avoids a dangerous case where a local disk failure
+	/// (e.g. the Linux-default remounting of the disk as read-only) causes [`PermanentFailure`]s
+	/// for all monitor updates. If we were to broadcast our latest commitment transaction and then
+	/// restart, we could end up reading a previous [`ChannelMonitor`] and [`ChannelManager`],
+	/// revoking our now-broadcasted state before seeing it confirm and losing all our funds.
 	///
-	/// This failure may also signal a failure to update the local persisted copy of one of
-	/// the channel monitor instance.
+	/// Note that this is somewhat of a tradeoff - if the disk is really gone and we may have lost
+	/// the data permanently, we really should broadcast immediately. If the data can be recovered
+	/// with manual intervention, we'd rather close the channel, rejecting future updates to it,
+	/// and broadcast the latest state only if we have HTLCs to claim which are timing out (which
+	/// we do as long as blocks are connected).
 	///
-	/// Note that even when you fail a holder commitment transaction update, you must store the
-	/// update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
-	/// broadcasts it (e.g distributed channel-monitor deployment)
+	/// In order to broadcast the latest local commitment transaction, you'll need to call
+	/// [`ChannelMonitor::get_latest_holder_commitment_txn`] and broadcast the resulting
+	/// transactions once you've safely ensured no further channel updates can be generated by your
+	/// [`ChannelManager`].
+	///
+	/// Note that at least one final [`ChannelMonitorUpdate`] may still be provided, which must
+	/// still be processed by a running [`ChannelMonitor`]. This final update will mark the
+	/// [`ChannelMonitor`] as finalized, ensuring no further updates (e.g. revocation of the latest
+	/// commitment transaction) are allowed.
+	///
+	/// Note that even if you return a [`PermanentFailure`] due to unavailability of secondary
+	/// [`ChannelMonitor`] copies, you should still make an attempt to store the update where
+	/// possible to ensure you can claim HTLC outputs on the latest commitment transaction
+	/// broadcasted later.
 	///
 	/// In case of distributed watchtowers deployment, the new version must be written to disk, as
 	/// state may have been stored but rejected due to a block forcing a commitment broadcast. This
 	/// storage is used to claim outputs of rejected state confirmed onchain by another watchtower,
 	/// lagging behind on block processing.
+	///
+	/// [`PermanentFailure`]: ChannelMonitorUpdateErr::PermanentFailure
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	PermanentFailure,
 }
 
@@ -278,7 +284,7 @@ pub trait Watch<ChannelSigner: Sign> {
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
 	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
-	/// Note: this interface MUST error with `ChannelMonitorUpdateErr::PermanentFailure` if
+	/// Note: this interface MUST error with [`ChannelMonitorUpdateErr::PermanentFailure`] if
 	/// the given `funding_txo` has previously been registered via `watch_channel`.
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch

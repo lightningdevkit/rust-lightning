@@ -65,6 +65,8 @@ fn test_simple_monitor_permanent_update_fail() {
 		_ => panic!("Unexpected event"),
 	};
 
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
 	// TODO: Once we hit the chain with the failure transaction we should check that we get a
 	// PaymentPathFailed event
 

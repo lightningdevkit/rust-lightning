@@ -1171,8 +1171,8 @@ pub enum PaymentSendFailure {
 	///
 	/// Any entries which contain Err(APIError::MonitorUpdateFailed) or Ok(()) MUST NOT be retried
 	/// as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
-	/// case of Ok(())) or will send once channel_monitor_updated is called on the next-hop channel
-	/// with the latest update_id.
+	/// case of Ok(())) or will send once a [`MonitorEvent::UpdateCompleted`] is provided for the
+	/// next-hop channel with the latest update_id.
 	PartialFailure {
 		/// The errors themselves, in the same order as the route hops.
 		results: Vec<Result<(), APIError>>,
@@ -1345,7 +1345,7 @@ macro_rules! handle_monitor_err {
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
 				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.get_user_id(),
-						$chan.force_shutdown(true), $self.get_channel_update_for_broadcast(&$chan).ok() ));
+						$chan.force_shutdown(false), $self.get_channel_update_for_broadcast(&$chan).ok() ));
 				(res, true)
 			},
 			ChannelMonitorUpdateErr::TemporaryFailure => {
@@ -4492,7 +4492,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// We do not do a force-close here as that would generate a monitor update for
 					// a monitor that we didn't manage to store (and that we don't care about - we
 					// don't respond with the funding_signed so the channel can never go on chain).
-					let (_monitor_update, failed_htlcs) = chan.force_shutdown(true);
+					let (_monitor_update, failed_htlcs) = chan.force_shutdown(false);
 					assert!(failed_htlcs.is_empty());
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id));
 				},
