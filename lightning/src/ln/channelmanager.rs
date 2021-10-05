@@ -2178,7 +2178,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			} else {
 				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
-					err: "Payment with ID {} not found".to_string()
+					err: format!("Payment with ID {} not found", log_bytes!(payment_id.0)),
 				}))
 			}
 		};
