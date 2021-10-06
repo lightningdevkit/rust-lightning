@@ -362,3 +362,5 @@ fn read_write_lockorder_fail() {
 		let _a = a.write().unwrap();
 	}
 }
+
+pub type FairRwLock<T> = RwLock<T>;

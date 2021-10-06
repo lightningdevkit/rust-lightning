@@ -33,7 +33,7 @@ use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 use prelude::*;
 use io;
 use alloc::collections::LinkedList;
-use sync::{Arc, Mutex, MutexGuard, RwLock};
+use sync::{Arc, Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
@@ -428,7 +428,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
 	message_handler: MessageHandler<CM, RM>,
-	peers: RwLock<PeerHolder<Descriptor>>,
+	peers: FairRwLock<PeerHolder<Descriptor>>,
 	/// Only add to this set when noise completes.
 	/// Locked *after* peers. When an item is removed, it must be removed with the `peers` write
 	/// lock held. Entries may be added with only the `peers` read lock held (though the
@@ -570,7 +570,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 		PeerManager {
 			message_handler,
-			peers: RwLock::new(PeerHolder {
+			peers: FairRwLock::new(PeerHolder {
 				peers: HashMap::new(),
 			}),
 			node_id_to_descriptor: Mutex::new(HashMap::new()),
