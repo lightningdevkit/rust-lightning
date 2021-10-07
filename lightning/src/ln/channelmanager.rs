@@ -402,7 +402,7 @@ struct PendingInboundPayment {
 
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
 /// and later, also stores information for retrying the payment.
-enum PendingOutboundPayment {
+pub(crate) enum PendingOutboundPayment {
 	Legacy {
 		session_privs: HashSet<[u8; 32]>,
 	},
@@ -1951,16 +1951,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
-		let payment = pending_outbounds.entry(payment_id).or_insert_with(|| PendingOutboundPayment::Retryable {
-			session_privs: HashSet::new(),
-			pending_amt_msat: 0,
-			payment_hash: *payment_hash,
-			payment_secret: *payment_secret,
-			starting_block_height: self.best_block.read().unwrap().height(),
-			total_msat: total_value,
-		});
-		assert!(payment.insert(session_priv_bytes, path.last().unwrap().fee_msat));
 
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
@@ -1978,12 +1968,27 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if !chan.get().is_live() {
 						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
 					}
-					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-						path: path.clone(),
-						session_priv: session_priv.clone(),
-						first_hop_htlc_msat: htlc_msat,
-						payment_id,
-					}, onion_packet, &self.logger), channel_state, chan)
+					let send_res = break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(
+						htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+							path: path.clone(),
+							session_priv: session_priv.clone(),
+							first_hop_htlc_msat: htlc_msat,
+							payment_id,
+						}, onion_packet, &self.logger),
+					channel_state, chan);
+
+					let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
+					let payment = pending_outbounds.entry(payment_id).or_insert_with(|| PendingOutboundPayment::Retryable {
+						session_privs: HashSet::new(),
+						pending_amt_msat: 0,
+						payment_hash: *payment_hash,
+						payment_secret: *payment_secret,
+						starting_block_height: self.best_block.read().unwrap().height(),
+						total_msat: total_value,
+					});
+					assert!(payment.insert(session_priv_bytes, path.last().unwrap().fee_msat));
+
+					send_res
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
 						if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
@@ -2173,7 +2178,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			} else {
 				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
-					err: "Payment with ID {} not found".to_string()
+					err: format!("Payment with ID {} not found", log_bytes!(payment_id.0)),
 				}))
 			}
 		};
@@ -4382,6 +4387,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
 		self.process_pending_events(&event_handler);
 		events.into_inner()
+	}
+
+	#[cfg(test)]
+	pub fn has_pending_payments(&self) -> bool {
+		!self.pending_outbound_payments.lock().unwrap().is_empty()
 	}
 }
 
