@@ -33,44 +33,75 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, Monit
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::Sign;
 use util::logger::Logger;
+use util::errors::APIError;
 use util::events;
 use util::events::EventHandler;
 use ln::channelmanager::ChannelDetails;
 
 use prelude::*;
-use sync::{RwLock, RwLockReadGuard, Mutex};
+use sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::ops::Deref;
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum UpdateOrigin {
+	OffChain(u64),
+}
+
+/// An opaque identifier describing a specific [`Persist`] method call.
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+pub struct MonitorUpdateId {
+	contents: UpdateOrigin,
+}
+
+impl MonitorUpdateId {
+	pub(crate) fn from_monitor_update(update: &ChannelMonitorUpdate) -> Self {
+		Self { contents: UpdateOrigin::OffChain(update.update_id) }
+	}
+	pub(crate) fn from_new_monitor<ChannelSigner: Sign>(monitor: &ChannelMonitor<ChannelSigner>) -> Self {
+		Self { contents: UpdateOrigin::OffChain(monitor.get_latest_update_id()) }
+	}
+}
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
 /// writing once to disk, and/or uploading to one or more backup services.
 ///
-/// Note that for every new monitor, you **must** persist the new `ChannelMonitor`
-/// to disk/backups. And, on every update, you **must** persist either the
-/// `ChannelMonitorUpdate` or the updated monitor itself. Otherwise, there is risk
-/// of situations such as revoking a transaction, then crashing before this
-/// revocation can be persisted, then unintentionally broadcasting a revoked
-/// transaction and losing money. This is a risk because previous channel states
-/// are toxic, so it's important that whatever channel state is persisted is
-/// kept up-to-date.
+/// Each method can return three possible values:
+///  * If persistence (including any relevant `fsync()` calls) happens immediately, the
+///    implementation should return `Ok(())`, indicating normal channel operation should continue.
+///  * If persistence happens asynchronously, implementations should first ensure the
+///    [`ChannelMonitor`] or [`ChannelMonitorUpdate`] are written durably to disk, and then return
+///    `Err(ChannelMonitorUpdateErr::TemporaryFailure)` while the update continues in the
+///    background. Once the update completes, [`ChainMonitor::channel_monitor_updated`] should be
+///    called with the corresponding [`MonitorUpdateId`].
+///
+///    Note that unlike the direct [`chain::Watch`] interface,
+///    [`ChainMonitor::channel_monitor_updated`] must be called once for *each* update which occurs.
+///
+///  * If persistence fails for some reason, implementations should return
+///    `Err(ChannelMonitorUpdateErr::PermanentFailure)`, in which case the channel will likely be
+///    closed without broadcasting the latest state. See
+///    [`ChannelMonitorUpdateErr::PermanentFailure`] for more details.
 pub trait Persist<ChannelSigner: Sign> {
-	/// Persist a new channel's data. The data can be stored any way you want, but
-	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
-	/// it is up to you to maintain a correct mapping between the outpoint and the
-	/// stored channel data). Note that you **must** persist every new monitor to
-	/// disk. See the `Persist` trait documentation for more details.
+	/// Persist a new channel's data. The data can be stored any way you want, but the identifier
+	/// provided by LDK is the channel's outpoint (and it is up to you to maintain a correct
+	/// mapping between the outpoint and the stored channel data). Note that you **must** persist
+	/// every new monitor to disk.
+	///
+	/// The `update_id` is used to identify this call to [`ChainMonitor::channel_monitor_updated`],
+	/// if you return [`ChannelMonitorUpdateErr::TemporaryFailure`].
 	///
 	/// See [`Writeable::write`] on [`ChannelMonitor`] for writing out a `ChannelMonitor`
 	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
-	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn persist_new_channel(&self, channel_id: OutPoint, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> Result<(), ChannelMonitorUpdateErr>;
 
-	/// Update one channel's data. The provided `ChannelMonitor` has already
-	/// applied the given update.
+	/// Update one channel's data. The provided [`ChannelMonitor`] has already applied the given
+	/// update.
 	///
-	/// Note that on every update, you **must** persist either the
-	/// `ChannelMonitorUpdate` or the updated monitor itself to disk/backups. See
-	/// the `Persist` trait documentation for more details.
+	/// Note that on every update, you **must** persist either the [`ChannelMonitorUpdate`] or the
+	/// updated monitor itself to disk/backups. See the [`Persist`] trait documentation for more
+	/// details.
 	///
 	/// If an implementer chooses to persist the updates only, they need to make
 	/// sure that all the updates are applied to the `ChannelMonitors` *before*
@@ -84,16 +115,33 @@ pub trait Persist<ChannelSigner: Sign> {
 	/// them in batches. The size of each monitor grows `O(number of state updates)`
 	/// whereas updates are small and `O(1)`.
 	///
+	/// The `update_id` is used to identify this call to [`ChainMonitor::channel_monitor_updated`],
+	/// if you return [`ChannelMonitorUpdateErr::TemporaryFailure`].
+	///
 	/// See [`Writeable::write`] on [`ChannelMonitor`] for writing out a `ChannelMonitor`,
 	/// [`Writeable::write`] on [`ChannelMonitorUpdate`] for writing out an update, and
 	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
-	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn update_persisted_channel(&self, channel_id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
 struct MonitorHolder<ChannelSigner: Sign> {
 	monitor: ChannelMonitor<ChannelSigner>,
+	/// The full set of pending monitor updates for this Channel.
+	///
+	/// Note that this lock must be held during updates to prevent a race where we call
+	/// update_persisted_channel, the user returns a TemporaryFailure, and then calls
+	/// channel_monitor_updated immediately, racing our insertion of the pending update into the
+	/// contained Vec.
+	pending_monitor_updates: Mutex<Vec<MonitorUpdateId>>,
+}
+
+impl<ChannelSigner: Sign> MonitorHolder<ChannelSigner> {
+	fn has_pending_offchain_updates(&self, pending_monitor_updates_lock: &MutexGuard<Vec<MonitorUpdateId>>) -> bool {
+		pending_monitor_updates_lock.iter().any(|update_id|
+			if let UpdateOrigin::OffChain(_) = update_id.contents { true } else { false })
+	}
 }
 
 /// A read-only reference to a current ChannelMonitor.
@@ -267,23 +315,61 @@ where C::Target: chain::Filter,
 	/// Indicates the persistence of a [`ChannelMonitor`] has completed after
 	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] was returned from an update operation.
 	///
-	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
-	/// fully committed in every copy of the given channels' ChannelMonitors.
-	///
-	/// Note that there is no effect to calling with a highest_applied_update_id other than the
-	/// current latest ChannelMonitorUpdate and one call to this function after multiple
-	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
-	/// exists largely only to prevent races between this and concurrent update_monitor calls.
-	///
 	/// Thus, the anticipated use is, at a high level:
 	///  1) This [`ChainMonitor`] calls [`Persist::update_persisted_channel`] which stores the
 	///     update to disk and begins updating any remote (e.g. watchtower/backup) copies,
 	///     returning [`ChannelMonitorUpdateErr::TemporaryFailure`],
-	///  2) once all remote copies are updated, you call this function with the update_id that
-	///     completed, and once it is the latest the Channel will be re-enabled.
-	pub fn channel_monitor_updated(&self, funding_txo: OutPoint, highest_applied_update_id: u64) {
+	///  2) once all remote copies are updated, you call this function with the
+	///     `completed_update_id` that completed, and once all pending updates have completed the
+	///     channel will be re-enabled.
+	//      Note that we re-enable only after `UpdateOrigin::OffChain` updates complete, we don't
+	//      care about `UpdateOrigin::ChainSync` updates for the channel state being updated. We
+	//      only care about `UpdateOrigin::ChainSync` for returning `MonitorEvent`s.
+	///
+	/// Returns an [`APIError::APIMisuseError`] if `funding_txo` does not match any currently
+	/// registered [`ChannelMonitor`]s.
+	pub fn channel_monitor_updated(&self, funding_txo: OutPoint, completed_update_id: MonitorUpdateId) -> Result<(), APIError> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&funding_txo) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", funding_txo) });
+		};
+		let mut pending_monitor_updates = monitor_data.pending_monitor_updates.lock().unwrap();
+		pending_monitor_updates.retain(|update_id| *update_id != completed_update_id);
+
+		match completed_update_id {
+			MonitorUpdateId { .. } => {
+				// Note that we only check for `UpdateOrigin::OffChain` failures here - if
+				// we're being told that a `UpdateOrigin::OffChain` monitor update completed,
+				// we only care about ensuring we don't tell the `ChannelManager` to restore
+				// the channel to normal operation until all `UpdateOrigin::OffChain` updates
+				// complete.
+				// If there's some `UpdateOrigin::ChainSync` update still pending that's okay
+				// - we can still update our channel state, just as long as we don't return
+				// `MonitorEvent`s from the monitor back to the `ChannelManager` until they
+				// complete.
+				let monitor_is_pending_updates = monitor_data.has_pending_offchain_updates(&pending_monitor_updates);
+				if monitor_is_pending_updates {
+					// If there are still monitor updates pending, we cannot yet construct an
+					// UpdateCompleted event.
+					return Ok(());
+				}
+				self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
+					funding_txo,
+					monitor_update_id: monitor_data.monitor.get_latest_update_id(),
+				});
+			}
+		}
+		Ok(())
+	}
+
+	/// This wrapper avoids having to update some of our tests for now as they assume the direct
+	/// chain::Watch API wherein we mark a monitor fully-updated by just calling
+	/// channel_monitor_updated once with the highest ID.
+	#[cfg(any(test, feature = "fuzztarget"))]
+	pub fn force_channel_monitor_updated(&self, funding_txo: OutPoint, monitor_update_id: u64) {
 		self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
-			funding_txo, monitor_update_id: highest_applied_update_id
+			funding_txo,
+			monitor_update_id,
 		});
 	}
 
@@ -397,12 +483,16 @@ where C::Target: chain::Filter,
 				return Err(ChannelMonitorUpdateErr::PermanentFailure)},
 			hash_map::Entry::Vacant(e) => e,
 		};
-		let persist_res = self.persister.persist_new_channel(funding_outpoint, &monitor);
+		let update_id = MonitorUpdateId::from_new_monitor(&monitor);
+		let mut pending_monitor_updates = Vec::new();
+		let persist_res = self.persister.persist_new_channel(funding_outpoint, &monitor, update_id);
 		if persist_res.is_err() {
 			log_error!(self.logger, "Failed to persist new channel data: {:?}", persist_res);
 		}
 		if persist_res == Err(ChannelMonitorUpdateErr::PermanentFailure) {
 			return persist_res;
+		} else if persist_res.is_err() {
+			pending_monitor_updates.push(update_id);
 		}
 		{
 			let funding_txo = monitor.get_funding_txo();
@@ -412,7 +502,7 @@ where C::Target: chain::Filter,
 				monitor.load_outputs_to_watch(chain_source);
 			}
 		}
-		entry.insert(MonitorHolder { monitor });
+		entry.insert(MonitorHolder { monitor, pending_monitor_updates: Mutex::new(pending_monitor_updates) });
 		persist_res
 	}
 
@@ -442,8 +532,13 @@ where C::Target: chain::Filter,
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
-				let persist_res = self.persister.update_persisted_channel(funding_txo, &update, monitor);
-				if let Err(ref e) = persist_res {
+				let update_id = MonitorUpdateId::from_monitor_update(&update);
+				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+				let persist_res = self.persister.update_persisted_channel(funding_txo, &update, monitor, update_id);
+				if let Err(e) = persist_res {
+					if e == ChannelMonitorUpdateErr::TemporaryFailure {
+						pending_monitor_updates.push(update_id);
+					}
 					log_error!(self.logger, "Failed to persist channel monitor update: {:?}", e);
 				}
 				if update_res.is_err() {
