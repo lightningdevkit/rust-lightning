@@ -3385,27 +3385,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.our_network_pubkey.clone()
 	}
 
-	/// Restores a single, given channel to normal operation after a
-	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
-	/// operation.
-	///
-	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
-	/// fully committed in every copy of the given channels' ChannelMonitors.
-	///
-	/// Note that there is no effect to calling with a highest_applied_update_id other than the
-	/// current latest ChannelMonitorUpdate and one call to this function after multiple
-	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
-	/// exists largely only to prevent races between this and concurrent update_monitor calls.
-	///
-	/// Thus, the anticipated use is, at a high level:
-	///  1) You register a chain::Watch with this ChannelManager,
-	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
-	///     said ChannelMonitors as it can, returning ChannelMonitorUpdateErr::TemporaryFailures
-	///     any time it cannot do so instantly,
-	///  3) update(s) are applied to each remote copy of a ChannelMonitor,
-	///  4) once all remote copies are updated, you call this function with the update_id that
-	///     completed, and once it is the latest the Channel will be re-enabled.
-	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
+	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let chan_restoration_res;
@@ -4135,6 +4115,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						});
 					}
 				},
+				MonitorEvent::UpdateCompleted { funding_txo, monitor_update_id } => {
+					self.channel_monitor_updated(&funding_txo, monitor_update_id);
+				},
 			}
 		}
 
@@ -4143,6 +4126,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		has_pending_monitor_events
+	}
+
+	/// In chanmon_consistency_target, we'd like to be able to restore monitor updating without
+	/// handling all pending events (i.e. not PendingHTLCsForwardable). Thus, we expose monitor
+	/// update events as a separate process method here.
+	#[cfg(feature = "fuzztarget")]
+	pub fn process_monitor_events(&self) {
+		self.process_pending_monitor_events();
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.

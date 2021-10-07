@@ -131,8 +131,29 @@ pub enum MonitorEvent {
 
 	/// A monitor event that the Channel's commitment transaction was confirmed.
 	CommitmentTxConfirmed(OutPoint),
+
+	/// Indicates a [`ChannelMonitor`] update has completed. See
+	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] for more information on how this is used.
+	///
+	/// [`ChannelMonitorUpdateErr::TemporaryFailure`]: super::ChannelMonitorUpdateErr::TemporaryFailure
+	UpdateCompleted {
+		/// The funding outpoint of the [`ChannelMonitor`] that was updated
+		funding_txo: OutPoint,
+		/// The Update ID from [`ChannelMonitorUpdate::update_id`] which was applied or
+		/// [`ChannelMonitor::get_latest_update_id`].
+		///
+		/// Note that this should only be set to a given update's ID if all previous updates for the
+		/// same [`ChannelMonitor`] have been applied and persisted.
+		monitor_update_id: u64,
+	},
 }
-impl_writeable_tlv_based_enum_upgradable!(MonitorEvent, ;
+impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
+	// Note that UpdateCompleted is currently never serialized to disk as it is generated only in ChainMonitor
+	(0, UpdateCompleted) => {
+		(0, funding_txo, required),
+		(2, monitor_update_id, required),
+	},
+;
 	(2, HTLCEvent),
 	(4, CommitmentTxConfirmed),
 );
@@ -854,14 +875,19 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.pending_monitor_events.len() as u64))?;
+		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
+			MonitorEvent::HTLCEvent(_) => true,
+			MonitorEvent::CommitmentTxConfirmed(_) => true,
+			_ => false,
+		}).count() as u64).to_be_bytes())?;
 		for event in self.pending_monitor_events.iter() {
 			match event {
 				MonitorEvent::HTLCEvent(upd) => {
 					0u8.write(writer)?;
 					upd.write(writer)?;
 				},
-				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?
+				MonitorEvent::CommitmentTxConfirmed(_) => 1u8.write(writer)?,
+				_ => {}, // Covered in the TLV writes below
 			}
 		}
 

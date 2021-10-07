@@ -182,9 +182,10 @@ pub enum ChannelMonitorUpdateErr {
 	/// our state failed, but is expected to succeed at some point in the future).
 	///
 	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, ChannelManager::channel_monitor_updated can be used to
-	/// restore the channel to an operational state.
+	/// submitting new commitment transactions to the counterparty. Once the update(s) that failed
+	/// have been successfully applied, a [`MonitorEvent::UpdateCompleted`] event should be returned
+	/// via [`Watch::release_pending_monitor_events`] which will then restore the channel to an
+	/// operational state.
 	///
 	/// Note that a given ChannelManager will *never* re-generate a given ChannelMonitorUpdate. If
 	/// you return a TemporaryFailure you must ensure that it is written to disk safely before
@@ -198,13 +199,14 @@ pub enum ChannelMonitorUpdateErr {
 	/// the channel which would invalidate previous ChannelMonitors are not made when a channel has
 	/// been "frozen".
 	///
-	/// Note that even if updates made after TemporaryFailure succeed you must still call
-	/// channel_monitor_updated to ensure you have the latest monitor and re-enable normal channel
-	/// operation.
+	/// Note that even if updates made after TemporaryFailure succeed you must still provide a
+	/// [`MonitorEvent::UpdateCompleted`] to ensure you have the latest monitor and re-enable
+	/// normal channel operation. Note that this is normally generated through a call to
+	/// [`ChainMonitor::channel_monitor_updated`].
 	///
-	/// Note that the update being processed here will not be replayed for you when you call
-	/// ChannelManager::channel_monitor_updated, so you must store the update itself along
-	/// with the persisted ChannelMonitor on your own local disk prior to returning a
+	/// Note that the update being processed here will not be replayed for you when you return a
+	/// [`MonitorEvent::UpdateCompleted`] event via [`Watch::release_pending_monitor_events`], so
+	/// you must store the update itself on your own local disk prior to returning a
 	/// TemporaryFailure. You may, of course, employ a journaling approach, storing only the
 	/// ChannelMonitorUpdate on disk without updating the monitor itself, replaying the journal at
 	/// reload-time.
@@ -212,6 +214,8 @@ pub enum ChannelMonitorUpdateErr {
 	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
 	/// remote location (with local copies persisted immediately), it is anticipated that all
 	/// updates will return TemporaryFailure until the remote copies could be updated.
+	///
+	/// [`ChainMonitor::channel_monitor_updated`]: chainmonitor::ChainMonitor::channel_monitor_updated
 	TemporaryFailure,
 	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
 	/// different watchtower and cannot update with all watchtowers that were previously informed
@@ -280,6 +284,9 @@ pub trait Watch<ChannelSigner: Sign> {
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
+	///
+	/// For details on asynchronous [`ChannelMonitor`] updating and returning
+	/// [`MonitorEvent::UpdateCompleted`] here, see [`ChannelMonitorUpdateErr::TemporaryFailure`].
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
 }
 

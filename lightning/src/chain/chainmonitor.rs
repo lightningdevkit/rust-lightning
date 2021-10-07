@@ -38,7 +38,7 @@ use util::events::EventHandler;
 use ln::channelmanager::ChannelDetails;
 
 use prelude::*;
-use sync::{RwLock, RwLockReadGuard};
+use sync::{RwLock, RwLockReadGuard, Mutex};
 use core::ops::Deref;
 
 /// `Persist` defines behavior for persisting channel monitors: this could mean
@@ -134,6 +134,7 @@ pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: De
 	logger: L,
 	fee_estimator: F,
 	persister: P,
+	pending_monitor_events: Mutex<Vec<MonitorEvent>>,
 }
 
 impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -207,6 +208,7 @@ where C::Target: chain::Filter,
 			logger,
 			fee_estimator: feeest,
 			persister,
+			pending_monitor_events: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -260,6 +262,29 @@ where C::Target: chain::Filter,
 	#[cfg(test)]
 	pub fn remove_monitor(&self, funding_txo: &OutPoint) -> ChannelMonitor<ChannelSigner> {
 		self.monitors.write().unwrap().remove(funding_txo).unwrap().monitor
+	}
+
+	/// Indicates the persistence of a [`ChannelMonitor`] has completed after
+	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] was returned from an update operation.
+	///
+	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
+	/// fully committed in every copy of the given channels' ChannelMonitors.
+	///
+	/// Note that there is no effect to calling with a highest_applied_update_id other than the
+	/// current latest ChannelMonitorUpdate and one call to this function after multiple
+	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
+	/// exists largely only to prevent races between this and concurrent update_monitor calls.
+	///
+	/// Thus, the anticipated use is, at a high level:
+	///  1) This [`ChainMonitor`] calls [`Persist::update_persisted_channel`] which stores the
+	///     update to disk and begins updating any remote (e.g. watchtower/backup) copies,
+	///     returning [`ChannelMonitorUpdateErr::TemporaryFailure`],
+	///  2) once all remote copies are updated, you call this function with the update_id that
+	///     completed, and once it is the latest the Channel will be re-enabled.
+	pub fn channel_monitor_updated(&self, funding_txo: OutPoint, highest_applied_update_id: u64) {
+		self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
+			funding_txo, monitor_update_id: highest_applied_update_id
+		});
 	}
 
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
@@ -431,7 +456,7 @@ where C::Target: chain::Filter,
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		let mut pending_monitor_events = Vec::new();
+		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			pending_monitor_events.append(&mut monitor_state.monitor.get_and_clear_pending_monitor_events());
 		}
