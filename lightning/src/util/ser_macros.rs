@@ -455,9 +455,12 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 macro_rules! impl_writeable_tlv_based_enum_upgradable {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
-	),* $(,)*) => {
+	),* $(,)*
+	$(;
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)*) => {
 		_impl_writeable_tlv_based_enum_common!($st,
-			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*; );
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
+			$($(($tuple_variant_id, $tuple_variant_name)),*)*);
 
 		impl ::util::ser::MaybeReadable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, ::ln::msgs::DecodeError> {
@@ -481,6 +484,9 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						};
 						f()
 					}),*
+					$($($tuple_variant_id => {
+						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
+					}),*)*
 					_ if id % 2 == 1 => Ok(None),
 					_ => Err(DecodeError::UnknownRequiredFeature),
 				}

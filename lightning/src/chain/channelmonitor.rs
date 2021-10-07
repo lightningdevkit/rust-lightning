@@ -132,6 +132,10 @@ pub enum MonitorEvent {
 	/// A monitor event that the Channel's commitment transaction was confirmed.
 	CommitmentTxConfirmed(OutPoint),
 }
+impl_writeable_tlv_based_enum_upgradable!(MonitorEvent, ;
+	(2, HTLCEvent),
+	(4, CommitmentTxConfirmed),
+);
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
@@ -891,6 +895,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
 			(3, self.htlcs_resolved_on_chain, vec_type),
+			(5, self.pending_monitor_events, vec_type),
 		});
 
 		Ok(())
@@ -3000,14 +3005,15 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		}
 
 		let pending_monitor_events_len: u64 = Readable::read(reader)?;
-		let mut pending_monitor_events = Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3)));
+		let mut pending_monitor_events = Some(
+			Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3))));
 		for _ in 0..pending_monitor_events_len {
 			let ev = match <u8 as Readable>::read(reader)? {
 				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
 				1 => MonitorEvent::CommitmentTxConfirmed(funding_info.0),
 				_ => return Err(DecodeError::InvalidValue)
 			};
-			pending_monitor_events.push(ev);
+			pending_monitor_events.as_mut().unwrap().push(ev);
 		}
 
 		let pending_events_len: u64 = Readable::read(reader)?;
@@ -3068,6 +3074,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
+			(5, pending_monitor_events, vec_type),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3107,7 +3114,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				current_holder_commitment_number,
 
 				payment_preimages,
-				pending_monitor_events,
+				pending_monitor_events: pending_monitor_events.unwrap(),
 				pending_events,
 
 				onchain_events_awaiting_threshold_conf,
