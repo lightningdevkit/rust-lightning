@@ -89,7 +89,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a channelmonitor::Persist<EnforcingSigner>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	pub update_ret: Mutex<Option<Result<(), channelmonitor::ChannelMonitorUpdateErr>>>,
 	/// If this is set to Some(), after the next return, we'll always return this until update_ret
@@ -101,7 +101,7 @@ pub struct TestChainMonitor<'a> {
 	pub expect_channel_force_closed: Mutex<Option<([u8; 32], bool)>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a channelmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
@@ -195,7 +195,7 @@ impl TestPersister {
 		*self.update_ret.lock().unwrap() = ret;
 	}
 }
-impl<Signer: keysinterface::Sign> channelmonitor::Persist<Signer> for TestPersister {
+impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>) -> Result<(), channelmonitor::ChannelMonitorUpdateErr> {
 		self.update_ret.lock().unwrap().clone()
 	}

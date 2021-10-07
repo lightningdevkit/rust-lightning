@@ -6221,8 +6221,7 @@ mod tests {
 #[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))]
 pub mod bench {
 	use chain::Listen;
-	use chain::chainmonitor::ChainMonitor;
-	use chain::channelmonitor::Persist;
+	use chain::chainmonitor::{ChainMonitor, Persist};
 	use chain::keysinterface::{KeysManager, InMemorySigner};
 	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
 	use ln::features::{InitFeatures, InvoiceFeatures};

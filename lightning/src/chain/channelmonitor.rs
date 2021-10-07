@@ -2877,53 +2877,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 }
 
-/// `Persist` defines behavior for persisting channel monitors: this could mean
-/// writing once to disk, and/or uploading to one or more backup services.
-///
-/// Note that for every new monitor, you **must** persist the new `ChannelMonitor`
-/// to disk/backups. And, on every update, you **must** persist either the
-/// `ChannelMonitorUpdate` or the updated monitor itself. Otherwise, there is risk
-/// of situations such as revoking a transaction, then crashing before this
-/// revocation can be persisted, then unintentionally broadcasting a revoked
-/// transaction and losing money. This is a risk because previous channel states
-/// are toxic, so it's important that whatever channel state is persisted is
-/// kept up-to-date.
-pub trait Persist<ChannelSigner: Sign> {
-	/// Persist a new channel's data. The data can be stored any way you want, but
-	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
-	/// it is up to you to maintain a correct mapping between the outpoint and the
-	/// stored channel data). Note that you **must** persist every new monitor to
-	/// disk. See the `Persist` trait documentation for more details.
-	///
-	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
-	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
-
-	/// Update one channel's data. The provided `ChannelMonitor` has already
-	/// applied the given update.
-	///
-	/// Note that on every update, you **must** persist either the
-	/// `ChannelMonitorUpdate` or the updated monitor itself to disk/backups. See
-	/// the `Persist` trait documentation for more details.
-	///
-	/// If an implementer chooses to persist the updates only, they need to make
-	/// sure that all the updates are applied to the `ChannelMonitors` *before*
-	/// the set of channel monitors is given to the `ChannelManager`
-	/// deserialization routine. See [`ChannelMonitor::update_monitor`] for
-	/// applying a monitor update to a monitor. If full `ChannelMonitors` are
-	/// persisted, then there is no need to persist individual updates.
-	///
-	/// Note that there could be a performance tradeoff between persisting complete
-	/// channel monitors on every update vs. persisting only updates and applying
-	/// them in batches. The size of each monitor grows `O(number of state updates)`
-	/// whereas updates are small and `O(1)`.
-	///
-	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
-	/// [`ChannelMonitorUpdate::write`] for writing out an update, and
-	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
-}
-
 impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
 where
 	T::Target: BroadcasterInterface,

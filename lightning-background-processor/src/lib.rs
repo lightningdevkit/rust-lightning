@@ -10,8 +10,7 @@
 
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::chainmonitor::ChainMonitor;
-use lightning::chain::channelmonitor;
+use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
@@ -194,7 +193,7 @@ impl BackgroundProcessor {
 		K::Target: 'static + KeysInterface<Signer = Signer>,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
-		P::Target: 'static + channelmonitor::Persist<Signer>,
+		P::Target: 'static + Persist<Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,

@@ -40,8 +40,8 @@ BlockSourceResult<ValidatedBlockHeader> {
 ///
 /// use lightning::chain;
 /// use lightning::chain::Watch;
+/// use lightning::chain::chainmonitor;
 /// use lightning::chain::chainmonitor::ChainMonitor;
-/// use lightning::chain::channelmonitor;
 /// use lightning::chain::channelmonitor::ChannelMonitor;
 /// use lightning::chain::chaininterface::BroadcasterInterface;
 /// use lightning::chain::chaininterface::FeeEstimator;
@@ -65,7 +65,7 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// 	F: FeeEstimator,
 /// 	L: Logger,
 /// 	C: chain::Filter,
-/// 	P: channelmonitor::Persist<S>,
+/// 	P: chainmonitor::Persist<S>,
 /// >(
 /// 	block_source: &mut B,
 /// 	chain_monitor: &ChainMonitor<S, &C, &T, &F, &L, &P>,
