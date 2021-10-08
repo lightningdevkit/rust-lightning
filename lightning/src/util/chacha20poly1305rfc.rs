@@ -16,8 +16,6 @@ mod real_chachapoly {
 	use util::poly1305::Poly1305;
 	use bitcoin::hashes::cmp::fixed_time_eq;
 
-	use util::byte_utils;
-
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
 		cipher: ChaCha20,
@@ -67,8 +65,8 @@ mod real_chachapoly {
 			self.mac.input(output);
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.finished = true;
-			self.mac.input(&byte_utils::le64_to_array(self.aad_len));
-			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
+			self.mac.input(&self.aad_len.to_le_bytes());
+			self.mac.input(&(self.data_len as u64).to_le_bytes());
 			self.mac.raw_result(out_tag);
 		}
 
@@ -82,8 +80,8 @@ mod real_chachapoly {
 
 			self.data_len += input.len();
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
-			self.mac.input(&byte_utils::le64_to_array(self.aad_len));
-			self.mac.input(&byte_utils::le64_to_array(self.data_len as u64));
+			self.mac.input(&self.aad_len.to_le_bytes());
+			self.mac.input(&(self.data_len as u64).to_le_bytes());
 
 			let mut calc_tag =  [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);

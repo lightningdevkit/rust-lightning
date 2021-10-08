@@ -24,7 +24,7 @@ use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
-use util::byte_utils;
+use util::atomic_counter::AtomicCounter;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
 use routing::network_graph::NetGraphMsgHandler;
@@ -33,7 +33,6 @@ use prelude::*;
 use io;
 use alloc::collections::LinkedList;
 use sync::{Arc, Mutex};
-use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
 use core::convert::Infallible;
@@ -343,12 +342,6 @@ struct PeerHolder<Descriptor: SocketDescriptor> {
 	node_id_to_descriptor: HashMap<PublicKey, Descriptor>,
 }
 
-#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
-fn _check_usize_is_32_or_64() {
-	// See below, less than 32 bit pointers may be unsafe here!
-	unsafe { mem::transmute::<*const usize, [u8; 4]>(panic!()); }
-}
-
 /// SimpleArcPeerManager is useful when you need a PeerManager with a static lifetime, e.g.
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
@@ -394,10 +387,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
 
-	// Usize needs to be at least 32 bits to avoid overflowing both low and high. If usize is 64
-	// bits we will never realistically count into high:
-	peer_counter_low: AtomicUsize,
-	peer_counter_high: AtomicUsize,
+	peer_counter: AtomicCounter,
 
 	logger: L,
 }
@@ -485,8 +475,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			}),
 			our_node_secret,
 			ephemeral_key_midstate,
-			peer_counter_low: AtomicUsize::new(0),
-			peer_counter_high: AtomicUsize::new(0),
+			peer_counter: AtomicCounter::new(),
 			logger,
 			custom_message_handler,
 		}
@@ -509,14 +498,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	fn get_ephemeral_key(&self) -> SecretKey {
 		let mut ephemeral_hash = self.ephemeral_key_midstate.clone();
-		let low = self.peer_counter_low.fetch_add(1, Ordering::AcqRel);
-		let high = if low == 0 {
-			self.peer_counter_high.fetch_add(1, Ordering::AcqRel)
-		} else {
-			self.peer_counter_high.load(Ordering::Acquire)
-		};
-		ephemeral_hash.input(&byte_utils::le64_to_array(low as u64));
-		ephemeral_hash.input(&byte_utils::le64_to_array(high as u64));
+		let counter = self.peer_counter.get_increment();
+		ephemeral_hash.input(&counter.to_le_bytes());
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
 	}
 
