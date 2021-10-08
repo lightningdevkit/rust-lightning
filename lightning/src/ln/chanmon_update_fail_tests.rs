@@ -42,9 +42,8 @@ use io;
 use prelude::*;
 use sync::{Arc, Mutex};
 
-// If persister_fail is true, we have the persister return a PermanentFailure
-// instead of the higher-level ChainMonitor.
-fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
+#[test]
+fn test_simple_monitor_permanent_update_fail() {
 	// Test that we handle a simple permanent monitor update failure
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -53,11 +52,7 @@ fn do_test_simple_monitor_permanent_update_fail(persister_fail: bool) {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
-
-	match persister_fail {
-		true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure)),
-		false => *nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::PermanentFailure))
-	}
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), true, APIError::ChannelUnavailable {..}, {});
 	check_added_monitors!(nodes[0], 2);
 
@@ -152,17 +147,7 @@ fn test_monitor_and_persister_update_fail() {
 	assert_eq!(events.len(), 1);
 }
 
-#[test]
-fn test_simple_monitor_permanent_update_fail() {
-	do_test_simple_monitor_permanent_update_fail(false);
-
-	// Test behavior when the persister returns a PermanentFailure.
-	do_test_simple_monitor_permanent_update_fail(true);
-}
-
-// If persister_fail is true, we have the persister return a TemporaryFailure instead of the
-// higher-level ChainMonitor.
-fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail: bool) {
+fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Test that we can recover from a simple temporary monitor update failure optionally with
 	// a disconnect in between
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
@@ -173,10 +158,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
 
-	match persister_fail {
-		true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure)),
-		false => *nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure))
-	}
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	{
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), false, APIError::MonitorUpdateFailed, {});
@@ -193,10 +175,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	}
 
-	match persister_fail {
-		true => chanmon_cfgs[0].persister.set_update_ret(Ok(())),
-		false => *nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()))
-	}
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
@@ -232,10 +211,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 	// Now set it to failed again...
 	let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
 	{
-		match persister_fail {
-			true => chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure)),
-			false => *nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure))
-		}
+		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -264,12 +240,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool, persister_fail
 
 #[test]
 fn test_simple_monitor_temporary_update_fail() {
-	do_test_simple_monitor_temporary_update_fail(false, false);
-	do_test_simple_monitor_temporary_update_fail(true, false);
-
-	// Test behavior when the persister returns a TemporaryFailure.
-	do_test_simple_monitor_temporary_update_fail(false, true);
-	do_test_simple_monitor_temporary_update_fail(true, true);
+	do_test_simple_monitor_temporary_update_fail(false);
+	do_test_simple_monitor_temporary_update_fail(true);
 }
 
 fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
