@@ -17,9 +17,9 @@ use bitcoin::secp256k1::key::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::network_graph::{NetworkGraph, RoutingFees};
+use routing::network_graph::{NetworkGraph, RoutingFees, NodeId};
 use util::ser::{Writeable, Readable};
-use util::logger::Logger;
+use util::logger::{Level, Logger};
 
 use io;
 use prelude::*;
@@ -151,7 +151,7 @@ pub struct RouteHintHop {
 
 #[derive(Eq, PartialEq)]
 struct RouteGraphNode {
-	pubkey: PublicKey,
+	node_id: NodeId,
 	lowest_fee_to_peer_through_node: u64,
 	lowest_fee_to_node: u64,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
@@ -169,7 +169,7 @@ impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
 		let other_score = cmp::max(other.lowest_fee_to_peer_through_node, other.path_htlc_minimum_msat);
 		let self_score = cmp::max(self.lowest_fee_to_peer_through_node, self.path_htlc_minimum_msat);
-		other_score.cmp(&self_score).then_with(|| other.pubkey.serialize().cmp(&self.pubkey.serialize()))
+		other_score.cmp(&self_score).then_with(|| other.node_id.cmp(&self.node_id))
 	}
 }
 
@@ -194,7 +194,7 @@ struct DummyDirectionalChannelInfo {
 struct PathBuildingHop<'a> {
 	// The RouteHintHop fields which will eventually be used if this hop is used in a final Route.
 	// Note that node_features is calculated separately after our initial graph walk.
-	pubkey: PublicKey,
+	node_id: NodeId,
 	short_channel_id: u64,
 	channel_features: &'a ChannelFeatures,
 	fee_msat: u64,
@@ -352,12 +352,12 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 /// Gets a keysend route from us (payer) to the given target node (payee). This is needed because
 /// keysend payments do not have an invoice from which to pull the payee's supported features, which
 /// makes it tricky to otherwise supply the `payee_features` parameter of `get_route`.
-pub fn get_keysend_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee:
+pub fn get_keysend_route<L: Deref>(our_node_pubkey: &PublicKey, network: &NetworkGraph, payee:
                        &PublicKey, first_hops: Option<&[&ChannelDetails]>, last_hops: &[&RouteHint],
                        final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route,
                        LightningError> where L::Target: Logger {
 	let invoice_features = InvoiceFeatures::for_keysend();
-	get_route(our_node_id, network, payee, Some(invoice_features), first_hops, last_hops,
+	get_route(our_node_pubkey, network, payee, Some(invoice_features), first_hops, last_hops,
             final_value_msat, final_cltv, logger)
 }
 
@@ -380,11 +380,14 @@ pub fn get_keysend_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGra
 /// The fees on channels from us to next-hops are ignored (as they are assumed to all be
 /// equal), however the enabled/disabled bit on such channels as well as the
 /// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
-pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, payee: &PublicKey, payee_features: Option<InvoiceFeatures>, first_hops: Option<&[&ChannelDetails]>,
+pub fn get_route<L: Deref>(our_node_pubkey: &PublicKey, network: &NetworkGraph, payee: &PublicKey, payee_features: Option<InvoiceFeatures>, first_hops: Option<&[&ChannelDetails]>,
 	last_hops: &[&RouteHint], final_value_msat: u64, final_cltv: u32, logger: L) -> Result<Route, LightningError> where L::Target: Logger {
+	let payee_node_id = NodeId::from_pubkey(&payee);
+	let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
+
 	// TODO: Obviously *only* using total fee cost sucks. We should consider weighting by
 	// uptime/success in using a node in the past.
-	if *payee == *our_node_id {
+	if payee_node_id == our_node_id {
 		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
@@ -482,12 +485,12 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// work reliably.
 	let allow_mpp = if let Some(features) = &payee_features {
 		features.supports_basic_mpp()
-	} else if let Some(node) = network_nodes.get(&payee) {
+	} else if let Some(node) = network_nodes.get(&payee_node_id) {
 		if let Some(node_info) = node.announcement_info.as_ref() {
 			node_info.features.supports_basic_mpp()
 		} else { false }
 	} else { false };
-	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP", our_node_id, payee,
+	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP", our_node_pubkey, payee,
 		if allow_mpp { "with" } else { "without" });
 
 	// Step (1).
@@ -499,10 +502,10 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	if let Some(hops) = first_hops {
 		for chan in hops {
 			let short_channel_id = chan.short_channel_id.expect("first_hops should be filled in with usable channels, not pending ones");
-			if chan.counterparty.node_id == *our_node_id {
-				return Err(LightningError{err: "First hop cannot have our_node_id as a destination.".to_owned(), action: ErrorAction::IgnoreError});
+			if chan.counterparty.node_id == *our_node_pubkey {
+				return Err(LightningError{err: "First hop cannot have our_node_pubkey as a destination.".to_owned(), action: ErrorAction::IgnoreError});
 			}
-			first_hop_targets.entry(chan.counterparty.node_id).or_insert(Vec::new())
+			first_hop_targets.entry(NodeId::from_pubkey(&chan.counterparty.node_id)).or_insert(Vec::new())
 				.push((short_channel_id, chan.counterparty.features.to_context(), chan.outbound_capacity_msat, chan.counterparty.features.to_context()));
 		}
 		if first_hop_targets.is_empty() {
@@ -547,7 +550,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// - when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
 
-	log_trace!(logger, "Building path from {} (payee) to {} (us/payer) for value {} msat.", payee, our_node_id, final_value_msat);
+	log_trace!(logger, "Building path from {} (payee) to {} (us/payer) for value {} msat.", payee, our_node_pubkey, final_value_msat);
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $src_node_id to $dest_node_id
@@ -647,7 +650,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							Some(Some(value_msat)) => cmp::max(value_msat, $directional_info.htlc_minimum_msat),
 							_ => u64::max_value()
 						};
-						let hm_entry = dist.entry(&$src_node_id);
+						let hm_entry = dist.entry($src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							// If there was previously no known way to access
 							// the source node (recall it goes payee-to-payer) of $chan_id, first add
@@ -661,7 +664,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								fee_proportional_millionths = fees.proportional_millionths;
 							}
 							PathBuildingHop {
-								pubkey: $dest_node_id.clone(),
+								node_id: $dest_node_id.clone(),
 								short_channel_id: 0,
 								channel_features: $chan_features,
 								fee_msat: 0,
@@ -697,7 +700,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 							// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
 							// will have the same effective-fee
-							if $src_node_id != *our_node_id {
+							if $src_node_id != our_node_id {
 								match compute_fees(amount_to_transfer_over_msat, $directional_info.fees) {
 									// max_value means we'll always fail
 									// the old_entry.total_fee_msat > total_fee_msat check
@@ -728,7 +731,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							}
 
 							let new_graph_node = RouteGraphNode {
-								pubkey: $src_node_id,
+								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
 								lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
 								value_contribution_msat: value_contribution_msat,
@@ -759,7 +762,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 								old_entry.next_hops_fee_msat = $next_hops_fee_msat;
 								old_entry.hop_use_fee_msat = hop_use_fee_msat;
 								old_entry.total_fee_msat = total_fee_msat;
-								old_entry.pubkey = $dest_node_id.clone();
+								old_entry.node_id = $dest_node_id.clone();
 								old_entry.short_channel_id = $chan_id.clone();
 								old_entry.channel_features = $chan_features;
 								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
@@ -814,7 +817,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
 		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr ) => {
-			let skip_node = if let Some(elem) = dist.get_mut($node_id) {
+			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
 				was_processed
@@ -822,14 +825,14 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// Entries are added to dist in add_entry!() when there is a channel from a node.
 				// Because there are no channels from payee, it will not have a dist entry at this point.
 				// If we're processing any other node, it is always be the result of a channel from it.
-				assert_eq!($node_id, payee);
+				assert_eq!($node_id, payee_node_id);
 				false
 			};
 
 			if !skip_node {
 				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
 					for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-						add_entry!(first_hop, *our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
+						add_entry!(first_hop, our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
 					}
 				}
 
@@ -843,9 +846,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					for chan_id in $node.channels.iter() {
 						let chan = network_channels.get(chan_id).unwrap();
 						if !chan.features.requires_unknown_bits() {
-							if chan.node_one == *$node_id {
+							if chan.node_one == $node_id {
 								// ie $node is one, ie next hop in A* is two, via the two_to_one channel
-								if first_hops.is_none() || chan.node_two != *our_node_id {
+								if first_hops.is_none() || chan.node_two != our_node_id {
 									if let Some(two_to_one) = chan.two_to_one.as_ref() {
 										if two_to_one.enabled {
 											add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
@@ -853,7 +856,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 									}
 								}
 							} else {
-								if first_hops.is_none() || chan.node_one != *our_node_id {
+								if first_hops.is_none() || chan.node_one != our_node_id{
 									if let Some(one_to_two) = chan.one_to_two.as_ref() {
 										if one_to_two.enabled {
 											add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat);
@@ -881,23 +884,23 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 
 		// If first hop is a private channel and the only way to reach the payee, this is the only
 		// place where it could be added.
-		if let Some(first_channels) = first_hop_targets.get(&payee) {
+		if let Some(first_channels) = first_hop_targets.get(&payee_node_id) {
 			for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-				let added = add_entry!(first_hop, *our_node_id, payee, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
+				let added = add_entry!(first_hop, our_node_id, payee_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0);
 				log_trace!(logger, "{} direct route to payee via SCID {}", if added { "Added" } else { "Skipped" }, first_hop);
 			}
 		}
 
 		// Add the payee as a target, so that the payee-to-payer
 		// search algorithm knows what to start with.
-		match network_nodes.get(payee) {
+		match network_nodes.get(&payee_node_id) {
 			// The payee is not in our network graph, so nothing to add here.
 			// There is still a chance of reaching them via last_hops though,
 			// so don't yet fail the payment here.
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee, 0, path_value_msat, 0);
+				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0);
 			},
 		}
 
@@ -911,8 +914,8 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 				// Only add the hops in this route to our candidate set if either
 				// we have a direct channel to the first hop or the first hop is
 				// in the regular network graph.
-				first_hop_targets.get(&first_hop_in_route.src_node_id).is_some() ||
-				network_nodes.get(&first_hop_in_route.src_node_id).is_some();
+				first_hop_targets.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some() ||
+				network_nodes.get(&NodeId::from_pubkey(&first_hop_in_route.src_node_id)).is_some();
 			if have_hop_src_in_graph {
 				// We start building the path from reverse, i.e., from payee
 				// to the first RouteHintHop in the path.
@@ -940,12 +943,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 						_ => aggregate_next_hops_fee_msat.checked_add(999).unwrap_or(u64::max_value())
 					}) { Some( val / 1000 ) } else { break; }; // converting from msat or breaking if max ~ infinity
 
-
 					// We assume that the recipient only included route hints for routes which had
 					// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
 					// invoices where the invoice does not specify value this may not be the case, but
 					// better to include the hints than not.
-					if !add_entry!(hop.short_channel_id, hop.src_node_id, prev_hop_id, directional_info, reqd_channel_cap, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat) {
+					if !add_entry!(hop.short_channel_id, NodeId::from_pubkey(&hop.src_node_id), NodeId::from_pubkey(&prev_hop_id), directional_info, reqd_channel_cap, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat) {
 						// If this hop was not used then there is no use checking the preceding hops
 						// in the RouteHint. We can break by just searching for a direct channel between
 						// last checked hop and first_hop_targets
@@ -953,9 +955,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					}
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get(&prev_hop_id) {
+					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
 						for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-							add_entry!(first_hop, *our_node_id , prev_hop_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
+							add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&prev_hop_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
 						}
 					}
 
@@ -987,9 +989,9 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 						// Note that we *must* check if the last hop was added as `add_entry`
 						// always assumes that the third argument is a node to which we have a
 						// path.
-						if let Some(first_channels) = first_hop_targets.get(&hop.src_node_id) {
+						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
 							for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-								add_entry!(first_hop, *our_node_id , hop.src_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
+								add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&hop.src_node_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat);
 							}
 						}
 					}
@@ -1012,17 +1014,17 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
-			if pubkey == *our_node_id {
+			if node_id == our_node_id {
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
 				let mut ordered_hops = vec!((new_entry.clone(), NodeFeatures::empty()));
 
 				'path_walk: loop {
 					let mut features_set = false;
-					if let Some(first_channels) = first_hop_targets.get(&ordered_hops.last().unwrap().0.pubkey) {
+					if let Some(first_channels) = first_hop_targets.get(&ordered_hops.last().unwrap().0.node_id) {
 						for (scid, _, _, ref features) in first_channels {
 							if *scid == ordered_hops.last().unwrap().0.short_channel_id {
 								ordered_hops.last_mut().unwrap().1 = features.clone();
@@ -1032,7 +1034,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 						}
 					}
 					if !features_set {
-						if let Some(node) = network_nodes.get(&ordered_hops.last().unwrap().0.pubkey) {
+						if let Some(node) = network_nodes.get(&ordered_hops.last().unwrap().0.node_id) {
 							if let Some(node_info) = node.announcement_info.as_ref() {
 								ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
 							} else {
@@ -1043,7 +1045,7 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 							// hop, if the last hop was provided via a BOLT 11 invoice (though we
 							// should be able to extend it further as BOLT 11 does have feature
 							// flags for the last hop node itself).
-							assert!(ordered_hops.last().unwrap().0.pubkey == *payee);
+							assert!(ordered_hops.last().unwrap().0.node_id == payee_node_id);
 						}
 					}
 
@@ -1051,11 +1053,11 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
-					if ordered_hops.last().unwrap().0.pubkey == *payee {
+					if ordered_hops.last().unwrap().0.node_id == payee_node_id {
 						break 'path_walk;
 					}
 
-					new_entry = match dist.remove(&ordered_hops.last().unwrap().0.pubkey) {
+					new_entry = match dist.remove(&ordered_hops.last().unwrap().0.node_id) {
 						Some(payment_hop) => payment_hop,
 						// We can't arrive at None because, if we ever add an entry to targets,
 						// we also fill in the entry in dist (see add_entry!).
@@ -1130,15 +1132,15 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 			// If we found a path back to the payee, we shouldn't try to process it again. This is
 			// the equivalent of the `elem.was_processed` check in
 			// add_entries_to_cheapest_to_target_node!() (see comment there for more info).
-			if pubkey == *payee { continue 'path_construction; }
+			if node_id == payee_node_id { continue 'path_construction; }
 
 			// Otherwise, since the current target node is not us,
 			// keep "unrolling" the payment graph from payee to payer by
 			// finding a way to reach the current target from the payer side.
-			match network_nodes.get(&pubkey) {
+			match network_nodes.get(&node_id) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, &pubkey, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat);
+					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat);
 				},
 			}
 		}
@@ -1257,27 +1259,29 @@ pub fn get_route<L: Deref>(our_node_id: &PublicKey, network: &NetworkGraph, paye
 	// Step (9).
 	// Select the best route by lowest total fee.
 	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
-	let mut selected_paths = Vec::<Vec<RouteHop>>::new();
+	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
 	for payment_path in drawn_routes.first().unwrap() {
 		selected_paths.push(payment_path.hops.iter().map(|(payment_hop, node_features)| {
-			RouteHop {
-				pubkey: payment_hop.pubkey,
+			Ok(RouteHop {
+				pubkey: PublicKey::from_slice(payment_hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &payment_hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
 				node_features: node_features.clone(),
 				short_channel_id: payment_hop.short_channel_id,
 				channel_features: payment_hop.channel_features.clone(),
 				fee_msat: payment_hop.fee_msat,
 				cltv_expiry_delta: payment_hop.cltv_expiry_delta,
-			}
+			})
 		}).collect());
 	}
 
 	if let Some(features) = &payee_features {
 		for path in selected_paths.iter_mut() {
-			path.last_mut().unwrap().node_features = features.to_context();
+			if let Ok(route_hop) = path.last_mut().unwrap() {
+				route_hop.node_features = features.to_context();
+			}
 		}
 	}
 
-	let route = Route { paths: selected_paths };
+	let route = Route { paths: selected_paths.into_iter().map(|path| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()? };
 	log_info!(logger, "Got route to {}: {}", payee, log_route!(route));
 	Ok(route)
 }
@@ -1783,7 +1787,7 @@ mod tests {
 		let our_chans = vec![get_channel_details(Some(2), our_id, InitFeatures::from_le_bytes(vec![0b11]), 100000)];
 
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &net_graph_msg_handler.network_graph, &nodes[2], None, Some(&our_chans.iter().collect::<Vec<_>>()), &Vec::new(), 100, 42, Arc::clone(&logger)) {
-			assert_eq!(err, "First hop cannot have our_node_id as a destination.");
+			assert_eq!(err, "First hop cannot have our_node_pubkey as a destination.");
 		} else { panic!(); }
 
 		let route = get_route(&our_id, &net_graph_msg_handler.network_graph, &nodes[2], None, None, &Vec::new(), 100, 42, Arc::clone(&logger)).unwrap();
@@ -2202,7 +2206,7 @@ mod tests {
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[3].clone(),
+			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
@@ -2210,7 +2214,7 @@ mod tests {
 			htlc_maximum_msat: None,
 		}
 		]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[4].clone(),
+			src_node_id: nodes[4],
 			short_channel_id: 9,
 			fees: RoutingFees {
 				base_msat: 1001,
@@ -2220,7 +2224,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5].clone(),
+			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
@@ -2235,7 +2239,7 @@ mod tests {
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[2].clone(),
+			src_node_id: nodes[2],
 			short_channel_id: 5,
 			fees: RoutingFees {
 				base_msat: 100,
@@ -2245,7 +2249,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
-			src_node_id: nodes[3].clone(),
+			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
@@ -2253,7 +2257,7 @@ mod tests {
 			htlc_maximum_msat: None,
 		}
 		]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[4].clone(),
+			src_node_id: nodes[4],
 			short_channel_id: 9,
 			fees: RoutingFees {
 				base_msat: 1001,
@@ -2263,7 +2267,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5].clone(),
+			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
@@ -2349,7 +2353,7 @@ mod tests {
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[3].clone(),
+			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
@@ -2358,7 +2362,7 @@ mod tests {
 		}]), RouteHint(vec![
 
 		]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5].clone(),
+			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
@@ -2421,7 +2425,7 @@ mod tests {
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[2].clone(),
+			src_node_id: nodes[2],
 			short_channel_id: 5,
 			fees: RoutingFees {
 				base_msat: 100,
@@ -2431,14 +2435,14 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
-			src_node_id: nodes[3].clone(),
+			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5].clone(),
+			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
@@ -2518,21 +2522,21 @@ mod tests {
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[4].clone(),
+			src_node_id: nodes[4],
 			short_channel_id: 11,
 			fees: zero_fees,
 			cltv_expiry_delta: (11 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
-			src_node_id: nodes[3].clone(),
+			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 8) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[4].clone(),
+			src_node_id: nodes[4],
 			short_channel_id: 9,
 			fees: RoutingFees {
 				base_msat: 1001,
@@ -2542,7 +2546,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5].clone(),
+			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
 			cltv_expiry_delta: (10 << 8) | 1,
@@ -4380,9 +4384,9 @@ mod tests {
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let src = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let dst = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let amt = seed as u64 % 200_000_000;
 				if get_route(src, &graph, dst, None, None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
 					continue 'load_endpoints;
@@ -4409,9 +4413,9 @@ mod tests {
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let src = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let dst = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let amt = seed as u64 % 200_000_000;
 				if get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &test_utils::TestLogger::new()).is_ok() {
 					continue 'load_endpoints;
@@ -4472,11 +4476,11 @@ mod benches {
 		'load_endpoints: for _ in 0..100 {
 			loop {
 				seed *= 0xdeadbeef;
-				let src = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed *= 0xdeadbeef;
-				let dst = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let amt = seed as u64 % 1_000_000;
-				if get_route(src, &graph, dst, None, None, &[], amt, 42, &DummyLogger{}).is_ok() {
+				if get_route(&src, &graph, &dst, None, None, &[], amt, 42, &DummyLogger{}).is_ok() {
 					path_endpoints.push((src, dst, amt));
 					continue 'load_endpoints;
 				}
@@ -4487,7 +4491,7 @@ mod benches {
 		let mut idx = 0;
 		bench.iter(|| {
 			let (src, dst, amt) = path_endpoints[idx % path_endpoints.len()];
-			assert!(get_route(src, &graph, dst, None, None, &[], amt, 42, &DummyLogger{}).is_ok());
+			assert!(get_route(&src, &graph, &dst, None, None, &[], amt, 42, &DummyLogger{}).is_ok());
 			idx += 1;
 		});
 	}
@@ -4504,11 +4508,11 @@ mod benches {
 		'load_endpoints: for _ in 0..100 {
 			loop {
 				seed *= 0xdeadbeef;
-				let src = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed *= 0xdeadbeef;
-				let dst = nodes.keys().skip(seed % nodes.len()).next().unwrap();
+				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let amt = seed as u64 % 1_000_000;
-				if get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok() {
+				if get_route(&src, &graph, &dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok() {
 					path_endpoints.push((src, dst, amt));
 					continue 'load_endpoints;
 				}
@@ -4519,7 +4523,7 @@ mod benches {
 		let mut idx = 0;
 		bench.iter(|| {
 			let (src, dst, amt) = path_endpoints[idx % path_endpoints.len()];
-			assert!(get_route(src, &graph, dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok());
+			assert!(get_route(&src, &graph, &dst, Some(InvoiceFeatures::known()), None, &[], amt, 42, &DummyLogger{}).is_ok());
 			idx += 1;
 		});
 	}
