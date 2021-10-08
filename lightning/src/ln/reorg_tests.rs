@@ -238,7 +238,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		// it when we go to deserialize, and then use the ChannelManager.
 		let nodes_0_serialized = nodes[0].node.encode();
 		let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+		get_monitor!(nodes[0], chan.2).write(&mut chan_0_monitor_serialized).unwrap();
 
 		persister = test_utils::TestPersister::new();
 		let keys_manager = &chanmon_cfgs[0].keys_manager;

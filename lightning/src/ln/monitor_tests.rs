@@ -107,9 +107,9 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::COMMITMENT_TX_BASE_WEIGHT / 1000
 		}],
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableOnChannelClose { claimable_amount_satoshis: 1_000, }],
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	nodes[0].node.close_channel(&chan_id).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -143,20 +143,20 @@ fn chanmon_claim_value_coop_close() {
 			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::COMMITMENT_TX_BASE_WEIGHT / 1000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}],
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 1000,
 			confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}],
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	assert_eq!(Vec::<Balance>::new(),
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(Vec::<Balance>::new(),
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_a_spendable.len(), 1);
@@ -230,11 +230,11 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000,
 		}],
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -284,11 +284,11 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		});
 	}
 	assert_eq!(sorted_vec(a_expected_balances),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000 + 3_000 + 4_000,
 		}],
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	// Broadcast the closing transaction (which has both pending HTLCs in it) and get B's
 	// broadcasted HTLC claim transaction with preimage.
@@ -342,7 +342,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	// The main non-HTLC balance is just awaiting confirmations, but the claimable height is the
 	// CSV delay, not ANTI_REORG_DELAY.
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
@@ -358,7 +358,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	expect_payment_failed!(nodes[0], dust_payment_hash, true);
@@ -373,7 +373,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 1_000,
 			confirmation_height: node_b_commitment_claimable,
@@ -384,7 +384,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(node_a_spendable.len(), 1);
@@ -410,13 +410,13 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	assert_eq!(vec![Balance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}],
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	// When the HTLC timeout output is spendable in the next block, A should broadcast it
 	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1 - 1);
@@ -441,12 +441,12 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}],
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	// After ANTI_REORG_DELAY, A will generate a SpendableOutputs event and drop the claimable
 	// balance entry.
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	assert_eq!(Vec::<Balance>::new(),
-		nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	expect_payment_failed!(nodes[0], timeout_payment_hash, true);
 
 	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
@@ -474,7 +474,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	// After reaching the commitment output CSV, we'll get a SpendableOutputs event for it and have
 	// only the HTLCs claimable on node B.
@@ -496,7 +496,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}]),
-		sorted_vec(nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances()));
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	// After reaching the claimed HTLC output CSV, we'll get a SpendableOutptus event for it and
 	// have only one HTLC output left spendable.
@@ -515,7 +515,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}],
-	nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	// Finally, mine the HTLC timeout transaction that A broadcasted (even though B should be able
 	// to claim this HTLC with the preimage it knows!). It will remain listed as a claimable HTLC
@@ -525,10 +525,10 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
 		}],
-	nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	assert_eq!(Vec::<Balance>::new(),
-		nodes[1].chain_monitor.chain_monitor.monitors.read().unwrap().get(&funding_outpoint).unwrap().get_claimable_balances());
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 }
 
 #[test]

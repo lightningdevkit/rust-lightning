@@ -114,8 +114,7 @@ fn test_monitor_and_persister_update_fail() {
 		blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 200); 200])),
 	};
 	let chain_mon = {
-		let monitors = nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap();
-		let monitor = monitors.get(&outpoint).unwrap();
+		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
@@ -2256,7 +2255,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		if reload_a {
 			let nodes_0_serialized = nodes[0].node.encode();
 			let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-			nodes[0].chain_monitor.chain_monitor.monitors.read().unwrap().iter().next().unwrap().1.write(&mut chan_0_monitor_serialized).unwrap();
+			get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
 
 			persister = test_utils::TestPersister::new();
 			let keys_manager = &chanmon_cfgs[0].keys_manager;
