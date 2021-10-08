@@ -45,7 +45,7 @@ use sync::{Arc, Mutex};
 #[test]
 fn test_simple_monitor_permanent_update_fail() {
 	// Test that we handle a simple permanent monitor update failure
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -150,7 +150,7 @@ fn test_monitor_and_persister_update_fail() {
 fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// Test that we can recover from a simple temporary monitor update failure optionally with
 	// a disconnect in between
-	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -275,7 +275,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	// Now try to send a second payment which will fail to send
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	{
-		*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -328,7 +328,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	}
 
 	// Now fix monitor updating...
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
@@ -619,14 +619,14 @@ fn test_monitor_update_fail_cs() {
 	let send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -650,7 +650,7 @@ fn test_monitor_update_fail_cs() {
 			assert!(updates.update_fee.is_none());
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 
-			*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+			chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
@@ -660,7 +660,7 @@ fn test_monitor_update_fail_cs() {
 		_ => panic!("Unexpected event"),
 	}
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
@@ -712,7 +712,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 	let bs_raa = commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true, false, true);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_raa);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
@@ -720,7 +720,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -769,7 +769,7 @@ fn test_monitor_update_raa_while_paused() {
 	check_added_monitors!(nodes[1], 1);
 	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event_2.msgs[0]);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -781,7 +781,7 @@ fn test_monitor_update_raa_while_paused() {
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented responses to RAA".to_string(), 1);
 	check_added_monitors!(nodes[0], 1);
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
@@ -861,7 +861,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now fail monitor updating.
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
@@ -877,7 +877,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		check_added_monitors!(nodes[0], 1);
 	}
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(())); // We succeed in updating the monitor for the first channel
+	chanmon_cfgs[1].persister.set_update_ret(Ok(())); // We succeed in updating the monitor for the first channel
 	send_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], send_event.commitment_msg, false, true);
@@ -907,7 +907,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Restore monitor updating, ensuring we immediately get a fail-back update and a
 	// update_add update.
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_2.2).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1109,7 +1109,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
 
@@ -1146,7 +1146,7 @@ fn test_monitor_update_fail_reestablish() {
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id())
 			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_1.2).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1217,7 +1217,7 @@ fn raa_no_response_awaiting_raa_state() {
 	// Now we have a CS queued up which adds a new HTLC (which will need a RAA/CS response from
 	// nodes[1]) followed by an RAA. Fail the monitor updating prior to the CS, deliver the RAA,
 	// then restore channel monitor updates.
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1229,7 +1229,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented responses to RAA".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	// nodes[1] should be AwaitingRAA here!
@@ -1319,7 +1319,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	// Now deliver a's reestablish, freeing the claim from the holding cell, but fail the monitor
 	// update.
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect);
 	let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
@@ -1346,7 +1346,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	// Now un-fail the monitor, which will result in B sending its original commitment update,
 	// receiving the commitment update from A, and the resulting commitment dances.
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1429,7 +1429,7 @@ fn monitor_failed_no_reestablish_response() {
 		check_added_monitors!(nodes[0], 1);
 	}
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -1455,7 +1455,7 @@ fn monitor_failed_no_reestablish_response() {
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reconnect);
 	let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1529,7 +1529,7 @@ fn first_message_on_recv_ordering() {
 	let payment_event = SendEvent::from_event(events.pop().unwrap());
 	assert_eq!(payment_event.node_id, nodes[1].node.get_our_node_id());
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	// Deliver the final RAA for the first payment, which does not require a response. RAAs
 	// generally require a commitment_signed, so the fact that we're expecting an opposite response
@@ -1548,7 +1548,7 @@ fn first_message_on_recv_ordering() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1592,7 +1592,7 @@ fn test_monitor_update_fail_claim() {
 
 	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
@@ -1610,7 +1610,7 @@ fn test_monitor_update_fail_claim() {
 
 	// Successfully update the monitor on the 1<->2 channel, but the 0<->1 channel should still be
 	// paused, so forward shouldn't succeed until we call channel_monitor_updated().
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 
 	let mut events = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1721,13 +1721,13 @@ fn test_monitor_update_on_pending_forwards() {
 	nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_1.2).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1781,14 +1781,14 @@ fn monitor_update_claim_fail_no_response() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	let as_raa = commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true, false, true);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1835,19 +1835,19 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, funding_tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	let channel_id = OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors!(nodes[1], 1);
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[0], 1);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[0], 0);
@@ -1879,7 +1879,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 	check_added_monitors!(nodes[1], 0);
@@ -1944,8 +1944,8 @@ fn test_path_paused_mpp() {
 
 	// Set it so that the first monitor update (for the path 0 -> 1 -> 3) succeeds, but the second
 	// (for the path 0 -> 2 -> 3) fails.
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
-	*nodes[0].chain_monitor.next_update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
+	chanmon_cfgs[0].persister.set_next_update_ret(Some(Err(ChannelMonitorUpdateErr::TemporaryFailure)));
 
 	// Now check that we get the right return value, indicating that the first path succeeded but
 	// the second got a MonitorUpdateFailed err. This implies PaymentSendFailure::PartialFailure as
@@ -1956,7 +1956,7 @@ fn test_path_paused_mpp() {
 		if let Err(APIError::MonitorUpdateFailed) = results[1] {} else { panic!(); }
 	} else { panic!(); }
 	check_added_monitors!(nodes[0], 2);
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 
 	// Pass the first HTLC of the payment along to nodes[3].
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -2207,7 +2207,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	assert!(nodes[0].node.claim_funds(payment_preimage_0));
 	check_added_monitors!(nodes[0], 1);
 
@@ -2300,7 +2300,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 
 	// If we finish updating the monitor, we should free the holding cell right away (this did
 	// not occur prior to #756).
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = None;
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
 	let (funding_txo, mon_id) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&funding_txo, mon_id);
 
@@ -2484,8 +2484,8 @@ fn test_temporary_error_during_shutdown() {
 
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	nodes[0].node.close_channel(&channel_id).unwrap();
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
@@ -2496,8 +2496,8 @@ fn test_temporary_error_during_shutdown() {
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = None;
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = None;
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 
 	let (outpoint, latest_update) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[0].node.channel_monitor_updated(&outpoint, latest_update);
@@ -2505,7 +2505,7 @@ fn test_temporary_error_during_shutdown() {
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = None;
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 	let (outpoint, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&outpoint, latest_update);
 
@@ -2538,7 +2538,7 @@ fn test_permanent_error_during_sending_shutdown() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	*nodes[0].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::PermanentFailure));
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
 
 	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
 	check_closed_broadcast!(nodes[0], true);
@@ -2559,7 +2559,7 @@ fn test_permanent_error_during_handling_shutdown() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::PermanentFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
 
 	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
 	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -2582,18 +2582,18 @@ fn double_temp_error() {
 	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 	let (payment_preimage_2, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	// `claim_funds` results in a ChannelMonitorUpdate.
 	assert!(nodes[1].node.claim_funds(payment_preimage_1));
 	check_added_monitors!(nodes[1], 1);
 	let (funding_tx, latest_update_1) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	// Previously, this would've panicked due to a double-call to `Channel::monitor_update_failed`,
 	// which had some asserts that prevented it from being called twice.
 	assert!(nodes[1].node.claim_funds(payment_preimage_2));
 	check_added_monitors!(nodes[1], 1);
-	*nodes[1].chain_monitor.update_ret.lock().unwrap() = Some(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 
 	let (_, latest_update_2) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].node.channel_monitor_updated(&funding_tx, latest_update_1);
