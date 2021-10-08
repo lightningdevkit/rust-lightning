@@ -82,7 +82,7 @@ fn updates_shutdown_wait() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
 
-	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 
 	nodes[0].node.close_channel(&chan_1.2).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -127,8 +127,9 @@ fn updates_shutdown_wait() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 			assert_eq!(our_payment_preimage, *payment_preimage);
+			assert_eq!(our_payment_hash, *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -242,7 +243,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
-	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 
 	nodes[1].node.close_channel(&chan_1.2).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -307,8 +308,9 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
 			assert_eq!(our_payment_preimage, *payment_preimage);
+			assert_eq!(our_payment_hash, *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}

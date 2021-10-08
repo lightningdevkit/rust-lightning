@@ -23,7 +23,8 @@ use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Re
 use routing::router::RouteHop;
 
 use bitcoin::blockdata::script::Script;
-
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::key::PublicKey;
 
 use io;
@@ -177,6 +178,10 @@ pub enum Event {
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
 		/// store it somehow!
 		payment_preimage: PaymentPreimage,
+		/// The hash which was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		payment_hash: PaymentHash,
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
@@ -287,10 +292,11 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_preimage } => {
+			&Event::PaymentSent { ref payment_preimage, ref payment_hash} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
+					(1, payment_hash, required),
 				});
 			},
 			&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
@@ -387,11 +393,17 @@ impl MaybeReadable for Event {
 			2u8 => {
 				let f = || {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
+					let mut payment_hash = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
+						(1, payment_hash, option),
 					});
+					if payment_hash.is_none() {
+						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
+					}
 					Ok(Some(Event::PaymentSent {
 						payment_preimage,
+						payment_hash: payment_hash.unwrap(),
 					}))
 				};
 				f()
