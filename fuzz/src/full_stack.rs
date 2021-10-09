@@ -365,7 +365,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 
 	let broadcast = Arc::new(TestBroadcaster{ txn_broadcasted: Mutex::new(Vec::new()) });
-	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(), Arc::new(TestPersister{})));
+	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(),
+		Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) })));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();

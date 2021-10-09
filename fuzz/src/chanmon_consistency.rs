@@ -99,8 +99,8 @@ impl Writer for VecWriter {
 struct TestChainMonitor {
 	pub logger: Arc<dyn Logger>,
 	pub keys: Arc<KeyProvider>,
+	pub persister: Arc<TestPersister>,
 	pub chain_monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	pub update_ret: Mutex<Result<(), chain::ChannelMonitorUpdateErr>>,
 	// If we reload a node with an old copy of ChannelMonitors, the ChannelManager deserialization
 	// logic will automatically force-close our channels for us (as we don't have an up-to-date
 	// monitor implying we are not able to punish misbehaving counterparties). Because this test
@@ -112,10 +112,10 @@ struct TestChainMonitor {
 impl TestChainMonitor {
 	pub fn new(broadcaster: Arc<TestBroadcaster>, logger: Arc<dyn Logger>, feeest: Arc<FuzzEstimator>, persister: Arc<TestPersister>, keys: Arc<KeyProvider>) -> Self {
 		Self {
-			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest, persister)),
+			chain_monitor: Arc::new(chainmonitor::ChainMonitor::new(None, broadcaster, logger.clone(), feeest, Arc::clone(&persister))),
 			logger,
 			keys,
-			update_ret: Mutex::new(Ok(())),
+			persister,
 			latest_monitors: Mutex::new(HashMap::new()),
 			should_update_manager: atomic::AtomicBool::new(false),
 		}
@@ -129,8 +129,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 			panic!("Already had monitor pre-watch_channel");
 		}
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
-		assert!(self.chain_monitor.watch_channel(funding_txo, monitor).is_ok());
-		self.update_ret.lock().unwrap().clone()
+		self.chain_monitor.watch_channel(funding_txo, monitor)
 	}
 
 	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), chain::ChannelMonitorUpdateErr> {
@@ -146,8 +145,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		deserialized_monitor.write(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));
 		self.should_update_manager.store(true, atomic::Ordering::Relaxed);
-		assert!(self.chain_monitor.update_channel(funding_txo, update).is_ok());
-		self.update_ret.lock().unwrap().clone()
+		self.chain_monitor.update_channel(funding_txo, update)
 	}
 
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
@@ -346,7 +344,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		($node_id: expr, $fee_estimator: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
-			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(), Arc::new(TestPersister{}), Arc::clone(&keys_manager)));
+			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
+				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(&keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
@@ -365,7 +364,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		($ser: expr, $node_id: expr, $old_monitors: expr, $keys_manager: expr, $fee_estimator: expr) => { {
 		    let keys_manager = Arc::clone(& $keys_manager);
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(), Arc::new(TestPersister{}), Arc::clone(& $keys_manager)));
+			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
+				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(& $keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
@@ -846,12 +846,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
 
-			0x00 => *monitor_a.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x01 => *monitor_b.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x02 => *monitor_c.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x04 => *monitor_a.update_ret.lock().unwrap() = Ok(()),
-			0x05 => *monitor_b.update_ret.lock().unwrap() = Ok(()),
-			0x06 => *monitor_c.update_ret.lock().unwrap() = Ok(()),
+			0x00 => *monitor_a.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
+			0x01 => *monitor_b.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
+			0x02 => *monitor_c.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
+			0x04 => *monitor_a.persister.update_ret.lock().unwrap() = Ok(()),
+			0x05 => *monitor_b.persister.update_ret.lock().unwrap() = Ok(()),
+			0x06 => *monitor_c.persister.update_ret.lock().unwrap() = Ok(()),
 
 			0x08 => {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
@@ -1072,9 +1072,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				// after we resolve all pending events.
 				// First make sure there are no pending monitor updates, resetting the error state
 				// and calling channel_monitor_updated for each monitor.
-				*monitor_a.update_ret.lock().unwrap() = Ok(());
-				*monitor_b.update_ret.lock().unwrap() = Ok(());
-				*monitor_c.update_ret.lock().unwrap() = Ok(());
+				*monitor_a.persister.update_ret.lock().unwrap() = Ok(());
+				*monitor_b.persister.update_ret.lock().unwrap() = Ok(());
+				*monitor_c.persister.update_ret.lock().unwrap() = Ok(());
 
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
