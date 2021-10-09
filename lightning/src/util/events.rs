@@ -480,23 +480,29 @@ impl MaybeReadable for Event {
 				f()
 			},
 			9u8 => {
-				let mut channel_id = [0; 32];
-				let mut reason = None;
-				read_tlv_fields!(reader, {
-					(0, channel_id, required),
-					(2, reason, ignorable),
-				});
-				if reason.is_none() { return Ok(None); }
-				Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut reason = None;
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, reason, ignorable),
+					});
+					if reason.is_none() { return Ok(None); }
+					Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
+				};
+				f()
 			},
 			11u8 => {
-				let mut channel_id = [0; 32];
-				let mut transaction = Transaction{ version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
-				read_tlv_fields!(reader, {
-					(0, channel_id, required),
-					(2, transaction, required),
-				});
-				Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut transaction = Transaction{ version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, transaction, required),
+					});
+					Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
+				};
+				f()
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
