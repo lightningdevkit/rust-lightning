@@ -763,21 +763,29 @@ macro_rules! check_closed_broadcast {
 	}}
 }
 
-/// Check that a channel's closing channel event has been issued
+/// Check that a channel's closing channel events has been issued
 #[macro_export]
 macro_rules! check_closed_event {
-	($node: expr, $events: expr, $reason: expr) => {{
+	($node: expr, $events: expr, $reason: expr) => {
+		check_closed_event!($node, $events, $reason, false);
+	};
+	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), $events);
 		let expected_reason = $reason;
+		let mut issues_discard_funding = false;
 		for event in events {
 			match event {
 				Event::ChannelClosed { ref reason, .. } => {
 					assert_eq!(*reason, expected_reason);
 				},
+				Event::DiscardFunding { .. } => {
+					issues_discard_funding = true;
+				}
 				_ => panic!("Unexpected event"),
 			}
 		}
+		assert_eq!($is_check_discard_funding, issues_discard_funding);
 	}}
 }
 
