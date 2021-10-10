@@ -12,7 +12,7 @@
 //! claim outputs on-chain.
 
 use chain;
-use chain::{Confirm, Listen, Watch};
+use chain::{Confirm, Listen, Watch, ChannelMonitorUpdateErr};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
@@ -4099,21 +4099,15 @@ fn test_no_txn_manager_serialize_deserialize() {
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);
 }
 
-#[test]
-fn test_dup_htlc_onchain_fails_on_reload() {
+fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
 	// having a copy of the relevant fail-/claim-back data and processes the HTLC fail/claim when
 	// the ChannelMonitor tells it to.
 	//
-	// If, due to an on-chain event, an HTLC is failed/claimed, and then we serialize the
-	// ChannelManager, we generally expect there not to be a duplicate HTLC fail/claim (eg via a
-	// PaymentPathFailed event appearing). However, because we may not serialize the relevant
-	// ChannelMonitor at the same time, this isn't strictly guaranteed. In order to provide this
-	// consistency, the ChannelManager explicitly tracks pending-onchain-resolution outbound HTLCs
-	// and de-duplicates ChannelMonitor events.
-	//
-	// This tests that explicit tracking behavior.
+	// If, due to an on-chain event, an HTLC is failed/claimed, we should avoid providing the
+	// ChannelManager the HTLC event until after the monitor is re-persisted. This should prevent a
+	// duplicate HTLC fail/claim (e.g. via a PaymentPathFailed event).
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4122,7 +4116,7 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
@@ -4140,35 +4134,59 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 3);
 	assert_eq!(node_txn[0], node_txn[1]);
+	check_spends!(node_txn[1], funding_tx);
+	check_spends!(node_txn[2], node_txn[1]);
 
 	assert!(nodes[1].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[1], 1);
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
-	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone(), node_txn[2].clone()]});
+	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone()]});
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
 	header.prev_blockhash = nodes[0].best_block_hash();
-	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone(), node_txn[2].clone()]});
+	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()]});
 
-	// Serialize out the ChannelMonitor before connecting the on-chain claim transactions. This is
-	// fairly normal behavior as ChannelMonitor(s) are often not re-serialized when on-chain events
-	// happen, unlike ChannelManager which tends to be re-serialized after any relevant event(s).
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	// Now connect the HTLC claim transaction with the ChainMonitor-generated ChannelMonitor update
+	// returning TemporaryFailure. This should cause the claim event to never make its way to the
+	// ChannelManager.
+	chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
+	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 	header.prev_blockhash = nodes[0].best_block_hash();
-	let claim_block = Block { header, txdata: claim_txn};
+	let claim_block = Block { header, txdata: claim_txn };
 	connect_block(&nodes[0], &claim_block);
+
+	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let mon_updates: Vec<_> = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap()
+		.get_mut(&funding_txo).unwrap().drain().collect();
+	assert_eq!(mon_updates.len(), 1);
+	assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// If we persist the ChannelManager here, we should get the PaymentSent event after
+	// deserialization.
+	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
+	if !persist_manager_post_event {
+		nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+	}
+
+	// Now persist the ChannelMonitor and inform the ChainMonitor that we're done, generating the
+	// payment sent event.
+	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
+	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, mon_updates[0]).unwrap();
 	expect_payment_sent!(nodes[0], payment_preimage);
 
-	// ChannelManagers generally get re-serialized after any relevant event(s). Since we just
-	// connected a highly-relevant block, it likely gets serialized out now.
-	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
-	nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
+	// twice.
+	if persist_manager_post_event {
+		nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+	}
 
 	// Now reload nodes[0]...
 	persister = test_utils::TestPersister::new();
@@ -4200,12 +4218,24 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node = &nodes_0_deserialized;
 
+	if persist_manager_post_event {
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	} else {
+		expect_payment_sent!(nodes[0], payment_preimage);
+	}
+
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
 	// which the current ChannelMonitor has not seen), the ChannelManager's de-duplication of
 	// payment events should kick in, leaving us with no pending events here.
 	let height = nodes[0].blocks.lock().unwrap().len() as u32 - 1;
 	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, height);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn test_dup_htlc_onchain_fails_on_reload() {
+	do_test_dup_htlc_onchain_fails_on_reload(true);
+	do_test_dup_htlc_onchain_fails_on_reload(false);
 }
 
 #[test]

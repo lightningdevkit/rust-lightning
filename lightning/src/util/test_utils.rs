@@ -163,13 +163,16 @@ pub struct TestPersister {
 	/// If this is set to Some(), after the next return, we'll always return this until update_ret
 	/// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), chain::ChannelMonitorUpdateErr>>>,
-
+	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
+	/// MonitorUpdateId here.
+	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
+			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
 		}
 	}
 
@@ -190,10 +193,13 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 		ret
 	}
 
-	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
 			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		if update.is_none() {
+			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		}
 		ret
 	}
