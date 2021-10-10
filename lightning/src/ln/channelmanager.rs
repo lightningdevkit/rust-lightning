@@ -3419,8 +3419,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return;
 			}
 
-			let (raa, commitment_update, order, pending_forwards, pending_failures, funding_broadcastable, funding_locked) = channel.get_mut().monitor_updating_restored(&self.logger);
-			let channel_update = if funding_locked.is_some() && channel.get().is_usable() && !channel.get().should_announce() {
+			let updates = channel.get_mut().monitor_updating_restored(&self.logger);
+			let channel_update = if updates.funding_locked.is_some() && channel.get().is_usable() && !channel.get().should_announce() {
 				// We only send a channel_update in the case where we are just now sending a
 				// funding_locked and the channel is in a usable state. Further, we rely on the
 				// normal announcement_signatures process to send a channel_update for public
@@ -3430,11 +3430,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msg: self.get_channel_update_for_unicast(channel.get()).unwrap(),
 				})
 			} else { None };
-			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, raa, commitment_update, order, None, pending_forwards, funding_broadcastable, funding_locked);
+			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.funding_locked);
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
-			pending_failures
+			updates.failed_htlcs
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		for failure in pending_failures.drain(..) {

@@ -349,6 +349,17 @@ pub(super) struct RAAUpdates {
 	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
 }
 
+/// The return value of `monitor_updating_restored`
+pub(super) struct MonitorRestoreUpdates {
+	pub raa: Option<msgs::RevokeAndACK>,
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub order: RAACommitmentOrder,
+	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
+	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	pub funding_broadcastable: Option<Transaction>,
+	pub funding_locked: Option<msgs::FundingLocked>,
+}
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -3097,7 +3108,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<Transaction>, Option<msgs::FundingLocked>) where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> MonitorRestoreUpdates where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
@@ -3120,15 +3131,18 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let mut forwards = Vec::new();
-		mem::swap(&mut forwards, &mut self.monitor_pending_forwards);
-		let mut failures = Vec::new();
-		mem::swap(&mut failures, &mut self.monitor_pending_failures);
+		let mut accepted_htlcs = Vec::new();
+		mem::swap(&mut accepted_htlcs, &mut self.monitor_pending_forwards);
+		let mut failed_htlcs = Vec::new();
+		mem::swap(&mut failed_htlcs, &mut self.monitor_pending_failures);
 
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, funding_broadcastable, funding_locked);
+			return MonitorRestoreUpdates {
+				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
+				accepted_htlcs, failed_htlcs, funding_broadcastable, funding_locked
+			};
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
@@ -3145,7 +3159,9 @@ impl<Signer: Sign> Channel<Signer> {
 			log_bytes!(self.channel_id()), if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures, funding_broadcastable, funding_locked)
+		MonitorRestoreUpdates {
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, funding_broadcastable, funding_locked
+		}
 	}
 
 	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
