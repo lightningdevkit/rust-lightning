@@ -14,7 +14,7 @@ use chain::{BestBlock, Confirm, Listen, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
+use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use routing::router::{Route, get_route};
 use routing::scorer::Scorer;
@@ -1156,10 +1156,11 @@ macro_rules! expect_payment_failed {
 	}
 }
 
-pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {
-	origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
+	let payment_id = origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
+	payment_id
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
@@ -1222,10 +1223,10 @@ pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 }
 
-pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
 	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(expected_route.last().unwrap());
-	send_along_route_with_secret(origin_node, route, &[expected_route], recv_value, our_payment_hash, our_payment_secret);
-	(our_payment_preimage, our_payment_hash, our_payment_secret)
+	let payment_id = send_along_route_with_secret(origin_node, route, &[expected_route], recv_value, our_payment_hash, our_payment_secret);
+	(our_payment_preimage, our_payment_hash, our_payment_secret, payment_id)
 }
 
 pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
@@ -1339,7 +1340,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 		assert_eq!(hop.pubkey, node.node.get_our_node_id());
 	}
 
-	send_along_route(origin_node, route, expected_route, recv_value)
+	let res = send_along_route(origin_node, route, expected_route, recv_value);
+	(res.0, res.1, res.2)
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {

@@ -3689,7 +3689,7 @@ fn test_funding_peer_disconnect() {
 	nodes[0].net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
-	let (payment_preimage, _, _) = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000);
+	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 
 	// Check that after deserialization and reconnection we can still generate an identical
@@ -4100,7 +4100,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);
 }
 
-fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
+fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, confirm_commitment_tx: bool, payment_timeout: bool) {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
 	// having a copy of the relevant fail-/claim-back data and processes the HTLC fail/claim when
@@ -4121,7 +4121,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
-	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1]], 10000000);
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 10000000);
 	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
@@ -4137,6 +4137,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 	assert_eq!(node_txn[0], node_txn[1]);
 	check_spends!(node_txn[1], funding_tx);
 	check_spends!(node_txn[2], node_txn[1]);
+	let timeout_txn = vec![node_txn[2].clone()];
 
 	assert!(nodes[1].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[1], 1);
@@ -4151,15 +4152,30 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 	header.prev_blockhash = nodes[0].best_block_hash();
 	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()]});
 
+	if confirm_commitment_tx {
+		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
+	}
+
+	header.prev_blockhash = nodes[0].best_block_hash();
+	let claim_block = Block { header, txdata: if payment_timeout { timeout_txn } else { claim_txn } };
+
+	if payment_timeout {
+		assert!(confirm_commitment_tx); // Otherwise we're spending below our CSV!
+		connect_block(&nodes[0], &claim_block);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+	}
+
 	// Now connect the HTLC claim transaction with the ChainMonitor-generated ChannelMonitor update
 	// returning TemporaryFailure. This should cause the claim event to never make its way to the
 	// ChannelManager.
 	chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
-	header.prev_blockhash = nodes[0].best_block_hash();
-	let claim_block = Block { header, txdata: claim_txn };
-	connect_block(&nodes[0], &claim_block);
+	if payment_timeout {
+		connect_blocks(&nodes[0], 1);
+	} else {
+		connect_block(&nodes[0], &claim_block);
+	}
 
 	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
 	let mon_updates: Vec<_> = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap()
@@ -4181,7 +4197,11 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
 	nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, mon_updates[0]).unwrap();
-	expect_payment_sent!(nodes[0], payment_preimage);
+	if payment_timeout {
+		expect_payment_failed!(nodes[0], payment_hash, true);
+	} else {
+		expect_payment_sent!(nodes[0], payment_preimage);
+	}
 
 	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
 	// twice.
@@ -4221,6 +4241,8 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 
 	if persist_manager_post_event {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	} else if payment_timeout {
+		expect_payment_failed!(nodes[0], payment_hash, true);
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
@@ -4235,8 +4257,12 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool) {
 
 #[test]
 fn test_dup_htlc_onchain_fails_on_reload() {
-	do_test_dup_htlc_onchain_fails_on_reload(true);
-	do_test_dup_htlc_onchain_fails_on_reload(false);
+	do_test_dup_htlc_onchain_fails_on_reload(true, true, true);
+	do_test_dup_htlc_onchain_fails_on_reload(true, true, false);
+	do_test_dup_htlc_onchain_fails_on_reload(true, false, false);
+	do_test_dup_htlc_onchain_fails_on_reload(false, true, true);
+	do_test_dup_htlc_onchain_fails_on_reload(false, true, false);
+	do_test_dup_htlc_onchain_fails_on_reload(false, false, false);
 }
 
 #[test]
