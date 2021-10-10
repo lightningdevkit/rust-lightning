@@ -145,7 +145,7 @@ pub(super) enum HTLCForwardInfo {
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) struct HTLCPreviousHopData {
 	short_channel_id: u64,
 	htlc_id: u64,
@@ -189,7 +189,8 @@ impl Readable for PaymentId {
 	}
 }
 /// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, PartialEq)]
+#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
@@ -201,6 +202,25 @@ pub(crate) enum HTLCSource {
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
 	},
+}
+#[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
+impl core::hash::Hash for HTLCSource {
+	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
+		match self {
+			HTLCSource::PreviousHopData(prev_hop_data) => {
+				0u8.hash(hasher);
+				prev_hop_data.hash(hasher);
+			},
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat } => {
+				1u8.hash(hasher);
+				path.hash(hasher);
+				session_priv[..].hash(hasher);
+				payment_id.hash(hasher);
+				payment_secret.hash(hasher);
+				first_hop_htlc_msat.hash(hasher);
+			},
+		}
+	}
 }
 #[cfg(test)]
 impl HTLCSource {
@@ -5878,6 +5898,49 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
 			}
 			pending_outbound_payments = Some(outbounds);
+		} else {
+			// If we're tracking pending payments, ensure we haven't lost any by looking at the
+			// ChannelMonitor data for any channels for which we do not have authorative state
+			// (i.e. those for which we just force-closed above or we otherwise don't have a
+			// corresponding `Channel` at all).
+			// This avoids several edge-cases where we would otherwise "forget" about pending
+			// payments which are still in-flight via their on-chain state.
+			// We only rebuild the pending payments map if we were most recently serialized by
+			// 0.0.102+
+			for (_, monitor) in args.channel_monitors {
+				if by_id.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
+					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
+						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
+							if path.is_empty() {
+								log_error!(args.logger, "Got an empty path for a pending payment");
+								return Err(DecodeError::InvalidValue);
+							}
+							let path_amt = path.last().unwrap().fee_msat;
+							let mut session_priv_bytes = [0; 32];
+							session_priv_bytes[..].copy_from_slice(&session_priv[..]);
+							match pending_outbound_payments.as_mut().unwrap().entry(payment_id) {
+								hash_map::Entry::Occupied(mut entry) => {
+									let newly_added = entry.get_mut().insert(session_priv_bytes, path_amt);
+									log_info!(args.logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), log_bytes!(htlc.payment_hash.0));
+								},
+								hash_map::Entry::Vacant(entry) => {
+									entry.insert(PendingOutboundPayment::Retryable {
+										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
+										payment_hash: htlc.payment_hash,
+										payment_secret,
+										pending_amt_msat: path_amt,
+										total_msat: path_amt,
+										starting_block_height: best_block_height,
+									});
+									log_info!(args.logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
+										path_amt, log_bytes!(htlc.payment_hash.0),  log_bytes!(session_priv_bytes));
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 
 		let mut secp_ctx = Secp256k1::new();

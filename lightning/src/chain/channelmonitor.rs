@@ -1515,6 +1515,101 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 		res
 	}
+
+	/// Gets the set of outbound HTLCs which are pending resolution in this channel.
+	/// This is used to reconstruct pending outbound payments on restart in the ChannelManager.
+	pub(crate) fn get_pending_outbound_htlcs(&self) -> HashMap<HTLCSource, HTLCOutputInCommitment> {
+		let mut res = HashMap::new();
+		let us = self.inner.lock().unwrap();
+
+		macro_rules! walk_htlcs {
+			($holder_commitment: expr, $htlc_iter: expr) => {
+				for (htlc, source) in $htlc_iter {
+					if us.htlcs_resolved_on_chain.iter().any(|v| Some(v.input_idx) == htlc.transaction_output_index) {
+						// We should assert that funding_spend_confirmed is_some() here, but we
+						// have some unit tests which violate HTLC transaction CSVs entirely and
+						// would fail.
+						// TODO: Once tests all connect transactions at consensus-valid times, we
+						// should assert here like we do in `get_claimable_balances`.
+					} else if htlc.offered == $holder_commitment {
+						// If the payment was outbound, check if there's an HTLCUpdate
+						// indicating we have spent this HTLC with a timeout, claiming it back
+						// and awaiting confirmations on it.
+						let htlc_update_confd = us.onchain_events_awaiting_threshold_conf.iter().any(|event| {
+							if let OnchainEvent::HTLCUpdate { input_idx: Some(input_idx), .. } = event.event {
+								// If the HTLC was timed out, we wait for ANTI_REORG_DELAY blocks
+								// before considering it "no longer pending" - this matches when we
+								// provide the ChannelManager an HTLC failure event.
+								Some(input_idx) == htlc.transaction_output_index &&
+									us.best_block.height() >= event.height + ANTI_REORG_DELAY - 1
+							} else if let OnchainEvent::HTLCSpendConfirmation { input_idx, .. } = event.event {
+								// If the HTLC was fulfilled with a preimage, we consider the HTLC
+								// immediately non-pending, matching when we provide ChannelManager
+								// the preimage.
+								Some(input_idx) == htlc.transaction_output_index
+							} else { false }
+						});
+						if !htlc_update_confd {
+							res.insert(source.clone(), htlc.clone());
+						}
+					}
+				}
+			}
+		}
+
+		// We're only concerned with the confirmation count of HTLC transactions, and don't
+		// actually care how many confirmations a commitment transaction may or may not have. Thus,
+		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
+		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
+			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					Some(event.txid)
+				} else { None }
+			})
+		});
+		if let Some(txid) = confirmed_txid {
+			if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
+				walk_htlcs!(false, us.counterparty_claimable_outpoints.get(&txid).unwrap().iter().filter_map(|(a, b)| {
+					if let &Some(ref source) = b {
+						Some((a, &**source))
+					} else { None }
+				}));
+			} else if txid == us.current_holder_commitment_tx.txid {
+				walk_htlcs!(true, us.current_holder_commitment_tx.htlc_outputs.iter().filter_map(|(a, _, c)| {
+					if let Some(source) = c { Some((a, source)) } else { None }
+				}));
+			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
+				if txid == prev_commitment.txid {
+					walk_htlcs!(true, prev_commitment.htlc_outputs.iter().filter_map(|(a, _, c)| {
+						if let Some(source) = c { Some((a, source)) } else { None }
+					}));
+				}
+			}
+		} else {
+			// If we have not seen a commitment transaction on-chain (ie the channel is not yet
+			// closed), just examine the available counterparty commitment transactions. See docs
+			// on `fail_unbroadcast_htlcs`, below, for justification.
+			macro_rules! walk_counterparty_commitment {
+				($txid: expr) => {
+					if let Some(ref latest_outpoints) = us.counterparty_claimable_outpoints.get($txid) {
+						for &(ref htlc, ref source_option) in latest_outpoints.iter() {
+							if let &Some(ref source) = source_option {
+								res.insert((**source).clone(), htlc.clone());
+							}
+						}
+					}
+				}
+			}
+			if let Some(ref txid) = us.current_counterparty_commitment_txid {
+				walk_counterparty_commitment!(txid);
+			}
+			if let Some(ref txid) = us.prev_counterparty_commitment_txid {
+				walk_counterparty_commitment!(txid);
+			}
+		}
+
+		res
+	}
 }
 
 /// Compares a broadcasted commitment transaction's HTLCs with those in the latest state,
