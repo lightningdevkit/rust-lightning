@@ -404,10 +404,12 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 										let is_chan_update_invalid = match error_code & 0xff {
 											7 => false,
 											11 => amt_to_forward > chan_update.contents.htlc_minimum_msat,
-											12 => {
-												let new_fee = amt_to_forward.checked_mul(chan_update.contents.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan_update.contents.fee_base_msat as u64) });
-												new_fee.is_some() && route_hop.fee_msat >= new_fee.unwrap()
-											}
+											12 => amt_to_forward
+												.checked_mul(chan_update.contents.fee_proportional_millionths as u64)
+												.map(|prop_fee| prop_fee / 1_000_000)
+												.and_then(|prop_fee| prop_fee.checked_add(chan_update.contents.fee_base_msat as u64))
+												.map(|fee_msats| route_hop.fee_msat >= fee_msats)
+												.unwrap_or(false),
 											13 => route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta,
 											14 => false, // expiry_too_soon; always valid?
 											20 => chan_update.contents.flags & 2 == 0,
