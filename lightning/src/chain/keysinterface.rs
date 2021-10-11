@@ -960,7 +960,8 @@ impl KeysManager {
 			input,
 			output: outputs,
 		};
-		transaction_utils::maybe_add_change_output(&mut spend_tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
+		let expected_max_weight =
+			transaction_utils::maybe_add_change_output(&mut spend_tx, input_value, witness_weight, feerate_sat_per_1000_weight, change_destination_script)?;
 
 		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
 		let mut input_idx = 0;
@@ -1014,6 +1015,12 @@ impl KeysManager {
 			}
 			input_idx += 1;
 		}
+
+		debug_assert!(expected_max_weight >= spend_tx.get_weight());
+		// Note that witnesses with a signature vary somewhat in size, so allow
+		// `expected_max_weight` to overshoot by up to 3 bytes per input.
+		debug_assert!(expected_max_weight <= spend_tx.get_weight() + descriptors.len() * 3);
+
 		Ok(spend_tx)
 	}
 }
