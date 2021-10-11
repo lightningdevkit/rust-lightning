@@ -972,7 +972,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 								if peer.pending_read_is_header {
 									let msg_len = try_potential_handleerror!(peer,
 										peer.channel_encryptor.decrypt_length_header(&peer.pending_read_buffer[..]));
-									peer.pending_read_buffer = Vec::with_capacity(msg_len as usize + 16);
+									if peer.pending_read_buffer.capacity() > 8192 { peer.pending_read_buffer = Vec::new(); }
 									peer.pending_read_buffer.resize(msg_len as usize + 16, 0);
 									if msg_len < 2 { // Need at least the message type tag
 										return Err(PeerHandleError{ no_connection_possible: false });
@@ -984,7 +984,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									assert!(msg_data.len() >= 2);
 
 									// Reset read buffer
-									peer.pending_read_buffer = [0; 18].to_vec();
+									if peer.pending_read_buffer.capacity() > 8192 { peer.pending_read_buffer = Vec::new(); }
+									peer.pending_read_buffer.resize(18, 0);
 									peer.pending_read_is_header = true;
 
 									let mut reader = io::Cursor::new(&msg_data[..]);
