@@ -1213,12 +1213,10 @@ impl ReadOnlyNetworkGraph<'_> {
 	/// Get network addresses by node id.
 	/// Returns None if the requested node is completely unknown,
 	/// or if node announcement for the node was never received.
-	///
-	/// (C-not exported) as there is no practical way to track lifetimes of returned values.
-	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<&Vec<NetAddress>> {
+	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<NetAddress>> {
 		if let Some(node) = self.nodes.get(&NodeId::from_pubkey(&pubkey)) {
 			if let Some(node_info) = node.announcement_info.as_ref() {
-				return Some(&node_info.addresses)
+				return Some(node_info.addresses.clone())
 			}
 		}
 		None
