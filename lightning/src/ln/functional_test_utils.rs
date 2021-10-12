@@ -973,8 +973,9 @@ macro_rules! commitment_signed_dance {
 macro_rules! get_payment_preimage_hash {
 	($dest_node: expr) => {
 		{
-			let payment_preimage = PaymentPreimage([*$dest_node.network_payment_count.borrow(); 32]);
-			*$dest_node.network_payment_count.borrow_mut() += 1;
+			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
+			let payment_preimage = PaymentPreimage([*payment_count; 32]);
+			*payment_count += 1;
 			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
 			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, None, 7200, 0).unwrap();
 			(payment_preimage, payment_hash, payment_secret)
@@ -989,7 +990,9 @@ macro_rules! get_route_and_payment_hash {
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
 		let route = get_route(&$send_node.node.get_our_node_id(),
 			&net_graph_msg_handler.network_graph,
-			&$recv_node.node.get_our_node_id(), None, None, &Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
+			&$recv_node.node.get_our_node_id(), None,
+			Some(&$send_node.node.list_usable_channels().iter().map(|a| a).collect::<Vec<_>>()),
+			&Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
 }
