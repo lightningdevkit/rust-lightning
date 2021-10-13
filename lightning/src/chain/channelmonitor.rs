@@ -146,9 +146,16 @@ pub enum MonitorEvent {
 		/// same [`ChannelMonitor`] have been applied and persisted.
 		monitor_update_id: u64,
 	},
+
+	/// Indicates a [`ChannelMonitor`] update has failed. See
+	/// [`ChannelMonitorUpdateErr::PermanentFailure`] for more information on how this is used.
+	///
+	/// [`ChannelMonitorUpdateErr::PermanentFailure`]: super::ChannelMonitorUpdateErr::PermanentFailure
+	UpdateFailed(OutPoint),
 }
 impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
-	// Note that UpdateCompleted is currently never serialized to disk as it is generated only in ChainMonitor
+	// Note that UpdateCompleted and UpdateFailed are currently never serialized to disk as they are
+	// generated only in ChainMonitor
 	(0, UpdateCompleted) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
@@ -156,6 +163,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 ;
 	(2, HTLCEvent),
 	(4, CommitmentTxConfirmed),
+	(6, UpdateFailed),
 );
 
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
@@ -649,7 +657,17 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
+	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated
+	// during chain data processing. This prevents a race in `ChainMonitor::update_channel` (and
+	// presumably user implementations thereof as well) where we update the in-memory channel
+	// object, then before the persistence finishes (as it's all under a read-lock), we return
+	// pending events to the user or to the relevant `ChannelManager`. Then, on reload, we'll have
+	// the pre-event state here, but have processed the event in the `ChannelManager`.
+	// Note that because the `event_lock` in `ChainMonitor` is only taken in
+	// block/transaction-connected events and *not* during block/transaction-disconnected events,
+	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<MonitorEvent>,
+
 	pending_events: Vec<Event>,
 
 	// Used to track on-chain events (i.e., transactions part of channels confirmed on chain) on

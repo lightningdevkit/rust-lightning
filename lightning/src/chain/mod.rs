@@ -285,6 +285,10 @@ pub trait Watch<ChannelSigner: Sign> {
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
 	///
+	/// Note that after any block- or transaction-connection calls to a [`ChannelMonitor`], no
+	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
+	/// to disk.
+	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::UpdateCompleted`] here, see [`ChannelMonitorUpdateErr::TemporaryFailure`].
 	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
