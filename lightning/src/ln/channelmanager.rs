@@ -1267,22 +1267,30 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
-	/// user_id will be provided back as user_channel_id in FundingGenerationReady events to allow
-	/// tracking of which events correspond with which create_channel call. Note that the
-	/// user_channel_id defaults to 0 for inbound channels, so you may wish to avoid using 0 for
-	/// user_id here. user_id has no meaning inside of LDK, it is simply copied to events and
-	/// otherwise ignored.
+	/// `user_id` will be provided back as `user_channel_id` in [`Event::FundingGenerationReady`]
+	/// to allow tracking of which events correspond with which `create_channel` call. Note that
+	/// the `user_channel_id` defaults to 0 for inbound channels, so you may wish to avoid using 0
+	/// for `user_id` here. `user_id` has no meaning inside of LDK, it is simply copied to events
+	/// and otherwise ignored.
 	///
-	/// If successful, will generate a SendOpenChannel message event, so you should probably poll
-	/// PeerManager::process_events afterwards.
-	///
-	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
-	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
+	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
+	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
 	///
 	/// Note that we do not check if you are currently connected to the given peer. If no
 	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
-	/// the channel eventually being silently forgotten.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
+	/// the channel eventually being silently forgotten (dropped on reload).
+	///
+	/// Returns the new Channel's temporary `channel_id`. This ID will appear as
+	/// [`Event::FundingGenerationReady::temporary_channel_id`] and in
+	/// [`ChannelDetails::channel_id`] until after
+	/// [`ChannelManager::funding_transaction_generated`] is called, swapping the Channel's ID for
+	/// one derived from the funding transaction's TXID. If the counterparty rejects the channel
+	/// immediately, this temporary ID will appear in [`Event::ChannelClosed::channel_id`].
+	///
+	/// [`Event::FundingGenerationReady`]: events::Event::FundingGenerationReady
+	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
+	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -1305,8 +1313,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
 
+		let temporary_channel_id = channel.channel_id();
 		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.entry(channel.channel_id()) {
+		match channel_state.by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(feature = "fuzztarget") {
 					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
@@ -1320,7 +1329,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			node_id: their_network_key,
 			msg: res,
 		});
-		Ok(())
+		Ok(temporary_channel_id)
 	}
 
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
