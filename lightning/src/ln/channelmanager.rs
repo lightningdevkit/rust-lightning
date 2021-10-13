@@ -1850,17 +1850,24 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					let cur_height = self.best_block.read().unwrap().height() + 1;
-					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now, but we want to be robust wrt to counterparty
-					// packet sanitization (see HTLC_FAIL_BACK_BUFFER rational)
+					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
+					// but we want to be robust wrt to counterparty packet sanitization (see
+					// HTLC_FAIL_BACK_BUFFER rationale).
 					if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
 						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
 						break Some(("CLTV expiry is too far in the future", 21, None));
 					}
-					// In theory, we would be safe against unintentional channel-closure, if we only required a margin of LATENCY_GRACE_PERIOD_BLOCKS.
-					// But, to be safe against policy reception, we use a longer delay.
-					if (*outgoing_cltv_value) as u64 <= (cur_height + HTLC_FAIL_BACK_BUFFER) as u64 {
+					// If the HTLC expires ~now, don't bother trying to forward it to our
+					// counterparty. They should fail it anyway, but we don't want to bother with
+					// the round-trips or risk them deciding they definitely want the HTLC and
+					// force-closing to ensure they get it if we're offline.
+					// We previously had a much more aggressive check here which tried to ensure
+					// our counterparty receives an HTLC which has *our* risk threshold met on it,
+					// but there is no need to do that, and since we're a bit conservative with our
+					// risk threshold it just results in failing to forward payments.
+					if (*outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
 						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
 					}
 

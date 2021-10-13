@@ -32,7 +32,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputIn
 use ln::chan_utils;
 use chain::BestBlock;
 use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER};
+use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{Sign, KeysInterface};
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
@@ -4107,7 +4107,10 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, logger: &L)
 			-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> where L::Target: Logger {
 		let mut timed_out_htlcs = Vec::new();
-		let unforwarded_htlc_cltv_limit = height + HTLC_FAIL_BACK_BUFFER;
+		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
+		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
+		// ~now.
+		let unforwarded_htlc_cltv_limit = height + LATENCY_GRACE_PERIOD_BLOCKS;
 		self.holding_cell_htlc_updates.retain(|htlc_update| {
 			match htlc_update {
 				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
