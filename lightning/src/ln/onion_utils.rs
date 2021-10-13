@@ -75,11 +75,11 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 #[inline]
-pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop)> (secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
+pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop, usize)> (secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-	for hop in path.iter() {
+	for (idx, hop) in path.iter().enumerate() {
 		let shared_secret = SharedSecret::new(&hop.pubkey, &blinded_priv);
 
 		let mut sha = Sha256::engine();
@@ -92,7 +92,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 		blinded_priv.mul_assign(&blinding_factor)?;
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
-		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop);
+		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop, idx);
 	}
 
 	Ok(())
@@ -102,7 +102,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.len());
 
-	construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _| {
+	construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
 		let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret[..]);
 
 		res.push(OnionKeys {
@@ -329,20 +329,19 @@ pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type:
 
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
-/// Returns update, a boolean indicating that the payment itself failed, and the error code.
+/// Returns update, a boolean indicating that the payment itself failed, the short channel id of
+/// the responsible channel, and the error code.
 #[inline]
-pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
+pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut packet_decrypted: Vec<u8>) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
 	if let &HTLCSource::OutboundRoute { ref path, ref session_priv, ref first_hop_htlc_msat, .. } = htlc_source {
 		let mut res = None;
 		let mut htlc_msat = *first_hop_htlc_msat;
 		let mut error_code_ret = None;
 		let mut error_packet_ret = None;
-		let mut next_route_hop_ix = 0;
 		let mut is_from_final_node = false;
 
 		// Handle packed channel/node updates for passing back for the route handler
-		construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _, _, route_hop| {
-			next_route_hop_ix += 1;
+		construct_onion_keys_callback(secp_ctx, path, session_priv, |shared_secret, _, _, route_hop, route_hop_idx| {
 			if res.is_some() { return; }
 
 			let amt_to_forward = htlc_msat - route_hop.fee_msat;
@@ -356,7 +355,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			chacha.process(&packet_decrypted, &mut decryption_tmp[..]);
 			packet_decrypted = decryption_tmp;
 
-			is_from_final_node = path.last().unwrap().pubkey == route_hop.pubkey;
+			// The failing hop includes either the inbound channel to the recipient or the outbound
+			// channel from the current hop (i.e., the next hop's inbound channel).
+			is_from_final_node = route_hop_idx + 1 == path.len();
+			let failing_route_hop = if is_from_final_node { route_hop } else { &path[route_hop_idx + 1] };
 
 			if let Ok(err_packet) = msgs::DecodedOnionErrorPacket::read(&mut Cursor::new(&packet_decrypted)) {
 				let um = gen_um_from_shared_secret(&shared_secret[..]);
@@ -377,22 +379,27 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 						// indicate that payment parameter has failed and no need to
 						// update Route object
-						let payment_failed = (match error_code & 0xff {
+						let payment_failed = match error_code & 0xff {
 							15|16|17|18|19 => true,
 							_ => false,
-						} && is_from_final_node) // PERM bit observed below even this error is from the intermediate nodes
-						|| error_code == 21; // Special case error 21 as the Route object is bogus, TODO: Maybe fail the node if the CLTV was reasonable?
+						} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
 
 						let mut network_update = None;
+						let mut short_channel_id = None;
 
 						if error_code & NODE == NODE {
-							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent: error_code & PERM == PERM });
+							let is_permanent = error_code & PERM == PERM;
+							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
+							short_channel_id = Some(route_hop.short_channel_id);
 						}
 						else if error_code & PERM == PERM {
-							network_update = if payment_failed { None } else { Some(NetworkUpdate::ChannelClosed {
-								short_channel_id: path[next_route_hop_ix - if next_route_hop_ix == path.len() { 1 } else { 0 }].short_channel_id,
-								is_permanent: true,
-							})};
+							if !payment_failed {
+								network_update = Some(NetworkUpdate::ChannelClosed {
+									short_channel_id: failing_route_hop.short_channel_id,
+									is_permanent: true,
+								});
+								short_channel_id = Some(failing_route_hop.short_channel_id);
+							}
 						}
 						else if error_code & UPDATE == UPDATE {
 							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
@@ -404,24 +411,31 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 										let is_chan_update_invalid = match error_code & 0xff {
 											7 => false,
 											11 => amt_to_forward > chan_update.contents.htlc_minimum_msat,
-											12 => {
-												let new_fee = amt_to_forward.checked_mul(chan_update.contents.fee_proportional_millionths as u64).and_then(|prop_fee| { (prop_fee / 1000000).checked_add(chan_update.contents.fee_base_msat as u64) });
-												new_fee.is_some() && route_hop.fee_msat >= new_fee.unwrap()
-											}
+											12 => amt_to_forward
+												.checked_mul(chan_update.contents.fee_proportional_millionths as u64)
+												.map(|prop_fee| prop_fee / 1_000_000)
+												.and_then(|prop_fee| prop_fee.checked_add(chan_update.contents.fee_base_msat as u64))
+												.map(|fee_msats| route_hop.fee_msat >= fee_msats)
+												.unwrap_or(false),
 											13 => route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta,
 											14 => false, // expiry_too_soon; always valid?
 											20 => chan_update.contents.flags & 2 == 0,
 											_ => false, // unknown error code; take channel_update as valid
 										};
-										network_update = if is_chan_update_invalid {
+										if is_chan_update_invalid {
 											// This probably indicates the node which forwarded
 											// to the node in question corrupted something.
-											Some(NetworkUpdate::ChannelClosed {
+											network_update = Some(NetworkUpdate::ChannelClosed {
 												short_channel_id: route_hop.short_channel_id,
 												is_permanent: true,
-											})
+											});
 										} else {
-											Some(NetworkUpdate::ChannelUpdateMessage {
+											// Make sure the ChannelUpdate contains the expected
+											// short channel id.
+											if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
+												short_channel_id = Some(failing_route_hop.short_channel_id);
+											}
+											network_update = Some(NetworkUpdate::ChannelUpdateMessage {
 												msg: chan_update,
 											})
 										};
@@ -436,7 +450,17 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 									is_permanent: true,
 								});
 							}
-						} else if !payment_failed {
+							if short_channel_id.is_none() {
+								short_channel_id = Some(route_hop.short_channel_id);
+							}
+						} else if payment_failed {
+							// Only blame the hop when a value in the HTLC doesn't match the
+							// corresponding value in the onion.
+							short_channel_id = match error_code & 0xff {
+								18|19 => Some(route_hop.short_channel_id),
+								_ => None,
+							};
+						} else {
 							// We can't understand their error messages and they failed to
 							// forward...they probably can't understand our forwards so its
 							// really not worth trying any further.
@@ -444,12 +468,13 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 								node_id: route_hop.pubkey,
 								is_permanent: true,
 							});
+							short_channel_id = Some(route_hop.short_channel_id);
 						}
 
 						// TODO: Here (and a few other places) we assume that BADONION errors
 						// are always "sourced" from the node previous to the one which failed
 						// to decode the onion.
-						res = Some((network_update, !(error_code & PERM == PERM && is_from_final_node)));
+						res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
 
 						let (description, title) = errors::get_onion_error_description(error_code);
 						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
@@ -461,20 +486,22 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 					} else {
 						// Useless packet that we can't use but it passed HMAC, so it
 						// definitely came from the peer in question
-						res = Some((Some(NetworkUpdate::NodeFailure {
+						let network_update = Some(NetworkUpdate::NodeFailure {
 							node_id: route_hop.pubkey,
 							is_permanent: true,
-						}), !is_from_final_node));
+						});
+						let short_channel_id = Some(route_hop.short_channel_id);
+						res = Some((network_update, short_channel_id, !is_from_final_node));
 					}
 				}
 			}
 		}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
-		if let Some((channel_update, payment_retryable)) = res {
-			(channel_update, payment_retryable, error_code_ret, error_packet_ret)
+		if let Some((channel_update, short_channel_id, payment_retryable)) = res {
+			(channel_update, short_channel_id, payment_retryable, error_code_ret, error_packet_ret)
 		} else {
 			// only not set either packet unparseable or hmac does not match with any
 			// payment not retryable only when garbage is from the final node
-			(None, !is_from_final_node, None, None)
+			(None, None, !is_from_final_node, None, None)
 		}
 	} else { unreachable!(); }
 }

@@ -3016,6 +3016,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									network_update: None,
 									all_paths_failed: payment.get().remaining_parts() == 0,
 									path: path.clone(),
+									short_channel_id: None,
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -3069,9 +3070,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
-						let (network_update, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
-						let (network_update, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+						let (network_update, short_channel_id, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 						// TODO: If we decided to blame ourselves (or one of our channels) in
 						// process_onion_failure we should close that channel as it implies our
 						// next-hop is needlessly blaming us!
@@ -3082,6 +3083,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								network_update,
 								all_paths_failed,
 								path: path.clone(),
+								short_channel_id,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -3109,6 +3111,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								network_update: None,
 								all_paths_failed,
 								path: path.clone(),
+								short_channel_id: Some(path.first().unwrap().short_channel_id),
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
