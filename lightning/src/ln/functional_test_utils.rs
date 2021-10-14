@@ -973,11 +973,16 @@ macro_rules! commitment_signed_dance {
 macro_rules! get_payment_preimage_hash {
 	($dest_node: expr) => {
 		{
+			get_payment_preimage_hash!($dest_node, None)
+		}
+	};
+	($dest_node: expr, $min_value_msat: expr) => {
+		{
 			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
 			let payment_preimage = PaymentPreimage([*payment_count; 32]);
 			*payment_count += 1;
 			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, None, 7200, 0).unwrap();
+			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, 0).unwrap();
 			(payment_preimage, payment_hash, payment_secret)
 		}
 	}
@@ -986,13 +991,17 @@ macro_rules! get_payment_preimage_hash {
 #[cfg(test)]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node);
+		get_route_and_payment_hash!($send_node, $recv_node, vec![], $recv_value, TEST_FINAL_CLTV)
+	}};
+	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
+		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node, Some($recv_value));
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
-		let route = get_route(&$send_node.node.get_our_node_id(),
-			&net_graph_msg_handler.network_graph,
-			&$recv_node.node.get_our_node_id(), None,
-			Some(&$send_node.node.list_usable_channels().iter().map(|a| a).collect::<Vec<_>>()),
-			&Vec::new(), $recv_value, TEST_FINAL_CLTV, $send_node.logger).unwrap();
+		let route = ::routing::router::get_route(
+			&$send_node.node.get_our_node_id(), &net_graph_msg_handler.network_graph,
+			&$recv_node.node.get_our_node_id(), Some(::ln::features::InvoiceFeatures::known()),
+			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+			&$last_hops, $recv_value, $cltv, $send_node.logger
+		).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
 }

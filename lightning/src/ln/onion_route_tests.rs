@@ -15,12 +15,11 @@ use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY};
 use ln::onion_utils;
-use routing::router::{Route, get_route};
 use routing::network_graph::NetworkUpdate;
-use ln::features::{InitFeatures, InvoiceFeatures};
+use routing::router::Route;
+use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
-use util::test_utils;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
 use util::config::UserConfig;
@@ -267,11 +266,9 @@ fn test_fee_failures() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
-	let logger = test_utils::TestLogger::new();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40_000, TEST_FINAL_CLTV, &logger).unwrap();
 
 	// positive case
-	let (payment_preimage_success, payment_hash_success, payment_secret_success) = get_payment_preimage_hash!(nodes[2]);
+	let (route, payment_hash_success, payment_preimage_success, payment_secret_success) = get_route_and_payment_hash!(nodes[0], nodes[2], 40_000);
 	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 40_000, payment_hash_success, payment_secret_success);
@@ -324,10 +321,8 @@ fn test_onion_failure() {
 		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
-	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let logger = test_utils::TestLogger::new();
-	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 40000, TEST_FINAL_CLTV, &logger).unwrap();
-	// positve case
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 40000);
+	// positive case
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 40000);
 
 	// intermediate node failure

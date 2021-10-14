@@ -13,11 +13,9 @@
 
 use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::{PaymentId, PaymentSendFailure};
-use routing::router::get_route;
-use ln::features::{InitFeatures, InvoiceFeatures};
+use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
-use util::test_utils;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::errors::APIError;
 
@@ -40,10 +38,7 @@ fn retry_single_path_payment() {
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
-	let logger = test_utils::TestLogger::new();
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
 
 	// Rebalance so that the first hop fails.
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
@@ -85,6 +80,31 @@ fn retry_single_path_payment() {
 }
 
 #[test]
+fn mpp_failure() {
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
+	let path = route.paths[0].clone();
+	route.paths.push(path);
+	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0][0].short_channel_id = chan_1_id;
+	route.paths[0][1].short_channel_id = chan_3_id;
+	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1][0].short_channel_id = chan_2_id;
+	route.paths[1][1].short_channel_id = chan_4_id;
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
+	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
+}
+
+#[test]
 fn mpp_retry() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -95,13 +115,10 @@ fn mpp_retry() {
 	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 	let chan_4_id = create_announced_chan_between_nodes(&nodes, 3, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let logger = test_utils::TestLogger::new();
 	// Rebalance
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
 
-	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[3]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let mut route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[3].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 1_000_000, TEST_FINAL_CLTV, &logger).unwrap();
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 1_000_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
@@ -186,10 +203,7 @@ fn retry_expired_payment() {
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
-	let logger = test_utils::TestLogger::new();
-	let (_payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2]);
-	let net_graph_msg_handler = &nodes[0].net_graph_msg_handler;
-	let route = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler.network_graph, &nodes[2].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
 
 	// Rebalance so that the first hop fails.
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
