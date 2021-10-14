@@ -274,10 +274,9 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 			let mut deserialized_monitors = Vec::new();
 			{
-				let old_monitors = self.chain_monitor.chain_monitor.monitors.read().unwrap();
-				for (_, old_monitor) in old_monitors.iter() {
+				for outpoint in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
-					old_monitor.write(&mut w).unwrap();
+					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
 						&mut io::Cursor::new(&w.0), self.keys_manager).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
@@ -437,20 +436,35 @@ macro_rules! get_feerate {
 	}
 }
 
+/// Returns a channel monitor given a channel id, making some naive assumptions
+#[macro_export]
+macro_rules! get_monitor {
+	($node: expr, $channel_id: expr) => {
+		{
+			use bitcoin::hashes::Hash;
+			let mut monitor = None;
+			// Assume funding vout is either 0 or 1 blindly
+			for index in 0..2 {
+				if let Ok(mon) = $node.chain_monitor.chain_monitor.get_monitor(
+					$crate::chain::transaction::OutPoint {
+						txid: bitcoin::Txid::from_slice(&$channel_id[..]).unwrap(), index
+					})
+				{
+					monitor = Some(mon);
+					break;
+				}
+			}
+			monitor.unwrap()
+		}
+	}
+}
+
 /// Returns any local commitment transactions for the channel.
 #[macro_export]
 macro_rules! get_local_commitment_txn {
 	($node: expr, $channel_id: expr) => {
 		{
-			let monitors = $node.chain_monitor.chain_monitor.monitors.read().unwrap();
-			let mut commitment_txn = None;
-			for (funding_txo, monitor) in monitors.iter() {
-				if funding_txo.to_channel_id() == $channel_id {
-					commitment_txn = Some(monitor.unsafe_get_latest_holder_commitment_txn(&$node.logger));
-					break;
-				}
-			}
-			commitment_txn.unwrap()
+			$crate::get_monitor!($node, $channel_id).unsafe_get_latest_holder_commitment_txn(&$node.logger)
 		}
 	}
 }

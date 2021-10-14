@@ -17,8 +17,8 @@ use bitcoin::hashes::hex::{FromHex, ToHex};
 use crate::util::DiskWriteable;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateErr};
-use lightning::chain::channelmonitor;
+use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
+use lightning::chain::chainmonitor;
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::ChannelManager;
@@ -158,17 +158,17 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChannelSigner: Sign> channelmonitor::Persist<ChannelSigner> for FilesystemPersister {
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+impl<ChannelSigner: Sign> chainmonitor::Persist<ChannelSigner> for FilesystemPersister {
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-			.map_err(|_| ChannelMonitorUpdateErr::PermanentFailure)
+			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
 	}
 }
 
@@ -180,7 +180,8 @@ mod tests {
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::Txid;
-	use lightning::chain::channelmonitor::{Persist, ChannelMonitorUpdateErr};
+	use lightning::chain::ChannelMonitorUpdateErr;
+	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
 	use lightning::ln::features::InitFeatures;

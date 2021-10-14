@@ -115,67 +115,6 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-/// An error enum representing a failure to persist a channel monitor update.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ChannelMonitorUpdateErr {
-	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
-	/// our state failed, but is expected to succeed at some point in the future).
-	///
-	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
-	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, ChannelManager::channel_monitor_updated can be used to
-	/// restore the channel to an operational state.
-	///
-	/// Note that a given ChannelManager will *never* re-generate a given ChannelMonitorUpdate. If
-	/// you return a TemporaryFailure you must ensure that it is written to disk safely before
-	/// writing out the latest ChannelManager state.
-	///
-	/// Even when a channel has been "frozen" updates to the ChannelMonitor can continue to occur
-	/// (eg if an inbound HTLC which we forwarded was claimed upstream resulting in us attempting
-	/// to claim it on this channel) and those updates must be applied wherever they can be. At
-	/// least one such updated ChannelMonitor must be persisted otherwise PermanentFailure should
-	/// be returned to get things on-chain ASAP using only the in-memory copy. Obviously updates to
-	/// the channel which would invalidate previous ChannelMonitors are not made when a channel has
-	/// been "frozen".
-	///
-	/// Note that even if updates made after TemporaryFailure succeed you must still call
-	/// channel_monitor_updated to ensure you have the latest monitor and re-enable normal channel
-	/// operation.
-	///
-	/// Note that the update being processed here will not be replayed for you when you call
-	/// ChannelManager::channel_monitor_updated, so you must store the update itself along
-	/// with the persisted ChannelMonitor on your own local disk prior to returning a
-	/// TemporaryFailure. You may, of course, employ a journaling approach, storing only the
-	/// ChannelMonitorUpdate on disk without updating the monitor itself, replaying the journal at
-	/// reload-time.
-	///
-	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
-	/// remote location (with local copies persisted immediately), it is anticipated that all
-	/// updates will return TemporaryFailure until the remote copies could be updated.
-	TemporaryFailure,
-	/// Used to indicate no further channel monitor updates will be allowed (eg we've moved on to a
-	/// different watchtower and cannot update with all watchtowers that were previously informed
-	/// of this channel).
-	///
-	/// At reception of this error, ChannelManager will force-close the channel and return at
-	/// least a final ChannelMonitorUpdate::ChannelForceClosed which must be delivered to at
-	/// least one ChannelMonitor copy. Revocation secret MUST NOT be released and offchain channel
-	/// update must be rejected.
-	///
-	/// This failure may also signal a failure to update the local persisted copy of one of
-	/// the channel monitor instance.
-	///
-	/// Note that even when you fail a holder commitment transaction update, you must store the
-	/// update to ensure you can claim from it in case of a duplicate copy of this ChannelMonitor
-	/// broadcasts it (e.g distributed channel-monitor deployment)
-	///
-	/// In case of distributed watchtowers deployment, the new version must be written to disk, as
-	/// state may have been stored but rejected due to a block forcing a commitment broadcast. This
-	/// storage is used to claim outputs of rejected state confirmed onchain by another watchtower,
-	/// lagging behind on block processing.
-	PermanentFailure,
-}
-
 /// General Err type for ChannelMonitor actions. Generally, this implies that the data provided is
 /// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
 /// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
@@ -2875,53 +2814,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.onchain_events_awaiting_threshold_conf.push(entry);
 		}
 	}
-}
-
-/// `Persist` defines behavior for persisting channel monitors: this could mean
-/// writing once to disk, and/or uploading to one or more backup services.
-///
-/// Note that for every new monitor, you **must** persist the new `ChannelMonitor`
-/// to disk/backups. And, on every update, you **must** persist either the
-/// `ChannelMonitorUpdate` or the updated monitor itself. Otherwise, there is risk
-/// of situations such as revoking a transaction, then crashing before this
-/// revocation can be persisted, then unintentionally broadcasting a revoked
-/// transaction and losing money. This is a risk because previous channel states
-/// are toxic, so it's important that whatever channel state is persisted is
-/// kept up-to-date.
-pub trait Persist<ChannelSigner: Sign> {
-	/// Persist a new channel's data. The data can be stored any way you want, but
-	/// the identifier provided by Rust-Lightning is the channel's outpoint (and
-	/// it is up to you to maintain a correct mapping between the outpoint and the
-	/// stored channel data). Note that you **must** persist every new monitor to
-	/// disk. See the `Persist` trait documentation for more details.
-	///
-	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
-	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	fn persist_new_channel(&self, id: OutPoint, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
-
-	/// Update one channel's data. The provided `ChannelMonitor` has already
-	/// applied the given update.
-	///
-	/// Note that on every update, you **must** persist either the
-	/// `ChannelMonitorUpdate` or the updated monitor itself to disk/backups. See
-	/// the `Persist` trait documentation for more details.
-	///
-	/// If an implementer chooses to persist the updates only, they need to make
-	/// sure that all the updates are applied to the `ChannelMonitors` *before*
-	/// the set of channel monitors is given to the `ChannelManager`
-	/// deserialization routine. See [`ChannelMonitor::update_monitor`] for
-	/// applying a monitor update to a monitor. If full `ChannelMonitors` are
-	/// persisted, then there is no need to persist individual updates.
-	///
-	/// Note that there could be a performance tradeoff between persisting complete
-	/// channel monitors on every update vs. persisting only updates and applying
-	/// them in batches. The size of each monitor grows `O(number of state updates)`
-	/// whereas updates are small and `O(1)`.
-	///
-	/// See [`ChannelMonitor::write`] for writing out a `ChannelMonitor`,
-	/// [`ChannelMonitorUpdate::write`] for writing out an update, and
-	/// [`ChannelMonitorUpdateErr`] for requirements when returning errors.
-	fn update_persisted_channel(&self, id: OutPoint, update: &ChannelMonitorUpdate, data: &ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
 }
 
 impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
