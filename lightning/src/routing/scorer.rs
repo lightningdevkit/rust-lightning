@@ -45,6 +45,9 @@
 use routing;
 
 use routing::network_graph::NodeId;
+use routing::router::RouteHop;
+
+use prelude::*;
 
 /// [`routing::Score`] implementation that provides reasonable default behavior.
 ///
@@ -78,4 +81,6 @@ impl routing::Score for Scorer {
 	) -> u64 {
 		self.base_penalty_msat
 	}
+
+	fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
 }

@@ -4537,6 +4537,8 @@ mod tests {
 		fn channel_penalty_msat(&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
+
+		fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
 	}
 
 	struct BadNodeScorer {
@@ -4547,6 +4549,8 @@ mod tests {
 		fn channel_penalty_msat(&self, _short_channel_id: u64, _source: &NodeId, target: &NodeId) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
+
+		fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
 	}
 
 	#[test]

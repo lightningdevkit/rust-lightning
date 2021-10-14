@@ -11,9 +11,9 @@ use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::{PaymentHash, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 use lightning::ln::msgs::LightningError;
+use lightning::routing;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
-use lightning::routing::scorer::Scorer;
 use lightning::util::logger::Logger;
 use secp256k1::key::PublicKey;
 use std::convert::TryInto;
@@ -109,13 +109,13 @@ impl<G, L: Deref> DefaultRouter<G, L> where G: Deref<Target = NetworkGraph>, L::
 	}
 }
 
-impl<G, L: Deref> Router for DefaultRouter<G, L>
+impl<G, L: Deref, S: routing::Score> Router<S> for DefaultRouter<G, L>
 where G: Deref<Target = NetworkGraph>, L::Target: Logger {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
+		scorer: &S
 	) -> Result<Route, LightningError> {
-		let scorer = Scorer::default();
-		find_route(payer, params, &*self.network_graph, first_hops, &*self.logger, &scorer)
+		find_route(payer, params, &*self.network_graph, first_hops, &*self.logger, scorer)
 	}
 }
 
