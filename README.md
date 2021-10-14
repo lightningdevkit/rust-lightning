@@ -87,7 +87,7 @@ In general, Rust-Lightning does not provide (but LDK has implementations of):
   hardware wallets.
 
 LDK's customizability was presented about at Advancing Bitcoin in February 2020:
-https://vimeo.com/showcase/7131712/video/418412286
+https://vimeo.com/showcase/8372504/video/412818125
 
 Design Goal
 -----------
