@@ -776,8 +776,8 @@ pub struct ChannelDetails {
 	///
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
-	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
-	pub user_id: u64,
+	/// The `user_channel_id` passed in to create_channel, or 0 if the channel was inbound.
+	pub user_channel_id: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
 	/// any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
@@ -1272,11 +1272,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
-	/// `user_id` will be provided back as `user_channel_id` in [`Event::FundingGenerationReady`]
-	/// to allow tracking of which events correspond with which `create_channel` call. Note that
-	/// the `user_channel_id` defaults to 0 for inbound channels, so you may wish to avoid using 0
-	/// for `user_id` here. `user_id` has no meaning inside of LDK, it is simply copied to events
-	/// and otherwise ignored.
+	/// `user_channel_id` will be provided back as in
+	/// [`Event::FundingGenerationReady::user_channel_id`] to allow tracking of which events
+	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to 0
+	/// for inbound channels, so you may wish to avoid using 0 for `user_channel_id` here.
+	/// `user_channel_id` has no meaning inside of LDK, it is simply copied to events and otherwise
+	/// ignored.
 	///
 	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
 	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
@@ -1292,10 +1293,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// one derived from the funding transaction's TXID. If the counterparty rejects the channel
 	/// immediately, this temporary ID will appear in [`Event::ChannelClosed::channel_id`].
 	///
-	/// [`Event::FundingGenerationReady`]: events::Event::FundingGenerationReady
+	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -1307,7 +1308,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let peer_state = peer_state.lock().unwrap();
 					let their_features = &peer_state.latest_features;
 					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_id, config)?
+					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_channel_id, config)?
 				},
 				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
 			}
@@ -1360,7 +1361,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					unspendable_punishment_reserve: to_self_reserve_satoshis,
 					inbound_capacity_msat,
 					outbound_capacity_msat,
-					user_id: channel.get_user_id(),
+					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),

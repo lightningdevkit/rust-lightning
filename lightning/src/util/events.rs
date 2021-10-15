@@ -146,8 +146,8 @@ pub enum Event {
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
 		output_script: Script,
-		/// The `user_id` value passed in to [`ChannelManager::create_channel`], or 0 for an
-		/// inbound channel.
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
+		/// an inbound channel.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		user_channel_id: u64,
@@ -265,8 +265,8 @@ pub enum Event {
 		/// The channel_id of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: [u8; 32],
-		/// The `user_id` value passed in to [`ChannelManager::create_channel`], or 0 for an
-		/// inbound channel. This will always be zero for objects serialized with LDK versions
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
+		/// an inbound channel. This will always be zero for objects serialized with LDK versions
 		/// prior to 0.0.102.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
