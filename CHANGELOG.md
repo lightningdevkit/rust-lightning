@@ -1,3 +1,81 @@
+# 0.0.102 - 2021-10-18
+
+## API Updates
+ * `get_route` now takes a `Score` as an argument. `Score` is queried during
+   the route-finding process, returning the absolute amounts which you are
+   willing to pay to avoid routing over a given channel. As a default, a
+   `Scorer` is provided which returns a constant amount, with a suggested
+   default of 500 msat. This translates to a willingness to pay up to 500 msat
+   in additional fees per hop in order to avoid additional hops (#1124).
+ * `Event::PaymentPathFailed` now contains a `short_channel_id` field which may
+   be filled in with a channel that can be "blamed" for the payment failure.
+   Payment retries should likely avoid the given channel for some time (#1077).
+ * `PublicKey`s in `NetworkGraph` have been replaced with a `NodeId` struct
+   which contains only a simple `[u8; 33]`, substantially improving
+   `NetworkGraph` deserialization performance (#1107).
+ * `ChainMonitor`'s `HashMap` of `ChannelMonitor`s is now private, exposed via
+   `Chainmonitor::get_monitor` and `ChainMonitor::list_monitors` instead
+   (#1112).
+ * When an outbound channel is closed prior to the broadcasting of its funding
+   transaction, but after you call
+   `ChannelManager::funding_transaction_generated`, a new event type,
+   `Event::DiscardFunding`, is generated, informing you the transaction was not
+   broadcasted and that you can spend the same inputs again elsewhere (#1098).
+ * `ChannelManager::create_channel` now returns the temporary channel ID which
+   may later appear in `Event::ChannelClosed` or `ChannelDetails` prior to the
+   channel being funded (#1121).
+ * `Event::PaymentSent` now contains the payment hash as well as the payment
+   preimage (#1062).
+ * `ReadOnlyNetworkGraph::get_addresses` now returns owned `NetAddress` rather
+   than references. As a side-effect this method is now exposed in foreign
+   language bindings (#1115).
+ * The `Persist` and `ChannelMonitorUpdateErr` types have moved to the
+   `lightning::chain::chainmonitor` and `lightning::chain` modules,
+   respectively (#1112).
+ * `ChannelManager::send_payment` now returns a `PaymentId` which identifies a
+   payment (whether MPP or not) and can be used to retry the full payment or
+   MPP parts through `retry_payment` (#1096). Note that doing so is currently
+   *not* crash safe, and you may find yourself sending twice. It is recommended
+   that you *not* use the `retry_payment` API until the next release.
+
+## Bug Fixes
+ * Due to an earlier fix for the Lightning dust inflation vulnerability tracked
+   in CVE-2021-41591/CVE-2021-41592/CVE-2021-41593 in 0.0.100, we required
+   counterparties to accept a dust limit slightly lower than the dust limit now
+   required by other implementations. This appeared as, at least, latest lnd
+   always refusing to accept channels opened by LDK clients (#1065).
+ * If there are multiple channels available to the same counterparty,
+   `get_route` would only consider the channel listed last as available for
+   sending (#1100).
+ * `Persist` implementations returning
+   `ChannelMonitorUpdateErr::TemporaryFailure` from `watch_channel` previously
+   resulted in the `ChannelMonitor` not being stored at all, resulting in a
+   panic after monitor updating is complete (#1112).
+ * If payments are pending awaiting forwarding at startup, an
+   `Event::PendingHTLCsForwardable` event will always be provided. This ensures
+   user code calls `ChannelManager::process_pending_htlc_fowards` even if it
+   shut down while awaiting the batching timer during the previous run (#1076).
+ * If a call to `ChannelManager::send_payment` failed due to lack of
+   availability of funds locally, LDK would store the payment as pending
+   forever, with no ability to retry or fail it, leaking memory (#1109).
+
+## Serialization Compatibility
+ * All above new Events/fields are ignored by prior clients. All above new
+   Events/fields, except for `Event::PaymentSent::payment_hash` are not present
+   when reading objects serialized by prior versions of the library.
+
+In total, this release features 32 files changed, 2248 insertions, and 1483
+deletions in 51 commits from 7 authors, in alphabetical order:
+
+ * 1nF0rmed
+ * Duncan Dean
+ * Elias Rohrer
+ * Galder Zamarreño
+ * Jeffrey Czyz
+ * Matt Corallo
+ * Valentine Wallace
+
+
 # 0.0.101 - 2021-09-23
 
 ## API Updates
