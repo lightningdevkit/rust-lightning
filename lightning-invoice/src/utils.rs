@@ -98,6 +98,7 @@ mod test {
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router;
+	use lightning::routing::scorer::Scorer;
 	use lightning::util::events::MessageSendEventsProvider;
 	use lightning::util::test_utils;
 	#[test]
@@ -117,6 +118,7 @@ mod test {
 		let last_hops = invoice.route_hints();
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let logger = test_utils::TestLogger::new();
+		let scorer = Scorer::new(0);
 		let route = router::get_route(
 			&nodes[0].node.get_our_node_id(),
 			network_graph,
@@ -127,6 +129,7 @@ mod test {
 			amt_msat,
 			invoice.min_final_cltv_expiry() as u32,
 			&logger,
+			&scorer,
 		).unwrap();
 
 		let payment_event = {

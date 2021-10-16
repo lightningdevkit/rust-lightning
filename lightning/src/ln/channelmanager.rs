@@ -5804,6 +5804,7 @@ mod tests {
 	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{get_keysend_route, get_route};
+	use routing::scorer::Scorer;
 	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils;
@@ -6042,13 +6043,14 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 		let logger = test_utils::TestLogger::new();
+		let scorer = Scorer::new(0);
 
 		// To start (1), send a regular payment but don't claim it.
 		let expected_route = [&nodes[1]];
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6076,7 +6078,7 @@ mod tests {
 
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6130,9 +6132,10 @@ mod tests {
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
+		let scorer = Scorer::new(0);
 		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
-                                  nodes[0].logger).unwrap();
+                                  nodes[0].logger, &scorer).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let mismatch_payment_hash = PaymentHash([43; 32]);
@@ -6166,9 +6169,10 @@ mod tests {
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
+		let scorer = Scorer::new(0);
 		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
                                   Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
-                                  nodes[0].logger).unwrap();
+                                  nodes[0].logger, &scorer).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let test_secret = PaymentSecret([43; 32]);
@@ -6229,6 +6233,7 @@ pub mod bench {
 	use ln::msgs::{ChannelMessageHandler, Init};
 	use routing::network_graph::NetworkGraph;
 	use routing::router::get_route;
+	use routing::scorer::Scorer;
 	use util::test_utils;
 	use util::config::UserConfig;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
@@ -6336,8 +6341,9 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
+				let scorer = Scorer::new(0);
 				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), Some(InvoiceFeatures::known()),
-					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a).unwrap();
+					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a, &scorer).unwrap();
 
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
