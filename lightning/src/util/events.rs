@@ -146,7 +146,10 @@ pub enum Event {
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
 		output_script: Script,
-		/// The value passed in to ChannelManager::create_channel
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
+		/// an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		user_channel_id: u64,
 	},
 	/// Indicates we've received money! Just gotta dig out that payment preimage and feed it to
@@ -262,6 +265,12 @@ pub enum Event {
 		/// The channel_id of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: [u8; 32],
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
+		/// an inbound channel. This will always be zero for objects serialized with LDK versions
+		/// prior to 0.0.102.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		user_channel_id: u64,
 		/// The reason the channel was closed.
 		reason: ClosureReason
 	},
@@ -352,10 +361,11 @@ impl Writeable for Event {
 					(2, claim_from_onchain_tx, required),
 				});
 			},
-			&Event::ChannelClosed { ref channel_id, ref reason } => {
+			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
 				9u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
+					(1, user_channel_id, required),
 					(2, reason, required)
 				});
 			},
@@ -492,12 +502,15 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut channel_id = [0; 32];
 					let mut reason = None;
+					let mut user_channel_id_opt = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
+						(1, user_channel_id_opt, option),
 						(2, reason, ignorable),
 					});
 					if reason.is_none() { return Ok(None); }
-					Ok(Some(Event::ChannelClosed { channel_id, reason: reason.unwrap() }))
+					let user_channel_id = if let Some(id) = user_channel_id_opt { id } else { 0 };
+					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: reason.unwrap() }))
 				};
 				f()
 			},

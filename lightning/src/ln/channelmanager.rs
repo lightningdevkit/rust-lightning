@@ -242,7 +242,7 @@ type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource
 
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
-	chan_id: Option<[u8; 32]>, // If Some a channel of ours has been closed
+	chan_id: Option<([u8; 32], u64)>, // If Some a channel of ours has been closed
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
@@ -278,7 +278,7 @@ impl MsgHandleErrInternal {
 		Self { err, chan_id: None, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: [u8; 32], shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u64, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -289,7 +289,7 @@ impl MsgHandleErrInternal {
 					},
 				},
 			},
-			chan_id: Some(channel_id),
+			chan_id: Some((channel_id, user_channel_id)),
 			shutdown_finish: Some((shutdown_res, channel_update)),
 		}
 	}
@@ -776,8 +776,8 @@ pub struct ChannelDetails {
 	///
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
-	/// The user_id passed in to create_channel, or 0 if the channel was inbound.
-	pub user_id: u64,
+	/// The `user_channel_id` passed in to create_channel, or 0 if the channel was inbound.
+	pub user_channel_id: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
 	/// any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
@@ -894,8 +894,11 @@ macro_rules! handle_error {
 							msg: update
 						});
 					}
-					if let Some(channel_id) = chan_id {
-						$self.pending_events.lock().unwrap().push(events::Event::ChannelClosed { channel_id,  reason: ClosureReason::ProcessingError { err: err.err.clone() } });
+					if let Some((channel_id, user_channel_id)) = chan_id {
+						$self.pending_events.lock().unwrap().push(events::Event::ChannelClosed {
+							channel_id, user_channel_id,
+							reason: ClosureReason::ProcessingError { err: err.err.clone() }
+						});
 					}
 				}
 
@@ -937,7 +940,8 @@ macro_rules! convert_chan_err {
 					$short_to_id.remove(&short_id);
 				}
 				let shutdown_res = $channel.force_shutdown(true);
-				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.get_user_id(),
+					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			},
 			ChannelError::CloseDelayBroadcast(msg) => {
 				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($channel_id[..]), msg);
@@ -945,7 +949,8 @@ macro_rules! convert_chan_err {
 					$short_to_id.remove(&short_id);
 				}
 				let shutdown_res = $channel.force_shutdown(false);
-				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
+				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.get_user_id(),
+					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			}
 		}
 	}
@@ -1013,7 +1018,7 @@ macro_rules! handle_monitor_err {
 				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
 				// given up the preimage yet, so might as well just wait until the payment is
 				// retried, avoiding the on-chain fees.
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id,
+				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.get_user_id(),
 						$chan.force_shutdown(true), $self.get_channel_update_for_broadcast(&$chan).ok() ));
 				(res, true)
 			},
@@ -1267,22 +1272,31 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
-	/// user_id will be provided back as user_channel_id in FundingGenerationReady events to allow
-	/// tracking of which events correspond with which create_channel call. Note that the
-	/// user_channel_id defaults to 0 for inbound channels, so you may wish to avoid using 0 for
-	/// user_id here. user_id has no meaning inside of LDK, it is simply copied to events and
-	/// otherwise ignored.
+	/// `user_channel_id` will be provided back as in
+	/// [`Event::FundingGenerationReady::user_channel_id`] to allow tracking of which events
+	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to 0
+	/// for inbound channels, so you may wish to avoid using 0 for `user_channel_id` here.
+	/// `user_channel_id` has no meaning inside of LDK, it is simply copied to events and otherwise
+	/// ignored.
 	///
-	/// If successful, will generate a SendOpenChannel message event, so you should probably poll
-	/// PeerManager::process_events afterwards.
-	///
-	/// Raises APIError::APIMisuseError when channel_value_satoshis > 2**24 or push_msat is
-	/// greater than channel_value_satoshis * 1k or channel_value_satoshis is < 1000.
+	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
+	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
 	///
 	/// Note that we do not check if you are currently connected to the given peer. If no
 	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
-	/// the channel eventually being silently forgotten.
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_id: u64, override_config: Option<UserConfig>) -> Result<(), APIError> {
+	/// the channel eventually being silently forgotten (dropped on reload).
+	///
+	/// Returns the new Channel's temporary `channel_id`. This ID will appear as
+	/// [`Event::FundingGenerationReady::temporary_channel_id`] and in
+	/// [`ChannelDetails::channel_id`] until after
+	/// [`ChannelManager::funding_transaction_generated`] is called, swapping the Channel's ID for
+	/// one derived from the funding transaction's TXID. If the counterparty rejects the channel
+	/// immediately, this temporary ID will appear in [`Event::ChannelClosed::channel_id`].
+	///
+	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
+	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
+	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -1294,7 +1308,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let peer_state = peer_state.lock().unwrap();
 					let their_features = &peer_state.latest_features;
 					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_id, config)?
+					Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key, their_features, channel_value_satoshis, push_msat, user_channel_id, config)?
 				},
 				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
 			}
@@ -1305,8 +1319,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
 
+		let temporary_channel_id = channel.channel_id();
 		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.entry(channel.channel_id()) {
+		match channel_state.by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(feature = "fuzztarget") {
 					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
@@ -1320,7 +1335,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			node_id: their_network_key,
 			msg: res,
 		});
-		Ok(())
+		Ok(temporary_channel_id)
 	}
 
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
@@ -1346,7 +1361,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					unspendable_punishment_reserve: to_self_reserve_satoshis,
 					inbound_capacity_msat,
 					outbound_capacity_msat,
-					user_id: channel.get_user_id(),
+					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
@@ -1393,7 +1408,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 			None => {},
 		}
-		pending_events_lock.push(events::Event::ChannelClosed { channel_id: channel.channel_id(), reason: closure_reason });
+		pending_events_lock.push(events::Event::ChannelClosed {
+			channel_id: channel.channel_id(),
+			user_channel_id: channel.get_user_id(),
+			reason: closure_reason
+		});
 	}
 
 	fn close_channel_internal(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
@@ -2228,7 +2247,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 					(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
 						.map_err(|e| if let ChannelError::Close(msg) = e {
-							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.force_shutdown(true), None)
+							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
 						} else { unreachable!(); })
 					, chan)
 				},
@@ -2570,7 +2589,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												channel_state.short_to_id.remove(&short_id);
 											}
 											// ChannelClosed event is generated by handle_error for us.
-											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
+											Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, channel.get_user_id(), channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
 										},
 										ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
 									};
@@ -5609,6 +5628,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 					channel_closures.push(events::Event::ChannelClosed {
 						channel_id: channel.channel_id(),
+						user_channel_id: channel.get_user_id(),
 						reason: ClosureReason::OutdatedChannelManager
 					});
 				} else {

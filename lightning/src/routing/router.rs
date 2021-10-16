@@ -1362,7 +1362,7 @@ mod tests {
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			short_channel_id,
 			channel_value_satoshis: 0,
-			user_id: 0,
+			user_channel_id: 0,
 			outbound_capacity_msat,
 			inbound_capacity_msat: 42,
 			unspendable_punishment_reserve: None,
