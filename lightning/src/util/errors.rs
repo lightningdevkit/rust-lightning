@@ -66,10 +66,10 @@ pub enum APIError {
 impl fmt::Debug for APIError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			APIError::APIMisuseError {ref err} => f.write_str(err),
+			APIError::APIMisuseError {ref err} => write!(f, "Misuse error: {}", err),
 			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
-			APIError::RouteError {ref err} => f.write_str(err),
-			APIError::ChannelUnavailable {ref err} => f.write_str(err),
+			APIError::RouteError {ref err} => write!(f, "Route error: {}", err),
+			APIError::ChannelUnavailable {ref err} => write!(f, "Channel unavailable: {}", err),
 			APIError::MonitorUpdateFailed => f.write_str("Client indicated a channel monitor update failed"),
 			APIError::IncompatibleShutdownScript { ref script } => {
 				write!(f, "Provided a scriptpubkey format not accepted by peer: {}", script)
