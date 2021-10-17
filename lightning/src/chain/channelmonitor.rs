@@ -1886,12 +1886,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		} else if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
+		let mut ret = Ok(());
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone())?
+					if let Err(e) = self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone()) {
+						log_error!(logger, "Providing latest holder commitment transaction failed/was refused:");
+						log_error!(logger, "    {}", e.0);
+						ret = Err(e);
+					}
 				}
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_revocation_point } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
@@ -1903,7 +1908,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
-					self.provide_secret(*idx, *secret)?
+					if let Err(e) = self.provide_secret(*idx, *secret) {
+						log_error!(logger, "Providing latest counterparty commitment secret failed/was refused:");
+						log_error!(logger, "    {}", e.0);
+						ret = Err(e);
+					}
 				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
@@ -1928,7 +1937,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 		self.latest_update_id = updates.update_id;
-		Ok(())
+		ret
 	}
 
 	pub fn get_latest_update_id(&self) -> u64 {
