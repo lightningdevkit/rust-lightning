@@ -1085,7 +1085,7 @@ macro_rules! expect_payment_sent {
 		let expected_payment_hash = PaymentHash(Sha256::hash(&$expected_payment_preimage.0).into_inner());
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
 				assert_eq!(expected_payment_hash, *payment_hash);
 			},

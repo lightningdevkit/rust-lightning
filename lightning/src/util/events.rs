@@ -15,6 +15,7 @@
 //! few other things.
 
 use chain::keysinterface::SpendableOutputDescriptor;
+use ln::channelmanager::PaymentId;
 use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -178,6 +179,12 @@ pub enum Event {
 	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentPathFailed`
 	/// event. In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: Option<PaymentId>,
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
 		/// store it somehow!
@@ -322,11 +329,12 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_preimage, ref payment_hash} => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 					(1, payment_hash, required),
+					(3, payment_id, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -435,14 +443,17 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
 					let mut payment_hash = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
+						(3, payment_id, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
 					}
 					Ok(Some(Event::PaymentSent {
+						payment_id,
 						payment_preimage,
 						payment_hash: payment_hash.unwrap(),
 					}))

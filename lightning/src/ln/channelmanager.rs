@@ -3475,6 +3475,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 					self.pending_events.lock().unwrap().push(
 						events::Event::PaymentSent {
+							payment_id: Some(payment_id),
 							payment_preimage,
 							payment_hash: payment_hash
 						}
@@ -6256,7 +6257,8 @@ mod tests {
 		// further events will be generated for subsequence path successes.
 		let events = nodes[0].node.get_and_clear_pending_events();
 		match events[0] {
-			Event::PaymentSent { payment_preimage: ref preimage, payment_hash: ref hash } => {
+			Event::PaymentSent { payment_id: ref id, payment_preimage: ref preimage, payment_hash: ref hash } => {
+				assert_eq!(Some(payment_id), *id);
 				assert_eq!(payment_preimage, *preimage);
 				assert_eq!(our_payment_hash, *hash);
 			},
