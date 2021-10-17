@@ -191,8 +191,7 @@ mod tests {
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::ErrorAction;
-	use lightning::util::events::{ClosureReason, Event, MessageSendEventsProvider, MessageSendEvent};
+	use lightning::util::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::util::test_utils;
 	use std::fs;
 	#[cfg(target_os = "windows")]

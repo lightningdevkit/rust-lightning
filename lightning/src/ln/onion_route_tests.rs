@@ -12,7 +12,7 @@
 //! returned errors decode to the correct thing.
 
 use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentHash, PaymentSecret};
 use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY};
 use ln::onion_utils;
 use routing::network_graph::NetworkUpdate;
@@ -26,7 +26,6 @@ use util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 
 use bitcoin::secp256k1;
