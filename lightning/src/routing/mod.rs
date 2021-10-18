@@ -13,10 +13,13 @@ pub mod network_graph;
 pub mod router;
 pub mod scorer;
 
+use routing::network_graph::NodeId;
+
 /// An interface used to score payment channels for path finding.
 ///
 ///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
 pub trait Score {
-	/// Returns the fee in msats willing to be paid to avoid routing through the given channel.
-	fn channel_penalty_msat(&self, short_channel_id: u64) -> u64;
+	/// Returns the fee in msats willing to be paid to avoid routing through the given channel
+	/// in the direction from `source` to `target`.
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64;
 }
