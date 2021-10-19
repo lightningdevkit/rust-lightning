@@ -92,10 +92,12 @@ impl MonitorUpdateId {
 ///    closed without broadcasting the latest state. See
 ///    [`ChannelMonitorUpdateErr::PermanentFailure`] for more details.
 pub trait Persist<ChannelSigner: Sign> {
-	/// Persist a new channel's data. The data can be stored any way you want, but the identifier
-	/// provided by LDK is the channel's outpoint (and it is up to you to maintain a correct
-	/// mapping between the outpoint and the stored channel data). Note that you **must** persist
-	/// every new monitor to disk.
+	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
+	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
+	///
+	/// The data can be stored any way you want, but the identifier provided by LDK is the
+	/// channel's outpoint (and it is up to you to maintain a correct mapping between the outpoint
+	/// and the stored channel data). Note that you **must** persist every new monitor to disk.
 	///
 	/// The `update_id` is used to identify this call to [`ChainMonitor::channel_monitor_updated`],
 	/// if you return [`ChannelMonitorUpdateErr::TemporaryFailure`].
@@ -103,6 +105,7 @@ pub trait Persist<ChannelSigner: Sign> {
 	/// See [`Writeable::write`] on [`ChannelMonitor`] for writing out a `ChannelMonitor`
 	/// and [`ChannelMonitorUpdateErr`] for requirements when returning errors.
 	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
 	fn persist_new_channel(&self, channel_id: OutPoint, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> Result<(), ChannelMonitorUpdateErr>;
 
