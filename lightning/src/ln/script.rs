@@ -21,7 +21,7 @@ use io;
 pub struct ShutdownScript(ShutdownScriptImpl);
 
 /// An error occurring when converting from [`Script`] to [`ShutdownScript`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InvalidShutdownScript {
 	/// The script that did not meet the requirements from [BOLT #2].
 	///
