@@ -172,6 +172,9 @@ pub struct TestPersister {
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
 	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
+	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
+	/// MonitorUpdateId here.
+	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
@@ -179,6 +182,7 @@ impl TestPersister {
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
+			offchain_monitor_updates: Mutex::new(HashMap::new()),
 		}
 	}
 
@@ -206,6 +210,8 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 		}
 		if update.is_none() {
 			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+		} else {
+			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		}
 		ret
 	}
