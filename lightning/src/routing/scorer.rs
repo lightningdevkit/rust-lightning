@@ -44,6 +44,8 @@
 
 use routing;
 
+use routing::network_graph::NodeId;
+
 /// [`routing::Score`] implementation that provides reasonable default behavior.
 ///
 /// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
@@ -71,5 +73,9 @@ impl Default for Scorer {
 }
 
 impl routing::Score for Scorer {
-	fn channel_penalty_msat(&self, _short_channel_id: u64) -> u64 { self.base_penalty_msat }
+	fn channel_penalty_msat(
+		&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
+	) -> u64 {
+		self.base_penalty_msat
+	}
 }
