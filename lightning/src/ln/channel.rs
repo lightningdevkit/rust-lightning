@@ -1254,11 +1254,11 @@ impl<Signer: Sign> Channel<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (included_non_dust_htlcs.len() as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len());
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
-			(value_to_self_msat / 1000 - total_fee as i64, value_to_remote_msat / 1000)
+			(value_to_self_msat / 1000 - total_fee_sat as i64, value_to_remote_msat / 1000)
 		} else {
-			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - total_fee as i64)
+			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - total_fee_sat as i64)
 		};
 
 		let mut value_to_a = if local { value_to_self } else { value_to_remote };
@@ -2066,12 +2066,19 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_selected_channel_reserve_satoshis)
 	}
 
-	// Get the fee cost of a commitment tx with a given number of HTLC outputs.
+	// Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
 	// Note that num_htlcs should not include dust HTLCs.
 	fn commit_tx_fee_msat(&self, num_htlcs: usize) -> u64 {
 		// Note that we need to divide before multiplying to round properly,
 		// since the lowest denomination of bitcoin on-chain is the satoshi.
 		(COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * self.feerate_per_kw as u64 / 1000 * 1000
+	}
+
+	// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
+	// Note that num_htlcs should not include dust HTLCs.
+	#[inline]
+	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize) -> u64 {
+		feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
 	}
 
 	// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
@@ -2497,10 +2504,10 @@ impl<Signer: Sign> Channel<Signer> {
 			update_state == FeeUpdateState::RemoteAnnounced
 		} else { false };
 		if update_fee { debug_assert!(!self.is_outbound()); }
-		let total_fee = feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, num_htlcs);
 		if update_fee {
 			let counterparty_reserve_we_require = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis);
-			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee + counterparty_reserve_we_require {
+			if self.channel_value_satoshis - self.value_to_self_msat / 1000 < total_fee_sat + counterparty_reserve_we_require {
 				return Err((None, ChannelError::Close("Funding remote cannot afford proposed new fee".to_owned())));
 			}
 		}
@@ -2516,7 +2523,7 @@ impl<Signer: Sign> Channel<Signer> {
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
-							assert_eq!(total_fee, info.fee / 1000);
+							assert_eq!(total_fee_sat, info.fee / 1000);
 						}
 				}
 			}
