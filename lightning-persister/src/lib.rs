@@ -159,13 +159,18 @@ impl FilesystemPersister {
 }
 
 impl<ChannelSigner: Sign> chainmonitor::Persist<ChannelSigner> for FilesystemPersister {
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
+	// down once these start returning failure.
+	// A PermanentFailure implies we need to shut down since we're force-closing channels without
+	// even broadcasting!
+
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: chainmonitor::MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
 			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &ChannelMonitorUpdate, monitor: &ChannelMonitor<ChannelSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: chainmonitor::MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
 			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
@@ -296,6 +301,8 @@ mod tests {
 		nodes[1].node.force_close_channel(&chan.2).unwrap();
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
 
 		// Set the persister's directory to read-only, which should result in
 		// returning a permanent failure when we then attempt to persist a
@@ -309,7 +316,7 @@ mod tests {
 			txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
-		match persister.persist_new_channel(test_txo, &added_monitors[0].1) {
+		match persister.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
 			Err(ChannelMonitorUpdateErr::PermanentFailure) => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
@@ -333,6 +340,8 @@ mod tests {
 		nodes[1].node.force_close_channel(&chan.2).unwrap();
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
+		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
 
 		// Create the persister with an invalid directory name and test that the
 		// channel fails to open because the directories fail to be created. There
@@ -344,7 +353,7 @@ mod tests {
 			txid: Txid::from_hex("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
-		match persister.persist_new_channel(test_txo, &added_monitors[0].1) {
+		match persister.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
 			Err(ChannelMonitorUpdateErr::PermanentFailure) => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}

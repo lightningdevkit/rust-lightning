@@ -3404,27 +3404,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.our_network_pubkey.clone()
 	}
 
-	/// Restores a single, given channel to normal operation after a
-	/// ChannelMonitorUpdateErr::TemporaryFailure was returned from a channel monitor update
-	/// operation.
-	///
-	/// All ChannelMonitor updates up to and including highest_applied_update_id must have been
-	/// fully committed in every copy of the given channels' ChannelMonitors.
-	///
-	/// Note that there is no effect to calling with a highest_applied_update_id other than the
-	/// current latest ChannelMonitorUpdate and one call to this function after multiple
-	/// ChannelMonitorUpdateErr::TemporaryFailures is fine. The highest_applied_update_id field
-	/// exists largely only to prevent races between this and concurrent update_monitor calls.
-	///
-	/// Thus, the anticipated use is, at a high level:
-	///  1) You register a chain::Watch with this ChannelManager,
-	///  2) it stores each update to disk, and begins updating any remote (eg watchtower) copies of
-	///     said ChannelMonitors as it can, returning ChannelMonitorUpdateErr::TemporaryFailures
-	///     any time it cannot do so instantly,
-	///  3) update(s) are applied to each remote copy of a ChannelMonitor,
-	///  4) once all remote copies are updated, you call this function with the update_id that
-	///     completed, and once it is the latest the Channel will be re-enabled.
-	pub fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
+	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let chan_restoration_res;
@@ -4129,7 +4109,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 					}
 				},
-				MonitorEvent::CommitmentTxConfirmed(funding_outpoint) => {
+				MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
+				MonitorEvent::UpdateFailed(funding_outpoint) => {
 					let mut channel_lock = self.channel_state.lock().unwrap();
 					let channel_state = &mut *channel_lock;
 					let by_id = &mut channel_state.by_id;
@@ -4145,7 +4126,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								msg: update
 							});
 						}
-						self.issue_channel_close_events(&chan, ClosureReason::CommitmentTxConfirmed);
+						let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
+							ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
+						} else {
+							ClosureReason::CommitmentTxConfirmed
+						};
+						self.issue_channel_close_events(&chan, reason);
 						pending_msg_events.push(events::MessageSendEvent::HandleError {
 							node_id: chan.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
@@ -4153,6 +4139,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							},
 						});
 					}
+				},
+				MonitorEvent::UpdateCompleted { funding_txo, monitor_update_id } => {
+					self.channel_monitor_updated(&funding_txo, monitor_update_id);
 				},
 			}
 		}
@@ -4162,6 +4151,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		has_pending_monitor_events
+	}
+
+	/// In chanmon_consistency_target, we'd like to be able to restore monitor updating without
+	/// handling all pending events (i.e. not PendingHTLCsForwardable). Thus, we expose monitor
+	/// update events as a separate process method here.
+	#[cfg(feature = "fuzztarget")]
+	pub fn process_monitor_events(&self) {
+		self.process_pending_monitor_events();
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
@@ -5468,20 +5465,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 ///
 /// At a high-level, the process for deserializing a ChannelManager and resuming normal operation
 /// is:
-/// 1) Deserialize all stored ChannelMonitors.
-/// 2) Deserialize the ChannelManager by filling in this struct and calling:
-///    <(BlockHash, ChannelManager)>::read(reader, args)
-///    This may result in closing some Channels if the ChannelMonitor is newer than the stored
-///    ChannelManager state to ensure no loss of funds. Thus, transactions may be broadcasted.
-/// 3) If you are not fetching full blocks, register all relevant ChannelMonitor outpoints the same
-///    way you would handle a `chain::Filter` call using ChannelMonitor::get_outputs_to_watch() and
-///    ChannelMonitor::get_funding_txo().
-/// 4) Reconnect blocks on your ChannelMonitors.
-/// 5) Disconnect/connect blocks on the ChannelManager.
-/// 6) Move the ChannelMonitors into your local chain::Watch.
+/// 1) Deserialize all stored [`ChannelMonitor`]s.
+/// 2) Deserialize the [`ChannelManager`] by filling in this struct and calling:
+///    `<(BlockHash, ChannelManager)>::read(reader, args)`
+///    This may result in closing some channels if the [`ChannelMonitor`] is newer than the stored
+///    [`ChannelManager`] state to ensure no loss of funds. Thus, transactions may be broadcasted.
+/// 3) If you are not fetching full blocks, register all relevant [`ChannelMonitor`] outpoints the
+///    same way you would handle a [`chain::Filter`] call using
+///    [`ChannelMonitor::get_outputs_to_watch`] and [`ChannelMonitor::get_funding_txo`].
+/// 4) Reconnect blocks on your [`ChannelMonitor`]s.
+/// 5) Disconnect/connect blocks on the [`ChannelManager`].
+/// 6) Re-persist the [`ChannelMonitor`]s to ensure the latest state is on disk.
+///    Note that if you're using a [`ChainMonitor`] for your [`chain::Watch`] implementation, you
+///    will likely accomplish this as a side-effect of calling [`chain::Watch::watch_channel`] in
+///    the next step.
+/// 7) Move the [`ChannelMonitor`]s into your local [`chain::Watch`]. If you're using a
+///    [`ChainMonitor`], this is done by calling [`chain::Watch::watch_channel`].
 ///
-/// Note that the ordering of #4-6 is not of importance, however all three must occur before you
-/// call any other methods on the newly-deserialized ChannelManager.
+/// Note that the ordering of #4-7 is not of importance, however all four must occur before you
+/// call any other methods on the newly-deserialized [`ChannelManager`].
 ///
 /// Note that because some channels may be closed during deserialization, it is critical that you
 /// always deserialize only the latest version of a ChannelManager and ChannelMonitors available to
@@ -5489,6 +5491,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// broadcast), and then later deserialize a newer version of the same ChannelManager (which will
 /// not force-close the same channels but consider them live), you may end up revoking a state for
 /// which you've already broadcasted the transaction.
+///
+/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,

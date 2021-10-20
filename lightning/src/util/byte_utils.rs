@@ -70,20 +70,6 @@ pub fn be64_to_array(u: u64) -> [u8; 8] {
 	v
 }
 
-#[inline]
-pub fn le64_to_array(u: u64) -> [u8; 8] {
-	let mut v = [0; 8];
-	v[0] = ((u >> 8*0) & 0xff) as u8;
-	v[1] = ((u >> 8*1) & 0xff) as u8;
-	v[2] = ((u >> 8*2) & 0xff) as u8;
-	v[3] = ((u >> 8*3) & 0xff) as u8;
-	v[4] = ((u >> 8*4) & 0xff) as u8;
-	v[5] = ((u >> 8*5) & 0xff) as u8;
-	v[6] = ((u >> 8*6) & 0xff) as u8;
-	v[7] = ((u >> 8*7) & 0xff) as u8;
-	v
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -96,6 +82,5 @@ mod tests {
 		assert_eq!(be32_to_array(0xdeadbeef), [0xde, 0xad, 0xbe, 0xef]);
 		assert_eq!(be48_to_array(0xdeadbeef1bad), [0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad]);
 		assert_eq!(be64_to_array(0xdeadbeef1bad1dea), [0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad, 0x1d, 0xea]);
-		assert_eq!(le64_to_array(0xdeadbeef1bad1dea), [0xea, 0x1d, 0xad, 0x1b, 0xef, 0xbe, 0xad, 0xde]);
 	}
 }

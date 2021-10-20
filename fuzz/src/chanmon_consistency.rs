@@ -855,22 +855,26 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 			0x08 => {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+					monitor_a.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
+					nodes[0].process_monitor_events();
 				}
 			},
 			0x09 => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+					monitor_b.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
+					nodes[1].process_monitor_events();
 				}
 			},
 			0x0a => {
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+					monitor_b.chain_monitor.force_channel_monitor_updated(chan_2_funding, *id);
+					nodes[1].process_monitor_events();
 				}
 			},
 			0x0b => {
 				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+					monitor_c.chain_monitor.force_channel_monitor_updated(chan_2_funding, *id);
+					nodes[2].process_monitor_events();
 				}
 			},
 
@@ -1071,22 +1075,26 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				// Test that no channel is in a stuck state where neither party can send funds even
 				// after we resolve all pending events.
 				// First make sure there are no pending monitor updates, resetting the error state
-				// and calling channel_monitor_updated for each monitor.
+				// and calling force_channel_monitor_updated for each monitor.
 				*monitor_a.persister.update_ret.lock().unwrap() = Ok(());
 				*monitor_b.persister.update_ret.lock().unwrap() = Ok(());
 				*monitor_c.persister.update_ret.lock().unwrap() = Ok(());
 
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[0].channel_monitor_updated(&chan_1_funding, *id);
+					monitor_a.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
+					nodes[0].process_monitor_events();
 				}
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_1_funding) {
-					nodes[1].channel_monitor_updated(&chan_1_funding, *id);
+					monitor_b.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);
+					nodes[1].process_monitor_events();
 				}
 				if let Some((id, _)) = monitor_b.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[1].channel_monitor_updated(&chan_2_funding, *id);
+					monitor_b.chain_monitor.force_channel_monitor_updated(chan_2_funding, *id);
+					nodes[1].process_monitor_events();
 				}
 				if let Some((id, _)) = monitor_c.latest_monitors.lock().unwrap().get(&chan_2_funding) {
-					nodes[2].channel_monitor_updated(&chan_2_funding, *id);
+					monitor_c.chain_monitor.force_channel_monitor_updated(chan_2_funding, *id);
+					nodes[2].process_monitor_events();
 				}
 
 				// Next, make sure peers are all connected to each other

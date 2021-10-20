@@ -12,6 +12,7 @@ use chain::WatchedOutput;
 use chain::chaininterface;
 use chain::chaininterface::ConfirmationTarget;
 use chain::chainmonitor;
+use chain::chainmonitor::MonitorUpdateId;
 use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
@@ -88,7 +89,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
-	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64)>>,
+	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64, MonitorUpdateId)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
@@ -116,7 +117,8 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
 			&mut io::Cursor::new(&w.0), self.keys_manager).unwrap().1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, monitor.get_latest_update_id()));
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+			(funding_txo, monitor.get_latest_update_id(), MonitorUpdateId::from_new_monitor(&monitor)));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
 	}
@@ -136,7 +138,8 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 			} else { panic!(); }
 		}
 
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(), (funding_txo, update.update_id));
+		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+			(funding_txo, update.update_id, MonitorUpdateId::from_monitor_update(&update)));
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
@@ -160,13 +163,16 @@ pub struct TestPersister {
 	/// If this is set to Some(), after the next return, we'll always return this until update_ret
 	/// is changed:
 	pub next_update_ret: Mutex<Option<Result<(), chain::ChannelMonitorUpdateErr>>>,
-
+	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
+	/// MonitorUpdateId here.
+	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
+			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
 		}
 	}
 
@@ -179,7 +185,7 @@ impl TestPersister {
 	}
 }
 impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersister {
-	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
 			*self.update_ret.lock().unwrap() = next_ret;
@@ -187,10 +193,13 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 		ret
 	}
 
-	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &channelmonitor::ChannelMonitorUpdate, _data: &channelmonitor::ChannelMonitor<Signer>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
 			*self.update_ret.lock().unwrap() = next_ret;
+		}
+		if update.is_none() {
+			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		}
 		ret
 	}
