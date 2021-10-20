@@ -429,7 +429,6 @@ where L::Target: Logger {
 /// this, MPP will only be used if the payee's features are available in the network graph.
 ///
 /// Private routing paths between a public node and the target may be included in `payee`.
-/// Currently, only the last hop in each path is considered.
 ///
 /// If some channels aren't announced, it may be useful to fill in a first_hops with the
 /// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
