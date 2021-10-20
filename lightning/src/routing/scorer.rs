@@ -18,7 +18,7 @@
 //! # extern crate secp256k1;
 //! #
 //! # use lightning::routing::network_graph::NetworkGraph;
-//! # use lightning::routing::router::get_route;
+//! # use lightning::routing::router::{Payee, get_route};
 //! # use lightning::routing::scorer::Scorer;
 //! # use lightning::util::logger::{Logger, Record};
 //! # use secp256k1::key::PublicKey;
@@ -27,7 +27,7 @@
 //! # impl Logger for FakeLogger {
 //! #     fn log(&self, record: &Record) { unimplemented!() }
 //! # }
-//! # fn find_scored_route(payer: PublicKey, payee: PublicKey, network_graph: NetworkGraph) {
+//! # fn find_scored_route(payer: PublicKey, payee: Payee, network_graph: NetworkGraph) {
 //! # let logger = FakeLogger {};
 //! #
 //! // Use the default channel penalty.
@@ -36,7 +36,7 @@
 //! // Or use a custom channel penalty.
 //! let scorer = Scorer::new(1_000);
 //!
-//! let route = get_route(&payer, &network_graph, &payee, None, None, &vec![], 1_000, 42, &logger, &scorer);
+//! let route = get_route(&payer, &payee, &network_graph, None, 1_000, 42, &logger, &scorer);
 //! # }
 //! ```
 //!

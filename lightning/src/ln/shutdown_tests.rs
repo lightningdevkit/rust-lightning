@@ -13,7 +13,7 @@ use chain::keysinterface::KeysInterface;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::PaymentSendFailure;
-use routing::router::get_route;
+use routing::router::{Payee, get_route};
 use routing::network_graph::NetworkUpdate;
 use routing::scorer::Scorer;
 use ln::features::{InitFeatures, InvoiceFeatures};
@@ -99,8 +99,10 @@ fn updates_shutdown_wait() {
 
 	let net_graph_msg_handler0 = &nodes[0].net_graph_msg_handler;
 	let net_graph_msg_handler1 = &nodes[1].net_graph_msg_handler;
-	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &net_graph_msg_handler0.network_graph, &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
-	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &net_graph_msg_handler1.network_graph, &nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &[], 100000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+	let payee_1 = Payee::new(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &payee_1, &net_graph_msg_handler0.network_graph, None, 100000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+	let payee_2 = Payee::new(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &payee_2, &net_graph_msg_handler1.network_graph, None, 100000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 
