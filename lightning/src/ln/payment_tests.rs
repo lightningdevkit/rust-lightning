@@ -626,3 +626,78 @@ fn test_dup_htlc_onchain_fails_on_reload() {
 	do_test_dup_htlc_onchain_fails_on_reload(false, true, false);
 	do_test_dup_htlc_onchain_fails_on_reload(false, false, false);
 }
+
+#[test]
+fn test_fulfill_restart_failure() {
+	// When we receive an update_fulfill_htlc message, we immediately consider the HTLC fully
+	// fulfilled. At this point, the peer can reconnect and decide to either fulfill the HTLC
+	// again, or fail it, giving us free money.
+	//
+	// Of course probably they won't fail it and give us free money, but because we have code to
+	// handle it, we should test the logic for it anyway. We do that here.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_1_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
+	// pre-fulfill, which we do by serializing it here.
+	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
+	nodes[1].node.write(&mut chan_manager_serialized).unwrap();
+	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[1], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[1], 1);
+	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
+	expect_payment_sent!(nodes[0], payment_preimage);
+
+	// Now reload nodes[1]...
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[1].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
+	nodes[1].chain_monitor = &new_chain_monitor;
+	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+		&mut chan_0_monitor_read, keys_manager).unwrap();
+	assert!(chan_0_monitor_read.is_empty());
+
+	let (_, nodes_1_deserialized_tmp) = {
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>
+			::read(&mut io::Cursor::new(&chan_manager_serialized.0[..]), ChannelManagerReadArgs {
+				default_config: Default::default(),
+				keys_manager,
+				fee_estimator: node_cfgs[1].fee_estimator,
+				chain_monitor: nodes[1].chain_monitor,
+				tx_broadcaster: nodes[1].tx_broadcaster.clone(),
+				logger: nodes[1].logger,
+				channel_monitors,
+			}).unwrap()
+	};
+	nodes_1_deserialized = nodes_1_deserialized_tmp;
+
+	assert!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	check_added_monitors!(nodes[1], 1);
+	nodes[1].node = &nodes_1_deserialized;
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	nodes[1].node.fail_htlc_backwards(&payment_hash);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, false);
+	// nodes[0] shouldn't generate any events here, while it just got a payment failure completion
+	// it had already considered the payment fulfilled, and now they just got free money.
+}
