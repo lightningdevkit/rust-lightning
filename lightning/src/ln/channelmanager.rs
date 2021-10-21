@@ -3127,16 +3127,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				let mut all_paths_failed = false;
-				if let hash_map::Entry::Occupied(mut sessions) = outbounds.entry(payment_id) {
-					if !sessions.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat)) {
+				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
+					if !payment.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat)) {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 						return;
 					}
-					if sessions.get().is_fulfilled() {
+					if payment.get().is_fulfilled() {
 						log_trace!(self.logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
 						return;
 					}
-					if sessions.get().remaining_parts() == 0 {
+					if payment.get().remaining_parts() == 0 {
 						all_paths_failed = true;
 					}
 				} else {
@@ -3390,11 +3390,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-				if let hash_map::Entry::Occupied(mut sessions) = outbounds.entry(payment_id) {
-					assert!(sessions.get().is_fulfilled());
-					sessions.get_mut().remove(&session_priv_bytes, None);
-					if sessions.get().remaining_parts() == 0 {
-						sessions.remove();
+				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
+					assert!(payment.get().is_fulfilled());
+					payment.get_mut().remove(&session_priv_bytes, None);
+					if payment.get().remaining_parts() == 0 {
+						payment.remove();
 					}
 				}
 			}
@@ -3408,9 +3408,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-				let found_payment = if let hash_map::Entry::Occupied(mut sessions) = outbounds.entry(payment_id) {
-					let found_payment = !sessions.get().is_fulfilled();
-					sessions.get_mut().mark_fulfilled();
+				let found_payment = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
+					let found_payment = !payment.get().is_fulfilled();
+					payment.get_mut().mark_fulfilled();
 					if from_onchain {
 						// We currently immediately remove HTLCs which were fulfilled on-chain.
 						// This could potentially lead to removing a pending payment too early,
@@ -3418,9 +3418,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// restart.
 						// TODO: We should have a second monitor event that informs us of payments
 						// irrevocably fulfilled.
-						sessions.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat));
-						if sessions.get().remaining_parts() == 0 {
-							sessions.remove();
+						payment.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat));
+						if payment.get().remaining_parts() == 0 {
+							payment.remove();
 						}
 					}
 					found_payment
