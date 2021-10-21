@@ -3036,6 +3036,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									all_paths_failed: payment.get().remaining_parts() == 0,
 									path: path.clone(),
 									short_channel_id: None,
+									retry: None,
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -3103,6 +3104,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id,
+								retry: None,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -3131,6 +3133,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id: Some(path.first().unwrap().short_channel_id),
+								retry: None,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]

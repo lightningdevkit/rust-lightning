@@ -129,7 +129,31 @@ impl Readable for Route {
 	}
 }
 
+/// Parameters needed to re-compute a [`Route`] for retrying a failed payment path.
+///
+/// Provided in [`Event::PaymentPathFailed`] and passed to [`get_retry_route`].
+///
+/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+#[derive(Clone, Debug)]
+pub struct PaymentPathRetry {
+	/// The recipient of the failed payment path.
+	pub payee: Payee,
+
+	/// The amount in msats sent on the failed payment path.
+	pub final_value_msat: u64,
+
+	/// The CLTV on the final hop of the failed payment path.
+	pub final_cltv_expiry_delta: u32,
+}
+
+impl_writeable_tlv_based!(PaymentPathRetry, {
+	(0, payee, required),
+	(2, final_value_msat, required),
+	(4, final_cltv_expiry_delta, required),
+});
+
 /// The recipient of a payment.
+#[derive(Clone, Debug)]
 pub struct Payee {
 	/// The node id of the payee.
 	pubkey: PublicKey,
@@ -145,6 +169,12 @@ pub struct Payee {
 	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
 	pub route_hints: Vec<RouteHint>,
 }
+
+impl_writeable_tlv_based!(Payee, {
+	(0, pubkey, required),
+	(2, features, option),
+	(4, route_hints, vec_type),
+});
 
 impl Payee {
 	/// Creates a payee with the node id of the given `pubkey`.
@@ -180,6 +210,28 @@ impl Payee {
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct RouteHint(pub Vec<RouteHintHop>);
 
+
+impl Writeable for RouteHint {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		(self.0.len() as u64).write(writer)?;
+		for hop in self.0.iter() {
+			hop.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for RouteHint {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let hop_count: u64 = Readable::read(reader)?;
+		let mut hops = Vec::with_capacity(cmp::min(hop_count, 16) as usize);
+		for _ in 0..hop_count {
+			hops.push(Readable::read(reader)?);
+		}
+		Ok(Self(hops))
+	}
+}
+
 /// A channel descriptor for a hop along a payment path.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct RouteHintHop {
@@ -196,6 +248,15 @@ pub struct RouteHintHop {
 	/// The maximum value in msat available for routing with a single HTLC.
 	pub htlc_maximum_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(RouteHintHop, {
+	(0, src_node_id, required),
+	(1, htlc_minimum_msat, option),
+	(2, short_channel_id, required),
+	(3, htlc_maximum_msat, option),
+	(4, fees, required),
+	(6, cltv_expiry_delta, required),
+});
 
 #[derive(Eq, PartialEq)]
 struct RouteGraphNode {
@@ -413,13 +474,31 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 pub fn get_keysend_route<L: Deref, S: routing::Score>(
 	our_node_pubkey: &PublicKey, network: &NetworkGraph, payee: &PublicKey,
 	first_hops: Option<&[&ChannelDetails]>, last_hops: &[&RouteHint], final_value_msat: u64,
-	final_cltv: u32, logger: L, scorer: &S
+	final_cltv_expiry_delta: u32, logger: L, scorer: &S
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
 	let route_hints = last_hops.iter().map(|hint| (*hint).clone()).collect();
 	let payee = Payee::for_keysend(*payee).with_route_hints(route_hints);
 	get_route(
-		our_node_pubkey, &payee, network, first_hops, final_value_msat, final_cltv, logger, scorer
+		our_node_pubkey, &payee, network, first_hops, final_value_msat, final_cltv_expiry_delta,
+		logger, scorer
+	)
+}
+
+/// Gets a route suitable for retrying a failed payment path.
+///
+/// Used to re-compute a [`Route`] when handling a [`Event::PaymentPathFailed`]. Any adjustments to
+/// the [`NetworkGraph`] and channel scores should be made prior to calling this function.
+///
+/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+pub fn get_retry_route<L: Deref, S: routing::Score>(
+	our_node_pubkey: &PublicKey, retry: &PaymentPathRetry, network: &NetworkGraph,
+	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S
+) -> Result<Route, LightningError>
+where L::Target: Logger {
+	get_route(
+		our_node_pubkey, &retry.payee, network, first_hops, retry.final_value_msat,
+		retry.final_cltv_expiry_delta, logger, scorer
 	)
 }
 
@@ -443,8 +522,8 @@ where L::Target: Logger {
 /// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
 pub fn get_route<L: Deref, S: routing::Score>(
 	our_node_pubkey: &PublicKey, payee: &Payee, network: &NetworkGraph,
-	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv: u32, logger: L,
-	scorer: &S
+	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv_expiry_delta: u32,
+	logger: L, scorer: &S
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
 	let payee_node_id = NodeId::from_pubkey(&payee.pubkey);
@@ -1154,7 +1233,7 @@ where L::Target: Logger {
 				}
 				ordered_hops.last_mut().unwrap().0.fee_msat = value_contribution_msat;
 				ordered_hops.last_mut().unwrap().0.hop_use_fee_msat = 0;
-				ordered_hops.last_mut().unwrap().0.cltv_expiry_delta = final_cltv;
+				ordered_hops.last_mut().unwrap().0.cltv_expiry_delta = final_cltv_expiry_delta;
 
 				log_trace!(logger, "Found a path back to us from the target with {} hops contributing up to {} msat: {:?}",
 					ordered_hops.len(), value_contribution_msat, ordered_hops);

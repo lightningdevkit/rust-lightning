@@ -20,7 +20,7 @@ use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
-use routing::router::RouteHop;
+use routing::router::{PaymentPathRetry, RouteHop};
 
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
@@ -216,6 +216,13 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
+		/// Parameters needed to re-compute a [`Route`] for retrying the failed path.
+		///
+		/// See [`get_retry_route`] for details.
+		///
+		/// [`Route`]: crate::routing::router::Route
+		/// [`get_retry_route`]: crate::routing::router::get_retry_route
+		retry: Option<PaymentPathRetry>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -322,8 +329,9 @@ impl Writeable for Event {
 					(1, payment_hash, required),
 				});
 			},
-			&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update,
-			                            ref all_paths_failed, ref path, ref short_channel_id,
+			&Event::PaymentPathFailed {
+				ref payment_hash, ref rejected_by_dest, ref network_update,
+				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -341,6 +349,7 @@ impl Writeable for Event {
 					(3, all_paths_failed, required),
 					(5, path, vec_type),
 					(7, short_channel_id, option),
+					(9, retry, option),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -452,6 +461,7 @@ impl MaybeReadable for Event {
 					let mut all_paths_failed = Some(true);
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
+					let mut retry = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
@@ -459,6 +469,7 @@ impl MaybeReadable for Event {
 						(3, all_paths_failed, option),
 						(5, path, vec_type),
 						(7, short_channel_id, ignorable),
+						(9, retry, option),
 					});
 					Ok(Some(Event::PaymentPathFailed {
 						payment_hash,
@@ -467,6 +478,7 @@ impl MaybeReadable for Event {
 						all_paths_failed: all_paths_failed.unwrap(),
 						path: path.unwrap(),
 						short_channel_id,
+						retry,
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]

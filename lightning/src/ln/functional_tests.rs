@@ -6008,7 +6008,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -6092,7 +6092,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
