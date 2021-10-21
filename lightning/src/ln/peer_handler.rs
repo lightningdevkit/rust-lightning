@@ -860,6 +860,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									let features = InitFeatures::known();
 									let resp = msgs::Init { features };
 									self.enqueue_message(peer, &resp);
+									peer.awaiting_pong_timer_tick_intervals = 0;
 								},
 								NextNoiseStep::ActThree => {
 									let their_node_id = try_potential_handleerror!(peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
@@ -870,6 +871,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									let features = InitFeatures::known();
 									let resp = msgs::Init { features };
 									self.enqueue_message(peer, &resp);
+									peer.awaiting_pong_timer_tick_intervals = 0;
 								},
 								NextNoiseStep::NoiseComplete => {
 									if peer.pending_read_is_header {
@@ -1530,12 +1532,29 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			let peer_count = peers.len();
 
 			peers.retain(|descriptor, peer| {
-				if !peer.channel_encryptor.is_ready_for_encryption() {
-					// The peer needs to complete its handshake before we can exchange messages
+				let mut do_disconnect_peer = false;
+				if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_node_id.is_none() {
+					// The peer needs to complete its handshake before we can exchange messages. We
+					// give peers one timer tick to complete handshake, reusing
+					// `awaiting_pong_timer_tick_intervals` to track number of timer ticks taken
+					// for handshake completion.
+					if peer.awaiting_pong_timer_tick_intervals != 0 {
+						do_disconnect_peer = true;
+					} else {
+						peer.awaiting_pong_timer_tick_intervals = 1;
+						return true;
+					}
+				}
+
+				if peer.awaiting_pong_timer_tick_intervals == -1 {
+					// Magic value set in `maybe_send_extra_ping`.
+					peer.awaiting_pong_timer_tick_intervals = 1;
+					peer.received_message_since_timer_tick = false;
 					return true;
 				}
 
-				if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
+				if do_disconnect_peer
+					|| (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
 					|| peer.awaiting_pong_timer_tick_intervals as u64 >
 						MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peer_count as u64
 				{
@@ -1546,21 +1565,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							node_id_to_descriptor.remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 						}
-						None => {
-							// This can't actually happen as we should have hit
-							// is_ready_for_encryption() previously on this same peer.
-							unreachable!();
-						},
+						None => {},
 					}
 					return false;
 				}
-
 				peer.received_message_since_timer_tick = false;
-				if peer.awaiting_pong_timer_tick_intervals == -1 {
-					// Magic value set in `maybe_send_extra_ping`.
-					peer.awaiting_pong_timer_tick_intervals = 1;
-					return true;
-				}
 
 				if peer.awaiting_pong_timer_tick_intervals > 0 {
 					peer.awaiting_pong_timer_tick_intervals += 1;
@@ -1757,5 +1766,38 @@ mod tests {
 		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
 		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
 		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
+	}
+
+	#[test]
+	fn test_handshake_timeout() {
+		// Tests that we time out a peer still waiting on handshake completion after a full timer
+		// tick.
+		let cfgs = create_peermgr_cfgs(2);
+		cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
+		cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
+		let peers = create_network(2, &cfgs);
+
+		let secp_ctx = Secp256k1::new();
+		let a_id = PublicKey::from_secret_key(&secp_ctx, &peers[0].our_node_secret);
+		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let initial_data = peers[1].new_outbound_connection(a_id, fd_b.clone()).unwrap();
+		peers[0].new_inbound_connection(fd_a.clone()).unwrap();
+
+		// If we get a single timer tick before completion, that's fine
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+		peers[0].timer_tick_occurred();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
+
+		assert_eq!(peers[0].read_event(&mut fd_a, &initial_data).unwrap(), false);
+		peers[0].process_events();
+		assert_eq!(peers[1].read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		peers[1].process_events();
+
+		// ...but if we get a second timer tick, we should disconnect the peer
+		peers[0].timer_tick_occurred();
+		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 0);
+
+		assert!(peers[0].read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).is_err());
 	}
 }
