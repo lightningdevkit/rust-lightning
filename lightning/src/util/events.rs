@@ -468,7 +468,7 @@ impl MaybeReadable for Event {
 						(2, rejected_by_dest, required),
 						(3, all_paths_failed, option),
 						(5, path, vec_type),
-						(7, short_channel_id, ignorable),
+						(7, short_channel_id, option),
 						(9, retry, option),
 					});
 					Ok(Some(Event::PaymentPathFailed {
