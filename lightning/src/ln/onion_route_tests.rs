@@ -479,7 +479,7 @@ fn test_onion_failure() {
 
 	// Test a positive test-case with one extra msat, meeting the minimum.
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward + 1;
-	let (preimage, _, _) = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1);
+	let preimage = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1).0;
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage);
 
 	//TODO: with new config API, we will be able to generate both valid and

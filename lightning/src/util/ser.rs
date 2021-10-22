@@ -502,14 +502,20 @@ impl<K, V> Writeable for HashMap<K, V>
 
 impl<K, V> Readable for HashMap<K, V>
 	where K: Readable + Eq + Hash,
-	      V: Readable
+	      V: MaybeReadable
 {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: u16 = Readable::read(r)?;
 		let mut ret = HashMap::with_capacity(len as usize);
 		for _ in 0..len {
-			ret.insert(K::read(r)?, V::read(r)?);
+			let k = K::read(r)?;
+			let v_opt = V::read(r)?;
+			if let Some(v) = v_opt {
+				if ret.insert(k, v).is_some() {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
 		}
 		Ok(ret)
 	}

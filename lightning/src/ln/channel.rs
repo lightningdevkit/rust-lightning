@@ -339,6 +339,29 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
+/// The return value of `revoke_and_ack` on success, primarily updates to other channels or HTLC
+/// state.
+pub(super) struct RAAUpdates {
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
+	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub monitor_update: ChannelMonitorUpdate,
+	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
+}
+
+/// The return value of `monitor_updating_restored`
+pub(super) struct MonitorRestoreUpdates {
+	pub raa: Option<msgs::RevokeAndACK>,
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub order: RAACommitmentOrder,
+	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
+	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub funding_broadcastable: Option<Transaction>,
+	pub funding_locked: Option<msgs::FundingLocked>,
+}
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -406,6 +429,7 @@ pub(super) struct Channel<Signer: Sign> {
 	monitor_pending_commitment_signed: bool,
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
 
 	// pending_update_fee is filled when sending and receiving update_fee.
 	//
@@ -692,6 +716,7 @@ impl<Signer: Sign> Channel<Signer> {
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
+			monitor_pending_finalized_fulfills: Vec::new(),
 
 			#[cfg(debug_assertions)]
 			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
@@ -955,6 +980,7 @@ impl<Signer: Sign> Channel<Signer> {
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
+			monitor_pending_finalized_fulfills: Vec::new(),
 
 			#[cfg(debug_assertions)]
 			holder_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
@@ -2711,7 +2737,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// waiting on this revoke_and_ack. The generation of this new commitment_signed may also fail,
 	/// generating an appropriate error *after* the channel state has been updated based on the
 	/// revoke_and_ack message.
-	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<(Option<msgs::CommitmentUpdate>, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, ChannelMonitorUpdate, Vec<(HTLCSource, PaymentHash)>), ChannelError>
+	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<RAAUpdates, ChannelError>
 		where L::Target: Logger,
 	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
@@ -2777,6 +2803,7 @@ impl<Signer: Sign> Channel<Signer> {
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", log_bytes!(self.channel_id()));
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
+		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
 		let mut update_fail_malformed_htlcs = Vec::new();
 		let mut require_commitment = false;
@@ -2803,6 +2830,7 @@ impl<Signer: Sign> Channel<Signer> {
 					if let Some(reason) = fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
+						finalized_claimed_htlcs.push(htlc.source.clone());
 						// They fulfilled, so we sent them money
 						value_to_self_msat_diff -= htlc.amount_msat as i64;
 					}
@@ -2899,8 +2927,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 			self.monitor_pending_forwards.append(&mut to_forward_infos);
 			self.monitor_pending_failures.append(&mut revoked_htlcs);
+			self.monitor_pending_finalized_fulfills.append(&mut finalized_claimed_htlcs);
 			log_debug!(logger, "Received a valid revoke_and_ack for channel {} but awaiting a monitor update resolution to reply.", log_bytes!(self.channel_id()));
-			return Ok((None, Vec::new(), Vec::new(), monitor_update, Vec::new()))
+			return Ok(RAAUpdates {
+				commitment_update: None, finalized_claimed_htlcs: Vec::new(),
+				accepted_htlcs: Vec::new(), failed_htlcs: Vec::new(),
+				monitor_update,
+				holding_cell_failed_htlcs: Vec::new()
+			});
 		}
 
 		match self.free_holding_cell_htlcs(logger)? {
@@ -2919,7 +2953,14 @@ impl<Signer: Sign> Channel<Signer> {
 				self.latest_monitor_update_id = monitor_update.update_id;
 				monitor_update.updates.append(&mut additional_update.updates);
 
-				Ok((Some(commitment_update), to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+				Ok(RAAUpdates {
+					commitment_update: Some(commitment_update),
+					finalized_claimed_htlcs,
+					accepted_htlcs: to_forward_infos,
+					failed_htlcs: revoked_htlcs,
+					monitor_update,
+					holding_cell_failed_htlcs: htlcs_to_fail
+				})
 			},
 			(None, htlcs_to_fail) => {
 				if require_commitment {
@@ -2932,17 +2973,27 @@ impl<Signer: Sign> Channel<Signer> {
 
 					log_debug!(logger, "Received a valid revoke_and_ack for channel {}. Responding with a commitment update with {} HTLCs failed.",
 						log_bytes!(self.channel_id()), update_fail_htlcs.len() + update_fail_malformed_htlcs.len());
-					Ok((Some(msgs::CommitmentUpdate {
-						update_add_htlcs: Vec::new(),
-						update_fulfill_htlcs: Vec::new(),
-						update_fail_htlcs,
-						update_fail_malformed_htlcs,
-						update_fee: None,
-						commitment_signed
-					}), to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+					Ok(RAAUpdates {
+						commitment_update: Some(msgs::CommitmentUpdate {
+							update_add_htlcs: Vec::new(),
+							update_fulfill_htlcs: Vec::new(),
+							update_fail_htlcs,
+							update_fail_malformed_htlcs,
+							update_fee: None,
+							commitment_signed
+						}),
+						finalized_claimed_htlcs,
+						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
+						monitor_update, holding_cell_failed_htlcs: htlcs_to_fail
+					})
 				} else {
 					log_debug!(logger, "Received a valid revoke_and_ack for channel {} with no reply necessary.", log_bytes!(self.channel_id()));
-					Ok((None, to_forward_infos, revoked_htlcs, monitor_update, htlcs_to_fail))
+					Ok(RAAUpdates {
+						commitment_update: None,
+						finalized_claimed_htlcs,
+						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
+						monitor_update, holding_cell_failed_htlcs: htlcs_to_fail
+					})
 				}
 			}
 		}
@@ -3057,18 +3108,23 @@ impl<Signer: Sign> Channel<Signer> {
 	/// which failed. The messages which were generated from that call which generated the
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>, mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>) {
+	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool,
+		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
+		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>
+	) {
 		self.monitor_pending_revoke_and_ack |= resend_raa;
 		self.monitor_pending_commitment_signed |= resend_commitment;
 		self.monitor_pending_forwards.append(&mut pending_forwards);
 		self.monitor_pending_failures.append(&mut pending_fails);
+		self.monitor_pending_finalized_fulfills.append(&mut pending_finalized_claimed_htlcs);
 		self.channel_state |= ChannelState::MonitorUpdateFailed as u32;
 	}
 
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> (Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, RAACommitmentOrder, Vec<(PendingHTLCInfo, u64)>, Vec<(HTLCSource, PaymentHash, HTLCFailReason)>, Option<Transaction>, Option<msgs::FundingLocked>) where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> MonitorRestoreUpdates where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
@@ -3091,15 +3147,20 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let mut forwards = Vec::new();
-		mem::swap(&mut forwards, &mut self.monitor_pending_forwards);
-		let mut failures = Vec::new();
-		mem::swap(&mut failures, &mut self.monitor_pending_failures);
+		let mut accepted_htlcs = Vec::new();
+		mem::swap(&mut accepted_htlcs, &mut self.monitor_pending_forwards);
+		let mut failed_htlcs = Vec::new();
+		mem::swap(&mut failed_htlcs, &mut self.monitor_pending_failures);
+		let mut finalized_claimed_htlcs = Vec::new();
+		mem::swap(&mut finalized_claimed_htlcs, &mut self.monitor_pending_finalized_fulfills);
 
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) != 0 {
 			self.monitor_pending_revoke_and_ack = false;
 			self.monitor_pending_commitment_signed = false;
-			return (None, None, RAACommitmentOrder::RevokeAndACKFirst, forwards, failures, funding_broadcastable, funding_locked);
+			return MonitorRestoreUpdates {
+				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
+				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked
+			};
 		}
 
 		let raa = if self.monitor_pending_revoke_and_ack {
@@ -3116,7 +3177,9 @@ impl<Signer: Sign> Channel<Signer> {
 			log_bytes!(self.channel_id()), if funding_broadcastable.is_some() { "a funding broadcastable, " } else { "" },
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
-		(raa, commitment_update, order, forwards, failures, funding_broadcastable, funding_locked)
+		MonitorRestoreUpdates {
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked
+		}
 	}
 
 	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &F, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
@@ -5176,6 +5239,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(5, self.config, required),
 			(7, self.shutdown_scriptpubkey, option),
 			(9, self.target_closing_feerate_sats_per_kw, option),
+			(11, self.monitor_pending_finalized_fulfills, vec_type),
 		});
 
 		Ok(())
@@ -5409,6 +5473,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 		let mut announcement_sigs = None;
 		let mut target_closing_feerate_sats_per_kw = None;
+		let mut monitor_pending_finalized_fulfills = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5416,6 +5481,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
 			(7, shutdown_scriptpubkey, option),
 			(9, target_closing_feerate_sats_per_kw, option),
+			(11, monitor_pending_finalized_fulfills, vec_type),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -5451,6 +5517,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			monitor_pending_commitment_signed,
 			monitor_pending_forwards,
 			monitor_pending_failures,
+			monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 
 			pending_update_fee,
 			holding_cell_update_fee,
@@ -5700,6 +5767,7 @@ mod tests {
 				session_priv: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
+				payment_secret: None,
 			}
 		});
 
