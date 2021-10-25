@@ -1208,10 +1208,10 @@ impl Invoice {
 	}
 
 	/// Returns a list of all routes included in the invoice as the underlying hints
-	pub fn route_hints(&self) -> Vec<&RouteHint> {
+	pub fn route_hints(&self) -> Vec<RouteHint> {
 		find_all_extract!(
 			self.signed_invoice.known_tagged_fields(), TaggedField::PrivateRoute(ref x), x
-		).map(|route| &**route).collect()
+		).map(|route| (**route).clone()).collect()
 	}
 
 	/// Returns the currency for which the invoice was issued

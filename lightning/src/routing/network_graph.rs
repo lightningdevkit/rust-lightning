@@ -1814,6 +1814,7 @@ mod tests {
 					msg: valid_channel_update,
 				}),
 				short_channel_id: None,
+				retry: None,
 				error_code: None,
 				error_data: None,
 			});
@@ -1840,6 +1841,7 @@ mod tests {
 					is_permanent: false,
 				}),
 				short_channel_id: None,
+				retry: None,
 				error_code: None,
 				error_data: None,
 			});
@@ -1864,6 +1866,7 @@ mod tests {
 					is_permanent: true,
 				}),
 				short_channel_id: None,
+				retry: None,
 				error_code: None,
 				error_data: None,
 			});

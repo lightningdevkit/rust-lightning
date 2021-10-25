@@ -113,19 +113,19 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
+		let payee = router::Payee::new(invoice.recover_payee_pub_key())
+			.with_features(invoice.features().unwrap().clone())
+			.with_route_hints(invoice.route_hints());
 		let amt_msat = invoice.amount_pico_btc().unwrap() / 10;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let last_hops = invoice.route_hints();
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let logger = test_utils::TestLogger::new();
 		let scorer = Scorer::new(0);
 		let route = router::get_route(
 			&nodes[0].node.get_our_node_id(),
+			&payee,
 			network_graph,
-			&invoice.recover_payee_pub_key(),
-			Some(invoice.features().unwrap().clone()),
 			Some(&first_hops.iter().collect::<Vec<_>>()),
-			&last_hops,
 			amt_msat,
 			invoice.min_final_cltv_expiry() as u32,
 			&logger,

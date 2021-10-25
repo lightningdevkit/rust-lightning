@@ -3114,6 +3114,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									all_paths_failed: payment.get().remaining_parts() == 0,
 									path: path.clone(),
 									short_channel_id: None,
+									retry: None,
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -3185,6 +3186,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id,
+								retry: None,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -3213,6 +3215,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id: Some(path.first().unwrap().short_channel_id),
+								retry: None,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
@@ -6009,7 +6012,7 @@ mod tests {
 	use ln::functional_test_utils::*;
 	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
-	use routing::router::{get_keysend_route, get_route};
+	use routing::router::{Payee, get_keysend_route, get_route};
 	use routing::scorer::Scorer;
 	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
@@ -6256,7 +6259,9 @@ mod tests {
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+		let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
+			.with_features(InvoiceFeatures::known());
+		let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph, None, 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6284,7 +6289,7 @@ mod tests {
 
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
-		let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &expected_route.last().unwrap().node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+		let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph, None, 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6438,7 +6443,7 @@ pub mod bench {
 	use ln::functional_test_utils::*;
 	use ln::msgs::{ChannelMessageHandler, Init};
 	use routing::network_graph::NetworkGraph;
-	use routing::router::get_route;
+	use routing::router::{Payee, get_route};
 	use routing::scorer::Scorer;
 	use util::test_utils;
 	use util::config::UserConfig;
@@ -6547,9 +6552,11 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
+				let payee = Payee::new($node_b.get_our_node_id())
+					.with_features(InvoiceFeatures::known());
 				let scorer = Scorer::new(0);
-				let route = get_route(&$node_a.get_our_node_id(), &dummy_graph, &$node_b.get_our_node_id(), Some(InvoiceFeatures::known()),
-					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), &[], 10_000, TEST_FINAL_CLTV, &logger_a, &scorer).unwrap();
+				let route = get_route(&$node_a.get_our_node_id(), &payee, &dummy_graph,
+					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), 10_000, TEST_FINAL_CLTV, &logger_a, &scorer).unwrap();
 
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());

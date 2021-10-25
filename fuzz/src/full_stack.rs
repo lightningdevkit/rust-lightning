@@ -38,7 +38,7 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,Ig
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-use lightning::routing::router::get_route;
+use lightning::routing::router::{get_route, Payee};
 use lightning::routing::scorer::Scorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
@@ -438,7 +438,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger), &scorer) {
+				let payee = Payee::new(get_pubkey!());
+				let route = match get_route(&our_id, &payee, &net_graph_msg_handler.network_graph, None, value, 42, Arc::clone(&logger), &scorer) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -455,7 +456,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let value = slice_to_be24(get_slice!(3)) as u64;
-				let mut route = match get_route(&our_id, &net_graph_msg_handler.network_graph, &get_pubkey!(), None, None, &Vec::new(), value, 42, Arc::clone(&logger), &scorer) {
+				let payee = Payee::new(get_pubkey!());
+				let mut route = match get_route(&our_id, &payee, &net_graph_msg_handler.network_graph, None, value, 42, Arc::clone(&logger), &scorer) {
 					Ok(route) => route,
 					Err(_) => return,
 				};

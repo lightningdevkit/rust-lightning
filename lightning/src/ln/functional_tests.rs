@@ -24,7 +24,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::network_graph::{NetworkUpdate, RoutingFees};
-use routing::router::{Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
+use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
 use routing::scorer::Scorer;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
@@ -5869,7 +5869,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -5953,7 +5953,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -7160,7 +7160,8 @@ fn test_check_htlc_underpaying() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let scorer = Scorer::new(0);
-	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph, &nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+	let payee = Payee::new(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, 0).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
@@ -7348,7 +7349,7 @@ fn test_priv_forwarding_rejection() {
 		htlc_minimum_msat: None,
 		htlc_maximum_msat: None,
 	}]);
-	let last_hops = vec![&route_hint];
+	let last_hops = vec![route_hint];
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], last_hops, 10_000, TEST_FINAL_CLTV);
 
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
@@ -7557,12 +7558,14 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
+	let payee = Payee::new(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let scorer = Scorer::new(0);
-	let route = get_route(&nodes[0].node.get_our_node_id(), &nodes[0].net_graph_msg_handler.network_graph,
-		&nodes[1].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 3_000_000, 50, nodes[0].logger, &scorer).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph,
+		None, 3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let route = get_route(&nodes[1].node.get_our_node_id(), &nodes[1].net_graph_msg_handler.network_graph,
-		&nodes[0].node.get_our_node_id(), Some(InvoiceFeatures::known()), None, &Vec::new(), 3_000_000, 50, nodes[0].logger, &scorer).unwrap();
+	let payee = Payee::new(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route = get_route(&nodes[1].node.get_our_node_id(), &payee, &nodes[1].net_graph_msg_handler.network_graph,
+		None, 3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
