@@ -156,7 +156,7 @@ impl_writeable_tlv_based!(PaymentPathRetry, {
 #[derive(Clone, Debug)]
 pub struct Payee {
 	/// The node id of the payee.
-	pubkey: PublicKey,
+	pub pubkey: PublicKey,
 
 	/// Features supported by the payee.
 	///
