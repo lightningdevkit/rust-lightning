@@ -5768,6 +5768,7 @@ mod tests {
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
 				payment_secret: None,
+				payee: None,
 			}
 		});
 

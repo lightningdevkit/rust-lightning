@@ -305,6 +305,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
+		payee: None,
 	}, payment_hash, &Some(payment_secret)) {
 		check_payment_err(err);
 		false
@@ -330,6 +331,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
+		payee: None,
 	}, payment_hash, &Some(payment_secret)) {
 		check_payment_err(err);
 		false

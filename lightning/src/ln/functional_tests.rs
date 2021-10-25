@@ -919,7 +919,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![hops] }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![hops], payee: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -948,7 +948,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![hops] }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![hops], payee: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
@@ -3912,7 +3912,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200000, cur_height, payment_id, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payee, &our_payment_hash, &Some(payment_secret), 200000, cur_height, payment_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
