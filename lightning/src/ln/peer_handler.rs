@@ -285,6 +285,10 @@ enum InitSyncTracker{
 	NodesSyncing(PublicKey),
 }
 
+/// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
+/// forwarding gossip messages to peers altogether.
+const FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO: usize = 2;
+
 /// When the outbound buffer has this many messages, we'll stop reading bytes from the peer until
 /// we have fewer than this many messages in the outbound buffer again.
 /// We also use this as the target number of outbound gossip messages to keep in the write buffer,
@@ -292,7 +296,7 @@ enum InitSyncTracker{
 const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 10;
 /// When the outbound buffer has this many messages, we'll simply skip relaying gossip messages to
 /// the peer.
-const OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP: usize = 20;
+const OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP: usize = OUTBOUND_BUFFER_LIMIT_READ_PAUSE * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO;
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
