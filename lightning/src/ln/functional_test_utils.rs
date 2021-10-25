@@ -1114,9 +1114,12 @@ macro_rules! expect_payment_failed_with_update {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data, .. } => {
+			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data, ref path, ref retry, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
+				assert!(retry.is_some(), "expected retry.is_some()");
+				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
+				assert_eq!(retry.as_ref().unwrap().payee.pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
 				match network_update {
@@ -1143,9 +1146,12 @@ macro_rules! expect_payment_failed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data, .. } => {
+			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data, ref path, ref retry, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
+				assert!(retry.is_some(), "expected retry.is_some()");
+				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
+				assert_eq!(retry.as_ref().unwrap().payee.pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
 				$(

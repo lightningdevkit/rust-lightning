@@ -45,7 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
 use ln::features::{InitFeatures, NodeFeatures};
-use routing::router::{Route, RouteHop};
+use routing::router::{Payee, PaymentPathRetry, Route, RouteHop};
 use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
@@ -201,6 +201,7 @@ pub(crate) enum HTLCSource {
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
+		payee: Option<Payee>,
 	},
 }
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
@@ -211,13 +212,14 @@ impl core::hash::Hash for HTLCSource {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat } => {
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat, payee } => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
 				payment_id.hash(hasher);
 				payment_secret.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
+				payee.hash(hasher);
 			},
 		}
 	}
@@ -231,6 +233,7 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			payment_secret: None,
+			payee: None,
 		}
 	}
 }
@@ -2021,7 +2024,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	// Only public for testing, this should otherwise never be called direcly
-	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>) -> Result<(), APIError> {
+	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payee: &Option<Payee>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
 		let session_priv_bytes = self.keys_manager.get_secure_random_bytes();
@@ -2071,6 +2074,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							payment_secret: payment_secret.clone(),
+							payee: payee.clone(),
 						}, onion_packet, &self.logger),
 					channel_state, chan);
 
@@ -2209,7 +2213,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let cur_height = self.best_block.read().unwrap().height() + 1;
 		let mut results = Vec::new();
 		for path in route.paths.iter() {
-			results.push(self.send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height, payment_id, &keysend_preimage));
+			results.push(self.send_payment_along_path(&path, &route.payee, &payment_hash, payment_secret, total_value, cur_height, payment_id, &keysend_preimage));
 		}
 		let mut has_ok = false;
 		let mut has_err = false;
@@ -3098,14 +3102,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					self.fail_htlc_backwards_internal(channel_state,
 						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
 				},
-				HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
+				HTLCSource::OutboundRoute { session_priv, payment_id, path, payee, .. } => {
 					let mut session_priv_bytes = [0; 32];
 					session_priv_bytes.copy_from_slice(&session_priv[..]);
 					let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 					if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-						if payment.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat)) &&
+						let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
+						if payment.get_mut().remove(&session_priv_bytes, Some(path_last_hop.fee_msat)) &&
 							!payment.get().is_fulfilled()
 						{
+							let retry = if let Some(payee_data) = payee {
+								Some(PaymentPathRetry {
+									payee: payee_data,
+									final_value_msat: path_last_hop.fee_msat,
+									final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
+								})
+							} else { None };
 							self.pending_events.lock().unwrap().push(
 								events::Event::PaymentPathFailed {
 									payment_hash,
@@ -3114,7 +3126,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									all_paths_failed: payment.get().remaining_parts() == 0,
 									path: path.clone(),
 									short_channel_id: None,
-									retry: None,
+									retry,
 									#[cfg(test)]
 									error_code: None,
 									#[cfg(test)]
@@ -3146,13 +3158,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
-			HTLCSource::OutboundRoute { ref path, session_priv, payment_id, .. } => {
+			HTLCSource::OutboundRoute { ref path, session_priv, payment_id, ref payee, .. } => {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				let mut all_paths_failed = false;
+				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-					if !payment.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat)) {
+					if !payment.get_mut().remove(&session_priv_bytes, Some(path_last_hop.fee_msat)) {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 						return;
 					}
@@ -3167,8 +3180,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 					return;
 				}
-				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				mem::drop(channel_state_lock);
+				let retry = if let Some(payee_data) = payee {
+					Some(PaymentPathRetry {
+						payee: payee_data.clone(),
+						final_value_msat: path_last_hop.fee_msat,
+						final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
+					})
+				} else { None };
+				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 				match &onion_error {
 					&HTLCFailReason::LightningError { ref err } => {
 #[cfg(test)]
@@ -3186,7 +3206,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id,
-								retry: None,
+								retry,
 #[cfg(test)]
 								error_code: onion_error_code,
 #[cfg(test)]
@@ -3215,7 +3235,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								all_paths_failed,
 								path: path.clone(),
 								short_channel_id: Some(path.first().unwrap().short_channel_id),
-								retry: None,
+								retry,
 #[cfg(test)]
 								error_code: Some(*failure_code),
 #[cfg(test)]
@@ -5378,12 +5398,14 @@ impl Readable for HTLCSource {
 				let mut path = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_secret = None;
+				let mut payee = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, path, vec_type),
+					(5, payee, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
@@ -5396,6 +5418,7 @@ impl Readable for HTLCSource {
 					path: path.unwrap(),
 					payment_id: payment_id.unwrap(),
 					payment_secret,
+					payee,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -5407,7 +5430,7 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret, payee } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
@@ -5416,6 +5439,7 @@ impl Writeable for HTLCSource {
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, path, vec_type),
+					(5, payee, option),
 				 });
 			}
 			HTLCSource::PreviousHopData(ref field) => {
@@ -6160,7 +6184,7 @@ mod tests {
 		// Use the utility function send_payment_along_path to send the payment with MPP data which
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payee, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -6190,7 +6214,7 @@ mod tests {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
-		nodes[0].node.send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payee, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
