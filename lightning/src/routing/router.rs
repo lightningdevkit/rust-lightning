@@ -70,6 +70,12 @@ pub struct Route {
 	/// given path is variable, keeping the length of any path to less than 20 should currently
 	/// ensure it is viable.
 	pub paths: Vec<Vec<RouteHop>>,
+	/// The `payee` parameter passed to [`get_route`].
+	/// This is used by `ChannelManager` to track information which may be required for retries,
+	/// provided back to you via [`Event::PaymentPathFailed`].
+	///
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	pub payee: Option<Payee>,
 }
 
 impl Route {
@@ -106,7 +112,9 @@ impl Writeable for Route {
 				hop.write(writer)?;
 			}
 		}
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {
+			(1, self.payee, option),
+		});
 		Ok(())
 	}
 }
@@ -124,8 +132,11 @@ impl Readable for Route {
 			}
 			paths.push(hops);
 		}
-		read_tlv_fields!(reader, {});
-		Ok(Route { paths })
+		let mut payee = None;
+		read_tlv_fields!(reader, {
+			(1, payee, option),
+		});
+		Ok(Route { paths, payee })
 	}
 }
 
@@ -153,7 +164,7 @@ impl_writeable_tlv_based!(PaymentPathRetry, {
 });
 
 /// The recipient of a payment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Payee {
 	/// The node id of the payee.
 	pub pubkey: PublicKey,
@@ -1442,7 +1453,10 @@ where L::Target: Logger {
 		}
 	}
 
-	let route = Route { paths: selected_paths.into_iter().map(|path| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()? };
+	let route = Route {
+		paths: selected_paths.into_iter().map(|path| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()?,
+		payee: Some(payee.clone()),
+	};
 	log_info!(logger, "Got route to {}: {}", payee.pubkey, log_route!(route));
 	Ok(route)
 }
@@ -4600,6 +4614,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
 				},
 			]],
+			payee: None,
 		};
 
 		assert_eq!(route.get_total_fees(), 250);
@@ -4632,6 +4647,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
 			]],
+			payee: None,
 		};
 
 		assert_eq!(route.get_total_fees(), 200);
@@ -4643,7 +4659,7 @@ mod tests {
 		// In an earlier version of `Route::get_total_fees` and `Route::get_total_amount`, they
 		// would both panic if the route was completely empty. We test to ensure they return 0
 		// here, even though its somewhat nonsensical as a route.
-		let route = Route { paths: Vec::new() };
+		let route = Route { paths: Vec::new(), payee: None };
 
 		assert_eq!(route.get_total_fees(), 0);
 		assert_eq!(route.get_total_amount(), 0);

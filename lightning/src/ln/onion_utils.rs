@@ -555,6 +555,7 @@ mod tests {
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
 					},
 			]],
+			payee: None,
 		};
 
 		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
