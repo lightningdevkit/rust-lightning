@@ -45,7 +45,7 @@ use chain::transaction::{OutPoint, TransactionData};
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
 use ln::features::{InitFeatures, NodeFeatures};
-use routing::router::{Payee, PaymentPathRetry, Route, RouteHop};
+use routing::router::{Payee, Route, RouteHop, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
@@ -3112,7 +3112,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							!payment.get().is_fulfilled()
 						{
 							let retry = if let Some(payee_data) = payee {
-								Some(PaymentPathRetry {
+								Some(RouteParameters {
 									payee: payee_data,
 									final_value_msat: path_last_hop.fee_msat,
 									final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
@@ -3183,7 +3183,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				mem::drop(channel_state_lock);
 				let retry = if let Some(payee_data) = payee {
-					Some(PaymentPathRetry {
+					Some(RouteParameters {
 						payee: payee_data.clone(),
 						final_value_msat: path_last_hop.fee_msat,
 						final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
@@ -6036,15 +6036,14 @@ mod tests {
 	use core::time::Duration;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use ln::channelmanager::{PaymentId, PaymentSendFailure};
-	use ln::features::{InitFeatures, InvoiceFeatures};
+	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
 	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
-	use routing::router::{Payee, get_keysend_route, get_route};
+	use routing::router::{Payee, RouteParameters, find_route};
 	use routing::scorer::Scorer;
 	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-	use util::test_utils;
 
 	#[cfg(feature = "std")]
 	#[test]
@@ -6280,7 +6279,6 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		let logger = test_utils::TestLogger::new();
 		let scorer = Scorer::new(0);
 
 		// To start (1), send a regular payment but don't claim it.
@@ -6288,9 +6286,15 @@ mod tests {
 		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &expected_route, 100_000);
 
 		// Next, attempt a keysend payment and make sure it fails.
-		let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
-			.with_features(InvoiceFeatures::known());
-		let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph, None, 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+		let params = RouteParameters {
+			payee: Payee::for_keysend(expected_route.last().unwrap().node.get_our_node_id()),
+			final_value_msat: 100_000,
+			final_cltv_expiry_delta: TEST_FINAL_CLTV,
+		};
+		let route = find_route(
+			&nodes[0].node.get_our_node_id(), &params,
+			&nodes[0].net_graph_msg_handler.network_graph, None, nodes[0].logger, &scorer
+		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6318,7 +6322,10 @@ mod tests {
 
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
-		let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].net_graph_msg_handler.network_graph, None, 100_000, TEST_FINAL_CLTV, &logger, &scorer).unwrap();
+		let route = find_route(
+			&nodes[0].node.get_our_node_id(), &params,
+			&nodes[0].net_graph_msg_handler.network_graph, None, nodes[0].logger, &scorer
+		).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -6370,12 +6377,18 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let params = RouteParameters {
+			payee: Payee::for_keysend(payee_pubkey),
+			final_value_msat: 10000,
+			final_cltv_expiry_delta: 40,
+		};
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = Scorer::new(0);
-		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
-                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
-                                  nodes[0].logger, &scorer).unwrap();
+		let route = find_route(
+			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			nodes[0].logger, &scorer
+		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let mismatch_payment_hash = PaymentHash([43; 32]);
@@ -6407,12 +6420,18 @@ mod tests {
 		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+		let params = RouteParameters {
+			payee: Payee::for_keysend(payee_pubkey),
+			final_value_msat: 10000,
+			final_cltv_expiry_delta: 40,
+		};
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = Scorer::new(0);
-		let route = get_keysend_route(&payer_pubkey, network_graph, &payee_pubkey,
-                                  Some(&first_hops.iter().collect::<Vec<_>>()), &vec![], 10000, 40,
-                                  nodes[0].logger, &scorer).unwrap();
+		let route = find_route(
+			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			nodes[0].logger, &scorer
+		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let test_secret = PaymentSecret([43; 32]);

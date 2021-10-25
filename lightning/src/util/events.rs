@@ -21,7 +21,7 @@ use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
-use routing::router::{PaymentPathRetry, RouteHop};
+use routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
@@ -229,13 +229,13 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-		/// Parameters needed to re-compute a [`Route`] for retrying the failed path.
+		/// Parameters needed to compute a new [`Route`] when retrying the failed payment path.
 		///
-		/// See [`get_retry_route`] for details.
+		/// See [`find_route`] for details.
 		///
 		/// [`Route`]: crate::routing::router::Route
-		/// [`get_retry_route`]: crate::routing::router::get_retry_route
-		retry: Option<PaymentPathRetry>,
+		/// [`find_route`]: crate::routing::router::find_route
+		retry: Option<RouteParameters>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]

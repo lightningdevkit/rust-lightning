@@ -24,7 +24,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::network_graph::{NetworkUpdate, RoutingFees};
-use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
+use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use routing::scorer::Scorer;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
@@ -9056,10 +9056,13 @@ fn test_keysend_payments_to_public_node() {
 	let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
+	let params = RouteParameters {
+		payee: Payee::for_keysend(payee_pubkey),
+		final_value_msat: 10000,
+		final_cltv_expiry_delta: 40,
+	};
 	let scorer = Scorer::new(0);
-	let route = get_keysend_route(
-		&payer_pubkey, &network_graph, &payee_pubkey, None, &vec![], 10000, 40, nodes[0].logger, &scorer
-	).unwrap();
+	let route = find_route(&payer_pubkey, &params, &network_graph, None, nodes[0].logger, &scorer).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
 	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
@@ -9085,12 +9088,17 @@ fn test_keysend_payments_to_private_node() {
 	nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+	let params = RouteParameters {
+		payee: Payee::for_keysend(payee_pubkey),
+		final_value_msat: 10000,
+		final_cltv_expiry_delta: 40,
+	};
 	let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 	let first_hops = nodes[0].node.list_usable_channels();
 	let scorer = Scorer::new(0);
-	let route = get_keysend_route(
-		&payer_pubkey, &network_graph, &payee_pubkey, Some(&first_hops.iter().collect::<Vec<_>>()),
-		&vec![], 10000, 40, nodes[0].logger, &scorer
+	let route = find_route(
+		&payer_pubkey, &params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+		nodes[0].logger, &scorer
 	).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
