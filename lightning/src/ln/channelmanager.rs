@@ -173,6 +173,7 @@ struct ClaimableHTLC {
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
+/// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentId(pub [u8; 32]);
 
