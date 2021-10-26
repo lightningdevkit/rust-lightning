@@ -1431,6 +1431,23 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		}
 	}
 
+	/// Disconnects all currently-connected peers. This is useful on platforms where there may be
+	/// an indication that TCP sockets have stalled even if we weren't around to time them out
+	/// using regular ping/pongs.
+	pub fn disconnect_all_peers(&self) {
+		let mut peers_lock = self.peers.lock().unwrap();
+		let peers = &mut *peers_lock;
+		for (mut descriptor, peer) in peers.peers.drain() {
+			if let Some(node_id) = peer.their_node_id {
+				log_trace!(self.logger, "Disconnecting peer with id {} due to client request to disconnect all peers", node_id);
+				peers.node_id_to_descriptor.remove(&node_id);
+				self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+			}
+			descriptor.disconnect_socket();
+		}
+		debug_assert!(peers.node_id_to_descriptor.is_empty());
+	}
+
 	/// Send pings to each peer and disconnect those which did not respond to the last round of
 	/// pings.
 	///
