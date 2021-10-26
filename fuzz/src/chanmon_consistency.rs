@@ -271,8 +271,8 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 		PaymentSendFailure::AllFailedRetrySafe(per_path_results) => {
 			for api_err in per_path_results { check_api_err(api_err); }
 		},
-		PaymentSendFailure::PartialFailure(per_path_results) => {
-			for res in per_path_results { if let Err(api_err) = res { check_api_err(api_err); } }
+		PaymentSendFailure::PartialFailure { results, .. } => {
+			for res in results { if let Err(api_err) = res { check_api_err(api_err); } }
 		},
 	}
 }

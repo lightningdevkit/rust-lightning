@@ -1950,7 +1950,7 @@ fn test_path_paused_mpp() {
 	// Now check that we get the right return value, indicating that the first path succeeded but
 	// the second got a MonitorUpdateFailed err. This implies PaymentSendFailure::PartialFailure as
 	// some paths succeeded, preventing retry.
-	if let Err(PaymentSendFailure::PartialFailure(results)) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) {
+	if let Err(PaymentSendFailure::PartialFailure { results, ..}) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) {
 		assert_eq!(results.len(), 2);
 		if let Ok(()) = results[0] {} else { panic!(); }
 		if let Err(APIError::MonitorUpdateFailed) = results[1] {} else { panic!(); }

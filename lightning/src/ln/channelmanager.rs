@@ -946,7 +946,16 @@ pub enum PaymentSendFailure {
 	/// as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
 	/// case of Ok(())) or will send once channel_monitor_updated is called on the next-hop channel
 	/// with the latest update_id.
-	PartialFailure(Vec<Result<(), APIError>>),
+	PartialFailure {
+		/// The errors themselves, in the same order as the route hops.
+		results: Vec<Result<(), APIError>>,
+		/// If some paths failed without irrevocably committing to the new HTLC(s), this will
+		/// contain a [`RouteParameters`] object which can be used to calculate a new route that
+		/// will pay all remaining unpaid balance.
+		failed_paths_retry: Option<RouteParameters>,
+		/// The payment id for the payment, which is now at least partially pending.
+		payment_id: PaymentId,
+	},
 }
 
 macro_rules! handle_error {
@@ -2236,7 +2245,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 		let mut has_ok = false;
 		let mut has_err = false;
-		for res in results.iter() {
+		let mut pending_amt_unsent = 0;
+		let mut max_unsent_cltv_delta = 0;
+		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() { has_ok = true; }
 			if res.is_err() { has_err = true; }
 			if let &Err(APIError::MonitorUpdateFailed) = res {
@@ -2244,11 +2255,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				// PartialFailure.
 				has_err = true;
 				has_ok = true;
-				break;
+			} else if res.is_err() {
+				pending_amt_unsent += path.last().unwrap().fee_msat;
+				max_unsent_cltv_delta = cmp::max(max_unsent_cltv_delta, path.last().unwrap().cltv_expiry_delta);
 			}
 		}
 		if has_err && has_ok {
-			Err(PaymentSendFailure::PartialFailure(results))
+			Err(PaymentSendFailure::PartialFailure {
+				results,
+				payment_id,
+				failed_paths_retry: if pending_amt_unsent != 0 {
+					if let Some(payee) = &route.payee {
+						Some(RouteParameters {
+							payee: payee.clone(),
+							final_value_msat: pending_amt_unsent,
+							final_cltv_expiry_delta: max_unsent_cltv_delta,
+						})
+					} else { None }
+				} else { None },
+			})
 		} else if has_err {
 			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
