@@ -194,6 +194,16 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: PaymentHash,
+		/// The total fee which was spent at intermediate hops in this payment, across all paths.
+		///
+		/// Note that, like [`Route::get_total_fees`] this does *not* include any potential
+		/// overpayment to the recipient node.
+		///
+		/// If the recipient or an intermediate node misbehaves and gives us free money, this may
+		/// overstate the amount paid, though this is unlikely.
+		///
+		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
+		fee_paid_msat: Option<u64>,
 	},
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
@@ -336,12 +346,13 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash} => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 					(1, payment_hash, required),
 					(3, payment_id, option),
+					(5, fee_paid_msat, option),
 				});
 			},
 			&Event::PaymentPathFailed {
@@ -452,10 +463,12 @@ impl MaybeReadable for Event {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
 					let mut payment_hash = None;
 					let mut payment_id = None;
+					let mut fee_paid_msat = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
 						(3, payment_id, option),
+						(5, fee_paid_msat, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
@@ -464,6 +477,7 @@ impl MaybeReadable for Event {
 						payment_id,
 						payment_preimage,
 						payment_hash: payment_hash.unwrap(),
+						fee_paid_msat,
 					}))
 				};
 				f()

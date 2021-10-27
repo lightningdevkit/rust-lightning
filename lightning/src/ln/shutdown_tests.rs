@@ -131,7 +131,7 @@ fn updates_shutdown_wait() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(our_payment_preimage, *payment_preimage);
 			assert_eq!(our_payment_hash, *payment_hash);
 		},
@@ -309,7 +309,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(our_payment_preimage, *payment_preimage);
 			assert_eq!(our_payment_hash, *payment_hash);
 		},

@@ -304,7 +304,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				let events_3 = nodes[0].node.get_and_clear_pending_events();
 				assert_eq!(events_3.len(), 1);
 				match events_3[0] {
-					Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+					Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 						assert_eq!(*payment_preimage, payment_preimage_1);
 						assert_eq!(*payment_hash, payment_hash_1);
 					},
@@ -397,7 +397,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			let events_3 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_3.len(), 1);
 			match events_3[0] {
-				Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 					assert_eq!(*payment_preimage, payment_preimage_1);
 					assert_eq!(*payment_hash, payment_hash_1);
 				},
@@ -1399,7 +1399,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
 			assert_eq!(*payment_hash, payment_hash_1);
 		},
@@ -1806,7 +1806,7 @@ fn monitor_update_claim_fail_no_response() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
 			assert_eq!(*payment_hash, payment_hash_1);
 		},

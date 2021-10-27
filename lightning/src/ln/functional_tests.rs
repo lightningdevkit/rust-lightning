@@ -2659,7 +2659,7 @@ fn test_htlc_on_chain_success() {
 	let mut first_claimed = false;
 	for event in events {
 		match event {
-			Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
+			Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 				if payment_preimage == our_payment_preimage && payment_hash == payment_hash_1 {
 					assert!(!first_claimed);
 					first_claimed = true;
@@ -3350,7 +3350,7 @@ fn test_simple_peer_disconnect() {
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
+			Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 				assert_eq!(payment_preimage, payment_preimage_3);
 				assert_eq!(payment_hash, payment_hash_3);
 			},
@@ -3514,7 +3514,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		let events_4 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_4.len(), 1);
 		match events_4[0] {
-			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+			Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 				assert_eq!(payment_preimage_1, *payment_preimage);
 				assert_eq!(payment_hash_1, *payment_hash);
 			},
@@ -3555,7 +3555,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			let events_4 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_4.len(), 1);
 			match events_4[0] {
-				Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 					assert_eq!(payment_preimage_1, *payment_preimage);
 					assert_eq!(payment_hash_1, *payment_hash);
 				},
@@ -3790,7 +3790,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 			let events_3 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_3.len(), 1);
 			match events_3[0] {
-				Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 					assert_eq!(*payment_preimage, payment_preimage_1);
 					assert_eq!(*payment_hash, payment_hash_1);
 				},
@@ -5059,7 +5059,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(*payment_preimage, our_payment_preimage);
 			assert_eq!(*payment_hash, duplicate_payment_hash);
 		}
@@ -5572,7 +5572,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
+		Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 			assert_eq!(payment_preimage, our_payment_preimage);
 			assert_eq!(payment_hash, our_payment_hash);
 		},
@@ -6002,7 +6002,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
 			assert_eq!(*payment_hash, payment_hash_1);
 		}
