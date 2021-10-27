@@ -1015,7 +1015,7 @@ macro_rules! get_route_and_payment_hash {
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
 		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
-		let scorer = ::routing::scorer::Scorer::new(0);
+		let scorer = ::routing::scorer::Scorer::with_fixed_penalty(0);
 		let route = ::routing::router::get_route(
 			&$send_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph,
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
@@ -1339,7 +1339,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let scorer = Scorer::new(0);
+	let scorer = Scorer::with_fixed_penalty(0);
 	let route = get_route(
 		&origin_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph,
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
@@ -1358,7 +1358,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
-	let scorer = Scorer::new(0);
+	let scorer = Scorer::with_fixed_penalty(0);
 	let route = get_route(&origin_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph, None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());

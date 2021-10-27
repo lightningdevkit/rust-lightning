@@ -183,7 +183,7 @@ mod test {
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let logger = test_utils::TestLogger::new();
-		let scorer = Scorer::new(0);
+		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &params, network_graph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer,
