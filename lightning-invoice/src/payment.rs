@@ -447,17 +447,20 @@ where
 mod tests {
 	use super::*;
 	use crate::{DEFAULT_EXPIRY_TIME, InvoiceBuilder, Currency};
+	use utils::create_invoice_from_channelmanager;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
-	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
+	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
+	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ErrorAction, LightningError};
 	use lightning::routing::network_graph::NodeId;
 	use lightning::routing::router::{Payee, Route, RouteHop};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
-	use lightning::util::events::Event;
+	use lightning::util::events::{Event, MessageSendEventsProvider};
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use std::cell::RefCell;
+	use std::collections::VecDeque;
 	use std::time::{SystemTime, Duration};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
@@ -1048,13 +1051,13 @@ mod tests {
 	}
 
 	struct TestScorer {
-		expectations: std::collections::VecDeque<u64>,
+		expectations: VecDeque<u64>,
 	}
 
 	impl TestScorer {
 		fn new() -> Self {
 			Self {
-				expectations: std::collections::VecDeque::new(),
+				expectations: VecDeque::new(),
 			}
 		}
 
@@ -1089,7 +1092,7 @@ mod tests {
 	}
 
 	struct TestPayer {
-		expectations: core::cell::RefCell<std::collections::VecDeque<u64>>,
+		expectations: core::cell::RefCell<VecDeque<u64>>,
 		attempts: core::cell::RefCell<usize>,
 		failing_on_attempt: Option<usize>,
 	}
@@ -1097,7 +1100,7 @@ mod tests {
 	impl TestPayer {
 		fn new() -> Self {
 			Self {
-				expectations: core::cell::RefCell::new(std::collections::VecDeque::new()),
+				expectations: core::cell::RefCell::new(VecDeque::new()),
 				attempts: core::cell::RefCell::new(0),
 				failing_on_attempt: None,
 			}
@@ -1181,5 +1184,79 @@ mod tests {
 				Err(PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed))
 			}
 		}
+	}
+
+	// *** Full Featured Functional Tests with a Real ChannelManager ***
+	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
+
+	impl<S: routing::Score> Router<S> for ManualRouter {
+		fn find_route(&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>, _scorer: &S)
+		-> Result<Route, LightningError> {
+			self.0.borrow_mut().pop_front().unwrap()
+		}
+	}
+	impl ManualRouter {
+		fn expect_find_route(&self, result: Result<Route, LightningError>) {
+			self.0.borrow_mut().push_back(result);
+		}
+	}
+	impl Drop for ManualRouter {
+		fn drop(&mut self) {
+			if std::thread::panicking() {
+				return;
+			}
+			assert!(self.0.borrow_mut().is_empty());
+		}
+	}
+
+	#[test]
+	fn retry_multi_path_single_failed_payment() {
+		// Tests that we can/will retry after a single path of an MPP payment failed immediately
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chans = nodes[0].node.list_usable_channels();
+		let mut route = Route {
+			paths: vec![
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chans[0].short_channel_id.unwrap(),
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 10_000,
+					cltv_expiry_delta: 100,
+				}],
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chans[1].short_channel_id.unwrap(),
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
+					cltv_expiry_delta: 100,
+				}],
+			],
+			payee: Some(Payee::new(nodes[1].node.get_our_node_id())),
+		};
+		let router = ManualRouter(RefCell::new(VecDeque::new()));
+		router.expect_find_route(Ok(route.clone()));
+		// On retry, split the payment across both channels.
+		route.paths[0][0].fee_msat = 50_000_001;
+		route.paths[1][0].fee_msat = 50_000_000;
+		router.expect_find_route(Ok(route.clone()));
+
+		let event_handler = |_: &_| { panic!(); };
+		let scorer = RefCell::new(TestScorer::new());
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
+
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+			.is_ok());
+		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(htlc_msgs.len(), 2);
+		check_added_monitors!(nodes[0], 2);
 	}
 }
