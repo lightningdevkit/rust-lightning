@@ -16,7 +16,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::routing::router::{get_route, Payee, RouteHint, RouteHintHop};
+use lightning::routing::router::{find_route, Payee, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scorer::Scorer;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
@@ -250,10 +250,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 				let scorer = Scorer::new(0);
 				for target in node_pks.iter() {
-					let payee = Payee::new(*target).with_route_hints(last_hops.clone());
-					let _ = get_route(&our_pubkey, &payee, &net_graph,
+					let params = RouteParameters {
+						payee: Payee::new(*target).with_route_hints(last_hops.clone()),
+						final_value_msat: slice_to_be64(get_slice!(8)),
+						final_cltv_expiry_delta: slice_to_be32(get_slice!(4)),
+					};
+					let _ = find_route(&our_pubkey, &params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
-						slice_to_be64(get_slice!(8)), slice_to_be32(get_slice!(4)), Arc::clone(&logger), &scorer);
+						Arc::clone(&logger), &scorer);
 				}
 			},
 		}

@@ -70,7 +70,7 @@ pub struct Route {
 	/// given path is variable, keeping the length of any path to less than 20 should currently
 	/// ensure it is viable.
 	pub paths: Vec<Vec<RouteHop>>,
-	/// The `payee` parameter passed to [`get_route`].
+	/// The `payee` parameter passed to [`find_route`].
 	/// This is used by `ChannelManager` to track information which may be required for retries,
 	/// provided back to you via [`Event::PaymentPathFailed`].
 	///
@@ -82,7 +82,7 @@ impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
-	/// the amount passed to [`get_route`]'s `final_value_msat`.
+	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
 		// Do not count last hop of each path since that's the full value of the payment
 		return self.paths.iter()
@@ -140,13 +140,14 @@ impl Readable for Route {
 	}
 }
 
-/// Parameters needed to re-compute a [`Route`] for retrying a failed payment path.
+/// Parameters needed to find a [`Route`] for paying a [`Payee`].
 ///
-/// Provided in [`Event::PaymentPathFailed`] and passed to [`get_retry_route`].
+/// Passed to [`find_route`] and also provided in [`Event::PaymentPathFailed`] for retrying a failed
+/// payment path.
 ///
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
 #[derive(Clone, Debug)]
-pub struct PaymentPathRetry {
+pub struct RouteParameters {
 	/// The recipient of the failed payment path.
 	pub payee: Payee,
 
@@ -157,7 +158,7 @@ pub struct PaymentPathRetry {
 	pub final_cltv_expiry_delta: u32,
 }
 
-impl_writeable_tlv_based!(PaymentPathRetry, {
+impl_writeable_tlv_based!(RouteParameters, {
 	(0, payee, required),
 	(2, final_value_msat, required),
 	(4, final_cltv_expiry_delta, required),
@@ -179,12 +180,16 @@ pub struct Payee {
 
 	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
 	pub route_hints: Vec<RouteHint>,
+
+	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
+	pub expiry_time: Option<u64>,
 }
 
 impl_writeable_tlv_based!(Payee, {
 	(0, pubkey, required),
 	(2, features, option),
 	(4, route_hints, vec_type),
+	(6, expiry_time, option),
 });
 
 impl Payee {
@@ -194,6 +199,7 @@ impl Payee {
 			pubkey,
 			features: None,
 			route_hints: vec![],
+			expiry_time: None,
 		}
 	}
 
@@ -214,6 +220,11 @@ impl Payee {
 	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
 		Self { route_hints, ..self }
+	}
+
+	/// Includes a payment expiration in seconds relative to the UNIX epoch.
+	pub fn with_expiry_time(self, expiry_time: u64) -> Self {
+		Self { expiry_time: Some(expiry_time), ..self }
 	}
 }
 
@@ -479,59 +490,46 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 	}
 }
 
-/// Gets a keysend route from us (payer) to the given target node (payee). This is needed because
-/// keysend payments do not have an invoice from which to pull the payee's supported features, which
-/// makes it tricky to otherwise supply the `payee` parameter of `get_route`.
-pub fn get_keysend_route<L: Deref, S: routing::Score>(
-	our_node_pubkey: &PublicKey, network: &NetworkGraph, payee: &PublicKey,
-	first_hops: Option<&[&ChannelDetails]>, last_hops: &[&RouteHint], final_value_msat: u64,
-	final_cltv_expiry_delta: u32, logger: L, scorer: &S
-) -> Result<Route, LightningError>
-where L::Target: Logger {
-	let route_hints = last_hops.iter().map(|hint| (*hint).clone()).collect();
-	let payee = Payee::for_keysend(*payee).with_route_hints(route_hints);
-	get_route(
-		our_node_pubkey, &payee, network, first_hops, final_value_msat, final_cltv_expiry_delta,
-		logger, scorer
-	)
-}
-
-/// Gets a route suitable for retrying a failed payment path.
+/// Finds a route from us (payer) to the given target node (payee).
 ///
-/// Used to re-compute a [`Route`] when handling a [`Event::PaymentPathFailed`]. Any adjustments to
-/// the [`NetworkGraph`] and channel scores should be made prior to calling this function.
+/// If the payee provided features in their invoice, they should be provided via `params.payee`.
+/// Without this, MPP will only be used if the payee's features are available in the network graph.
 ///
+/// Private routing paths between a public node and the target may be included in `params.payee`.
+///
+/// If some channels aren't announced, it may be useful to fill in `first_hops` with the results
+/// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of our local
+/// channels from [`NetworkGraph`] will be ignored, and only those in `first_hops` will be used.
+///
+/// The fees on channels from us to the next hop are ignored as they are assumed to all be equal.
+/// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
+/// `htlc_maximum_msat` *are* checked as they may change based on the receiving node.
+///
+/// # Note
+///
+/// May be used to re-compute a [`Route`] when handling a [`Event::PaymentPathFailed`]. Any
+/// adjustments to the [`NetworkGraph`] and channel scores should be made prior to calling this
+/// function.
+///
+/// # Panics
+///
+/// Panics if first_hops contains channels without short_channel_ids;
+/// [`ChannelManager::list_usable_channels`] will never include such channels.
+///
+/// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-pub fn get_retry_route<L: Deref, S: routing::Score>(
-	our_node_pubkey: &PublicKey, retry: &PaymentPathRetry, network: &NetworkGraph,
+pub fn find_route<L: Deref, S: routing::Score>(
+	our_node_pubkey: &PublicKey, params: &RouteParameters, network: &NetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
 	get_route(
-		our_node_pubkey, &retry.payee, network, first_hops, retry.final_value_msat,
-		retry.final_cltv_expiry_delta, logger, scorer
+		our_node_pubkey, &params.payee, network, first_hops, params.final_value_msat,
+		params.final_cltv_expiry_delta, logger, scorer
 	)
 }
 
-/// Gets a route from us (payer) to the given target node (payee).
-///
-/// If the payee provided features in their invoice, they should be provided via `payee`.  Without
-/// this, MPP will only be used if the payee's features are available in the network graph.
-///
-/// Private routing paths between a public node and the target may be included in `payee`.
-///
-/// If some channels aren't announced, it may be useful to fill in a first_hops with the
-/// results from a local ChannelManager::list_usable_channels() call. If it is filled in, our
-/// view of our local channels (from net_graph_msg_handler) will be ignored, and only those
-/// in first_hops will be used.
-///
-/// Panics if first_hops contains channels without short_channel_ids
-/// (ChannelManager::list_usable_channels will never include such channels).
-///
-/// The fees on channels from us to next-hops are ignored (as they are assumed to all be
-/// equal), however the enabled/disabled bit on such channels as well as the
-/// htlc_minimum_msat/htlc_maximum_msat *are* checked as they may change based on the receiving node.
-pub fn get_route<L: Deref, S: routing::Score>(
+pub(crate) fn get_route<L: Deref, S: routing::Score>(
 	our_node_pubkey: &PublicKey, payee: &Payee, network: &NetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv_expiry_delta: u32,
 	logger: L, scorer: &S

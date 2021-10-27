@@ -16,6 +16,7 @@ use bitcoin::secp256k1::key::PublicKey;
 
 use routing::router::Route;
 use ln::chan_utils::HTLCType;
+use util::logger::DebugBytes;
 
 pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
 impl<'a> core::fmt::Display for DebugPubKey<'a> {
@@ -32,18 +33,11 @@ macro_rules! log_pubkey {
 	}
 }
 
-pub(crate) struct DebugBytes<'a>(pub &'a [u8]);
-impl<'a> core::fmt::Display for DebugBytes<'a> {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		for i in self.0 {
-			write!(f, "{:02x}", i)?;
-		}
-		Ok(())
-	}
-}
+/// Logs a byte slice in hex format.
+#[macro_export]
 macro_rules! log_bytes {
 	($obj: expr) => {
-		::util::macro_logger::DebugBytes(&$obj)
+		$crate::util::logger::DebugBytes(&$obj)
 	}
 }
 
@@ -157,6 +151,7 @@ macro_rules! log_spendable {
 
 /// Create a new Record and log it. You probably don't want to use this macro directly,
 /// but it needs to be exported so `log_trace` etc can use it in external crates.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! log_internal {
 	($logger: expr, $lvl:expr, $($arg:tt)+) => (

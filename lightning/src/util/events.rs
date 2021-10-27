@@ -15,13 +15,15 @@
 //! few other things.
 
 use chain::keysinterface::SpendableOutputDescriptor;
+use ln::channelmanager::PaymentId;
 use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use routing::network_graph::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
-use routing::router::{PaymentPathRetry, RouteHop};
+use routing::router::{RouteHop, RouteParameters};
 
+use bitcoin::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -31,7 +33,7 @@ use io;
 use prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
-use bitcoin::Transaction;
+use sync::Arc;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -178,6 +180,12 @@ pub enum Event {
 	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentPathFailed`
 	/// event. In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: Option<PaymentId>,
 		/// The preimage to the hash given to ChannelManager::send_payment.
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
 		/// store it somehow!
@@ -190,6 +198,12 @@ pub enum Event {
 	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
 	PaymentPathFailed {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: Option<PaymentId>,
 		/// The hash which was given to ChannelManager::send_payment.
 		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
@@ -216,13 +230,13 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-		/// Parameters needed to re-compute a [`Route`] for retrying the failed path.
+		/// Parameters needed to compute a new [`Route`] when retrying the failed payment path.
 		///
-		/// See [`get_retry_route`] for details.
+		/// See [`find_route`] for details.
 		///
 		/// [`Route`]: crate::routing::router::Route
-		/// [`get_retry_route`]: crate::routing::router::get_retry_route
-		retry: Option<PaymentPathRetry>,
+		/// [`find_route`]: crate::routing::router::find_route
+		retry: Option<RouteParameters>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -322,15 +336,16 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_preimage, ref payment_hash} => {
+			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
 					(1, payment_hash, required),
+					(3, payment_id, option),
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_hash, ref rejected_by_dest, ref network_update,
+				ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update,
 				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
@@ -350,6 +365,7 @@ impl Writeable for Event {
 					(5, path, vec_type),
 					(7, short_channel_id, option),
 					(9, retry, option),
+					(11, payment_id, option),
 				});
 			},
 			&Event::PendingHTLCsForwardable { time_forwardable: _ } => {
@@ -435,14 +451,17 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
 					let mut payment_hash = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
 						(1, payment_hash, option),
+						(3, payment_id, option),
 					});
 					if payment_hash.is_none() {
 						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()));
 					}
 					Ok(Some(Event::PaymentSent {
+						payment_id,
 						payment_preimage,
 						payment_hash: payment_hash.unwrap(),
 					}))
@@ -462,6 +481,7 @@ impl MaybeReadable for Event {
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut retry = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
@@ -470,8 +490,10 @@ impl MaybeReadable for Event {
 						(5, path, vec_type),
 						(7, short_channel_id, option),
 						(9, retry, option),
+						(11, payment_id, option),
 					});
 					Ok(Some(Event::PaymentPathFailed {
+						payment_id,
 						payment_hash,
 						rejected_by_dest,
 						network_update,
@@ -758,5 +780,11 @@ pub trait EventHandler {
 impl<F> EventHandler for F where F: Fn(&Event) {
 	fn handle_event(&self, event: &Event) {
 		self(event)
+	}
+}
+
+impl<T: EventHandler> EventHandler for Arc<T> {
+	fn handle_event(&self, event: &Event) {
+		self.deref().handle_event(event)
 	}
 }

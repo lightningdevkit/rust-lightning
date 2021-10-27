@@ -9,7 +9,7 @@
 
 //! Utilities for scoring payment channels.
 //!
-//! [`Scorer`] may be given to [`get_route`] to score payment channels during path finding when a
+//! [`Scorer`] may be given to [`find_route`] to score payment channels during path finding when a
 //! custom [`routing::Score`] implementation is not needed.
 //!
 //! # Example
@@ -18,7 +18,7 @@
 //! # extern crate secp256k1;
 //! #
 //! # use lightning::routing::network_graph::NetworkGraph;
-//! # use lightning::routing::router::{Payee, get_route};
+//! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scorer::Scorer;
 //! # use lightning::util::logger::{Logger, Record};
 //! # use secp256k1::key::PublicKey;
@@ -27,7 +27,7 @@
 //! # impl Logger for FakeLogger {
 //! #     fn log(&self, record: &Record) { unimplemented!() }
 //! # }
-//! # fn find_scored_route(payer: PublicKey, payee: Payee, network_graph: NetworkGraph) {
+//! # fn find_scored_route(payer: PublicKey, params: RouteParameters, network_graph: NetworkGraph) {
 //! # let logger = FakeLogger {};
 //! #
 //! // Use the default channel penalty.
@@ -36,11 +36,11 @@
 //! // Or use a custom channel penalty.
 //! let scorer = Scorer::new(1_000);
 //!
-//! let route = get_route(&payer, &payee, &network_graph, None, 1_000, 42, &logger, &scorer);
+//! let route = find_route(&payer, &params, &network_graph, None, &logger, &scorer);
 //! # }
 //! ```
 //!
-//! [`get_route`]: crate::routing::router::get_route
+//! [`find_route`]: crate::routing::router::find_route
 
 use routing;
 

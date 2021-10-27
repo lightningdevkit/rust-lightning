@@ -24,7 +24,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::HTLC_SUCCESS_TX_WEIGHT;
 use routing::network_graph::{NetworkUpdate, RoutingFees};
-use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, get_route, get_keysend_route};
+use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use routing::scorer::Scorer;
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
@@ -2659,7 +2659,7 @@ fn test_htlc_on_chain_success() {
 	let mut first_claimed = false;
 	for event in events {
 		match event {
-			Event::PaymentSent { payment_preimage, payment_hash } => {
+			Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
 				if payment_preimage == our_payment_preimage && payment_hash == payment_hash_1 {
 					assert!(!first_claimed);
 					first_claimed = true;
@@ -3350,7 +3350,7 @@ fn test_simple_peer_disconnect() {
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::PaymentSent { payment_preimage, payment_hash } => {
+			Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
 				assert_eq!(payment_preimage, payment_preimage_3);
 				assert_eq!(payment_hash, payment_hash_3);
 			},
@@ -3514,7 +3514,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		let events_4 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_4.len(), 1);
 		match events_4[0] {
-			Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 				assert_eq!(payment_preimage_1, *payment_preimage);
 				assert_eq!(payment_hash_1, *payment_hash);
 			},
@@ -3555,7 +3555,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			let events_4 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_4.len(), 1);
 			match events_4[0] {
-				Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+				Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 					assert_eq!(payment_preimage_1, *payment_preimage);
 					assert_eq!(payment_hash_1, *payment_hash);
 				},
@@ -3790,7 +3790,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 			let events_3 = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events_3.len(), 1);
 			match events_3[0] {
-				Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+				Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 					assert_eq!(*payment_preimage, payment_preimage_1);
 					assert_eq!(*payment_hash, payment_hash_1);
 				},
@@ -5059,7 +5059,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 			assert_eq!(*payment_preimage, our_payment_preimage);
 			assert_eq!(*payment_hash, duplicate_payment_hash);
 		}
@@ -5572,7 +5572,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { payment_preimage, payment_hash } => {
+		Event::PaymentSent { payment_id: _, payment_preimage, payment_hash } => {
 			assert_eq!(payment_preimage, our_payment_preimage);
 			assert_eq!(payment_hash, our_payment_hash);
 		},
@@ -5844,7 +5844,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	let our_payment_id = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
@@ -5869,7 +5869,8 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+			assert_eq!(our_payment_id, *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -5927,7 +5928,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	nodes[0].node.send_payment(&route_1, payment_hash_1, &Some(payment_secret_1)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
-	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
+	let payment_id_2 = nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
 
@@ -5953,7 +5954,8 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, path: _, ref short_channel_id, retry: _, ref error_code, ref error_data } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*rejected_by_dest, false);
 			assert_eq!(*all_paths_failed, true);
@@ -6000,7 +6002,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash } => {
+		Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
 			assert_eq!(*payment_preimage, payment_preimage_1);
 			assert_eq!(*payment_hash, payment_hash_1);
 		}
@@ -9054,10 +9056,13 @@ fn test_keysend_payments_to_public_node() {
 	let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
+	let params = RouteParameters {
+		payee: Payee::for_keysend(payee_pubkey),
+		final_value_msat: 10000,
+		final_cltv_expiry_delta: 40,
+	};
 	let scorer = Scorer::new(0);
-	let route = get_keysend_route(
-		&payer_pubkey, &network_graph, &payee_pubkey, None, &vec![], 10000, 40, nodes[0].logger, &scorer
-	).unwrap();
+	let route = find_route(&payer_pubkey, &params, &network_graph, None, nodes[0].logger, &scorer).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
 	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
@@ -9083,12 +9088,17 @@ fn test_keysend_payments_to_private_node() {
 	nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
+	let params = RouteParameters {
+		payee: Payee::for_keysend(payee_pubkey),
+		final_value_msat: 10000,
+		final_cltv_expiry_delta: 40,
+	};
 	let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 	let first_hops = nodes[0].node.list_usable_channels();
 	let scorer = Scorer::new(0);
-	let route = get_keysend_route(
-		&payer_pubkey, &network_graph, &payee_pubkey, Some(&first_hops.iter().collect::<Vec<_>>()),
-		&vec![], 10000, 40, nodes[0].logger, &scorer
+	let route = find_route(
+		&payer_pubkey, &params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+		nodes[0].logger, &scorer
 	).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);

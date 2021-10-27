@@ -1806,6 +1806,7 @@ mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
 			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
@@ -1832,6 +1833,7 @@ mod tests {
 			};
 
 			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
@@ -1857,6 +1859,7 @@ mod tests {
 		// Permanent closing deletes a channel
 		{
 			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
