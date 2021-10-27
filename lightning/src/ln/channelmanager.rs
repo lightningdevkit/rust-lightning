@@ -474,8 +474,8 @@ impl PendingOutboundPayment {
 		*self = PendingOutboundPayment::Fulfilled { session_privs };
 	}
 
-	/// panics if part_amt_msat is None and !self.is_fulfilled
-	fn remove(&mut self, session_priv: &[u8; 32], part_amt_msat: Option<u64>) -> bool {
+	/// panics if path is None and !self.is_fulfilled
+	fn remove(&mut self, session_priv: &[u8; 32], path: Option<&Vec<RouteHop>>) -> bool {
 		let remove_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
@@ -485,13 +485,15 @@ impl PendingOutboundPayment {
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, .. } = self {
-				*pending_amt_msat -= part_amt_msat.expect("We must only not provide an amount if the payment was already fulfilled");
+				let path = path.expect("Fulfilling a payment should always come with a path");
+				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
+				*pending_amt_msat -= path_last_hop.fee_msat;
 			}
 		}
 		remove_res
 	}
 
-	fn insert(&mut self, session_priv: [u8; 32], part_amt_msat: u64) -> bool {
+	fn insert(&mut self, session_priv: [u8; 32], path: &Vec<RouteHop>) -> bool {
 		let insert_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } => {
@@ -501,7 +503,8 @@ impl PendingOutboundPayment {
 		};
 		if insert_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, .. } = self {
-				*pending_amt_msat += part_amt_msat;
+				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
+				*pending_amt_msat += path_last_hop.fee_msat;
 			}
 		}
 		insert_res
@@ -2086,7 +2089,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						starting_block_height: self.best_block.read().unwrap().height(),
 						total_msat: total_value,
 					});
-					assert!(payment.insert(session_priv_bytes, path.last().unwrap().fee_msat));
+					assert!(payment.insert(session_priv_bytes, path));
 
 					send_res
 				} {
@@ -3107,11 +3110,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					session_priv_bytes.copy_from_slice(&session_priv[..]);
 					let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 					if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-						let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-						if payment.get_mut().remove(&session_priv_bytes, Some(path_last_hop.fee_msat)) &&
-							!payment.get().is_fulfilled()
-						{
+						if payment.get_mut().remove(&session_priv_bytes, Some(&path)) && !payment.get().is_fulfilled() {
 							let retry = if let Some(payee_data) = payee {
+								let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 								Some(RouteParameters {
 									payee: payee_data,
 									final_value_msat: path_last_hop.fee_msat,
@@ -3164,9 +3165,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				let mut all_paths_failed = false;
-				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-					if !payment.get_mut().remove(&session_priv_bytes, Some(path_last_hop.fee_msat)) {
+					if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 						return;
 					}
@@ -3183,6 +3183,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				mem::drop(channel_state_lock);
 				let retry = if let Some(payee_data) = payee {
+					let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 					Some(RouteParameters {
 						payee: payee_data.clone(),
 						final_value_msat: path_last_hop.fee_msat,
@@ -3467,7 +3468,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// restart.
 						// TODO: We should have a second monitor event that informs us of payments
 						// irrevocably fulfilled.
-						payment.get_mut().remove(&session_priv_bytes, Some(path.last().unwrap().fee_msat));
+						payment.get_mut().remove(&session_priv_bytes, Some(&path));
 						if payment.get().remaining_parts() == 0 {
 							payment.remove();
 						}
@@ -5951,7 +5952,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 							session_priv_bytes[..].copy_from_slice(&session_priv[..]);
 							match pending_outbound_payments.as_mut().unwrap().entry(payment_id) {
 								hash_map::Entry::Occupied(mut entry) => {
-									let newly_added = entry.get_mut().insert(session_priv_bytes, path_amt);
+									let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
 									log_info!(args.logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
 										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), log_bytes!(htlc.payment_hash.0));
 								},
