@@ -1081,13 +1081,20 @@ macro_rules! expect_payment_received {
 
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
+		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>);
+	};
+	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		let expected_payment_hash = PaymentHash(Sha256::hash(&$expected_payment_preimage.0).into_inner());
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash } => {
+			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
 				assert_eq!(expected_payment_hash, *payment_hash);
+				assert!(fee_paid_msat.is_some());
+				if $expected_fee_msat_opt.is_some() {
+					assert_eq!(*fee_paid_msat, $expected_fee_msat_opt);
+				}
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1237,12 +1244,14 @@ pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route
 	(our_payment_preimage, our_payment_hash, our_payment_secret, payment_id)
 }
 
-pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
+pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) -> u64 {
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	assert!(expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage));
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
+
+	let mut expected_total_fee_msat = 0;
 
 	macro_rules! msgs_from_ev {
 		($ev: expr) => {
@@ -1286,6 +1295,7 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let fee = $node.node.channel_state.lock().unwrap().by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap().config.forwarding_fee_base_msat;
 					expect_payment_forwarded!($node, Some(fee as u64), false);
+					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();
@@ -1324,8 +1334,12 @@ pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, exp
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
 		}
 	}
+	expected_total_fee_msat
+}
+pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
+	let expected_total_fee_msat = do_claim_payment_along_route(origin_node, expected_paths, skip_last, our_payment_preimage);
 	if !skip_last {
-		expect_payment_sent!(origin_node, our_payment_preimage);
+		expect_payment_sent!(origin_node, our_payment_preimage, Some(expected_total_fee_msat));
 	}
 }
 

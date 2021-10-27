@@ -430,7 +430,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 
 		invoice_payer.handle_event(&Event::PaymentSent {
-			payment_id, payment_preimage, payment_hash
+			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 1);
@@ -472,7 +472,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 2);
 
 		invoice_payer.handle_event(&Event::PaymentSent {
-			payment_id, payment_preimage, payment_hash
+			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 2);
@@ -514,7 +514,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 2);
 
 		invoice_payer.handle_event(&Event::PaymentSent {
-			payment_id, payment_preimage, payment_hash
+			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 2);
@@ -802,7 +802,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 
 		invoice_payer.handle_event(&Event::PaymentSent {
-			payment_id, payment_preimage, payment_hash
+			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 1);

@@ -296,7 +296,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	// Serialize the ChannelManager prior to sending payments
 	let nodes_0_serialized = nodes[0].node.encode();
@@ -445,7 +445,13 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// Finally, retry the payment (which was reloaded from the ChannelMonitor when nodes[0] was
 	// reloaded) via a route over the new channel, which work without issue and eventually be
 	// received and claimed at the recipient just like any other payment.
-	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	let (mut new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+
+	// Update the fee on the middle hop to ensure PaymentSent events have the correct (retried) fee
+	// and not the original fee. We also update node[1]'s relevant config as
+	// do_claim_payment_along_route expects us to never overpay.
+	nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_id_2).unwrap().config.forwarding_fee_base_msat += 100_000;
+	new_route.paths[0][0].fee_msat += 100_000;
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
 	nodes[0].node.retry_payment(&new_route, payment_id).unwrap();
@@ -453,7 +459,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0][0].fee_msat));
 }
 
 #[test]
