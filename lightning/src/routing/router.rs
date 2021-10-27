@@ -78,17 +78,26 @@ pub struct Route {
 	pub payee: Option<Payee>,
 }
 
+pub(crate) trait RoutePath {
+	/// Gets the fees for a given path, excluding any excess paid to the recipient.
+	fn get_path_fees(&self) -> u64;
+}
+impl RoutePath for Vec<RouteHop> {
+	fn get_path_fees(&self) -> u64 {
+		// Do not count last hop of each path since that's the full value of the payment
+		self.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[])
+			.iter().map(|hop| &hop.fee_msat)
+			.sum()
+	}
+}
+
 impl Route {
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
 	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
-		// Do not count last hop of each path since that's the full value of the payment
-		return self.paths.iter()
-			.flat_map(|path| path.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[]))
-			.map(|hop| &hop.fee_msat)
-			.sum();
+		self.paths.iter().map(|path| path.get_path_fees()).sum()
 	}
 
 	/// Returns the total amount paid on this [`Route`], excluding the fees.
