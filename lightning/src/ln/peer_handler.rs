@@ -493,6 +493,17 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	}
 }
 
+/// A simple wrapper that optionally prints " from <pubkey>" for an optional pubkey.
+/// This works around `format!()` taking a reference to each argument, preventing
+/// `if let Some(node_id) = peer.their_node_id { format!(.., node_id) } else { .. }` from compiling
+/// due to lifetime errors.
+struct OptionalFromDebugger<'a>(&'a Option<PublicKey>);
+impl core::fmt::Display for OptionalFromDebugger<'_> {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+		if let Some(node_id) = self.0 { write!(f, " from {}", log_pubkey!(node_id)) } else { Ok(()) }
+	}
+}
+
 impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, L, CMH> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
@@ -804,19 +815,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 											match e.action {
 												msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 													//TODO: Try to push msg
-													log_debug!(self.logger, "Error handling message; disconnecting peer with: {}", e.err);
+													log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													return Err(PeerHandleError{ no_connection_possible: false });
 												},
 												msgs::ErrorAction::IgnoreAndLog(level) => {
-													log_given_level!(self.logger, level, "Error handling message; ignoring: {}", e.err);
+													log_given_level!(self.logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													continue
 												},
 												msgs::ErrorAction::IgnoreError => {
-													log_debug!(self.logger, "Error handling message; ignoring: {}", e.err);
+													log_debug!(self.logger, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													continue;
 												},
 												msgs::ErrorAction::SendErrorMessage { msg } => {
-													log_debug!(self.logger, "Error handling message; sending error message with: {}", e.err);
+													log_debug!(self.logger, "Error handling message{}; sending error message with: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													self.enqueue_message(peer, &msg);
 													continue;
 												},
@@ -982,7 +993,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					return Err(PeerHandleError{ no_connection_possible: false }.into());
 				}
 
-				log_info!(self.logger, "Received peer Init message: {}", msg.features);
+				log_info!(self.logger, "Received peer Init message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.features);
 
 				if msg.features.initial_routing_sync() {
 					peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
