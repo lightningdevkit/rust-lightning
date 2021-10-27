@@ -313,8 +313,9 @@ fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
 }
 
 fn has_expired(params: &RouteParameters) -> bool {
-	let expiry_time = Duration::from_secs(params.payee.expiry_time.unwrap());
-	Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, expiry_time)
+	if let Some(expiry_time) = params.payee.expiry_time {
+		Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, Duration::from_secs(expiry_time))
+	} else { false }
 }
 
 impl<P: Deref, R, S: Deref, L: Deref, E> EventHandler for InvoicePayer<P, R, S, L, E>
