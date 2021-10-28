@@ -722,14 +722,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		}
 	}
 
-	/// Append a message to a peer's pending outbound/write buffer, and update the map of peers needing sends accordingly.
+	/// Append a message to a peer's pending outbound/write buffer
+	fn enqueue_encoded_message(&self, peer: &mut Peer, encoded_message: &Vec<u8>) {
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
+	}
+
+	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let mut buffer = VecWriter(Vec::with_capacity(2048));
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
-		let encoded_message = buffer.0;
-
 		log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
+		self.enqueue_encoded_message(peer, &buffer.0);
 	}
 
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
@@ -1118,7 +1121,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+					self.enqueue_encoded_message(peer, &encoded_msg);
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -1140,7 +1143,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+					self.enqueue_encoded_message(peer, &encoded_msg);
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -1159,7 +1162,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_msg[..]));
+					self.enqueue_encoded_message(peer, &encoded_msg);
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),
