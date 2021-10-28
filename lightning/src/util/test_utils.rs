@@ -320,7 +320,6 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 pub struct TestRoutingMessageHandler {
 	pub chan_upds_recvd: AtomicUsize,
 	pub chan_anns_recvd: AtomicUsize,
-	pub chan_anns_sent: AtomicUsize,
 	pub request_full_sync: AtomicBool,
 }
 
@@ -329,7 +328,6 @@ impl TestRoutingMessageHandler {
 		TestRoutingMessageHandler {
 			chan_upds_recvd: AtomicUsize::new(0),
 			chan_anns_recvd: AtomicUsize::new(0),
-			chan_anns_sent: AtomicUsize::new(0),
 			request_full_sync: AtomicBool::new(false),
 		}
 	}
@@ -348,8 +346,8 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	}
 	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
 		let mut chan_anns = Vec::new();
-		const TOTAL_UPDS: u64 = 100;
-		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS - self.chan_anns_sent.load(Ordering::Acquire) as u64);
+		const TOTAL_UPDS: u64 = 50;
+		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS);
 		for i in starting_point..end {
 			let chan_upd_1 = get_dummy_channel_update(i);
 			let chan_upd_2 = get_dummy_channel_update(i);
@@ -358,7 +356,6 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 			chan_anns.push((chan_ann, Some(chan_upd_1), Some(chan_upd_2)));
 		}
 
-		self.chan_anns_sent.fetch_add(chan_anns.len(), Ordering::AcqRel);
 		chan_anns
 	}
 
