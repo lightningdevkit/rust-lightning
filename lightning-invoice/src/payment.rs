@@ -253,6 +253,10 @@ where
 	) -> Result<PaymentId, PaymentError> {
 		debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
+		if invoice.is_expired() {
+			log_trace!(self.logger, "Invoice expired prior to first send for payment {}", log_bytes!(payment_hash.0));
+			return Err(PaymentError::Invoice("Invoice expired prior to send"));
+		}
 		let retry_data_payment_id = loop {
 			let mut payment_cache = self.payment_cache.lock().unwrap();
 			match payment_cache.entry(payment_hash) {
@@ -728,9 +732,32 @@ mod tests {
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = expired_invoice(payment_preimage);
+		if let PaymentError::Invoice(msg) = invoice_payer.pay_invoice(&invoice).unwrap_err() {
+			assert_eq!(msg, "Invoice expired prior to send");
+		} else { panic!("Expected Invoice Error"); }
+	}
+
+	#[test]
+	fn fails_retrying_invoice_after_expiration() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payer = TestPayer::new();
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
+		let mut retry_data = TestRouter::retry_for_invoice(&invoice);
+		retry_data.payee.expiry_time = Some(SystemTime::now()
+			.checked_sub(Duration::from_secs(2)).unwrap()
+			.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs());
 		let event = Event::PaymentPathFailed {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
@@ -739,7 +766,7 @@ mod tests {
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
-			retry: Some(TestRouter::retry_for_invoice(&invoice)),
+			retry: Some(retry_data),
 		};
 		invoice_payer.handle_event(&event);
 		assert_eq!(*event_handled.borrow(), true);
