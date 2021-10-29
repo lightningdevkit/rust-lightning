@@ -27,6 +27,7 @@ use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
+use core::time::Duration;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -909,5 +910,21 @@ impl Readable for String {
 		let v: Vec<u8> = Readable::read(r)?;
 		let ret = String::from_utf8(v).map_err(|_| DecodeError::InvalidValue)?;
 		Ok(ret)
+	}
+}
+
+impl Writeable for Duration {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.as_secs().write(w)?;
+		self.subsec_nanos().write(w)
+	}
+}
+impl Readable for Duration {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let secs = Readable::read(r)?;
+		let nanos = Readable::read(r)?;
+		Ok(Duration::new(secs, nanos))
 	}
 }

@@ -44,15 +44,25 @@
 //! # }
 //! ```
 //!
+//! # Note
+//!
+//! If persisting [`Scorer`], it must be restored using the same [`Time`] parameterization. Using a
+//! different type results in undefined behavior. Specifically, persisting when built with feature
+//! `no-std` and restoring without it, or vice versa, uses different types and thus is undefined.
+//!
 //! [`find_route`]: crate::routing::router::find_route
 
 use routing;
 
+use ln::msgs::DecodeError;
 use routing::network_graph::NodeId;
 use routing::router::RouteHop;
+use util::ser::{Readable, Writeable, Writer};
 
 use prelude::*;
+use core::ops::Sub;
 use core::time::Duration;
+use io::{self, Read};
 
 /// [`routing::Score`] implementation that provides reasonable default behavior.
 ///
@@ -75,6 +85,10 @@ pub type DefaultTime = Eternity;
 /// [`routing::Score`] implementation parameterized by [`Time`].
 ///
 /// See [`Scorer`] for details.
+///
+/// # Note
+///
+/// Mixing [`Time`] types between serialization and deserialization results in undefined behavior.
 pub struct ScorerUsingTime<T: Time> {
 	params: ScoringParameters,
 	// TODO: Remove entries of closed channels.
@@ -106,6 +120,12 @@ pub struct ScoringParameters {
 	pub failure_penalty_half_life: Duration,
 }
 
+impl_writeable_tlv_based!(ScoringParameters, {
+	(0, base_penalty_msat, required),
+	(2, failure_penalty_msat, required),
+	(4, failure_penalty_half_life, required),
+});
+
 /// Accounting for penalties against a channel for failing to relay any payments.
 ///
 /// Penalties decay over time, though accumulate as more failures occur.
@@ -118,12 +138,17 @@ struct ChannelFailure<T: Time> {
 }
 
 /// A measurement of time.
-pub trait Time {
+pub trait Time: Sub<Duration, Output = Self> where Self: Sized {
 	/// Returns an instance corresponding to the current moment.
 	fn now() -> Self;
 
 	/// Returns the amount of time elapsed since `self` was created.
 	fn elapsed(&self) -> Duration;
+
+	/// Returns the amount of time passed since the beginning of [`Time`].
+	///
+	/// Used during (de-)serialization.
+	fn duration_since_epoch() -> Duration;
 }
 
 impl<T: Time> ScorerUsingTime<T> {
@@ -211,6 +236,11 @@ impl Time for std::time::Instant {
 		std::time::Instant::now()
 	}
 
+	fn duration_since_epoch() -> Duration {
+		use std::time::SystemTime;
+		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
+	}
+
 	fn elapsed(&self) -> Duration {
 		std::time::Instant::elapsed(self)
 	}
@@ -224,7 +254,55 @@ impl Time for Eternity {
 		Self
 	}
 
+	fn duration_since_epoch() -> Duration {
+		Duration::from_secs(0)
+	}
+
 	fn elapsed(&self) -> Duration {
 		Duration::from_secs(0)
+	}
+}
+
+impl Sub<Duration> for Eternity {
+	type Output = Self;
+
+	fn sub(self, _other: Duration) -> Self {
+		self
+	}
+}
+
+impl<T: Time> Writeable for ScorerUsingTime<T> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.params.write(w)?;
+		self.channel_failures.write(w)
+	}
+}
+
+impl<T: Time> Readable for ScorerUsingTime<T> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self {
+			params: Readable::read(r)?,
+			channel_failures: Readable::read(r)?,
+		})
+	}
+}
+
+impl<T: Time> Writeable for ChannelFailure<T> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.undecayed_penalty_msat.write(w)?;
+		(T::duration_since_epoch() - self.last_failed.elapsed()).write(w)
+	}
+}
+
+impl<T: Time> Readable for ChannelFailure<T> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self {
+			undecayed_penalty_msat: Readable::read(r)?,
+			last_failed: T::now() - (T::duration_since_epoch() - Readable::read(r)?),
+		})
 	}
 }
