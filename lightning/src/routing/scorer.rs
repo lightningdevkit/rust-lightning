@@ -52,7 +52,6 @@ use routing::network_graph::NodeId;
 use routing::router::RouteHop;
 
 use prelude::*;
-#[cfg(not(feature = "no-std"))]
 use core::time::Duration;
 #[cfg(not(feature = "no-std"))]
 use std::time::Instant;
@@ -67,10 +66,8 @@ use std::time::Instant;
 /// [module-level documentation]: crate::routing::scorer
 pub struct Scorer {
 	params: ScoringParameters,
-	#[cfg(not(feature = "no-std"))]
-	channel_failures: HashMap<u64, (u64, Instant)>,
-	#[cfg(feature = "no-std")]
-	channel_failures: HashMap<u64, u64>,
+	// TODO: Remove entries of closed channels.
+	channel_failures: HashMap<u64, ChannelFailure>,
 }
 
 /// Parameters for configuring [`Scorer`].
@@ -78,16 +75,31 @@ pub struct ScoringParameters {
 	/// A fixed penalty in msats to apply to each channel.
 	pub base_penalty_msat: u64,
 
-	/// A penalty in msats to apply to a channel upon failure.
+	/// A penalty in msats to apply to a channel upon failing to relay a payment.
 	///
-	/// This may be reduced over time based on [`failure_penalty_half_life`].
+	/// This accumulates for each failure but may be reduced over time based on
+	/// [`failure_penalty_half_life`].
 	///
 	/// [`failure_penalty_half_life`]: Self::failure_penalty_half_life
 	pub failure_penalty_msat: u64,
 
-	/// The time needed before any accumulated channel failure penalties are cut in half.
-	#[cfg(not(feature = "no-std"))]
+	/// The time required to elapse before any accumulated [`failure_penalty_msat`] penalties are
+	/// cut in half.
+	///
+	/// [`failure_penalty_msat`]: Self::failure_penalty_msat
 	pub failure_penalty_half_life: Duration,
+}
+
+/// Accounting for penalties against a channel for failing to relay any payments.
+///
+/// Penalties decay over time, though accumulate as more failures occur.
+struct ChannelFailure {
+	/// Accumulated penalty in msats for the channel as of `last_failed`.
+	undecayed_penalty_msat: u64,
+
+	/// Last time the channel failed. Used to decay `undecayed_penalty_msat`.
+	#[cfg(not(feature = "no-std"))]
+	last_failed: Instant,
 }
 
 impl Scorer {
@@ -105,14 +117,41 @@ impl Scorer {
 		Self::new(ScoringParameters {
 			base_penalty_msat: penalty_msat,
 			failure_penalty_msat: 0,
-			#[cfg(not(feature = "no-std"))]
 			failure_penalty_half_life: Duration::from_secs(0),
 		})
 	}
+}
 
-	#[cfg(not(feature = "no-std"))]
-	fn decay_from(&self, penalty_msat: u64, last_failure: &Instant) -> u64 {
-		decay_from(penalty_msat, last_failure, self.params.failure_penalty_half_life)
+impl ChannelFailure {
+	fn new(failure_penalty_msat: u64) -> Self {
+		Self {
+			undecayed_penalty_msat: failure_penalty_msat,
+			#[cfg(not(feature = "no-std"))]
+			last_failed: Instant::now(),
+		}
+	}
+
+	fn add_penalty(&mut self, failure_penalty_msat: u64, half_life: Duration) {
+		self.undecayed_penalty_msat = self.decayed_penalty_msat(half_life) + failure_penalty_msat;
+		#[cfg(not(feature = "no-std"))]
+		{
+			self.last_failed = Instant::now();
+		}
+	}
+
+	fn decayed_penalty_msat(&self, half_life: Duration) -> u64 {
+		let decays = self.elapsed().as_secs().checked_div(half_life.as_secs());
+		match decays {
+			Some(decays) => self.undecayed_penalty_msat >> decays,
+			None => 0,
+		}
+	}
+
+	fn elapsed(&self) -> Duration {
+		#[cfg(not(feature = "no-std"))]
+		return self.last_failed.elapsed();
+		#[cfg(feature = "no-std")]
+		return Duration::from_secs(0);
 	}
 }
 
@@ -127,7 +166,6 @@ impl Default for ScoringParameters {
 		Self {
 			base_penalty_msat: 500,
 			failure_penalty_msat: 1024 * 1000,
-			#[cfg(not(feature = "no-std"))]
 			failure_penalty_half_life: Duration::from_secs(3600),
 		}
 	}
@@ -137,45 +175,19 @@ impl routing::Score for Scorer {
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId
 	) -> u64 {
-		#[cfg(not(feature = "no-std"))]
-		let failure_penalty_msat = match self.channel_failures.get(&short_channel_id) {
-			Some((penalty_msat, last_failure)) => self.decay_from(*penalty_msat, last_failure),
-			None => 0,
-		};
-		#[cfg(feature = "no-std")]
-		let failure_penalty_msat =
-			self.channel_failures.get(&short_channel_id).copied().unwrap_or(0);
+		let failure_penalty_msat = self.channel_failures
+			.get(&short_channel_id)
+			.map_or(0, |value| value.decayed_penalty_msat(self.params.failure_penalty_half_life));
 
 		self.params.base_penalty_msat + failure_penalty_msat
 	}
 
 	fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, short_channel_id: u64) {
 		let failure_penalty_msat = self.params.failure_penalty_msat;
-		#[cfg(not(feature = "no-std"))]
-		{
-			let half_life = self.params.failure_penalty_half_life;
-			self.channel_failures
-				.entry(short_channel_id)
-				.and_modify(|(penalty_msat, last_failure)| {
-					let decayed_penalty = decay_from(*penalty_msat, last_failure, half_life);
-					*penalty_msat = decayed_penalty + failure_penalty_msat;
-					*last_failure = Instant::now();
-				})
-				.or_insert_with(|| (failure_penalty_msat, Instant::now()));
-		}
-		#[cfg(feature = "no-std")]
+		let half_life = self.params.failure_penalty_half_life;
 		self.channel_failures
 			.entry(short_channel_id)
-			.and_modify(|penalty_msat| *penalty_msat += failure_penalty_msat)
-			.or_insert(failure_penalty_msat);
-	}
-}
-
-#[cfg(not(feature = "no-std"))]
-fn decay_from(penalty_msat: u64, last_failure: &Instant, half_life: Duration) -> u64 {
-	let decays = last_failure.elapsed().as_secs().checked_div(half_life.as_secs());
-	match decays {
-		Some(decays) => penalty_msat >> decays,
-		None => 0,
+			.and_modify(|failure| failure.add_penalty(failure_penalty_msat, half_life))
+			.or_insert_with(|| ChannelFailure::new(failure_penalty_msat));
 	}
 }
