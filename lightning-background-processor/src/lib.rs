@@ -312,7 +312,6 @@ mod tests {
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
-	use lightning::routing::scorer::Scorer;
 	use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
@@ -635,7 +634,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = move |node: &ChannelManager<InMemorySigner, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
 		let router = DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger));
-		let scorer = Arc::new(Mutex::new(Scorer::default()));
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::default()));
 		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, scorer, Arc::clone(&nodes[0].logger), |_: &_| {}, RetryAttempts(2)));
 		let event_handler = Arc::clone(&invoice_payer);
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());

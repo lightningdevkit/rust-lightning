@@ -15,7 +15,6 @@ use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::PaymentSendFailure;
 use routing::router::{Payee, get_route};
 use routing::network_graph::NetworkUpdate;
-use routing::scorer::Scorer;
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction};
@@ -82,7 +81,7 @@ fn updates_shutdown_wait() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
-	let scorer = Scorer::with_fixed_penalty(0);
+	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 

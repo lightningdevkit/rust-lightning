@@ -6087,9 +6087,9 @@ mod tests {
 	use ln::msgs;
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{Payee, RouteParameters, find_route};
-	use routing::scorer::Scorer;
 	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::test_utils;
 
 	#[cfg(feature = "std")]
 	#[test]
@@ -6325,7 +6325,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// To start (1), send a regular payment but don't claim it.
 		let expected_route = [&nodes[1]];
@@ -6430,7 +6430,7 @@ mod tests {
 		};
 		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = find_route(
 			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			nodes[0].logger, &scorer
@@ -6473,7 +6473,7 @@ mod tests {
 		};
 		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = find_route(
 			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			nodes[0].logger, &scorer

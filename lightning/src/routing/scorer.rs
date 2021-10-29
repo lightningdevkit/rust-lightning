@@ -53,8 +53,6 @@ use routing::router::RouteHop;
 
 use prelude::*;
 use core::time::Duration;
-#[cfg(not(feature = "no-std"))]
-use std::time::Instant;
 
 /// [`routing::Score`] implementation that provides reasonable default behavior.
 ///
@@ -64,10 +62,23 @@ use std::time::Instant;
 /// See [module-level documentation] for usage.
 ///
 /// [module-level documentation]: crate::routing::scorer
-pub struct Scorer {
+pub type Scorer = ScorerUsingTime::<DefaultTime>;
+
+/// Time used by [`Scorer`].
+#[cfg(not(feature = "no-std"))]
+pub type DefaultTime = std::time::Instant;
+
+/// Time used by [`Scorer`].
+#[cfg(feature = "no-std")]
+pub type DefaultTime = Eternity;
+
+/// [`routing::Score`] implementation parameterized by [`Time`].
+///
+/// See [`Scorer`] for details.
+pub struct ScorerUsingTime<T: Time> {
 	params: ScoringParameters,
 	// TODO: Remove entries of closed channels.
-	channel_failures: HashMap<u64, ChannelFailure>,
+	channel_failures: HashMap<u64, ChannelFailure<T>>,
 }
 
 /// Parameters for configuring [`Scorer`].
@@ -86,6 +97,11 @@ pub struct ScoringParameters {
 	/// The time required to elapse before any accumulated [`failure_penalty_msat`] penalties are
 	/// cut in half.
 	///
+	/// # Note
+	///
+	/// When time is an [`Eternity`], as is default when enabling feature `no-std`, it will never
+	/// elapse. Therefore, this penalty will never decay.
+	///
 	/// [`failure_penalty_msat`]: Self::failure_penalty_msat
 	pub failure_penalty_half_life: Duration,
 }
@@ -93,16 +109,24 @@ pub struct ScoringParameters {
 /// Accounting for penalties against a channel for failing to relay any payments.
 ///
 /// Penalties decay over time, though accumulate as more failures occur.
-struct ChannelFailure {
+struct ChannelFailure<T: Time> {
 	/// Accumulated penalty in msats for the channel as of `last_failed`.
 	undecayed_penalty_msat: u64,
 
 	/// Last time the channel failed. Used to decay `undecayed_penalty_msat`.
-	#[cfg(not(feature = "no-std"))]
-	last_failed: Instant,
+	last_failed: T,
 }
 
-impl Scorer {
+/// A measurement of time.
+pub trait Time {
+	/// Returns an instance corresponding to the current moment.
+	fn now() -> Self;
+
+	/// Returns the amount of time elapsed since `self` was created.
+	fn elapsed(&self) -> Duration;
+}
+
+impl<T: Time> ScorerUsingTime<T> {
 	/// Creates a new scorer using the given scoring parameters.
 	pub fn new(params: ScoringParameters) -> Self {
 		Self {
@@ -122,42 +146,31 @@ impl Scorer {
 	}
 }
 
-impl ChannelFailure {
+impl<T: Time> ChannelFailure<T> {
 	fn new(failure_penalty_msat: u64) -> Self {
 		Self {
 			undecayed_penalty_msat: failure_penalty_msat,
-			#[cfg(not(feature = "no-std"))]
-			last_failed: Instant::now(),
+			last_failed: T::now(),
 		}
 	}
 
 	fn add_penalty(&mut self, failure_penalty_msat: u64, half_life: Duration) {
 		self.undecayed_penalty_msat = self.decayed_penalty_msat(half_life) + failure_penalty_msat;
-		#[cfg(not(feature = "no-std"))]
-		{
-			self.last_failed = Instant::now();
-		}
+		self.last_failed = T::now();
 	}
 
 	fn decayed_penalty_msat(&self, half_life: Duration) -> u64 {
-		let decays = self.elapsed().as_secs().checked_div(half_life.as_secs());
+		let decays = self.last_failed.elapsed().as_secs().checked_div(half_life.as_secs());
 		match decays {
 			Some(decays) => self.undecayed_penalty_msat >> decays,
 			None => 0,
 		}
 	}
-
-	fn elapsed(&self) -> Duration {
-		#[cfg(not(feature = "no-std"))]
-		return self.last_failed.elapsed();
-		#[cfg(feature = "no-std")]
-		return Duration::from_secs(0);
-	}
 }
 
-impl Default for Scorer {
+impl<T: Time> Default for ScorerUsingTime<T> {
 	fn default() -> Self {
-		Scorer::new(ScoringParameters::default())
+		Self::new(ScoringParameters::default())
 	}
 }
 
@@ -171,7 +184,7 @@ impl Default for ScoringParameters {
 	}
 }
 
-impl routing::Score for Scorer {
+impl<T: Time> routing::Score for ScorerUsingTime<T> {
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId
 	) -> u64 {
@@ -189,5 +202,29 @@ impl routing::Score for Scorer {
 			.entry(short_channel_id)
 			.and_modify(|failure| failure.add_penalty(failure_penalty_msat, half_life))
 			.or_insert_with(|| ChannelFailure::new(failure_penalty_msat));
+	}
+}
+
+#[cfg(not(feature = "no-std"))]
+impl Time for std::time::Instant {
+	fn now() -> Self {
+		std::time::Instant::now()
+	}
+
+	fn elapsed(&self) -> Duration {
+		std::time::Instant::elapsed(self)
+	}
+}
+
+/// A state in which time has no meaning.
+pub struct Eternity;
+
+impl Time for Eternity {
+	fn now() -> Self {
+		Self
+	}
+
+	fn elapsed(&self) -> Duration {
+		Duration::from_secs(0)
 	}
 }
