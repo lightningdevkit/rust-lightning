@@ -6299,7 +6299,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		let scorer = Scorer::new(0);
+		let scorer = Scorer::with_fixed_penalty(0);
 
 		// To start (1), send a regular payment but don't claim it.
 		let expected_route = [&nodes[1]];
@@ -6404,7 +6404,7 @@ mod tests {
 		};
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = Scorer::new(0);
+		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(
 			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			nodes[0].logger, &scorer
@@ -6447,7 +6447,7 @@ mod tests {
 		};
 		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = Scorer::new(0);
+		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(
 			&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
 			nodes[0].logger, &scorer
@@ -6622,7 +6622,7 @@ pub mod bench {
 				let usable_channels = $node_a.list_usable_channels();
 				let payee = Payee::new($node_b.get_our_node_id())
 					.with_features(InvoiceFeatures::known());
-				let scorer = Scorer::new(0);
+				let scorer = Scorer::with_fixed_penalty(0);
 				let route = get_route(&$node_a.get_our_node_id(), &payee, &dummy_graph,
 					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), 10_000, TEST_FINAL_CLTV, &logger_a, &scorer).unwrap();
 

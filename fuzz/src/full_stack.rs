@@ -382,7 +382,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
 	let network_graph = NetworkGraph::new(genesis_block(network).block_hash());
 	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger)));
-	let scorer = Scorer::new(0);
+	let scorer = Scorer::with_fixed_penalty(0);
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {

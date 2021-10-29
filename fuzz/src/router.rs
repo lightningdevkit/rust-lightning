@@ -248,7 +248,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						}]));
 					}
 				}
-				let scorer = Scorer::new(0);
+				let scorer = Scorer::with_fixed_penalty(0);
 				for target in node_pks.iter() {
 					let params = RouteParameters {
 						payee: Payee::new(*target).with_route_hints(last_hops.clone()),
