@@ -175,6 +175,10 @@ pub trait Router<S: routing::Score> {
 }
 
 /// Number of attempts to retry payment path failures for an [`Invoice`].
+///
+/// Note that this is the number of *path* failures, not full payment retries. For multi-path
+/// payments, if this is less than the total number of paths, we will never even retry all of the
+/// payment's paths.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RetryAttempts(pub usize);
 
@@ -216,6 +220,10 @@ where
 	}
 
 	/// Pays the given [`Invoice`], caching it for later use in case a retry is needed.
+	///
+	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
+	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
+	/// for you.
 	pub fn pay_invoice(&self, invoice: &Invoice) -> Result<PaymentId, PaymentError> {
 		if invoice.amount_milli_satoshis().is_none() {
 			Err(PaymentError::Invoice("amount missing"))
@@ -226,6 +234,10 @@ where
 
 	/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
 	/// case a retry is needed.
+	///
+	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
+	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
+	/// for you.
 	pub fn pay_zero_value_invoice(
 		&self, invoice: &Invoice, amount_msats: u64
 	) -> Result<PaymentId, PaymentError> {
