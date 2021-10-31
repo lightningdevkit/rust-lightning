@@ -16,7 +16,6 @@ pub mod scorer;
 use routing::network_graph::NodeId;
 use routing::router::RouteHop;
 
-use prelude::*;
 use core::cell::{RefCell, RefMut};
 use core::ops::DerefMut;
 use sync::{Mutex, MutexGuard};
