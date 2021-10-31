@@ -262,7 +262,7 @@ where
 			match payment_cache.entry(payment_hash) {
 				hash_map::Entry::Vacant(entry) => {
 					let payer = self.payer.node_id();
-					let mut payee = Payee::new(invoice.recover_payee_pub_key())
+					let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
 						.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
 						.with_route_hints(invoice.route_hints());
 					if let Some(features) = invoice.features() {
@@ -1034,7 +1034,7 @@ mod tests {
 		}
 
 		fn retry_for_invoice(invoice: &Invoice) -> RouteParameters {
-			let mut payee = Payee::new(invoice.recover_payee_pub_key())
+			let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
 				.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 				.with_route_hints(invoice.route_hints());
 			if let Some(features) = invoice.features() {
@@ -1266,7 +1266,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payee: Some(Payee::new(nodes[1].node.get_our_node_id())),
+			payee: Some(Payee::from_node_id(nodes[1].node.get_our_node_id())),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -1309,7 +1309,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payee: Some(Payee::new(nodes[1].node.get_our_node_id())),
+			payee: Some(Payee::from_node_id(nodes[1].node.get_our_node_id())),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));

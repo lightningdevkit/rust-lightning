@@ -251,7 +251,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let scorer = Scorer::with_fixed_penalty(0);
 				for target in node_pks.iter() {
 					let params = RouteParameters {
-						payee: Payee::new(*target).with_route_hints(last_hops.clone()),
+						payee: Payee::from_node_id(*target).with_route_hints(last_hops.clone()),
 						final_value_msat: slice_to_be64(get_slice!(8)),
 						final_cltv_expiry_delta: slice_to_be32(get_slice!(4)),
 					};

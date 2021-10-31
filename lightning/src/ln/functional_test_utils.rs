@@ -1012,7 +1012,7 @@ macro_rules! get_route_and_payment_hash {
 	}};
 	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node, Some($recv_value));
-		let payee = $crate::routing::router::Payee::new($recv_node.node.get_our_node_id())
+		let payee = $crate::routing::router::Payee::from_node_id($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
 		let scorer = ::util::test_utils::TestScorer::with_fixed_penalty(0);
@@ -1350,7 +1350,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
-	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
+	let payee = Payee::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = get_route(
@@ -1368,7 +1368,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
+	let payee = Payee::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = get_route(&origin_node.node.get_our_node_id(), &payee, origin_node.network_graph, None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
