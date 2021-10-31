@@ -16,8 +16,6 @@ pub mod scorer;
 use routing::network_graph::NodeId;
 use routing::router::RouteHop;
 
-use core::cell::{RefCell, RefMut};
-use core::ops::DerefMut;
 use sync::{Mutex, MutexGuard};
 
 /// An interface used to score payment channels for path finding.
@@ -40,36 +38,18 @@ pub trait Score {
 /// result in [`Score::channel_penalty_msat`] returning a different value for the same channel.
 ///
 /// [`find_route`]: crate::routing::router::find_route
-pub trait LockableScore<'a> {
-	/// The locked [`Score`] type.
-	type Locked: 'a + Score;
+pub struct LockableScore<S: Score> {
+	scorer: Mutex<S>,
+}
 
+impl<S: Score> LockableScore<S> {
+	/// Constructs a new LockableScore from a Score
+	pub fn new(score: S) -> Self {
+		Self { scorer: Mutex::new(score) }
+	}
 	/// Returns the locked scorer.
-	fn lock(&'a self) -> Self::Locked;
-}
-
-impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
-	type Locked = MutexGuard<'a, T>;
-
-	fn lock(&'a self) -> MutexGuard<'a, T> {
-		Mutex::lock(self).unwrap()
-	}
-}
-
-impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
-	type Locked = RefMut<'a, T>;
-
-	fn lock(&'a self) -> RefMut<'a, T> {
-		self.borrow_mut()
-	}
-}
-
-impl<S: Score, T: DerefMut<Target=S>> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, source, target)
-	}
-
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
-		self.deref_mut().payment_path_failed(path, short_channel_id)
+	/// (C-not exported)
+	pub fn lock<'a>(&'a self) -> MutexGuard<'a, S> {
+		self.scorer.lock().unwrap()
 	}
 }

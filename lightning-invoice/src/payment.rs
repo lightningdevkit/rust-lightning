@@ -30,7 +30,7 @@
 //! # use lightning::ln::{PaymentHash, PaymentSecret};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
-//! # use lightning::routing;
+//! # use lightning::routing::{self, LockableScore};
 //! # use lightning::routing::network_graph::NodeId;
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
@@ -89,7 +89,7 @@
 //! };
 //! # let payer = FakePayer {};
 //! # let router = FakeRouter {};
-//! # let scorer = RefCell::new(FakeScorer {});
+//! # let scorer = LockableScore::new(FakeScorer {});
 //! # let logger = FakeLogger {};
 //! let invoice_payer = InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
 //!
@@ -118,7 +118,7 @@ use lightning::ln::{PaymentHash, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing;
-use lightning::routing::{LockableScore, Score};
+use lightning::routing::LockableScore;
 use lightning::routing::router::{Payee, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
@@ -131,17 +131,14 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 /// A utility for paying [`Invoice]`s.
-pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E>
+pub struct InvoicePayer<P: Deref, R: Router<S>, S: routing::Score, Sc: Deref<Target=LockableScore<S>>, L: Deref, E: EventHandler>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	payer: P,
 	router: R,
-	scorer: S,
+	scorer: Sc,
 	logger: L,
 	event_handler: E,
 	payment_cache: Mutex<HashMap<PaymentHash, usize>>,
@@ -193,20 +190,17 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E> InvoicePayer<P, R, S, L, E>
+impl<P: Deref, R: Router<S>, S: routing::Score, Sc: Deref<Target=LockableScore<S>>, L: Deref, E: EventHandler> InvoicePayer<P, R, S, Sc, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	/// Creates an invoice payer that retries failed payment paths.
 	///
 	/// Will forward any [`Event::PaymentPathFailed`] events to the decorated `event_handler` once
 	/// `retry_attempts` has been exceeded for a given [`Invoice`].
 	pub fn new(
-		payer: P, router: R, scorer: S, logger: L, event_handler: E, retry_attempts: RetryAttempts
+		payer: P, router: R, scorer: Sc, logger: L, event_handler: E, retry_attempts: RetryAttempts
 	) -> Self {
 		Self {
 			payer,
@@ -401,13 +395,10 @@ fn has_expired(params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E> EventHandler for InvoicePayer<P, R, S, L, E>
+impl<P: Deref, R: Router<S>, S: routing::Score, Sc: Deref<Target=LockableScore<S>>, L: Deref, E: EventHandler> EventHandler for InvoicePayer<P, R, S, Sc, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	fn handle_event(&self, event: &Event) {
 		match event {
@@ -529,7 +520,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(0));
@@ -558,7 +549,7 @@ mod tests {
 			.expect_value_msat(final_value_msat)
 			.expect_value_msat(final_value_msat / 2);
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -599,7 +590,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -644,7 +635,7 @@ mod tests {
 			.expect_value_msat(final_value_msat / 2)
 			.expect_value_msat(final_value_msat / 2);
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -694,7 +685,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -726,7 +717,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -745,7 +736,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -787,7 +778,7 @@ mod tests {
 			.fails_on_attempt(2)
 			.expect_value_msat(final_value_msat);
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -817,7 +808,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -849,7 +840,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(0));
@@ -890,7 +881,7 @@ mod tests {
 	fn fails_paying_invoice_with_routing_errors() {
 		let payer = TestPayer::new();
 		let router = FailingRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, |_: &_| {}, RetryAttempts(0));
@@ -908,7 +899,7 @@ mod tests {
 	fn fails_paying_invoice_with_sending_errors() {
 		let payer = TestPayer::new().fails_on_attempt(1);
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, |_: &_| {}, RetryAttempts(0));
@@ -934,7 +925,7 @@ mod tests {
 
 		let payer = TestPayer::new().expect_value_msat(final_value_msat);
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(0));
@@ -957,7 +948,7 @@ mod tests {
 
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(0));
@@ -988,7 +979,7 @@ mod tests {
 		// Expect that scorer is given short_channel_id upon handling the event.
 		let payer = TestPayer::new();
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new().expect_channel_failure(short_channel_id.unwrap()));
+		let scorer = LockableScore::new(TestScorer::new().expect_channel_failure(short_channel_id.unwrap()));
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -1277,7 +1268,7 @@ mod tests {
 		router.expect_find_route(Ok(route.clone()));
 
 		let event_handler = |_: &_| { panic!(); };
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
@@ -1322,7 +1313,7 @@ mod tests {
 		router.expect_find_route(Ok(route.clone()));
 
 		let event_handler = |_: &_| { panic!(); };
-		let scorer = RefCell::new(TestScorer::new());
+		let scorer = LockableScore::new(TestScorer::new());
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
