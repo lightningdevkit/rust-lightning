@@ -482,9 +482,9 @@ macro_rules! unwrap_send_err {
 					_ => panic!(),
 				}
 			},
-			&Err(PaymentSendFailure::PartialFailure(ref fails)) if !$all_failed => {
-				assert_eq!(fails.len(), 1);
-				match fails[0] {
+			&Err(PaymentSendFailure::PartialFailure { ref results, .. }) if !$all_failed => {
+				assert_eq!(results.len(), 1);
+				match results[0] {
 					Err($type) => { $check },
 					_ => panic!(),
 				}

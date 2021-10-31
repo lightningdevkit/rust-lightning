@@ -175,6 +175,10 @@ pub trait Router<S: routing::Score> {
 }
 
 /// Number of attempts to retry payment path failures for an [`Invoice`].
+///
+/// Note that this is the number of *path* failures, not full payment retries. For multi-path
+/// payments, if this is less than the total number of paths, we will never even retry all of the
+/// payment's paths.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RetryAttempts(pub usize);
 
@@ -216,75 +220,166 @@ where
 	}
 
 	/// Pays the given [`Invoice`], caching it for later use in case a retry is needed.
+	///
+	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
+	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
+	/// for you.
 	pub fn pay_invoice(&self, invoice: &Invoice) -> Result<PaymentId, PaymentError> {
 		if invoice.amount_milli_satoshis().is_none() {
 			Err(PaymentError::Invoice("amount missing"))
 		} else {
-			self.pay_invoice_internal(invoice, None)
+			self.pay_invoice_internal(invoice, None, 0)
 		}
 	}
 
 	/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
 	/// case a retry is needed.
+	///
+	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
+	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
+	/// for you.
 	pub fn pay_zero_value_invoice(
 		&self, invoice: &Invoice, amount_msats: u64
 	) -> Result<PaymentId, PaymentError> {
 		if invoice.amount_milli_satoshis().is_some() {
 			Err(PaymentError::Invoice("amount unexpected"))
 		} else {
-			self.pay_invoice_internal(invoice, Some(amount_msats))
+			self.pay_invoice_internal(invoice, Some(amount_msats), 0)
 		}
 	}
 
 	fn pay_invoice_internal(
-		&self, invoice: &Invoice, amount_msats: Option<u64>
+		&self, invoice: &Invoice, amount_msats: Option<u64>, retry_count: usize
 	) -> Result<PaymentId, PaymentError> {
 		debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
-		let mut payment_cache = self.payment_cache.lock().unwrap();
-		match payment_cache.entry(payment_hash) {
-			hash_map::Entry::Vacant(entry) => {
-				let payer = self.payer.node_id();
-				let mut payee = Payee::new(invoice.recover_payee_pub_key())
-					.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
-					.with_route_hints(invoice.route_hints());
-				if let Some(features) = invoice.features() {
-					payee = payee.with_features(features.clone());
-				}
-				let params = RouteParameters {
-					payee,
-					final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
-					final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
-				};
-				let first_hops = self.payer.first_hops();
-				let route = self.router.find_route(
-					&payer,
-					&params,
-					Some(&first_hops.iter().collect::<Vec<_>>()),
-					&self.scorer.lock(),
-				).map_err(|e| PaymentError::Routing(e))?;
+		if invoice.is_expired() {
+			log_trace!(self.logger, "Invoice expired prior to first send for payment {}", log_bytes!(payment_hash.0));
+			return Err(PaymentError::Invoice("Invoice expired prior to send"));
+		}
+		let retry_data_payment_id = loop {
+			let mut payment_cache = self.payment_cache.lock().unwrap();
+			match payment_cache.entry(payment_hash) {
+				hash_map::Entry::Vacant(entry) => {
+					let payer = self.payer.node_id();
+					let mut payee = Payee::new(invoice.recover_payee_pub_key())
+						.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
+						.with_route_hints(invoice.route_hints());
+					if let Some(features) = invoice.features() {
+						payee = payee.with_features(features.clone());
+					}
+					let params = RouteParameters {
+						payee,
+						final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
+						final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+					};
+					let first_hops = self.payer.first_hops();
+					let route = self.router.find_route(
+						&payer,
+						&params,
+						Some(&first_hops.iter().collect::<Vec<_>>()),
+						&self.scorer.lock(),
+					).map_err(|e| PaymentError::Routing(e))?;
 
-				let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
-				let payment_secret = Some(invoice.payment_secret().clone());
-				let payment_id = self.payer.send_payment(&route, payment_hash, &payment_secret)
-					.map_err(|e| PaymentError::Sending(e))?;
-				entry.insert(0);
-				Ok(payment_id)
-			},
-			hash_map::Entry::Occupied(_) => Err(PaymentError::Invoice("payment pending")),
+					let payment_secret = Some(invoice.payment_secret().clone());
+					let payment_id = match self.payer.send_payment(&route, payment_hash, &payment_secret) {
+						Ok(payment_id) => payment_id,
+						Err(PaymentSendFailure::ParameterError(e)) =>
+							return Err(PaymentError::Sending(PaymentSendFailure::ParameterError(e))),
+						Err(PaymentSendFailure::PathParameterError(e)) =>
+							return Err(PaymentError::Sending(PaymentSendFailure::PathParameterError(e))),
+						Err(PaymentSendFailure::AllFailedRetrySafe(e)) => {
+							if retry_count >= self.retry_attempts.0 {
+								return Err(PaymentError::Sending(PaymentSendFailure::AllFailedRetrySafe(e)))
+							}
+							break None;
+						},
+						Err(PaymentSendFailure::PartialFailure { results: _, failed_paths_retry, payment_id }) => {
+							if let Some(retry_data) = failed_paths_retry {
+								entry.insert(retry_count);
+								break Some((retry_data, payment_id));
+							} else {
+								// This may happen if we send a payment and some paths fail, but
+								// only due to a temporary monitor failure or the like, implying
+								// they're really in-flight, but we haven't sent the initial
+								// HTLC-Add messages yet.
+								payment_id
+							}
+						},
+					};
+					entry.insert(retry_count);
+					return Ok(payment_id);
+				},
+				hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
+			}
+		};
+		if let Some((retry_data, payment_id)) = retry_data_payment_id {
+			// Some paths were sent, even if we failed to send the full MPP value our recipient may
+			// misbehave and claim the funds, at which point we have to consider the payment sent,
+			// so return `Ok()` here, ignoring any retry errors.
+			let _ = self.retry_payment(payment_id, payment_hash, &retry_data);
+			Ok(payment_id)
+		} else {
+			self.pay_invoice_internal(invoice, amount_msats, retry_count + 1)
 		}
 	}
 
-	fn retry_payment(
-		&self, payment_id: PaymentId, params: &RouteParameters
-	) -> Result<(), PaymentError> {
-		let payer = self.payer.node_id();
-		let first_hops = self.payer.first_hops();
-		let route = self.router.find_route(
-			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()),
-			&self.scorer.lock()
-		).map_err(|e| PaymentError::Routing(e))?;
-		self.payer.retry_payment(&route, payment_id).map_err(|e| PaymentError::Sending(e))
+	fn retry_payment(&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters)
+	-> Result<(), ()> {
+		let route;
+		{
+			let mut payment_cache = self.payment_cache.lock().unwrap();
+			let entry = loop {
+				let entry = payment_cache.entry(payment_hash);
+				match entry {
+					hash_map::Entry::Occupied(_) => break entry,
+					hash_map::Entry::Vacant(entry) => entry.insert(0),
+				};
+			};
+			if let hash_map::Entry::Occupied(mut entry) = entry {
+				let max_payment_attempts = self.retry_attempts.0 + 1;
+				let attempts = entry.get_mut();
+				*attempts += 1;
+
+				if *attempts >= max_payment_attempts {
+					log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+					return Err(());
+				} else if has_expired(params) {
+					log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+					return Err(());
+				}
+
+				let payer = self.payer.node_id();
+				let first_hops = self.payer.first_hops();
+				route = self.router.find_route(&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), &self.scorer.lock());
+				if route.is_err() {
+					log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+					return Err(());
+				}
+			} else {
+				unreachable!();
+			}
+		}
+
+		let retry_res = self.payer.retry_payment(&route.unwrap(), payment_id);
+		match retry_res {
+			Ok(()) => Ok(()),
+			Err(PaymentSendFailure::ParameterError(_)) |
+			Err(PaymentSendFailure::PathParameterError(_)) => {
+				log_trace!(self.logger, "Failed to retry for payment {} due to bogus route/payment data, not retrying.", log_bytes!(payment_hash.0));
+				return Err(());
+			},
+			Err(PaymentSendFailure::AllFailedRetrySafe(_)) => {
+				self.retry_payment(payment_id, payment_hash, params)
+			},
+			Err(PaymentSendFailure::PartialFailure { results: _, failed_paths_retry, .. }) => {
+				if let Some(retry) = failed_paths_retry {
+					self.retry_payment(payment_id, payment_hash, &retry)
+				} else {
+					Ok(())
+				}
+			},
+		}
 	}
 
 	/// Removes the payment cached by the given payment hash.
@@ -301,8 +396,9 @@ fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
 }
 
 fn has_expired(params: &RouteParameters) -> bool {
-	let expiry_time = Duration::from_secs(params.payee.expiry_time.unwrap());
-	Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, expiry_time)
+	if let Some(expiry_time) = params.payee.expiry_time {
+		Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, Duration::from_secs(expiry_time))
+	} else { false }
 }
 
 impl<P: Deref, R, S: Deref, L: Deref, E> EventHandler for InvoicePayer<P, R, S, L, E>
@@ -316,48 +412,25 @@ where
 	fn handle_event(&self, event: &Event) {
 		match event {
 			Event::PaymentPathFailed {
-				payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
+				all_paths_failed, payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
 					self.scorer.lock().payment_path_failed(path, *short_channel_id);
 				}
 
-				let mut payment_cache = self.payment_cache.lock().unwrap();
-				let entry = loop {
-					let entry = payment_cache.entry(*payment_hash);
-					match entry {
-						hash_map::Entry::Occupied(_) => break entry,
-						hash_map::Entry::Vacant(entry) => entry.insert(0),
-					};
-				};
-				if let hash_map::Entry::Occupied(mut entry) = entry {
-					let max_payment_attempts = self.retry_attempts.0 + 1;
-					let attempts = entry.get_mut();
-					*attempts += 1;
-
-					if *rejected_by_dest {
-						log_trace!(self.logger, "Payment {} rejected by destination; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else if payment_id.is_none() {
-						log_trace!(self.logger, "Payment {} has no id; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else if *attempts >= max_payment_attempts {
-						log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else if retry.is_none() {
-						log_trace!(self.logger, "Payment {} missing retry params; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else if has_expired(retry.as_ref().unwrap()) {
-						log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else if self.retry_payment(*payment_id.as_ref().unwrap(), retry.as_ref().unwrap()).is_err() {
-						log_trace!(self.logger, "Error retrying payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					} else {
-						log_trace!(self.logger, "Payment {} failed; retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+				if *rejected_by_dest {
+					log_trace!(self.logger, "Payment {} rejected by destination; not retrying", log_bytes!(payment_hash.0));
+				} else if payment_id.is_none() {
+					log_trace!(self.logger, "Payment {} has no id; not retrying", log_bytes!(payment_hash.0));
+				} else if let Some(params) = retry {
+					if self.retry_payment(payment_id.unwrap(), *payment_hash, params).is_ok() {
+						// We retried at least somewhat, don't provide the PaymentPathFailed event to the user.
 						return;
 					}
-
-					// Either the payment was rejected, the maximum attempts were exceeded, or an
-					// error occurred when attempting to retry.
-					entry.remove();
 				} else {
-					unreachable!();
+					log_trace!(self.logger, "Payment {} missing retry params; not retrying", log_bytes!(payment_hash.0));
 				}
+				if *all_paths_failed { self.payment_cache.lock().unwrap().remove(payment_hash); }
 			},
 			Event::PaymentSent { payment_hash, .. } => {
 				let mut payment_cache = self.payment_cache.lock().unwrap();
@@ -378,17 +451,20 @@ where
 mod tests {
 	use super::*;
 	use crate::{DEFAULT_EXPIRY_TIME, InvoiceBuilder, Currency};
+	use utils::create_invoice_from_channelmanager;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
-	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
+	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
+	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ErrorAction, LightningError};
 	use lightning::routing::network_graph::NodeId;
 	use lightning::routing::router::{Payee, Route, RouteHop};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
-	use lightning::util::events::Event;
+	use lightning::util::events::{Event, MessageSendEventsProvider};
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use std::cell::RefCell;
+	use std::collections::VecDeque;
 	use std::time::{SystemTime, Duration};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
@@ -656,9 +732,32 @@ mod tests {
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = expired_invoice(payment_preimage);
+		if let PaymentError::Invoice(msg) = invoice_payer.pay_invoice(&invoice).unwrap_err() {
+			assert_eq!(msg, "Invoice expired prior to send");
+		} else { panic!("Expected Invoice Error"); }
+	}
+
+	#[test]
+	fn fails_retrying_invoice_after_expiration() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payer = TestPayer::new();
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
+		let mut retry_data = TestRouter::retry_for_invoice(&invoice);
+		retry_data.payee.expiry_time = Some(SystemTime::now()
+			.checked_sub(Duration::from_secs(2)).unwrap()
+			.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs());
 		let event = Event::PaymentPathFailed {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
@@ -667,7 +766,7 @@ mod tests {
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
-			retry: Some(TestRouter::retry_for_invoice(&invoice)),
+			retry: Some(retry_data),
 		};
 		invoice_payer.handle_event(&event);
 		assert_eq!(*event_handled.borrow(), true);
@@ -979,13 +1078,13 @@ mod tests {
 	}
 
 	struct TestScorer {
-		expectations: std::collections::VecDeque<u64>,
+		expectations: VecDeque<u64>,
 	}
 
 	impl TestScorer {
 		fn new() -> Self {
 			Self {
-				expectations: std::collections::VecDeque::new(),
+				expectations: VecDeque::new(),
 			}
 		}
 
@@ -1020,7 +1119,7 @@ mod tests {
 	}
 
 	struct TestPayer {
-		expectations: core::cell::RefCell<std::collections::VecDeque<u64>>,
+		expectations: core::cell::RefCell<VecDeque<u64>>,
 		attempts: core::cell::RefCell<usize>,
 		failing_on_attempt: Option<usize>,
 	}
@@ -1028,7 +1127,7 @@ mod tests {
 	impl TestPayer {
 		fn new() -> Self {
 			Self {
-				expectations: core::cell::RefCell::new(std::collections::VecDeque::new()),
+				expectations: core::cell::RefCell::new(VecDeque::new()),
 				attempts: core::cell::RefCell::new(0),
 				failing_on_attempt: None,
 			}
@@ -1112,5 +1211,124 @@ mod tests {
 				Err(PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed))
 			}
 		}
+	}
+
+	// *** Full Featured Functional Tests with a Real ChannelManager ***
+	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
+
+	impl<S: routing::Score> Router<S> for ManualRouter {
+		fn find_route(&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>, _scorer: &S)
+		-> Result<Route, LightningError> {
+			self.0.borrow_mut().pop_front().unwrap()
+		}
+	}
+	impl ManualRouter {
+		fn expect_find_route(&self, result: Result<Route, LightningError>) {
+			self.0.borrow_mut().push_back(result);
+		}
+	}
+	impl Drop for ManualRouter {
+		fn drop(&mut self) {
+			if std::thread::panicking() {
+				return;
+			}
+			assert!(self.0.borrow_mut().is_empty());
+		}
+	}
+
+	#[test]
+	fn retry_multi_path_single_failed_payment() {
+		// Tests that we can/will retry after a single path of an MPP payment failed immediately
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chans = nodes[0].node.list_usable_channels();
+		let mut route = Route {
+			paths: vec![
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chans[0].short_channel_id.unwrap(),
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 10_000,
+					cltv_expiry_delta: 100,
+				}],
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chans[1].short_channel_id.unwrap(),
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
+					cltv_expiry_delta: 100,
+				}],
+			],
+			payee: Some(Payee::new(nodes[1].node.get_our_node_id())),
+		};
+		let router = ManualRouter(RefCell::new(VecDeque::new()));
+		router.expect_find_route(Ok(route.clone()));
+		// On retry, split the payment across both channels.
+		route.paths[0][0].fee_msat = 50_000_001;
+		route.paths[1][0].fee_msat = 50_000_000;
+		router.expect_find_route(Ok(route.clone()));
+
+		let event_handler = |_: &_| { panic!(); };
+		let scorer = RefCell::new(TestScorer::new());
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
+
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+			.is_ok());
+		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(htlc_msgs.len(), 2);
+		check_added_monitors!(nodes[0], 2);
+	}
+
+	#[test]
+	fn immediate_retry_on_failure() {
+		// Tests that we can/will retry immediately after a failure
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chans = nodes[0].node.list_usable_channels();
+		let mut route = Route {
+			paths: vec![
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chans[0].short_channel_id.unwrap(),
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
+					cltv_expiry_delta: 100,
+				}],
+			],
+			payee: Some(Payee::new(nodes[1].node.get_our_node_id())),
+		};
+		let router = ManualRouter(RefCell::new(VecDeque::new()));
+		router.expect_find_route(Ok(route.clone()));
+		// On retry, split the payment across both channels.
+		route.paths.push(route.paths[0].clone());
+		route.paths[0][0].short_channel_id = chans[1].short_channel_id.unwrap();
+		route.paths[0][0].fee_msat = 50_000_000;
+		route.paths[1][0].fee_msat = 50_000_001;
+		router.expect_find_route(Ok(route.clone()));
+
+		let event_handler = |_: &_| { panic!(); };
+		let scorer = RefCell::new(TestScorer::new());
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
+
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+			.is_ok());
+		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(htlc_msgs.len(), 2);
+		check_added_monitors!(nodes[0], 2);
 	}
 }
