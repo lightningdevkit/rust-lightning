@@ -220,7 +220,7 @@ impl<T: Time> routing::Score for ScorerUsingTime<T> {
 		self.params.base_penalty_msat + failure_penalty_msat
 	}
 
-	fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, short_channel_id: u64) {
+	fn payment_path_failed(&mut self, _path: &[&RouteHop], short_channel_id: u64) {
 		let failure_penalty_msat = self.params.failure_penalty_msat;
 		let half_life = self.params.failure_penalty_half_life;
 		self.channel_failures

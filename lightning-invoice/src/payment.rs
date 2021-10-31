@@ -71,7 +71,7 @@
 //! #     fn channel_penalty_msat(
 //! #         &self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
 //! #     ) -> u64 { 0 }
-//! #     fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
+//! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 //! # }
 //! #
 //! # struct FakeLogger {};
@@ -415,7 +415,8 @@ where
 				all_paths_failed, payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
-					self.scorer.lock().payment_path_failed(path, *short_channel_id);
+					let t = path.iter().collect::<Vec<_>>();
+					self.scorer.lock().payment_path_failed(&t, *short_channel_id);
 				}
 
 				if *rejected_by_dest {
@@ -1099,7 +1100,7 @@ mod tests {
 			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
 		) -> u64 { 0 }
 
-		fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, short_channel_id: u64) {
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], short_channel_id: u64) {
 			if let Some(expected_short_channel_id) = self.expectations.pop_front() {
 				assert_eq!(short_channel_id, expected_short_channel_id);
 			}

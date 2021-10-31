@@ -4552,7 +4552,7 @@ mod tests {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
-		fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 
 	struct BadNodeScorer {
@@ -4564,7 +4564,7 @@ mod tests {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
-		fn payment_path_failed(&mut self, _path: &Vec<RouteHop>, _short_channel_id: u64) {}
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 
 	#[test]
