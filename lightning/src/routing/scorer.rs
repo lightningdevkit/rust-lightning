@@ -60,7 +60,7 @@ use std::time::Instant;
 /// [`routing::Score`] implementation that provides reasonable default behavior.
 ///
 /// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
-/// slightly higher fees are available. May also further penalize failed channels.
+/// slightly higher fees are available. Will further penalize channels that fail to relay payments.
 ///
 /// See [module-level documentation] for usage.
 ///
