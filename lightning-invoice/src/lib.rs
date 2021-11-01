@@ -379,7 +379,8 @@ pub enum TaggedField {
 
 /// SHA-256 hash
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct Sha256(pub sha256::Hash);
+pub struct Sha256(/// (C-not exported) as the native hash types are not currently mapped
+	pub sha256::Hash);
 
 /// Description string
 ///

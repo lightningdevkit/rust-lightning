@@ -121,6 +121,7 @@ pub trait Logger {
 }
 
 /// Wrapper for logging byte slices in hex format.
+/// (C-not exported) as fmt can't be used in C
 #[doc(hidden)]
 pub struct DebugBytes<'a>(pub &'a [u8]);
 impl<'a> core::fmt::Display for DebugBytes<'a> {
