@@ -209,8 +209,7 @@ pub struct NetGraphMsgHandler<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
 {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
-	/// Representation of the payment channel network
-	pub network_graph: G,
+	network_graph: G,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,

@@ -181,7 +181,7 @@ mod test {
 			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
-		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
+		let network_graph = node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
 		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(

@@ -6312,8 +6312,8 @@ mod tests {
 			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params,
-			&nodes[0].net_graph_msg_handler.network_graph, None, nodes[0].logger, &scorer
+			&nodes[0].node.get_our_node_id(), &params, nodes[0].network_graph, None,
+			nodes[0].logger, &scorer
 		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -6343,8 +6343,8 @@ mod tests {
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params,
-			&nodes[0].net_graph_msg_handler.network_graph, None, nodes[0].logger, &scorer
+			&nodes[0].node.get_our_node_id(), &params, nodes[0].network_graph, None,
+			nodes[0].logger, &scorer
 		).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -6402,7 +6402,7 @@ mod tests {
 			final_value_msat: 10000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
+		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(
@@ -6445,7 +6445,7 @@ mod tests {
 			final_value_msat: 10000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = &nodes[0].net_graph_msg_handler.network_graph;
+		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = Scorer::with_fixed_penalty(0);
 		let route = find_route(
