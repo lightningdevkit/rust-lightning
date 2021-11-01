@@ -15,7 +15,7 @@ use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
-use lightning::routing::network_graph::NetGraphMsgHandler;
+use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use std::sync::Arc;
@@ -103,7 +103,8 @@ ChannelManagerPersister<Signer, M, T, K, F, L> for Fun where
 /// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
 struct DecoratingEventHandler<
 	E: EventHandler,
-	N: Deref<Target = NetGraphMsgHandler<A, L>>,
+	N: Deref<Target = NetGraphMsgHandler<G, A, L>>,
+	G: Deref<Target = NetworkGraph>,
 	A: Deref,
 	L: Deref,
 >
@@ -114,10 +115,11 @@ where A::Target: chain::Access, L::Target: Logger {
 
 impl<
 	E: EventHandler,
-	N: Deref<Target = NetGraphMsgHandler<A, L>>,
+	N: Deref<Target = NetGraphMsgHandler<G, A, L>>,
+	G: Deref<Target = NetworkGraph>,
 	A: Deref,
 	L: Deref,
-> EventHandler for DecoratingEventHandler<E, N, A, L>
+> EventHandler for DecoratingEventHandler<E, N, G, A, L>
 where A::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
 		if let Some(event_handler) = &self.net_graph_msg_handler {
@@ -168,6 +170,7 @@ impl BackgroundProcessor {
 		T: 'static + Deref + Send + Sync,
 		K: 'static + Deref + Send + Sync,
 		F: 'static + Deref + Send + Sync,
+		G: 'static + Deref<Target = NetworkGraph> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
@@ -177,7 +180,7 @@ impl BackgroundProcessor {
 		CMP: 'static + Send + ChannelManagerPersister<Signer, CW, T, K, F, L>,
 		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
-		NG: 'static + Deref<Target = NetGraphMsgHandler<CA, L>> + Send + Sync,
+		NG: 'static + Deref<Target = NetGraphMsgHandler<G, CA, L>> + Send + Sync,
 		UMH: 'static + Deref + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
 	>(
@@ -340,11 +343,12 @@ mod tests {
 
 	struct Node {
 		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
-		net_graph_msg_handler: Option<Arc<NetGraphMsgHandler<Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>>,
+		net_graph_msg_handler: Option<Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>>,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
 		chain_monitor: Arc<ChainMonitor>,
 		persister: Arc<FilesystemPersister>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
+		network_graph: Arc<NetworkGraph>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
 	}
@@ -382,11 +386,11 @@ mod tests {
 			let best_block = BestBlock::from_genesis(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
-			let network_graph = NetworkGraph::new(genesis_block.header.block_hash());
-			let net_graph_msg_handler = Some(Arc::new(NetGraphMsgHandler::new(network_graph, Some(chain_source.clone()), logger.clone())));
+			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash()));
+			let net_graph_msg_handler = Some(Arc::new(NetGraphMsgHandler::new(network_graph.clone(), Some(chain_source.clone()), logger.clone())));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new() )};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(), &seed, logger.clone(), IgnoringMessageHandler{}));
-			let node = Node { node: manager, net_graph_msg_handler, peer_manager, chain_monitor, persister, tx_broadcaster, logger, best_block };
+			let node = Node { node: manager, net_graph_msg_handler, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block };
 			nodes.push(node);
 		}
 
@@ -630,8 +634,7 @@ mod tests {
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = move |node: &ChannelManager<InMemorySigner, Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>>| FilesystemPersister::persist_manager(data_dir.clone(), node);
-		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
-		let router = DefaultRouter::new(network_graph, Arc::clone(&nodes[0].logger));
+		let router = DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger));
 		let scorer = Arc::new(Mutex::new(Scorer::default()));
 		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, scorer, Arc::clone(&nodes[0].logger), |_: &_| {}, RetryAttempts(2)));
 		let event_handler = Arc::clone(&invoice_payer);

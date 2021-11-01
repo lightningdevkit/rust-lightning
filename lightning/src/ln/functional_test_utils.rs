@@ -190,6 +190,7 @@ pub struct TestChanMonCfg {
 	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 	pub keys_manager: test_utils::TestKeysInterface,
+	pub network_graph: NetworkGraph,
 }
 
 pub struct NodeCfg<'a> {
@@ -199,6 +200,7 @@ pub struct NodeCfg<'a> {
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
+	pub network_graph: &'a NetworkGraph,
 	pub node_seed: [u8; 32],
 	pub features: InitFeatures,
 }
@@ -209,7 +211,8 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingSigner, &'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
-	pub net_graph_msg_handler: NetGraphMsgHandler<&'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+	pub network_graph: &'c NetworkGraph,
+	pub net_graph_msg_handler: NetGraphMsgHandler<&'c NetworkGraph, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -240,12 +243,11 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
-				let network_graph_ser = &self.net_graph_msg_handler.network_graph;
-				network_graph_ser.write(&mut w).unwrap();
+				self.network_graph.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
-				assert!(network_graph_deser == self.net_graph_msg_handler.network_graph);
+				assert!(network_graph_deser == *self.network_graph);
 				let net_graph_msg_handler = NetGraphMsgHandler::new(
-					network_graph_deser, Some(self.chain_source), self.logger
+					&network_graph_deser, Some(self.chain_source), self.logger
 				);
 				let mut chan_progress = 0;
 				loop {
@@ -1014,10 +1016,9 @@ macro_rules! get_route_and_payment_hash {
 		let payee = $crate::routing::router::Payee::new($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
-		let net_graph_msg_handler = &$send_node.net_graph_msg_handler;
 		let scorer = ::routing::scorer::Scorer::with_fixed_penalty(0);
 		let route = ::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph,
+			&$send_node.node.get_our_node_id(), &payee, $send_node.network_graph,
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 			$recv_value, $cltv, $send_node.logger, &scorer
 		).unwrap();
@@ -1352,10 +1353,9 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
-	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let scorer = Scorer::with_fixed_penalty(0);
 	let route = get_route(
-		&origin_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph,
+		&origin_node.node.get_our_node_id(), &payee, &origin_node.network_graph,
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 		recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
@@ -1371,9 +1371,8 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payee = Payee::new(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
-	let net_graph_msg_handler = &origin_node.net_graph_msg_handler;
 	let scorer = Scorer::with_fixed_penalty(0);
-	let route = get_route(&origin_node.node.get_our_node_id(), &payee, &net_graph_msg_handler.network_graph, None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
+	let route = get_route(&origin_node.node.get_our_node_id(), &payee, origin_node.network_graph, None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1499,8 +1498,9 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let network_graph = NetworkGraph::new(chain_source.genesis_hash);
 
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager });
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, network_graph });
 	}
 
 	chan_mon_cfgs
@@ -1521,6 +1521,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
 			features: InitFeatures::known(),
+			network_graph: &chanmon_cfgs[i].network_graph,
 		});
 	}
 
@@ -1566,15 +1567,15 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
 
 	for i in 0..node_count {
-		let network_graph = NetworkGraph::new(cfgs[i].chain_source.genesis_hash);
-		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, cfgs[i].logger);
-		nodes.push(Node{ chain_source: cfgs[i].chain_source,
-		                 tx_broadcaster: cfgs[i].tx_broadcaster, chain_monitor: &cfgs[i].chain_monitor,
-		                 keys_manager: &cfgs[i].keys_manager, node: &chan_mgrs[i], net_graph_msg_handler,
-		                 node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
-		                 network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
-		                 blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
-		                 connect_style: Rc::clone(&connect_style),
+		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].network_graph, None, cfgs[i].logger);
+		nodes.push(Node{
+			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
+			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
+			node: &chan_mgrs[i], network_graph: &cfgs[i].network_graph, net_graph_msg_handler,
+			node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
+			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
+			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
+			connect_style: Rc::clone(&connect_style),
 		})
 	}
 
