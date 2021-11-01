@@ -232,6 +232,8 @@ impl Payee {
 	}
 
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
+	///
+	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_expiry_time(self, expiry_time: u64) -> Self {
 		Self { expiry_time: Some(expiry_time), ..self }
 	}
