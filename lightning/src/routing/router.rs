@@ -4549,6 +4549,9 @@ mod tests {
 		short_channel_id: u64,
 	}
 
+	impl Writeable for BadChannelScorer {
+		fn write<W: ::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
+	}
 	impl routing::Score for BadChannelScorer {
 		fn channel_penalty_msat(&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
@@ -4561,6 +4564,9 @@ mod tests {
 		node_id: NodeId,
 	}
 
+	impl Writeable for BadNodeScorer {
+		fn write<W: ::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
+	}
 	impl routing::Score for BadNodeScorer {
 		fn channel_penalty_msat(&self, _short_channel_id: u64, _source: &NodeId, target: &NodeId) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }

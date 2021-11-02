@@ -18,10 +18,13 @@ use routing::router::RouteHop;
 
 use sync::{Mutex, MutexGuard};
 
+use util::ser::{Writeable, Writer};
+use io;
+
 /// An interface used to score payment channels for path finding.
 ///
 ///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
-pub trait Score {
+pub trait Score : Writeable {
 	/// Returns the fee in msats willing to be paid to avoid routing through the given channel
 	/// in the direction from `source` to `target`.
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64;
@@ -51,5 +54,12 @@ impl<S: Score> LockableScore<S> {
 	/// (C-not exported)
 	pub fn lock<'a>(&'a self) -> MutexGuard<'a, S> {
 		self.scorer.lock().unwrap()
+	}
+}
+
+impl<S: Score> Writeable for LockableScore<S> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.scorer.lock().unwrap().write(w)
 	}
 }

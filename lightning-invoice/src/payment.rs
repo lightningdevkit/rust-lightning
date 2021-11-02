@@ -67,6 +67,9 @@
 //! # }
 //! #
 //! # struct FakeScorer {};
+//! # impl lightning::util::ser::Writeable for FakeScorer {
+//! #     fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), std::io::Error> { unreachable!(); }
+//! # }
 //! # impl routing::Score for FakeScorer {
 //! #     fn channel_penalty_msat(
 //! #         &self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
@@ -1086,6 +1089,9 @@ mod tests {
 		}
 	}
 
+	impl lightning::util::ser::Writeable for TestScorer {
+		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), std::io::Error> { unreachable!(); }
+	}
 	impl routing::Score for TestScorer {
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
