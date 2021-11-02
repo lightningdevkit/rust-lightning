@@ -64,23 +64,27 @@ use core::ops::Sub;
 use core::time::Duration;
 use io::{self, Read};
 
-/// [`routing::Score`] implementation that provides reasonable default behavior.
-///
-/// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
-/// slightly higher fees are available. Will further penalize channels that fail to relay payments.
-///
-/// See [module-level documentation] for usage.
-///
-/// [module-level documentation]: crate::routing::scorer
-pub type Scorer = ScorerUsingTime::<DefaultTime>;
 
-/// Time used by [`Scorer`].
-#[cfg(not(feature = "no-std"))]
-pub type DefaultTime = std::time::Instant;
+pub(crate) mod sealed {
+	use core::ops::Sub;
+	use core::time::Duration;
+	/// A measurement of time.
+	///
+	/// Sealed due to C bindings limitations in understanding the `Sub` supertrait.
+	pub trait Time: Sub<Duration, Output = Self> where Self: Sized {
+		/// Returns an instance corresponding to the current moment.
+		fn now() -> Self;
 
-/// Time used by [`Scorer`].
-#[cfg(feature = "no-std")]
-pub type DefaultTime = Eternity;
+		/// Returns the amount of time elapsed since `self` was created.
+		fn elapsed(&self) -> Duration;
+
+		/// Returns the amount of time passed since the beginning of [`Time`].
+		///
+		/// Used during (de-)serialization.
+		fn duration_since_epoch() -> Duration;
+	}
+}
+pub(crate) use self::sealed::Time;
 
 /// [`routing::Score`] implementation parameterized by [`Time`].
 ///
@@ -89,11 +93,25 @@ pub type DefaultTime = Eternity;
 /// # Note
 ///
 /// Mixing [`Time`] types between serialization and deserialization results in undefined behavior.
+///
+/// (C-not exported) we export [`Scorer`] below instead.
 pub struct ScorerUsingTime<T: Time> {
 	params: ScoringParameters,
 	// TODO: Remove entries of closed channels.
 	channel_failures: HashMap<u64, ChannelFailure<T>>,
 }
+
+use std::time::Instant;
+
+/// [`routing::Score`] implementation that provides reasonable default behavior.
+///
+/// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
+/// slightly higher fees are available. Will further penalize channels that fail to relay payments.
+///
+/// See [module-level documentation] for usage.
+///
+/// [module-level documentation]: crate::routing::scorer
+pub type Scorer = ScorerUsingTime::<Instant>;
 
 /// Parameters for configuring [`Scorer`].
 pub struct ScoringParameters {
@@ -135,20 +153,6 @@ struct ChannelFailure<T: Time> {
 
 	/// Last time the channel failed. Used to decay `undecayed_penalty_msat`.
 	last_failed: T,
-}
-
-/// A measurement of time.
-pub trait Time: Sub<Duration, Output = Self> where Self: Sized {
-	/// Returns an instance corresponding to the current moment.
-	fn now() -> Self;
-
-	/// Returns the amount of time elapsed since `self` was created.
-	fn elapsed(&self) -> Duration;
-
-	/// Returns the amount of time passed since the beginning of [`Time`].
-	///
-	/// Used during (de-)serialization.
-	fn duration_since_epoch() -> Duration;
 }
 
 impl<T: Time> ScorerUsingTime<T> {
@@ -247,6 +251,8 @@ impl Time for std::time::Instant {
 }
 
 /// A state in which time has no meaning.
+///
+/// (C-not exported)
 pub struct Eternity;
 
 impl Time for Eternity {
