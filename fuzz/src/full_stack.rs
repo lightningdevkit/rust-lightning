@@ -438,7 +438,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
-				let payee = Payee::new(get_pubkey!());
+				let payee = Payee::from_node_id(get_pubkey!());
 				let params = RouteParameters {
 					payee,
 					final_value_msat,
@@ -461,7 +461,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
-				let payee = Payee::new(get_pubkey!());
+				let payee = Payee::from_node_id(get_pubkey!());
 				let params = RouteParameters {
 					payee,
 					final_value_msat,

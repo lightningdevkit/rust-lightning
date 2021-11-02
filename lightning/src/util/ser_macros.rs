@@ -310,7 +310,7 @@ macro_rules! write_ver_prefix {
 /// correctly.
 macro_rules! write_tlv_fields {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => {
-		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*});
+		encode_varint_length_prefixed_tlv!($stream, {$(($type, $field, $fieldty)),*})
 	}
 }
 

@@ -7161,7 +7161,7 @@ fn test_check_htlc_underpaying() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
-	let payee = Payee::new(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, nodes[0].network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, 0).unwrap();
@@ -7559,12 +7559,12 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
-	let payee = Payee::new(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].network_graph, None,
 		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let payee = Payee::new(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let payee = Payee::from_node_id(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let route = get_route(&nodes[1].node.get_our_node_id(), &payee, nodes[1].network_graph, None,
 		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);

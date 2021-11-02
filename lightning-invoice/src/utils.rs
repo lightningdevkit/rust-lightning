@@ -171,7 +171,7 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
-		let payee = Payee::new(invoice.recover_payee_pub_key())
+		let payee = Payee::from_node_id(invoice.recover_payee_pub_key())
 			.with_features(invoice.features().unwrap().clone())
 			.with_route_hints(invoice.route_hints());
 		let params = RouteParameters {

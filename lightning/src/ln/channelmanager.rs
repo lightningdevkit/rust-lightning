@@ -1141,7 +1141,7 @@ macro_rules! handle_monitor_err {
 		res
 	} };
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails, Vec::new());
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails, Vec::new())
 	}
 }
 
@@ -6646,7 +6646,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
-				let payee = Payee::new($node_b.get_our_node_id())
+				let payee = Payee::from_node_id($node_b.get_our_node_id())
 					.with_features(InvoiceFeatures::known());
 				let scorer = Scorer::with_fixed_penalty(0);
 				let route = get_route(&$node_a.get_our_node_id(), &payee, &dummy_graph,

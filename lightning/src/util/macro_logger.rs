@@ -213,6 +213,6 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_trace {
 	($logger: expr, $($arg:tt)*) => (
-		log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*);
+		log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*)
 	)
 }

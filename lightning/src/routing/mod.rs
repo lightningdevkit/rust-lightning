@@ -16,7 +16,6 @@ pub mod scorer;
 use routing::network_graph::NodeId;
 use routing::router::RouteHop;
 
-use prelude::*;
 use core::cell::{RefCell, RefMut};
 use core::ops::DerefMut;
 use sync::{Mutex, MutexGuard};
@@ -30,7 +29,7 @@ pub trait Score {
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
-	fn payment_path_failed(&mut self, path: &Vec<RouteHop>, short_channel_id: u64);
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
 }
 
 /// A scorer that is accessed under a lock.
@@ -70,7 +69,7 @@ impl<S: Score, T: DerefMut<Target=S>> Score for T {
 		self.deref().channel_penalty_msat(short_channel_id, source, target)
 	}
 
-	fn payment_path_failed(&mut self, path: &Vec<RouteHop>, short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
 	}
 }
