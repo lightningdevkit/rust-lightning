@@ -1473,7 +1473,6 @@ mod tests {
 	use routing;
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
 	use routing::router::{get_route, Payee, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees};
-	use routing::scorer::Scorer;
 	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
@@ -1943,7 +1942,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Simple route to 2 via 1
 
@@ -1974,7 +1973,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Simple route to 2 via 1
 
@@ -1993,7 +1992,7 @@ mod tests {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Simple route to 2 via 1
 
@@ -2118,7 +2117,7 @@ mod tests {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]).with_features(InvoiceFeatures::known());
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// A route to node#2 via two paths.
 		// One path allows transferring 35-40 sats, another one also allows 35-40 sats.
@@ -2254,7 +2253,7 @@ mod tests {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// // Disable channels 4 and 12 by flags=2
 		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
@@ -2312,7 +2311,7 @@ mod tests {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[2]);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
 		let unknown_features = NodeFeatures::known().set_unknown_feature_required();
@@ -2353,7 +2352,7 @@ mod tests {
 	fn our_chans_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
 		let payee = Payee::new(nodes[0]);
@@ -2482,7 +2481,7 @@ mod tests {
 	fn partial_route_hint_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
 		// Tests the behaviour when the RouteHint contains a suboptimal hop.
@@ -2581,7 +2580,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[6]).with_route_hints(empty_last_hop(&nodes));
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Test handling of an empty RouteHint passed in Invoice.
 
@@ -2663,7 +2662,7 @@ mod tests {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[6]).with_route_hints(multi_hint_last_hops(&nodes));
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		// Test through channels 2, 3, 5, 8.
 		// Test shows that multiple hop hints are considered.
 
@@ -2769,7 +2768,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payee = Payee::new(nodes[6]).with_route_hints(last_hops_with_public_channel(&nodes));
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		// This test shows that public routes can be present in the invoice
 		// which would be handled in the same manner.
 
@@ -2818,7 +2817,7 @@ mod tests {
 	fn our_chans_last_hop_connect_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
@@ -2939,7 +2938,7 @@ mod tests {
 		}]);
 		let payee = Payee::new(target_node_id).with_route_hints(vec![last_hops]);
 		let our_chans = vec![get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		get_route(&source_node_id, &payee, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()), Some(&our_chans.iter().collect::<Vec<_>>()), route_val, 42, &test_utils::TestLogger::new(), &scorer)
 	}
 
@@ -2993,7 +2992,7 @@ mod tests {
 
 		let (secp_ctx, network_graph, mut net_graph_msg_handler, chain_monitor, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]).with_features(InvoiceFeatures::known());
 
 		// We will use a simple single-path route from
@@ -3265,7 +3264,7 @@ mod tests {
 		// one of the latter hops is limited.
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[3]).with_features(InvoiceFeatures::known());
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
@@ -3388,7 +3387,7 @@ mod tests {
 	fn ignore_fee_first_hop_test() {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]);
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
@@ -3434,7 +3433,7 @@ mod tests {
 	fn simple_mpp_route_test() {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]).with_features(InvoiceFeatures::known());
 
 		// We need a route consisting of 3 paths:
@@ -3565,7 +3564,7 @@ mod tests {
 	fn long_mpp_route_test() {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[3]).with_features(InvoiceFeatures::known());
 
 		// We need a route consisting of 3 paths:
@@ -3727,7 +3726,7 @@ mod tests {
 	fn mpp_cheaper_route_test() {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[3]).with_features(InvoiceFeatures::known());
 
 		// This test checks that if we have two cheaper paths and one more expensive path,
@@ -3894,7 +3893,7 @@ mod tests {
 		// if the fee is not properly accounted for, the behavior is different.
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[3]).with_features(InvoiceFeatures::known());
 
 		// We need a route consisting of 2 paths:
@@ -4063,7 +4062,7 @@ mod tests {
 		// path finding we realize that we found more capacity than we need.
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]).with_features(InvoiceFeatures::known());
 
 		// We need a route consisting of 3 paths:
@@ -4220,7 +4219,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
 		let net_graph_msg_handler = NetGraphMsgHandler::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[6]);
 
 		add_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
@@ -4349,7 +4348,7 @@ mod tests {
 		// we calculated fees on a higher value, resulting in us ignoring such paths.
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]);
 
 		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
@@ -4411,7 +4410,7 @@ mod tests {
 		// resulting in us thinking there is no possible path, even if other paths exist.
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[2]).with_features(InvoiceFeatures::known());
 
 		// We modify the graph to set the htlc_minimum of channel 2 and 4 as needed - channel 2
@@ -4478,7 +4477,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let payee = Payee::new(nodes[0]).with_features(InvoiceFeatures::known());
 
 		{
@@ -4519,7 +4518,7 @@ mod tests {
 		let payee = Payee::new(nodes[6]).with_route_hints(last_hops(&nodes));
 
 		// Without penalizing each hop 100 msats, a longer path with lower fees is chosen.
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = get_route(
 			&our_id, &payee, &network_graph, None, 100, 42,
 			Arc::clone(&logger), &scorer
@@ -4532,7 +4531,7 @@ mod tests {
 
 		// Applying a 100 msat penalty to each hop results in taking channels 7 and 10 to nodes[6]
 		// from nodes[2] rather than channel 6, 11, and 8, even though the longer path is cheaper.
-		let scorer = Scorer::with_fixed_penalty(100);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(100);
 		let route = get_route(
 			&our_id, &payee, &network_graph, None, 100, 42,
 			Arc::clone(&logger), &scorer
@@ -4575,7 +4574,7 @@ mod tests {
 		let payee = Payee::new(nodes[6]).with_route_hints(last_hops(&nodes));
 
 		// A path to nodes[6] exists when no penalties are applied to any channel.
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = get_route(
 			&our_id, &payee, &network_graph, None, 100, 42,
 			Arc::clone(&logger), &scorer
@@ -4704,7 +4703,7 @@ mod tests {
 			},
 		};
 		let graph = NetworkGraph::read(&mut d).unwrap();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut seed = random_init_seed() as usize;
@@ -4735,7 +4734,7 @@ mod tests {
 			},
 		};
 		let graph = NetworkGraph::read(&mut d).unwrap();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut seed = random_init_seed() as usize;

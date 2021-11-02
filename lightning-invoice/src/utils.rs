@@ -157,7 +157,6 @@ mod test {
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{Payee, RouteParameters, find_route};
-	use lightning::routing::scorer::Scorer;
 	use lightning::util::events::MessageSendEventsProvider;
 	use lightning::util::test_utils;
 	#[test]
@@ -183,7 +182,7 @@ mod test {
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &params, network_graph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer,
