@@ -3,18 +3,19 @@
 ## API Updates
  * This release is almost entirely focused on a new API in the
    `lightning-invoice` crate - the `InvoicePayer`. `InvoicePayer` is a
-   struct which takes a reference to a `ChannelManager` and a `NetworkGraph`
+   struct which takes a reference to a `ChannelManager` and a `Router`
    and retries payments as paths fail. It limits retries to a configurable
    number, but is not serialized to disk and may retry additional times across
    a serialization/load. In order to learn about failed payments, it must
    receive `Event`s directly from the `ChannelManager`, wrapping a
    user-provided `EventHandler` which it provides all unhandled events to
    (#1059).
- * `get_route` has been renamed `find_route` (#1059) and now takes a `Payee`
-   struct in replacement of a number of its long list of arguments (#1134).
-   `Payee` is further stored in the `Route` object returned and provided in the
-   `RouteParameters` contained in `Event::PaymentPathFailed` (#1059).
- * `ChannelMonitor`s must now be persisted after calls which provide new block
+ * `get_route` has been renamed `find_route` (#1059) and now takes a
+   `RouteParameters` struct in replacement of a number of its long list of
+   arguments (#1134). The `Payee` in the `RouteParameters` is stored in the
+   `Route` object returned and provided in the `RouteParameters` contained in
+   `Event::PaymentPathFailed` (#1059).
+ * `ChannelMonitor`s must now be persisted after calls that provide new block
    data, prior to `MonitorEvent`s being passed back to `ChannelManager` for
    processing. If you are using a `ChainMonitor` this is handled for you.
    The `Persist` API has been updated to `Option`ally take the
@@ -36,16 +37,18 @@
    `NodeId` of both the source and destination nodes of a channel (#1133).
 
 ## Bug Fixes
- * Delay disconnecting peers if we receive messages from them even if it takes
-   a while to receive a pong from them. Further, avoid sending too many gossip
-   messages between pings to ensure we should always receive pongs in a timely
-   manner. Together, these should significantly reduce instances of us failing
-   to remain connected to a peer during initial gossip sync (#1137).
- * If a payment is sent, creating an outbound HTLC and sending it to our
+ * Previous versions would often disconnect peers during initial graph sync due
+   to ping timeouts while processing large numbers of gossip messages. We now
+   delay disconnecting peers if we receive messages from them even if it takes
+   a while to receive a pong from them. Further, we avoid sending too many
+   gossip messages between pings to ensure we should always receive pongs in a
+   timely manner (#1137).
+ * If a payment was sent, creating an outbound HTLC and sending it to our
    counterparty (implying the `ChannelMonitor` was persisted on disk), but the
    `ChannelManager` was not persisted prior to shutdown/crash, no
-   `Event::PaymentPathFailed` event will be generated if the HTLC is eventually
-   failed on chain (#1104).
+   `Event::PaymentPathFailed` event was generated if the HTLC was eventually
+   failed on chain. Events are now consistent irrespective of `ChannelManager`
+   persistence or non-persistence (#1104).
 
 ## Serialization Compatibility
  * All above new Events/fields are ignored by prior clients. All above new
