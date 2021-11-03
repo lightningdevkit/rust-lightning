@@ -275,34 +275,48 @@ impl<T: Time> Writeable for ScorerUsingTime<T> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.params.write(w)?;
-		self.channel_failures.write(w)
+		self.channel_failures.write(w)?;
+		write_tlv_fields!(w, {});
+		Ok(())
 	}
 }
 
 impl<T: Time> Readable for ScorerUsingTime<T> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		Ok(Self {
+		let res = Ok(Self {
 			params: Readable::read(r)?,
 			channel_failures: Readable::read(r)?,
-		})
+		});
+		read_tlv_fields!(r, {});
+		res
 	}
 }
 
 impl<T: Time> Writeable for ChannelFailure<T> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.undecayed_penalty_msat.write(w)?;
-		(T::duration_since_epoch() - self.last_failed.elapsed()).write(w)
+		let duration_since_epoch = T::duration_since_epoch() - self.last_failed.elapsed();
+		write_tlv_fields!(w, {
+			(0, self.undecayed_penalty_msat, required),
+			(2, duration_since_epoch, required),
+		});
+		Ok(())
 	}
 }
 
 impl<T: Time> Readable for ChannelFailure<T> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut undecayed_penalty_msat = 0;
+		let mut duration_since_epoch = Duration::from_secs(0);
+		read_tlv_fields!(r, {
+			(0, undecayed_penalty_msat, required),
+			(2, duration_since_epoch, required),
+		});
 		Ok(Self {
-			undecayed_penalty_msat: Readable::read(r)?,
-			last_failed: T::now() - (T::duration_since_epoch() - Readable::read(r)?),
+			undecayed_penalty_msat,
+			last_failed: T::now() - (T::duration_since_epoch() - duration_since_epoch),
 		})
 	}
 }
