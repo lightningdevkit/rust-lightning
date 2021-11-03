@@ -19,6 +19,7 @@ stdin_fuzz = []
 [dependencies]
 afl = { version = "0.4", optional = true }
 lightning = { path = "../lightning", features = ["regex"] }
+lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 bitcoin = { version = "0.28.1", features = ["secp-lowmemory"] }
 hex = "0.3"
 honggfuzz = { version = "0.5", optional = true }

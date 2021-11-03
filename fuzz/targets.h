@@ -3,6 +3,7 @@ void chanmon_deser_run(const unsigned char* data, size_t data_len);
 void chanmon_consistency_run(const unsigned char* data, size_t data_len);
 void full_stack_run(const unsigned char* data, size_t data_len);
 void peer_crypt_run(const unsigned char* data, size_t data_len);
+void process_network_graph_run(const unsigned char* data, size_t data_len);
 void router_run(const unsigned char* data, size_t data_len);
 void zbase32_run(const unsigned char* data, size_t data_len);
 void msg_accept_channel_run(const unsigned char* data, size_t data_len);

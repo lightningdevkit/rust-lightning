@@ -67,7 +67,7 @@ impl NodeId {
 	pub fn from_pubkey(pubkey: &PublicKey) -> Self {
 		NodeId(pubkey.serialize())
 	}
-	
+
 	/// Get the public key slice from this NodeId
 	pub fn as_slice(&self) -> &[u8] {
 		&self.0
@@ -712,6 +712,16 @@ impl ChannelInfo {
 		};
 		Some((DirectedChannelInfo::new(self, direction), target))
 	}
+
+	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
+	pub fn get_directional_info(&self, channel_flags: u8) -> Option<&ChannelUpdateInfo> {
+		let direction = channel_flags & 1u8;
+		if direction == 0 {
+			self.one_to_two.as_ref()
+		} else {
+			self.two_to_one.as_ref()
+		}
+	}
 }
 
 impl fmt::Display for ChannelInfo {
@@ -1155,6 +1165,83 @@ impl NetworkGraph {
 		self.update_channel_from_unsigned_announcement_intern(msg, None, chain_access)
 	}
 
+	/// Update channel from partial announcement data received via rapid gossip sync
+	///
+	/// `timestamp: u64`: Timestamp emulating the backdated original announcement receipt (by the
+	/// rapid gossip sync server)
+	///
+	/// All other parameters as used in [`msgs::UnsignedChannelAnnouncement`] fields.
+	pub fn add_channel_from_partial_announcement(&self, short_channel_id: u64, timestamp: u64, features: ChannelFeatures, node_id_1: PublicKey, node_id_2: PublicKey) -> Result<(), LightningError> {
+		if node_id_1 == node_id_2 {
+			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
+		};
+
+		let node_1 = NodeId::from_pubkey(&node_id_1);
+		let node_2 = NodeId::from_pubkey(&node_id_2);
+		let channel_info = ChannelInfo {
+			features,
+			node_one: node_1.clone(),
+			one_to_two: None,
+			node_two: node_2.clone(),
+			two_to_one: None,
+			capacity_sats: None,
+			announcement_message: None,
+			announcement_received_time: timestamp,
+		};
+
+		self.add_channel_between_nodes(short_channel_id, channel_info, None)
+	}
+
+	fn add_channel_between_nodes(&self, short_channel_id: u64, channel_info: ChannelInfo, utxo_value: Option<u64>) -> Result<(), LightningError> {
+		let mut channels = self.channels.write().unwrap();
+		let mut nodes = self.nodes.write().unwrap();
+
+		let node_id_a = channel_info.node_one.clone();
+		let node_id_b = channel_info.node_two.clone();
+
+		match channels.entry(short_channel_id) {
+			BtreeEntry::Occupied(mut entry) => {
+				//TODO: because asking the blockchain if short_channel_id is valid is only optional
+				//in the blockchain API, we need to handle it smartly here, though it's unclear
+				//exactly how...
+				if utxo_value.is_some() {
+					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
+					// only sometimes returns results. In any case remove the previous entry. Note
+					// that the spec expects us to "blacklist" the node_ids involved, but we can't
+					// do that because
+					// a) we don't *require* a UTXO provider that always returns results.
+					// b) we don't track UTXOs of channels we know about and remove them if they
+					//    get reorg'd out.
+					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
+					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
+					*entry.get_mut() = channel_info;
+				} else {
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
+				}
+			},
+			BtreeEntry::Vacant(entry) => {
+				entry.insert(channel_info);
+			}
+		};
+
+		for current_node_id in [node_id_a, node_id_b].iter() {
+			match nodes.entry(current_node_id.clone()) {
+				BtreeEntry::Occupied(node_entry) => {
+					node_entry.into_mut().channels.push(short_channel_id);
+				},
+				BtreeEntry::Vacant(node_entry) => {
+					node_entry.insert(NodeInfo {
+						channels: vec!(short_channel_id),
+						lowest_inbound_channel_fees: None,
+						announcement_info: None,
+					});
+				}
+			};
+		};
+
+		Ok(())
+	}
+
 	fn update_channel_from_unsigned_announcement_intern<C: Deref>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, chain_access: &Option<C>
 	) -> Result<(), LightningError>
@@ -1203,65 +1290,18 @@ impl NetworkGraph {
 		}
 
 		let chan_info = ChannelInfo {
-				features: msg.features.clone(),
-				node_one: NodeId::from_pubkey(&msg.node_id_1),
-				one_to_two: None,
-				node_two: NodeId::from_pubkey(&msg.node_id_2),
-				two_to_one: None,
-				capacity_sats: utxo_value,
-				announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
-					{ full_msg.cloned() } else { None },
-				announcement_received_time,
-			};
-
-		let mut channels = self.channels.write().unwrap();
-		let mut nodes = self.nodes.write().unwrap();
-		match channels.entry(msg.short_channel_id) {
-			BtreeEntry::Occupied(mut entry) => {
-				//TODO: because asking the blockchain if short_channel_id is valid is only optional
-				//in the blockchain API, we need to handle it smartly here, though it's unclear
-				//exactly how...
-				if utxo_value.is_some() {
-					// Either our UTXO provider is busted, there was a reorg, or the UTXO provider
-					// only sometimes returns results. In any case remove the previous entry. Note
-					// that the spec expects us to "blacklist" the node_ids involved, but we can't
-					// do that because
-					// a) we don't *require* a UTXO provider that always returns results.
-					// b) we don't track UTXOs of channels we know about and remove them if they
-					//    get reorg'd out.
-					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
-					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), msg.short_channel_id);
-					*entry.get_mut() = chan_info;
-				} else {
-					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
-				}
-			},
-			BtreeEntry::Vacant(entry) => {
-				entry.insert(chan_info);
-			}
+			features: msg.features.clone(),
+			node_one: NodeId::from_pubkey(&msg.node_id_1),
+			one_to_two: None,
+			node_two: NodeId::from_pubkey(&msg.node_id_2),
+			two_to_one: None,
+			capacity_sats: utxo_value,
+			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
+				{ full_msg.cloned() } else { None },
+			announcement_received_time,
 		};
 
-		macro_rules! add_channel_to_node {
-			( $node_id: expr ) => {
-				match nodes.entry($node_id) {
-					BtreeEntry::Occupied(node_entry) => {
-						node_entry.into_mut().channels.push(msg.short_channel_id);
-					},
-					BtreeEntry::Vacant(node_entry) => {
-						node_entry.insert(NodeInfo {
-							channels: vec!(msg.short_channel_id),
-							lowest_inbound_channel_fees: None,
-							announcement_info: None,
-						});
-					}
-				}
-			};
-		}
-
-		add_channel_to_node!(NodeId::from_pubkey(&msg.node_id_1));
-		add_channel_to_node!(NodeId::from_pubkey(&msg.node_id_2));
-
-		Ok(())
+		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
 	}
 
 	/// Close a channel if a corresponding HTLC fail was sent.
@@ -1581,7 +1621,7 @@ mod tests {
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
-		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, 
+		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;

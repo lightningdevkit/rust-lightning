@@ -158,7 +158,7 @@ mod sync {
 	#[cfg(test)]
 	pub use debug_sync::*;
 	#[cfg(not(test))]
-	pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard};
+	pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 	#[cfg(not(test))]
 	pub use crate::util::fairrwlock::FairRwLock;
 }
