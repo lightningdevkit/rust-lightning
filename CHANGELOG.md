@@ -30,6 +30,9 @@
  * `Event::PaymentSent` now includes the full fee which was spent across all
    payment paths which were fulfilled or pending when the payment was fulfilled
    (#1142).
+ * `Event::PaymentSent` and `Event::PaymentPathFailed` now include the
+   `PaymentId` which matches the `PaymentId` returned from
+   `ChannelManager::send_payment` or `InvoicePayer::pay_invoice` (#1059).
  * `NetGraphMsgHandler` now takes a `Deref` to the `NetworkGraph`, allowing for
    shared references to the graph data to make serialization and references to
    the graph data in the `InvoicePayer`'s `Router` simpler (#1149).
