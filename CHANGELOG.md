@@ -1,3 +1,69 @@
+# 0.0.103 - 2021-11-02
+
+## API Updates
+ * This release is almost entirely focused on a new API in the
+   `lightning-invoice` crate - the `InvoicePayer`. `InvoicePayer` is a
+   struct which takes a reference to a `ChannelManager` and a `NetworkGraph`
+   and retries payments as paths fail. It limits retries to a configurable
+   number, but is not serialized to disk and may retry additional times across
+   a serialization/load. In order to learn about failed payments, it must
+   receive `Event`s directly from the `ChannelManager`, wrapping a
+   user-provided `EventHandler` which it provides all unhandled events to
+   (#1059).
+ * `get_route` has been renamed `find_route` (#1059) and now takes a `Payee`
+   struct in replacement of a number of its long list of arguments (#1134).
+   `Payee` is further stored in the `Route` object returned and provided in the
+   `RouteParameters` contained in `Event::PaymentPathFailed` (#1059).
+ * `ChannelMonitor`s must now be persisted after calls which provide new block
+   data, prior to `MonitorEvent`s being passed back to `ChannelManager` for
+   processing. If you are using a `ChainMonitor` this is handled for you.
+   The `Persist` API has been updated to `Option`ally take the
+   `ChannelMonitorUpdate` as persistence events that result from chain data no
+   longer have a corresponding update (#1108).
+ * `routing::Score` now has a `payment_path_failed` method which it can use to
+   learn which channels often fail payments. It is automatically called by
+   `InvoicePayer` for failed payment paths (#1144).
+ * The default `Scorer` implementation is now a type alias to a type generic
+   across different clocks and supports serialization to persist scoring data
+   across restarts (#1146).
+ * `Event::PaymentSent` now includes the full fee which was spent across all
+   payment paths which were fulfilled or pending when the payment was fulfilled
+   (#1142).
+ * `NetGraphMsgHandler` now takes a `Deref` to the `NetworkGraph`, allowing for
+   shared references to the graph data to make serialization and references to
+   the graph data in the `InvoicePayer`'s `Router` simpler (#1149).
+ * `routing::Score::channel_penalty_msat` has been updated to provide the
+   `NodeId` of both the source and destination nodes of a channel (#1133).
+
+## Bug Fixes
+ * Delay disconnecting peers if we receive messages from them even if it takes
+   a while to receive a pong from them. Further, avoid sending too many gossip
+   messages between pings to ensure we should always receive pongs in a timely
+   manner. Together, these should significantly reduce instances of us failing
+   to remain connected to a peer during initial gossip sync (#1137).
+ * If a payment is sent, creating an outbound HTLC and sending it to our
+   counterparty (implying the `ChannelMonitor` was persisted on disk), but the
+   `ChannelManager` was not persisted prior to shutdown/crash, no
+   `Event::PaymentPathFailed` event will be generated if the HTLC is eventually
+   failed on chain (#1104).
+
+## Serialization Compatibility
+ * All above new Events/fields are ignored by prior clients. All above new
+   Events/fields are not present when reading objects serialized by prior
+   versions of the library.
+ * Payments for which a `Route` was generated using a previous version or for
+   which the payment was originally sent by a previous version of the library
+   will not be retried by an `InvoicePayer`.
+
+This release was singularly focused and some contributions by third parties
+were delayed.
+In total, this release features 38 files changed, 4414 insertions, and 969
+deletions in 71 commits from 2 authors, in alphabetical order:
+
+ * Jeffrey Czyz
+ * Matt Corallo
+
+
 # 0.0.102 - 2021-10-18
 
 ## API Updates

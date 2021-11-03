@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.0.102"
+version = "0.0.103"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-bitcoin/rust-lightning/"
