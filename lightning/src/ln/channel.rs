@@ -23,7 +23,7 @@ use bitcoin::secp256k1::{Secp256k1,Signature};
 use bitcoin::secp256k1;
 
 use ln::{PaymentPreimage, PaymentHash};
-use ln::features::{ChannelFeatures, InitFeatures};
+use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::script::{self, ShutdownScript};
@@ -550,6 +550,9 @@ pub(super) struct Channel<Signer: Sign> {
 	// is fine, but as a sanity check in our failure to generate the second claim, we check here
 	// that the original was a claim, and that we aren't now trying to fulfill a failed HTLC.
 	historical_inbound_htlc_fulfills: HashSet<u64>,
+
+	/// This channel's type, as negotiated during channel open
+	channel_type: ChannelTypeFeatures,
 }
 
 #[cfg(any(test, feature = "fuzztarget"))]
@@ -775,6 +778,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
+
+			// We currently only actually support one channel type, so don't retry with new types
+			// on error messages. When we support more we'll need fallback support (assuming we
+			// want to support old types).
+			channel_type: ChannelTypeFeatures::only_static_remote_key(),
 		})
 	}
 
@@ -803,6 +811,23 @@ impl<Signer: Sign> Channel<Signer> {
 		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
+		// First check the channel type is known, failing before we do anything else if we don't
+		// support this channel type.
+		let channel_type = if let Some(channel_type) = &msg.channel_type {
+			if channel_type.supports_any_optional_bits() {
+				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
+			}
+			if *channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
+			}
+			channel_type.clone()
+		} else {
+			ChannelTypeFeatures::from_counterparty_init(&their_features)
+		};
+		if !channel_type.supports_static_remote_key() {
+			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
+		}
+
 		let holder_signer = keys_provider.get_channel_signer(true, msg.funding_satoshis);
 		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
@@ -1043,6 +1068,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
+
+			channel_type,
 		};
 
 		Ok(chan)
@@ -4283,6 +4310,7 @@ impl<Signer: Sign> Channel<Signer> {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
+			channel_type: Some(self.channel_type.clone()),
 		}
 	}
 
@@ -5240,6 +5268,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(7, self.shutdown_scriptpubkey, option),
 			(9, self.target_closing_feerate_sats_per_kw, option),
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
+			(13, self.channel_type, required),
 		});
 
 		Ok(())
@@ -5474,6 +5503,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		let mut announcement_sigs = None;
 		let mut target_closing_feerate_sats_per_kw = None;
 		let mut monitor_pending_finalized_fulfills = Some(Vec::new());
+		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
+		// only, so we default to that if none was written.
+		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5482,7 +5514,15 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(7, shutdown_scriptpubkey, option),
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
+			(13, channel_type, option),
 		});
+
+		let chan_features = channel_type.as_ref().unwrap();
+		if chan_features.supports_unknown_bits() || chan_features.requires_unknown_bits() {
+			// If the channel was written by a new version and negotiated with features we don't
+			// understand yet, refuse to read it.
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
@@ -5576,6 +5616,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 
 			#[cfg(any(test, feature = "fuzztarget"))]
 			historical_inbound_htlc_fulfills,
+
+			channel_type: channel_type.unwrap(),
 		})
 	}
 }

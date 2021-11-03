@@ -155,7 +155,7 @@ impl BackgroundProcessor {
 	/// functionality implemented by other handlers.
 	/// * [`NetGraphMsgHandler`] if given will update the [`NetworkGraph`] based on payment failures.
 	///
-	/// [top-level documentation]: Self
+	/// [top-level documentation]: BackgroundProcessor
 	/// [`join`]: Self::join
 	/// [`stop`]: Self::stop
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
