@@ -328,11 +328,13 @@ mod tests {
 
 	use routing::Score;
 	use routing::network_graph::NodeId;
+	use util::ser::{Readable, Writeable};
 
 	use bitcoin::secp256k1::PublicKey;
 	use core::cell::Cell;
 	use core::ops::Sub;
 	use core::time::Duration;
+	use io;
 
 	/// Time that can be advanced manually in tests.
 	#[derive(Debug, PartialEq, Eq)]
@@ -393,5 +395,158 @@ mod tests {
 
 		assert_eq!(now.elapsed(), Duration::from_secs(0));
 		assert_eq!(later - elapsed, now);
+	}
+
+	/// A scorer for testing with time that can be manually advanced.
+	type Scorer = ScorerUsingTime::<SinceEpoch>;
+
+	fn source_node_id() -> NodeId {
+		NodeId::from_pubkey(&PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap())
+	}
+
+	fn target_node_id() -> NodeId {
+		NodeId::from_pubkey(&PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap())
+	}
+
+	#[test]
+	fn penalizes_without_channel_failures() {
+		let scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(1),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+
+		SinceEpoch::advance(Duration::from_secs(1));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+	}
+
+	#[test]
+	fn accumulates_channel_failure_penalties() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 64,
+			failure_penalty_half_life: Duration::from_secs(10),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_064);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_128);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_192);
+	}
+
+	#[test]
+	fn decays_channel_failure_penalties_over_time() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_512);
+
+		SinceEpoch::advance(Duration::from_secs(9));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_512);
+
+		SinceEpoch::advance(Duration::from_secs(1));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_256);
+
+		SinceEpoch::advance(Duration::from_secs(10 * 8));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_001);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+	}
+
+	#[test]
+	fn accumulates_channel_failure_penalties_after_decay() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_000);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_512);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_256);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_768);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_384);
+	}
+
+	#[test]
+	fn restores_persisted_channel_failure_penalties() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_512);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_256);
+
+		scorer.payment_path_failed(&[], 43);
+		assert_eq!(scorer.channel_penalty_msat(43, &source, &target), 1_512);
+
+		let mut serialized_scorer = Vec::new();
+		scorer.write(&mut serialized_scorer).unwrap();
+
+		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target), 1_256);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(43, &source, &target), 1_512);
+	}
+
+	#[test]
+	fn decays_persisted_channel_failure_penalties() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target), 1_512);
+
+		let mut serialized_scorer = Vec::new();
+		scorer.write(&mut serialized_scorer).unwrap();
+
+		SinceEpoch::advance(Duration::from_secs(10));
+
+		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target), 1_256);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target), 1_128);
 	}
 }
