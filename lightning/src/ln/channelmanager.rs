@@ -13,10 +13,11 @@
 //! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
 //! upon reconnect to the relevant peer(s).
 //!
-//! It does not manage routing logic (see routing::router::get_route for that) nor does it manage constructing
+//! It does not manage routing logic (see [`find_route`] for that) nor does it manage constructing
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
 //!
+//! [`find_route`]: crate::routing::router::find_route
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
@@ -1777,12 +1778,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.list_channels_with_filter(|_| true)
 	}
 
-	/// Gets the list of usable channels, in random order. Useful as an argument to
-	/// get_route to ensure non-announced channels are used.
+	/// Gets the list of usable channels, in random order. Useful as an argument to [`find_route`]
+	/// to ensure non-announced channels are used.
 	///
 	/// These are guaranteed to have their [`ChannelDetails::is_usable`] value set to true, see the
 	/// documentation for [`ChannelDetails::is_usable`] for more info on exactly what the criteria
 	/// are.
+	///
+	/// [`find_route`]: crate::routing::router::find_route
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
@@ -3765,7 +3768,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							.. } => {
 						// we get a fail_malformed_htlc from the first hop
 						// TODO: We'd like to generate a NetworkUpdate for temporary
-						// failures here, but that would be insufficient as get_route
+						// failures here, but that would be insufficient as find_route
 						// generally ignores its view of our own channels as we provide them via
 						// ChannelDetails.
 						// TODO: For non-temporary failures, we really should be closing the

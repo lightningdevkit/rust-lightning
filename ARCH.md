@@ -12,8 +12,8 @@ channel steps forward.
 
 There are two additional important structures that you may use either on the same device
 as the `ChannelManager` or on a separate one. `NetGraphMsgHandler` handles receiving channel
-and node announcements, which are then used to calculate routes by `get_route` for sending payments.
-`PeerManager` handles the authenticated and encrypted communication protocol,
+and node announcements, which are then used to calculate routes by `find_route` for sending
+payments. `PeerManager` handles the authenticated and encrypted communication protocol,
 monitoring for liveness of peers, routing messages to `ChannelManager` and `NetGraphMsgHandler`
 instances directly, and receiving messages from them via the `EventsProvider` interface.
 
