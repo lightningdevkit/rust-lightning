@@ -395,7 +395,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						}
 						else if error_code & PERM == PERM {
 							if !payment_failed {
-								network_update = Some(NetworkUpdate::ChannelClosed {
+								network_update = Some(NetworkUpdate::ChannelFailure {
 									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: true,
 								});
@@ -440,7 +440,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 										if is_chan_update_invalid {
 											// This probably indicates the node which forwarded
 											// to the node in question corrupted something.
-											network_update = Some(NetworkUpdate::ChannelClosed {
+											network_update = Some(NetworkUpdate::ChannelFailure {
 												short_channel_id: route_hop.short_channel_id,
 												is_permanent: true,
 											});

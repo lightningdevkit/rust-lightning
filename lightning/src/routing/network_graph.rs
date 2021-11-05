@@ -162,17 +162,17 @@ pub enum NetworkUpdate {
 		/// The update to apply via [`NetworkGraph::update_channel`].
 		msg: ChannelUpdate,
 	},
-	/// An error indicating only that a channel has been closed, which should be applied via
-	/// [`NetworkGraph::close_channel_from_update`].
-	ChannelClosed {
+	/// An error indicating that a channel failed to route a payment, which should be applied via
+	/// [`NetworkGraph::channel_failed`].
+	ChannelFailure {
 		/// The short channel id of the closed channel.
 		short_channel_id: u64,
 		/// Whether the channel should be permanently removed or temporarily disabled until a new
 		/// `channel_update` message is received.
 		is_permanent: bool,
 	},
-	/// An error indicating only that a node has failed, which should be applied via
-	/// [`NetworkGraph::fail_node`].
+	/// An error indicating that a node failed to route a payment, which should be applied via
+	/// [`NetworkGraph::node_failed`].
 	NodeFailure {
 		/// The node id of the failed node.
 		node_id: PublicKey,
@@ -186,7 +186,7 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 	(0, ChannelUpdateMessage) => {
 		(0, msg, required),
 	},
-	(2, ChannelClosed) => {
+	(2, ChannelFailure) => {
 		(0, short_channel_id, required),
 		(2, is_permanent, required),
 	},
@@ -282,15 +282,15 @@ where C::Target: chain::Access, L::Target: Logger
 				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
 				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
 			},
-			NetworkUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 				let action = if is_permanent { "Removing" } else { "Disabling" };
 				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-				self.network_graph.close_channel_from_update(short_channel_id, is_permanent);
+				self.network_graph.channel_failed(short_channel_id, is_permanent);
 			},
 			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
 				let action = if is_permanent { "Removing" } else { "Disabling" };
 				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
-				self.network_graph.fail_node(node_id, is_permanent);
+				self.network_graph.node_failed(node_id, is_permanent);
 			},
 		}
 	}
@@ -1328,11 +1328,11 @@ impl NetworkGraph {
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
 	}
 
-	/// Close a channel if a corresponding HTLC fail was sent.
+	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
 	/// If permanent, removes a channel from the local storage.
 	/// May cause the removal of nodes too, if this was their last channel.
 	/// If not permanent, makes channels unavailable for routing.
-	pub fn close_channel_from_update(&self, short_channel_id: u64, is_permanent: bool) {
+	pub fn channel_failed(&self, short_channel_id: u64, is_permanent: bool) {
 		let mut channels = self.channels.write().unwrap();
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
@@ -1352,7 +1352,7 @@ impl NetworkGraph {
 	}
 
 	/// Marks a node in the graph as failed.
-	pub fn fail_node(&self, _node_id: &PublicKey, is_permanent: bool) {
+	pub fn node_failed(&self, _node_id: &PublicKey, is_permanent: bool) {
 		if is_permanent {
 			// TODO: Wholly remove the node
 		} else {
@@ -2120,7 +2120,7 @@ mod tests {
 				rejected_by_dest: false,
 				all_paths_failed: true,
 				path: vec![],
-				network_update: Some(NetworkUpdate::ChannelClosed {
+				network_update: Some(NetworkUpdate::ChannelFailure {
 					short_channel_id,
 					is_permanent: false,
 				}),
@@ -2145,7 +2145,7 @@ mod tests {
 			rejected_by_dest: false,
 			all_paths_failed: true,
 			path: vec![],
-			network_update: Some(NetworkUpdate::ChannelClosed {
+			network_update: Some(NetworkUpdate::ChannelFailure {
 				short_channel_id,
 				is_permanent: true,
 			}),

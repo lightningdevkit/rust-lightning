@@ -1512,7 +1512,7 @@ macro_rules! expect_payment_failed_conditions {
 							}
 							assert_eq!(msg.contents.flags & 2, 0);
 						},
-						&Some($crate::routing::network_graph::NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if chan_closed => {
+						&Some($crate::routing::network_graph::NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
 							if let Some(scid) = $conditions.expected_blamed_scid {
 								assert_eq!(short_channel_id, scid);
 							}
