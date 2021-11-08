@@ -1113,10 +1113,16 @@ where L::Target: Logger {
 						fees: hop.fees,
 					};
 
-					let reqd_channel_cap = if let Some (val) = final_value_msat.checked_add(match idx {
-						0 => 999,
-						_ => aggregate_next_hops_fee_msat.checked_add(999).unwrap_or(u64::max_value())
-					}) { Some( val / 1000 ) } else { break; }; // converting from msat or breaking if max ~ infinity
+					// We want a value of final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR but we
+					// need it to increment at each hop by the fee charged at later hops. Further,
+					// we need to ensure we round up when we divide to get satoshis.
+					let channel_cap_msat = final_value_msat
+						.checked_mul(ROUTE_CAPACITY_PROVISION_FACTOR).and_then(|v| v.checked_add(aggregate_next_hops_fee_msat))
+						.unwrap_or(u64::max_value());
+					let channel_cap_sat = match channel_cap_msat.checked_add(999) {
+						None => break, // We overflowed above, just ignore this route hint
+						Some(val) => Some(val / 1000),
+					};
 
 					let src_node_id = NodeId::from_pubkey(&hop.src_node_id);
 					let dest_node_id = NodeId::from_pubkey(&prev_hop_id);
@@ -1128,7 +1134,7 @@ where L::Target: Logger {
 					// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
 					// invoices where the invoice does not specify value this may not be the case, but
 					// better to include the hints than not.
-					if !add_entry!(hop.short_channel_id, src_node_id, dest_node_id, directional_info, reqd_channel_cap, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat) {
+					if !add_entry!(hop.short_channel_id, src_node_id, dest_node_id, directional_info, channel_cap_sat, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat) {
 						// If this hop was not used then there is no use checking the preceding hops
 						// in the RouteHint. We can break by just searching for a direct channel between
 						// last checked hop and first_hop_targets
@@ -4055,7 +4061,105 @@ mod tests {
 			assert_eq!(total_amount_paid_msat, 200_000);
 			assert_eq!(route.get_total_fees(), 150_000);
 		}
+	}
 
+	#[test]
+	fn mpp_with_last_hops() {
+		// Previously, if we tried to send an MPP payment to a destination which was only reachable
+		// via a single last-hop route hint, we'd fail to route if we first collected routes
+		// totaling close but not quite enough to fund the full payment.
+		//
+		// This was because we considered last-hop hints to have exactly the sought payment amount
+		// instead of the amount we were trying to collect, needlessly limiting our path searching
+		// at the very first hop.
+		//
+		// Specifically, this interacted with our "all paths must fund at least 5% of total target"
+		// criterion to cause us to refuse all routes at the last hop hint which would be considered
+		// to only have the remaining to-collect amount in available liquidity.
+		//
+		// This bug appeared in production in some specific channel configurations.
+		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+		let payee = Payee::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap()).with_features(InvoiceFeatures::known())
+			.with_route_hints(vec![RouteHint(vec![RouteHintHop {
+				src_node_id: nodes[2],
+				short_channel_id: 42,
+				fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+				cltv_expiry_delta: 42,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
+			}])]);
+
+		// Keep only two paths from us to nodes[2], both with a 99sat HTLC maximum, with one with
+		// no fee and one with a 1msat fee. Previously, trying to route 100 sats to nodes[2] here
+		// would first use the no-fee route and then fail to find a path along the second route as
+		// we think we can only send up to 1 additional sat over the last-hop but refuse to as its
+		// under 5% of our payment amount.
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: u16::max_value(),
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(99_000),
+			fee_base_msat: u32::max_value(),
+			fee_proportional_millionths: u32::max_value(),
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 2,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: u16::max_value(),
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(99_000),
+			fee_base_msat: u32::max_value(),
+			fee_proportional_millionths: u32::max_value(),
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: (4 << 8) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 1,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0|2, // Channel disabled
+			cltv_expiry_delta: (13 << 8) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 2000000,
+			excess_data: Vec::new()
+		});
+
+		// Get a route for 100 sats and check that we found the MPP route no problem and didn't
+		// overpay at all.
+		let route = get_route(&our_id, &payee, &network_graph, None, 100_000, 42, Arc::clone(&logger), &scorer).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		// Paths are somewhat randomly ordered, but:
+		// * the first is channel 2 (1 msat fee) -> channel 4 -> channel 42
+		// * the second is channel 1 (0 fee, but 99 sat maximum) -> channel 3 -> channel 42
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 1);
+		assert_eq!(route.paths[0][2].fee_msat, 1_000);
+		assert_eq!(route.paths[1][0].short_channel_id, 1);
+		assert_eq!(route.paths[1][0].fee_msat, 0);
+		assert_eq!(route.paths[1][2].fee_msat, 99_000);
+		assert_eq!(route.get_total_fees(), 1);
+		assert_eq!(route.get_total_amount(), 100_000);
 	}
 
 	#[test]
