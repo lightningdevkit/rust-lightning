@@ -24,10 +24,8 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
@@ -55,7 +53,6 @@ use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
-use util::chacha20::{ChaCha20, ChaChaReader};
 use util::logger::{Level, Logger};
 use util::errors::APIError;
 
@@ -63,7 +60,7 @@ use io;
 use prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
-use io::{Cursor, Read};
+use io::Read;
 use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
@@ -2088,7 +2085,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
 			arr
 		};
-		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(&shared_secret);
 
 		if msg.onion_routing_packet.version != 0 {
 			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
@@ -2098,13 +2094,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			//packet by the node that send us the message, in the case of hashing the hop_data, the
 			//node knows the HMAC matched, so they already know what is there...
 			return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
-		}
-
-		let mut hmac = HmacEngine::<Sha256>::new(&mu);
-		hmac.input(&msg.onion_routing_packet.hop_data);
-		hmac.input(&msg.payment_hash.0[..]);
-		if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &msg.onion_routing_packet.hmac) {
-			return_malformed_err!("HMAC Check failed", 0x8000 | 0x4000 | 5);
 		}
 
 		let mut channel_state = None;
@@ -2124,164 +2113,122 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 
-		let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
-		let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&msg.onion_routing_packet.hop_data[..]) };
-		let (next_hop_data, next_hop_hmac): (msgs::OnionHopData, _) = {
-			match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
-				Err(err) => {
-					let error_code = match err {
-						msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
-						msgs::DecodeError::UnknownRequiredFeature|
-						msgs::DecodeError::InvalidValue|
-						msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
-						_ => 0x2000 | 2, // Should never happen
-					};
-					return_err!("Unable to decode our hop data", error_code, &[0;0]);
-				},
-				Ok(msg) => {
-					let mut hmac = [0; 32];
-					if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
-						return_err!("Unable to decode hop data", 0x4000 | 22, &[0;0]);
-					}
-					(msg, hmac)
-				},
-			}
+		let next_hop = match onion_utils::decode_next_hop(shared_secret, &msg.onion_routing_packet.hop_data[..], msg.onion_routing_packet.hmac, msg.payment_hash) {
+			Ok(res) => res,
+			Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+				return_malformed_err!(err_msg, err_code);
+			},
+			Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+				return_err!(err_msg, err_code, &[0; 0]);
+			},
 		};
 
-		let pending_forward_info = if next_hop_hmac == [0; 32] {
-			#[cfg(test)]
-			{
-				// In tests, make sure that the initial onion pcket data is, at least, non-0.
-				// We could do some fancy randomness test here, but, ehh, whatever.
-				// This checks for the issue where you can calculate the path length given the
-				// onion data as all the path entries that the originator sent will be here
-				// as-is (and were originally 0s).
-				// Of course reverse path calculation is still pretty easy given naive routing
-				// algorithms, but this fixes the most-obvious case.
-				let mut next_bytes = [0; 32];
-				chacha_stream.read_exact(&mut next_bytes).unwrap();
-				assert_ne!(next_bytes[..], [0; 32][..]);
-				chacha_stream.read_exact(&mut next_bytes).unwrap();
-				assert_ne!(next_bytes[..], [0; 32][..]);
-			}
+		let pending_forward_info = match next_hop {
+			onion_utils::Hop::Receive(next_hop_data) => {
+				// OUR PAYMENT!
+				// final_expiry_too_soon
+				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
+				// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
+				// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
+				// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
+				// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
+				if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
+				}
+				// final_incorrect_htlc_amount
+				if next_hop_data.amt_to_forward > msg.amount_msat {
+					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
+				}
+				// final_incorrect_cltv_expiry
+				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
+					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
+				}
 
-			// OUR PAYMENT!
-			// final_expiry_too_soon
-			// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
-			// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
-			// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
-			// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
-			// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
-			if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
-				return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
-			}
-			// final_incorrect_htlc_amount
-			if next_hop_data.amt_to_forward > msg.amount_msat {
-				return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
-			}
-			// final_incorrect_cltv_expiry
-			if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
-				return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
-			}
+				let routing = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
+					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
+					msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+						if payment_data.is_some() && keysend_preimage.is_some() {
+							return_err!("We don't support MPP keysend payments", 0x4000|22, &[0;0]);
+						} else if let Some(data) = payment_data {
+							PendingHTLCRouting::Receive {
+								payment_data: data,
+								incoming_cltv_expiry: msg.cltv_expiry,
+							}
+						} else if let Some(payment_preimage) = keysend_preimage {
+							// We need to check that the sender knows the keysend preimage before processing this
+							// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+							// could discover the final destination of X, by probing the adjacent nodes on the route
+							// with a keysend payment of identical payment hash to X and observing the processing
+							// time discrepancies due to a hash collision with X.
+							let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+							if hashed_preimage != msg.payment_hash {
+								return_err!("Payment preimage didn't match payment hash", 0x4000|22, &[0;0]);
+							}
 
-			let routing = match next_hop_data.format {
-				msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
-				msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
-				msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
-					if payment_data.is_some() && keysend_preimage.is_some() {
-						return_err!("We don't support MPP keysend payments", 0x4000|22, &[0;0]);
-					} else if let Some(data) = payment_data {
-						PendingHTLCRouting::Receive {
-							payment_data: data,
-							incoming_cltv_expiry: msg.cltv_expiry,
+							PendingHTLCRouting::ReceiveKeysend {
+								payment_preimage,
+								incoming_cltv_expiry: msg.cltv_expiry,
+							}
+						} else {
+							return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
 						}
-					} else if let Some(payment_preimage) = keysend_preimage {
-						// We need to check that the sender knows the keysend preimage before processing this
-						// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
-						// could discover the final destination of X, by probing the adjacent nodes on the route
-						// with a keysend payment of identical payment hash to X and observing the processing
-						// time discrepancies due to a hash collision with X.
-						let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-						if hashed_preimage != msg.payment_hash {
-							return_err!("Payment preimage didn't match payment hash", 0x4000|22, &[0;0]);
-						}
+					},
+				};
 
-						PendingHTLCRouting::ReceiveKeysend {
-							payment_preimage,
-							incoming_cltv_expiry: msg.cltv_expiry,
-						}
-					} else {
-						return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
-					}
-				},
-			};
+				// Note that we could obviously respond immediately with an update_fulfill_htlc
+				// message, however that would leak that we are the recipient of this payment, so
+				// instead we stay symmetric with the forwarding case, only responding (after a
+				// delay) once they've send us a commitment_signed!
 
-			// Note that we could obviously respond immediately with an update_fulfill_htlc
-			// message, however that would leak that we are the recipient of this payment, so
-			// instead we stay symmetric with the forwarding case, only responding (after a
-			// delay) once they've send us a commitment_signed!
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
+					routing,
+					payment_hash: msg.payment_hash.clone(),
+					incoming_shared_secret: shared_secret,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+				})
+			},
+			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
+				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 
-			PendingHTLCStatus::Forward(PendingHTLCInfo {
-				routing,
-				payment_hash: msg.payment_hash.clone(),
-				incoming_shared_secret: shared_secret,
-				amt_to_forward: next_hop_data.amt_to_forward,
-				outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-			})
-		} else {
-			let mut new_packet_data = [0; 20*65];
-			let read_pos = chacha_stream.read(&mut new_packet_data).unwrap();
-			#[cfg(debug_assertions)]
-			{
-				// Check two things:
-				// a) that the behavior of our stream here will return Ok(0) even if the TLV
-				//    read above emptied out our buffer and the unwrap() wont needlessly panic
-				// b) that we didn't somehow magically end up with extra data.
-				let mut t = [0; 1];
-				debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
+				let blinding_factor = {
+					let mut sha = Sha256::engine();
+					sha.input(&new_pubkey.serialize()[..]);
+					sha.input(&shared_secret);
+					Sha256::from_engine(sha).into_inner()
+				};
+
+				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+					Err(e)
+				} else { Ok(new_pubkey) };
+
+				let outgoing_packet = msgs::OnionPacket {
+					version: 0,
+					public_key,
+					hop_data: new_packet_bytes,
+					hmac: next_hop_hmac.clone(),
+				};
+
+				let short_channel_id = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+					msgs::OnionHopDataFormat::FinalNode { .. } => {
+						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
+					},
+				};
+
+				PendingHTLCStatus::Forward(PendingHTLCInfo {
+					routing: PendingHTLCRouting::Forward {
+						onion_packet: outgoing_packet,
+						short_channel_id,
+					},
+					payment_hash: msg.payment_hash.clone(),
+					incoming_shared_secret: shared_secret,
+					amt_to_forward: next_hop_data.amt_to_forward,
+					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+				})
 			}
-			// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
-			// fill the onion hop data we'll forward to our next-hop peer.
-			chacha_stream.chacha.process_in_place(&mut new_packet_data[read_pos..]);
-
-			let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
-
-			let blinding_factor = {
-				let mut sha = Sha256::engine();
-				sha.input(&new_pubkey.serialize()[..]);
-				sha.input(&shared_secret);
-				Sha256::from_engine(sha).into_inner()
-			};
-
-			let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
-				Err(e)
-			} else { Ok(new_pubkey) };
-
-			let outgoing_packet = msgs::OnionPacket {
-				version: 0,
-				public_key,
-				hop_data: new_packet_data,
-				hmac: next_hop_hmac.clone(),
-			};
-
-			let short_channel_id = match next_hop_data.format {
-				msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
-				msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-				msgs::OnionHopDataFormat::FinalNode { .. } => {
-					return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
-				},
-			};
-
-			PendingHTLCStatus::Forward(PendingHTLCInfo {
-				routing: PendingHTLCRouting::Forward {
-					onion_packet: outgoing_packet,
-					short_channel_id,
-				},
-				payment_hash: msg.payment_hash.clone(),
-				incoming_shared_secret: shared_secret,
-				amt_to_forward: next_hop_data.amt_to_forward,
-				outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-			})
 		};
 
 		channel_state = Some(self.channel_state.lock().unwrap());

@@ -12,7 +12,7 @@ use ln::channelmanager::HTLCSource;
 use ln::msgs;
 use routing::network_graph::NetworkUpdate;
 use routing::router::RouteHop;
-use util::chacha20::ChaCha20;
+use util::chacha20::{ChaCha20, ChaChaReader};
 use util::errors::{self, APIError};
 use util::ser::{Readable, Writeable, LengthCalculatingWriter};
 use util::logger::Logger;
@@ -28,7 +28,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use prelude::*;
-use io::Cursor;
+use io::{Cursor, Read};
 use core::convert::TryInto;
 use core::ops::Deref;
 
@@ -504,6 +504,114 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 			(None, None, !is_from_final_node, None, None)
 		}
 	} else { unreachable!(); }
+}
+
+/// Data decrypted from the onion payload.
+pub(crate) enum Hop {
+	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
+	/// verifying the incoming payment.
+	Receive(msgs::OnionHopData),
+	/// This onion payload needs to be forwarded to a next-hop.
+	Forward {
+		/// Onion payload data used in forwarding the payment.
+		next_hop_data: msgs::OnionHopData,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Bytes of the onion packet we're forwarding.
+		new_packet_bytes: [u8; 20*65],
+	},
+}
+
+/// Error returned when we fail to decode the onion packet.
+pub(crate) enum OnionDecodeErr {
+	/// The HMAC of the onion packet did not match the hop data.
+	Malformed {
+		err_msg: &'static str,
+		err_code: u16,
+	},
+	/// We failed to decode the onion payload.
+	Relay {
+		err_msg: &'static str,
+		err_code: u16,
+	},
+}
+
+pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
+	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
+	let mut hmac = HmacEngine::<Sha256>::new(&mu);
+	hmac.input(hop_data);
+	hmac.input(&payment_hash.0[..]);
+	if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &hmac_bytes) {
+		return Err(OnionDecodeErr::Malformed {
+			err_msg: "HMAC Check failed",
+			err_code: 0x8000 | 0x4000 | 5,
+		});
+	}
+
+	let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
+	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
+	match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
+		Err(err) => {
+			let error_code = match err {
+				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
+				msgs::DecodeError::UnknownRequiredFeature|
+				msgs::DecodeError::InvalidValue|
+				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
+				_ => 0x2000 | 2, // Should never happen
+			};
+			return Err(OnionDecodeErr::Relay {
+				err_msg: "Unable to decode our hop data",
+				err_code: error_code,
+			});
+		},
+		Ok(msg) => {
+			let mut hmac = [0; 32];
+			if let Err(_) = chacha_stream.read_exact(&mut hmac[..]) {
+				return Err(OnionDecodeErr::Relay {
+					err_msg: "Unable to decode our hop data",
+					err_code: 0x4000 | 22,
+				});
+			}
+			if hmac == [0; 32] {
+				#[cfg(test)]
+				{
+					// In tests, make sure that the initial onion packet data is, at least, non-0.
+					// We could do some fancy randomness test here, but, ehh, whatever.
+					// This checks for the issue where you can calculate the path length given the
+					// onion data as all the path entries that the originator sent will be here
+					// as-is (and were originally 0s).
+					// Of course reverse path calculation is still pretty easy given naive routing
+					// algorithms, but this fixes the most-obvious case.
+					let mut next_bytes = [0; 32];
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
+					chacha_stream.read_exact(&mut next_bytes).unwrap();
+					assert_ne!(next_bytes[..], [0; 32][..]);
+				}
+				return Ok(Hop::Receive(msg));
+			} else {
+				let mut new_packet_bytes = [0; 20*65];
+				let read_pos = chacha_stream.read(&mut new_packet_bytes).unwrap();
+				#[cfg(debug_assertions)]
+				{
+					// Check two things:
+					// a) that the behavior of our stream here will return Ok(0) even if the TLV
+					//    read above emptied out our buffer and the unwrap() wont needlessly panic
+					// b) that we didn't somehow magically end up with extra data.
+					let mut t = [0; 1];
+					debug_assert!(chacha_stream.read(&mut t).unwrap() == 0);
+				}
+				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
+				// fill the onion hop data we'll forward to our next-hop peer.
+				chacha_stream.chacha.process_in_place(&mut new_packet_bytes[read_pos..]);
+				return Ok(Hop::Forward {
+					next_hop_data: msg,
+					next_hop_hmac: hmac,
+					new_packet_bytes,
+				})
+			}
+		},
+	}
 }
 
 #[cfg(test)]
