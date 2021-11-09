@@ -5254,6 +5254,13 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			htlc.write(writer)?;
 		}
 
+		// If the channel type is something other than only-static-remote-key, then we need to have
+		// older clients fail to deserialize this channel at all. If the type is
+		// only-static-remote-key, we simply consider it "default" and don't write the channel type
+		// out at all.
+		let chan_type = if self.channel_type != ChannelTypeFeatures::only_static_remote_key() {
+			Some(&self.channel_type) } else { None };
+
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -5263,12 +5270,12 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			// and new versions map the default values to None and allow the TLV entries here to
 			// override that.
 			(1, self.minimum_depth, option),
+			(2, chan_type, option),
 			(3, self.counterparty_selected_channel_reserve_satoshis, option),
 			(5, self.config, required),
 			(7, self.shutdown_scriptpubkey, option),
 			(9, self.target_closing_feerate_sats_per_kw, option),
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
-			(13, self.channel_type, required),
 		});
 
 		Ok(())
@@ -5509,12 +5516,12 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
+			(2, channel_type, option),
 			(3, counterparty_selected_channel_reserve_satoshis, option),
 			(5, config, option), // Note that if none is provided we will *not* overwrite the existing one.
 			(7, shutdown_scriptpubkey, option),
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
-			(13, channel_type, option),
 		});
 
 		let chan_features = channel_type.as_ref().unwrap();
