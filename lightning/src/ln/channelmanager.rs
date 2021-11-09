@@ -3683,7 +3683,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(),
-				&their_features, msg, 0, &self.default_configuration, self.best_block.read().unwrap().height())
+				&their_features, msg, 0, &self.default_configuration, self.best_block.read().unwrap().height(), &self.logger)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;

@@ -387,9 +387,9 @@ pub(super) struct MonitorRestoreUpdates {
 /// the channel. Sadly, there isn't really a good number for this - if we expect to have no new
 /// HTLCs for days we may need this to suffice for feerate increases across days, but that may
 /// leave the channel less usable as we hold a bigger reserve.
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
-#[cfg(not(fuzzing))]
+#[cfg(not(any(fuzzing, test)))]
 const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 
 /// If we fail to see a funding transaction confirmed on-chain within this many blocks after the
@@ -516,19 +516,30 @@ pub(super) struct Channel<Signer: Sign> {
 	channel_creation_height: u32,
 
 	counterparty_dust_limit_satoshis: u64,
+
 	#[cfg(test)]
 	pub(super) holder_dust_limit_satoshis: u64,
 	#[cfg(not(test))]
 	holder_dust_limit_satoshis: u64,
+
 	#[cfg(test)]
 	pub(super) counterparty_max_htlc_value_in_flight_msat: u64,
 	#[cfg(not(test))]
 	counterparty_max_htlc_value_in_flight_msat: u64,
+
+	#[cfg(test)]
+	pub(super) holder_max_htlc_value_in_flight_msat: u64,
+	#[cfg(not(test))]
 	holder_max_htlc_value_in_flight_msat: u64,
 
 	/// minimum channel reserve for self to maintain - set by them.
 	counterparty_selected_channel_reserve_satoshis: Option<u64>,
+
+	#[cfg(test)]
+	pub(super) holder_selected_channel_reserve_satoshis: u64,
+	#[cfg(not(test))]
 	holder_selected_channel_reserve_satoshis: u64,
+
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
 	#[cfg(test)]
@@ -868,12 +879,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(
+	pub fn new_from_req<K: Deref, F: Deref, L: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32
+		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32, logger: &L
 	) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
-          F::Target: FeeEstimator
+		      F::Target: FeeEstimator,
+		      L::Target: Logger,
 	{
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
@@ -920,9 +932,6 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis {} was larger than funding_satoshis {}. Peer never wants payout outputs?", msg.dust_limit_satoshis, msg.funding_satoshis)));
-		}
-		if msg.dust_limit_satoshis > msg.channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("Bogus; channel reserve ({}) is less than dust limit ({})", msg.channel_reserve_satoshis, msg.dust_limit_satoshis)));
 		}
 		let full_channel_value_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000;
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
@@ -980,7 +989,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is smaller than our dust limit ({})", msg.channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+			log_debug!(logger, "channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast stale states without any risk, implying this channel is very insecure for our counterparty.",
+				msg.channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 		}
 		if holder_selected_channel_reserve_satoshis < msg.dust_limit_satoshis {
 			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", msg.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
@@ -1711,9 +1721,6 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		if msg.channel_reserve_satoshis > self.channel_value_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.channel_value_satoshis)));
-		}
-		if msg.channel_reserve_satoshis < self.holder_dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("Peer never wants payout outputs? channel_reserve_satoshis was ({}). dust_limit is ({})", msg.channel_reserve_satoshis, self.holder_dust_limit_satoshis)));
 		}
 		if msg.dust_limit_satoshis > self.holder_selected_channel_reserve_satoshis {
 			return Err(ChannelError::Close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.dust_limit_satoshis, self.holder_selected_channel_reserve_satoshis)));
@@ -5912,6 +5919,7 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let logger = test_utils::TestLogger::new();
 
 		// Go through the flow of opening a channel between two nodes, making sure
 		// they have different dust limits.
@@ -5925,7 +5933,7 @@ mod tests {
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0).unwrap();
+		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
@@ -6043,7 +6051,7 @@ mod tests {
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
