@@ -8,7 +8,7 @@ use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
-use lightning::ln::{PaymentHash, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 use lightning::ln::msgs::LightningError;
 use lightning::routing;
@@ -139,6 +139,13 @@ where
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
 	) -> Result<PaymentId, PaymentSendFailure> {
 		self.send_payment(route, payment_hash, payment_secret)
+	}
+
+	fn send_spontaneous_payment(
+		&self, route: &Route, payment_preimage: PaymentPreimage,
+	) -> Result<PaymentId, PaymentSendFailure> {
+		self.send_spontaneous_payment(route, Some(payment_preimage))
+			.map(|(_, payment_id)| payment_id)
 	}
 
 	fn retry_payment(
