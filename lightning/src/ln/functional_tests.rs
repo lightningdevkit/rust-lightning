@@ -1561,6 +1561,41 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 }
 
 #[test]
+fn test_chan_init_feerate_unaffordability() {
+	// Test that we will reject channel opens which do not leave enough to pay for any HTLCs due to
+	// channel reserve and feerate requirements.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Set the push_msat amount such that nodes[0] will not be able to afford to add even a single
+	// HTLC.
+	let mut push_amt = 100_000_000;
+	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64);
+	assert_eq!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt + 1, 42, None).unwrap_err(),
+		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
+
+	// During open, we don't have a "counterparty channel reserve" to check against, so that
+	// requirement only comes into play on the open_channel handling side.
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt, 42, None).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	open_channel_msg.push_msat += 1;
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel_msg);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			assert_eq!(msg.data, "Insufficient funding amount for initial reserve");
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
 fn test_chan_reserve_dust_inbound_htlcs_inbound_chan() {
 	// Test that if we receive many dust HTLCs over an inbound channel, they don't count when
 	// calculating our counterparty's commitment transaction fee (this was previously broken).
