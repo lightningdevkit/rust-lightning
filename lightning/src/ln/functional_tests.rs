@@ -18,7 +18,7 @@ use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PER
 use chain::transaction::OutPoint;
 use chain::keysinterface::BaseSign;
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
@@ -584,12 +584,19 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1977;
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
+	let channel_value = 5000;
+	let push_sats = 700;
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, push_sats * 1000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
+	let bs_channel_reserve_sats = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value);
 
-	let feerate = 260;
+	// Calculate the maximum feerate that A can afford. Note that we don't send an update_fee
+	// CONCURRENT_INBOUND_HTLC_FEE_BUFFER HTLCs before actually running out of local balance, so we
+	// calculate two different feerates here - the expected local limit as well as the expected
+	// remote limit.
+	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / (COMMITMENT_TX_BASE_WEIGHT + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
+	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / COMMITMENT_TX_BASE_WEIGHT) as u32;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = feerate;
@@ -602,27 +609,25 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	commitment_signed_dance!(nodes[1], nodes[0], update_msg.commitment_signed, false);
 
-	//Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate of 260 set above.
-	//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve)
+	// Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate set above.
 	{
 		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
-		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
-		let num_htlcs = commitment_tx.output.len() - 2;
-		let total_fee: u64 = feerate as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		//We made sure neither party's funds are below the dust limit and there are no HTLCs here
+		assert_eq!(commitment_tx.output.len(), 2);
+		let total_fee: u64 = commit_tx_fee_msat(feerate, 0) / 1000;
 		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value);
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
 	}
 
-	//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
-	//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
 	{
+		// Increment the feerate by a small constant, accounting for rounding errors
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
-		*feerate_lock = feerate + 2;
+		*feerate_lock += 4;
 	}
 	nodes[0].node.timer_tick_occurred();
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 2), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 4), 1);
 	check_added_monitors!(nodes[0], 0);
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
@@ -658,11 +663,11 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
-			700,
-			999,
+			push_sats,
+			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0) / 1000,
 			false, local_funding, remote_funding,
 			commit_tx_keys.clone(),
-			feerate + 124,
+			non_buffer_feerate + 4,
 			&mut htlcs,
 			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
@@ -677,7 +682,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	let update_fee = msgs::UpdateFee {
 		channel_id: chan.2,
-		feerate_per_kw: feerate + 124,
+		feerate_per_kw: non_buffer_feerate + 4,
 	};
 
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);

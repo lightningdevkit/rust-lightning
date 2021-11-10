@@ -406,7 +406,7 @@ pub(crate) const FUNDING_CONF_DEADLINE_BLOCKS: u32 = 2016;
 /// size 2. However, if the number of concurrent update_add_htlc is higher, this still
 /// leads to a channel force-close. Ultimately, this is an issue coming from the
 /// design of LN state machines, allowing asynchronous updates.
-const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
+pub(crate) const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
 
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
