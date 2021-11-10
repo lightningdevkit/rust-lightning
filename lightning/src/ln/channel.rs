@@ -408,6 +408,11 @@ pub(crate) const FUNDING_CONF_DEADLINE_BLOCKS: u32 = 2016;
 /// design of LN state machines, allowing asynchronous updates.
 pub(crate) const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
 
+/// When a channel is opened, we check that the funding amount is enough to pay for relevant
+/// commitment transaction fees, with at least this many HTLCs present on the commitment
+/// transaction (not counting the value of the HTLCs themselves).
+pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -708,6 +713,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
+		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
+		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT);
+		if value_to_self_msat < commitment_tx_fee {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
+		}
+
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
 
@@ -738,7 +749,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-			value_to_self_msat: channel_value_satoshis * 1000 - push_msat,
+			value_to_self_msat,
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
@@ -952,8 +963,6 @@ impl<Signer: Sign> Channel<Signer> {
 		// we either accept their preference or the preferences match
 		local_config.announced_channel = announce;
 
-		let background_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
@@ -966,17 +975,18 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// check if the funder's amount for the initial commitment tx is sufficient
-		// for full fee payment
+		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		let lower_limit = background_feerate as u64 * COMMITMENT_TX_BASE_WEIGHT;
-		if funders_amount_msat < lower_limit {
-			return Err(ChannelError::Close(format!("Insufficient funding amount ({}) for initial commitment. Must be at least {}", funders_amount_msat, lower_limit)));
+		let commitment_tx_fee = Self::commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT) / 1000;
+		if funders_amount_msat / 1000 < commitment_tx_fee {
+			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commitment_tx_fee)));
 		}
 
-		let to_local_msat = msg.push_msat;
-		let to_remote_msat = funders_amount_msat - background_feerate as u64 * COMMITMENT_TX_BASE_WEIGHT;
-		if to_local_msat <= msg.channel_reserve_satoshis * 1000 && to_remote_msat <= holder_selected_channel_reserve_satoshis * 1000 {
-			return Err(ChannelError::Close("Insufficient funding amount for initial commitment".to_owned()));
+		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee;
+		// While it's reasonable for us to not meet the channel reserve initially (if they don't
+		// want to push much to us), our counterparty should always have more than our reserve.
+		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::Close("Insufficient funding amount for initial reserve".to_owned()));
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
