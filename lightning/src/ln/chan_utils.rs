@@ -1144,7 +1144,7 @@ impl CommitmentTransaction {
 			let script = if opt_anchors {
 			    get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_v0_p2wsh()
 			} else {
-			    script_for_p2wpkh(&countersignatory_pubkeys.payment_point)
+			    get_p2wpkh_redeemscript(&countersignatory_pubkeys.payment_point)
 			};
 			txouts.push((
 				TxOut {
@@ -1439,7 +1439,7 @@ pub fn get_commitment_transaction_number_obscure_factor(
 		| ((res[31] as u64) << 0 * 8)
 }
 
-fn script_for_p2wpkh(key: &PublicKey) -> Script {
+fn get_p2wpkh_redeemscript(key: &PublicKey) -> Script {
 	Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
 		.push_slice(&WPubkeyHash::hash(&key.serialize())[..])
 		.into_script()
@@ -1450,7 +1450,7 @@ mod tests {
 	use super::CounterpartyCommitmentSecrets;
 	use ::{hex, chain};
 	use prelude::*;
-	use ln::chan_utils::{get_to_countersignatory_with_anchors_redeemscript, script_for_p2wpkh, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use ln::chan_utils::{get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use util::test_utils;
 	use chain::keysinterface::{KeysInterface, BaseSign};
@@ -1493,7 +1493,7 @@ mod tests {
 			&mut htlcs_with_aux, &channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, script_for_p2wpkh(&counterparty_pubkeys.payment_point));
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_p2wpkh_redeemscript(&counterparty_pubkeys.payment_point));
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
