@@ -217,7 +217,9 @@ impl BackgroundProcessor {
 				let updates_available =
 					channel_manager.await_persistable_update_timeout(Duration::from_millis(100));
 				if updates_available {
+					log_trace!(logger, "Persisting ChannelManager...");
 					persister.persist_manager(&*channel_manager)?;
+					log_trace!(logger, "Done persisting ChannelManager.");
 				}
 				// Exit the loop if the background processor was requested to stop.
 				if stop_thread.load(Ordering::Acquire) == true {
