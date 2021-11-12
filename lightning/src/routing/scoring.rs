@@ -10,7 +10,7 @@
 //! Utilities for scoring payment channels.
 //!
 //! [`Scorer`] may be given to [`find_route`] to score payment channels during path finding when a
-//! custom [`routing::Score`] implementation is not needed.
+//! custom [`Score`] implementation is not needed.
 //!
 //! # Example
 //!
@@ -19,7 +19,7 @@
 //! #
 //! # use lightning::routing::network_graph::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
-//! # use lightning::routing::scorer::{Scorer, ScoringParameters};
+//! # use lightning::routing::scoring::{Scorer, ScoringParameters};
 //! # use lightning::util::logger::{Logger, Record};
 //! # use secp256k1::key::PublicKey;
 //! #
@@ -52,26 +52,89 @@
 //!
 //! [`find_route`]: crate::routing::router::find_route
 
-use routing;
-
 use ln::msgs::DecodeError;
 use routing::network_graph::NodeId;
 use routing::router::RouteHop;
 use util::ser::{Readable, Writeable, Writer};
 
 use prelude::*;
-use core::ops::Sub;
+use core::cell::{RefCell, RefMut};
+use core::ops::{DerefMut, Sub};
 use core::time::Duration;
-use io::{self, Read};
+use io::{self, Read}; use sync::{Mutex, MutexGuard};
 
-/// [`routing::Score`] implementation that provides reasonable default behavior.
+/// An interface used to score payment channels for path finding.
+///
+///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
+pub trait Score {
+	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
+	/// given channel in the direction from `source` to `target`.
+	///
+	/// The channel's capacity (less any other MPP parts which are also being considered for use in
+	/// the same payment) is given by `channel_capacity_msat`. It may be guessed from various
+	/// sources or assumed from no data at all.
+	///
+	/// For hints provided in the invoice, we assume the channel has sufficient capacity to accept
+	/// the invoice's full amount, and provide a `channel_capacity_msat` of `None`. In all other
+	/// cases it is set to `Some`, even if we're guessing at the channel value.
+	///
+	/// Your code should be overflow-safe through a `channel_capacity_msat` of 21 million BTC.
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64;
+
+	/// Handles updating channel penalties after failing to route through a channel.
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
+}
+
+/// A scorer that is accessed under a lock.
+///
+/// Needed so that calls to [`Score::channel_penalty_msat`] in [`find_route`] can be made while
+/// having shared ownership of a scorer but without requiring internal locking in [`Score`]
+/// implementations. Internal locking would be detrimental to route finding performance and could
+/// result in [`Score::channel_penalty_msat`] returning a different value for the same channel.
+///
+/// [`find_route`]: crate::routing::router::find_route
+pub trait LockableScore<'a> {
+	/// The locked [`Score`] type.
+	type Locked: 'a + Score;
+
+	/// Returns the locked scorer.
+	fn lock(&'a self) -> Self::Locked;
+}
+
+impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
+	type Locked = MutexGuard<'a, T>;
+
+	fn lock(&'a self) -> MutexGuard<'a, T> {
+		Mutex::lock(self).unwrap()
+	}
+}
+
+impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
+	type Locked = RefMut<'a, T>;
+
+	fn lock(&'a self) -> RefMut<'a, T> {
+		self.borrow_mut()
+	}
+}
+
+impl<S: Score, T: DerefMut<Target=S>> Score for T {
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
+	}
+
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.deref_mut().payment_path_failed(path, short_channel_id)
+	}
+}
+
+/// [`Score`] implementation that provides reasonable default behavior.
 ///
 /// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
 /// slightly higher fees are available. Will further penalize channels that fail to relay payments.
 ///
 /// See [module-level documentation] for usage.
 ///
-/// [module-level documentation]: crate::routing::scorer
+/// [module-level documentation]: crate::routing::scoring
 pub type Scorer = ScorerUsingTime::<DefaultTime>;
 
 /// Time used by [`Scorer`].
@@ -82,7 +145,7 @@ pub type DefaultTime = std::time::Instant;
 #[cfg(feature = "no-std")]
 pub type DefaultTime = Eternity;
 
-/// [`routing::Score`] implementation parameterized by [`Time`].
+/// [`Score`] implementation parameterized by [`Time`].
 ///
 /// See [`Scorer`] for details.
 ///
@@ -236,7 +299,7 @@ impl Default for ScoringParameters {
 	}
 }
 
-impl<T: Time> routing::Score for ScorerUsingTime<T> {
+impl<T: Time> Score for ScorerUsingTime<T> {
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, send_amt_msat: u64, chan_capacity_opt: Option<u64>, _source: &NodeId, _target: &NodeId
 	) -> u64 {
@@ -366,7 +429,7 @@ impl<T: Time> Readable for ChannelFailure<T> {
 mod tests {
 	use super::{Eternity, ScoringParameters, ScorerUsingTime, Time};
 
-	use routing::Score;
+	use routing::scoring::Score;
 	use routing::network_graph::NodeId;
 	use util::ser::{Readable, Writeable};
 

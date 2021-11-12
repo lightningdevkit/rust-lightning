@@ -21,7 +21,7 @@ use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
 use ln::script::ShutdownScript;
-use routing::scorer::{Eternity, ScorerUsingTime};
+use routing::scoring::{Eternity, ScorerUsingTime};
 use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use util::events;
 use util::logger::{Logger, Level, Record};

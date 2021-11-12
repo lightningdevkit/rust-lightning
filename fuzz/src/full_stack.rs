@@ -39,7 +39,7 @@ use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use lightning::routing::router::{find_route, Payee, RouteParameters};
-use lightning::routing::scorer::Scorer;
+use lightning::routing::scoring::Scorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::events::Event;

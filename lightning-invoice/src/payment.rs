@@ -31,7 +31,7 @@
 //! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
-//! # use lightning::routing;
+//! # use lightning::routing::scoring::Score;
 //! # use lightning::routing::network_graph::NodeId;
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
@@ -63,7 +63,7 @@
 //! # }
 //! #
 //! # struct FakeRouter {};
-//! # impl<S: routing::Score> Router<S> for FakeRouter {
+//! # impl<S: Score> Router<S> for FakeRouter {
 //! #     fn find_route(
 //! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
 //! #         first_hops: Option<&[&ChannelDetails]>, scorer: &S
@@ -71,7 +71,7 @@
 //! # }
 //! #
 //! # struct FakeScorer {};
-//! # impl routing::Score for FakeScorer {
+//! # impl Score for FakeScorer {
 //! #     fn channel_penalty_msat(
 //! #         &self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 //! #     ) -> u64 { 0 }
@@ -122,8 +122,7 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
-use lightning::routing;
-use lightning::routing::{LockableScore, Score};
+use lightning::routing::scoring::{LockableScore, Score};
 use lightning::routing::router::{Payee, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
@@ -139,8 +138,8 @@ use std::time::{Duration, SystemTime};
 pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
+	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
+	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
 	E: EventHandler,
 {
@@ -177,7 +176,7 @@ pub trait Payer {
 }
 
 /// A trait defining behavior for routing an [`Invoice`] payment.
-pub trait Router<S: routing::Score> {
+pub trait Router<S: Score> {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
@@ -207,8 +206,8 @@ pub enum PaymentError {
 impl<P: Deref, R, S: Deref, L: Deref, E> InvoicePayer<P, R, S, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
+	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
+	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
 	E: EventHandler,
 {
@@ -441,8 +440,8 @@ fn has_expired(params: &RouteParameters) -> bool {
 impl<P: Deref, R, S: Deref, L: Deref, E> EventHandler for InvoicePayer<P, R, S, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as routing::LockableScore<'a>>::Locked>,
-	S::Target: for <'a> routing::LockableScore<'a>,
+	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
+	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
 	E: EventHandler,
 {
@@ -1186,7 +1185,7 @@ mod tests {
 		}
 	}
 
-	impl<S: routing::Score> Router<S> for TestRouter {
+	impl<S: Score> Router<S> for TestRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
 			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
@@ -1199,7 +1198,7 @@ mod tests {
 
 	struct FailingRouter;
 
-	impl<S: routing::Score> Router<S> for FailingRouter {
+	impl<S: Score> Router<S> for FailingRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
 			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
@@ -1225,7 +1224,7 @@ mod tests {
 		}
 	}
 
-	impl routing::Score for TestScorer {
+	impl Score for TestScorer {
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 		) -> u64 { 0 }
@@ -1364,7 +1363,7 @@ mod tests {
 	// *** Full Featured Functional Tests with a Real ChannelManager ***
 	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
 
-	impl<S: routing::Score> Router<S> for ManualRouter {
+	impl<S: Score> Router<S> for ManualRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
 			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
