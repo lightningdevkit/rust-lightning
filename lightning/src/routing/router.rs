@@ -892,9 +892,9 @@ where L::Target: Logger {
 								}
 							}
 
-							let path_penalty_msat = $next_hops_path_penalty_msat
-								.checked_add(scorer.channel_penalty_msat($chan_id.clone(), &$src_node_id, &$dest_node_id))
-								.unwrap_or_else(|| u64::max_value());
+							let path_penalty_msat = $next_hops_path_penalty_msat.checked_add(
+								scorer.channel_penalty_msat($chan_id.clone(), amount_to_transfer_over_msat, Some(*available_liquidity_msat),
+									&$src_node_id, &$dest_node_id)).unwrap_or_else(|| u64::max_value());
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1121,7 +1121,7 @@ where L::Target: Logger {
 					let src_node_id = NodeId::from_pubkey(&hop.src_node_id);
 					let dest_node_id = NodeId::from_pubkey(&prev_hop_id);
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, &src_node_id, &dest_node_id))
+						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, None, &src_node_id, &dest_node_id))
 						.unwrap_or_else(|| u64::max_value());
 
 					// We assume that the recipient only included route hints for routes which had
@@ -4550,7 +4550,7 @@ mod tests {
 	}
 
 	impl routing::Score for BadChannelScorer {
-		fn channel_penalty_msat(&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
@@ -4562,7 +4562,7 @@ mod tests {
 	}
 
 	impl routing::Score for BadNodeScorer {
-		fn channel_penalty_msat(&self, _short_channel_id: u64, _source: &NodeId, target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, target: &NodeId) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 

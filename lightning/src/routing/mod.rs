@@ -24,9 +24,19 @@ use sync::{Mutex, MutexGuard};
 ///
 ///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
 pub trait Score {
-	/// Returns the fee in msats willing to be paid to avoid routing through the given channel
-	/// in the direction from `source` to `target`.
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64;
+	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
+	/// given channel in the direction from `source` to `target`.
+	///
+	/// The channel's capacity (less any other MPP parts which are also being considered for use in
+	/// the same payment) is given by `channel_capacity_msat`. It may be guessed from various
+	/// sources or assumed from no data at all.
+	///
+	/// For hints provided in the invoice, we assume the channel has sufficient capacity to accept
+	/// the invoice's full amount, and provide a `channel_capacity_msat` of `None`. In all other
+	/// cases it is set to `Some`, even if we're guessing at the channel value.
+	///
+	/// Your code should be overflow-safe through a `channel_capacity_msat` of 21 million BTC.
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
@@ -65,8 +75,8 @@ impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 }
 
 impl<S: Score, T: DerefMut<Target=S>> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, source, target)
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {

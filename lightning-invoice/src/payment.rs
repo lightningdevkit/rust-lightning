@@ -73,7 +73,7 @@
 //! # struct FakeScorer {};
 //! # impl routing::Score for FakeScorer {
 //! #     fn channel_penalty_msat(
-//! #         &self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
+//! #         &self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 //! #     ) -> u64 { 0 }
 //! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 //! # }
@@ -1227,7 +1227,7 @@ mod tests {
 
 	impl routing::Score for TestScorer {
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId
+			&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 		) -> u64 { 0 }
 
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], short_channel_id: u64) {
