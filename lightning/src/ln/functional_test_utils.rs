@@ -999,7 +999,7 @@ macro_rules! get_payment_preimage_hash {
 			let payment_preimage = PaymentPreimage([*payment_count; 32]);
 			*payment_count += 1;
 			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, 0).unwrap();
+			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200).unwrap();
 			(payment_preimage, payment_hash, payment_secret)
 		}
 	}

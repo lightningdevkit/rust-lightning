@@ -1152,7 +1152,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
-	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, 0).unwrap();
+	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
@@ -4957,7 +4957,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 900000);
 
-	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, 0).unwrap();
+	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200).unwrap();
 	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
@@ -5160,30 +5160,30 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
 	// 2nd HTLC:
-	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200, 0).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 	// 3rd HTLC:
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200, 0).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 	// 4th HTLC:
 	let (_, payment_hash_3, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 5th HTLC:
 	let (_, payment_hash_4, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	// 6th HTLC:
-	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200, 0).unwrap());
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200).unwrap());
 	// 7th HTLC:
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200, 0).unwrap());
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200).unwrap());
 
 	// 8th HTLC:
 	let (_, payment_hash_5, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 9th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200, 0).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
 
 	// 10th HTLC:
 	let (_, payment_hash_6, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 11th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200, 0).unwrap());
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200).unwrap());
 
 	// Double-check that six of the new HTLC were added
 	// We now have six HTLCs pending over the dust limit and six HTLCs under the dust limit (ie,
@@ -7164,7 +7164,7 @@ fn test_check_htlc_underpaying() {
 	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, nodes[0].network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
-	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, 0).unwrap();
+	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -8018,7 +8018,7 @@ fn test_preimage_storage() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
 	{
-		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200, 42);
+		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200);
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -8035,8 +8035,7 @@ fn test_preimage_storage() {
 	match events[0] {
 		Event::PaymentReceived { ref purpose, .. } => {
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, user_payment_id, .. } => {
-					assert_eq!(*user_payment_id, 42);
+				PaymentPurpose::InvoicePayment { payment_preimage, .. } => {
 					claim_payment(&nodes[0], &[&nodes[1]], payment_preimage.unwrap());
 				},
 				_ => panic!("expected PaymentPurpose::InvoicePayment")
@@ -8056,11 +8055,11 @@ fn test_secret_timeout() {
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
-	let (payment_hash, payment_secret_1) = nodes[1].node.create_inbound_payment(Some(100_000), 2, 0);
+	let (payment_hash, payment_secret_1) = nodes[1].node.create_inbound_payment(Some(100_000), 2);
 
 	// We should fail to register the same payment hash twice, at least until we've connected a
 	// block with time 7200 + CHAN_CONFIRM_DEPTH + 1.
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
+	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
 	let mut block = {
@@ -8075,16 +8074,16 @@ fn test_secret_timeout() {
 		}
 	};
 	connect_block(&nodes[1], &block);
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 0) {
+	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
 
 	// If we then connect the second block, we should be able to register the same payment hash
-	// again with a different user_payment_id (this time getting a new payment secret).
+	// again (this time getting a new payment secret).
 	block.header.prev_blockhash = block.header.block_hash();
 	block.header.time += 1;
 	connect_block(&nodes[1], &block);
-	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2, 42).unwrap();
+	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2).unwrap();
 	assert_ne!(payment_secret_1, our_payment_secret);
 
 	{
@@ -8102,9 +8101,8 @@ fn test_secret_timeout() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, user_payment_id }, .. } => {
+		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
 			assert!(payment_preimage.is_none());
-			assert_eq!(user_payment_id, 42);
 			assert_eq!(payment_secret, our_payment_secret);
 			// We don't actually have the payment preimage with which to claim this payment!
 		},
@@ -8124,7 +8122,7 @@ fn test_bad_secret_hash() {
 
 	let random_payment_hash = PaymentHash([42; 32]);
 	let random_payment_secret = PaymentSecret([43; 32]);
-	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2, 0);
+	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2);
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 	// All the below cases should end up being handled exactly identically, so we macro the

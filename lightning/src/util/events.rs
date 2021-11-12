@@ -60,15 +60,6 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
-		/// This is the `user_payment_id` which was provided to
-		/// [`ChannelManager::create_inbound_payment_for_hash`] or
-		/// [`ChannelManager::create_inbound_payment`]. It has no meaning inside of LDK and is
-		/// simply copied here. It may be used to correlate PaymentReceived events with invoice
-		/// metadata stored elsewhere.
-		///
-		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
-		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-		user_payment_id: u64,
 	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
@@ -352,13 +343,11 @@ impl Writeable for Event {
 			&Event::PaymentReceived { ref payment_hash, ref amt, ref purpose } => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
-				let mut user_payment_id = None;
 				let payment_preimage;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret, user_payment_id: id } => {
+					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
-						user_payment_id = Some(id);
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
@@ -368,7 +357,7 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(2, payment_secret, option),
 					(4, amt, required),
-					(6, user_payment_id, option),
+					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
 					(8, payment_preimage, option),
 				});
 			},
@@ -457,21 +446,18 @@ impl MaybeReadable for Event {
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
 					let mut amt = 0;
-					let mut user_payment_id = None;
+					let mut _user_payment_id = None; // For compatibility with 0.0.103 and earlier
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(2, payment_secret, option),
 						(4, amt, required),
-						(6, user_payment_id, option),
+						(6, _user_payment_id, option),
 						(8, payment_preimage, option),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
 							payment_preimage,
-							payment_secret: secret,
-							user_payment_id: if let Some(id) = user_payment_id {
-								id
-							} else { return Err(msgs::DecodeError::InvalidValue) }
+							payment_secret: secret
 						},
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
