@@ -2085,26 +2085,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				Some(id) => id.clone(),
 			};
 
-			let channel_state = &mut *channel_lock;
-			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
-				match {
-					if chan.get().get_counterparty_node_id() != path.first().unwrap().pubkey {
-						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
-					}
-					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
-					}
-					let send_res = break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(
-						htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-							path: path.clone(),
-							session_priv: session_priv.clone(),
-							first_hop_htlc_msat: htlc_msat,
-							payment_id,
-							payment_secret: payment_secret.clone(),
-							payee: payee.clone(),
-						}, onion_packet, &self.logger),
-					channel_state, chan);
-
+			macro_rules! insert_outbound_payment {
+				() => {
 					let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
 						session_privs: HashSet::new(),
 						pending_amt_msat: 0,
@@ -2115,8 +2097,28 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						total_msat: total_value,
 					});
 					assert!(payment.insert(session_priv_bytes, path));
+				}
+			}
 
-					send_res
+			let channel_state = &mut *channel_lock;
+			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+				match {
+					if chan.get().get_counterparty_node_id() != path.first().unwrap().pubkey {
+						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
+					}
+					if !chan.get().is_live() {
+						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
+					}
+					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(
+						htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
+							path: path.clone(),
+							session_priv: session_priv.clone(),
+							first_hop_htlc_msat: htlc_msat,
+							payment_id,
+							payment_secret: payment_secret.clone(),
+							payee: payee.clone(),
+						}, onion_packet, &self.logger),
+					channel_state, chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
 						if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
@@ -2126,8 +2128,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							// is restored. Therefore, we must return an error indicating that
 							// it is unsafe to retry the payment wholesale, which we do in the
 							// send_payment check for MonitorUpdateFailed, below.
+							insert_outbound_payment!(); // Only do this after possibly break'ing on Perm failure above.
 							return Err(APIError::MonitorUpdateFailed);
 						}
+						insert_outbound_payment!();
 
 						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan.get().channel_id()));
 						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -2142,7 +2146,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							},
 						});
 					},
-					None => {},
+					None => { insert_outbound_payment!(); },
 				}
 			} else { unreachable!(); }
 			return Ok(());
@@ -2275,6 +2279,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				} else { None },
 			})
 		} else if has_err {
+			// If we failed to send any paths, we shouldn't have inserted the new PaymentId into
+			// our `pending_outbound_payments` map at all.
+			debug_assert!(self.pending_outbound_payments.lock().unwrap().get(&payment_id).is_none());
 			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
 			Ok(payment_id)
