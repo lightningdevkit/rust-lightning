@@ -65,7 +65,7 @@
 //! # struct FakeRouter {};
 //! # impl<S: routing::Score> Router<S> for FakeRouter {
 //! #     fn find_route(
-//! #         &self, payer: &PublicKey, params: &RouteParameters,
+//! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
 //! #         first_hops: Option<&[&ChannelDetails]>, scorer: &S
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
 //! # }
@@ -180,8 +180,8 @@ pub trait Payer {
 pub trait Router<S: routing::Score> {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		scorer: &S
+		&self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
+		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError>;
 }
 
@@ -329,10 +329,8 @@ where
 		let payer = self.payer.node_id();
 		let first_hops = self.payer.first_hops();
 		let route = self.router.find_route(
-			&payer,
-			params,
-			Some(&first_hops.iter().collect::<Vec<_>>()),
-			&self.scorer.lock(),
+			&payer, params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
+			&self.scorer.lock()
 		).map_err(|e| PaymentError::Routing(e))?;
 
 		match send_payment(&route) {
@@ -392,7 +390,10 @@ where
 
 		let payer = self.payer.node_id();
 		let first_hops = self.payer.first_hops();
-		let route = self.router.find_route(&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), &self.scorer.lock());
+		let route = self.router.find_route(
+			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
+			&self.scorer.lock()
+		);
 		if route.is_err() {
 			log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
 			return Err(());
@@ -1187,11 +1188,8 @@ mod tests {
 
 	impl<S: routing::Score> Router<S> for TestRouter {
 		fn find_route(
-			&self,
-			_payer: &PublicKey,
-			params: &RouteParameters,
-			_first_hops: Option<&[&ChannelDetails]>,
-			_scorer: &S,
+			&self, _payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
 		) -> Result<Route, LightningError> {
 			Ok(Route {
 				payee: Some(params.payee.clone()), ..Self::route_for_value(params.final_value_msat)
@@ -1203,11 +1201,8 @@ mod tests {
 
 	impl<S: routing::Score> Router<S> for FailingRouter {
 		fn find_route(
-			&self,
-			_payer: &PublicKey,
-			_params: &RouteParameters,
-			_first_hops: Option<&[&ChannelDetails]>,
-			_scorer: &S,
+			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
@@ -1370,8 +1365,10 @@ mod tests {
 	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
 
 	impl<S: routing::Score> Router<S> for ManualRouter {
-		fn find_route(&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>, _scorer: &S)
-		-> Result<Route, LightningError> {
+		fn find_route(
+			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
+		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
 	}

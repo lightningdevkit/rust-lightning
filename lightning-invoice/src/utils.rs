@@ -112,8 +112,8 @@ impl<G, L: Deref> DefaultRouter<G, L> where G: Deref<Target = NetworkGraph>, L::
 impl<G, L: Deref, S: routing::Score> Router<S> for DefaultRouter<G, L>
 where G: Deref<Target = NetworkGraph>, L::Target: Logger {
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		scorer: &S
+		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError> {
 		find_route(payer, params, &*self.network_graph, first_hops, &*self.logger, scorer)
 	}
