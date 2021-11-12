@@ -98,6 +98,8 @@ pub struct ScorerUsingTime<T: Time> {
 /// Parameters for configuring [`Scorer`].
 pub struct ScoringParameters {
 	/// A fixed penalty in msats to apply to each channel.
+	///
+	/// Default value: 500 msat
 	pub base_penalty_msat: u64,
 
 	/// A penalty in msats to apply to a channel upon failing to relay a payment.
@@ -105,8 +107,27 @@ pub struct ScoringParameters {
 	/// This accumulates for each failure but may be reduced over time based on
 	/// [`failure_penalty_half_life`].
 	///
+	/// Default value: 1,024,000 msat
+	///
 	/// [`failure_penalty_half_life`]: Self::failure_penalty_half_life
 	pub failure_penalty_msat: u64,
+
+	/// When the amount being sent over a channel is this many 1024ths of the total channel
+	/// capacity, we begin applying [`overuse_penalty_msat_per_1024th`].
+	///
+	/// Default value: 128 1024ths (i.e. begin penalizing when an HTLC uses 1/8th of a channel)
+	///
+	/// [`overuse_penalty_msat_per_1024th`]: Self::overuse_penalty_msat_per_1024th
+	pub overuse_penalty_start_1024th: u16,
+
+	/// A penalty applied, per whole 1024ths of the channel capacity which the amount being sent
+	/// over the channel exceeds [`overuse_penalty_start_1024th`] by.
+	///
+	/// Default value: 20 msat (i.e. 2560 msat penalty to use 1/4th of a channel, 7680 msat penalty
+	///                to use half a channel, and 12,560 msat penalty to use 3/4ths of a channel)
+	///
+	/// [`overuse_penalty_start_1024th`]: Self::overuse_penalty_start_1024th
+	pub overuse_penalty_msat_per_1024th: u64,
 
 	/// The time required to elapse before any accumulated [`failure_penalty_msat`] penalties are
 	/// cut in half.
@@ -122,7 +143,9 @@ pub struct ScoringParameters {
 
 impl_writeable_tlv_based!(ScoringParameters, {
 	(0, base_penalty_msat, required),
+	(1, overuse_penalty_start_1024th, (default_value, 128)),
 	(2, failure_penalty_msat, required),
+	(3, overuse_penalty_msat_per_1024th, (default_value, 20)),
 	(4, failure_penalty_half_life, required),
 });
 
@@ -167,6 +190,8 @@ impl<T: Time> ScorerUsingTime<T> {
 			base_penalty_msat: penalty_msat,
 			failure_penalty_msat: 0,
 			failure_penalty_half_life: Duration::from_secs(0),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		})
 	}
 }
@@ -205,19 +230,34 @@ impl Default for ScoringParameters {
 			base_penalty_msat: 500,
 			failure_penalty_msat: 1024 * 1000,
 			failure_penalty_half_life: Duration::from_secs(3600),
+			overuse_penalty_start_1024th: 1024 / 8,
+			overuse_penalty_msat_per_1024th: 20,
 		}
 	}
 }
 
 impl<T: Time> routing::Score for ScorerUsingTime<T> {
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, _send_amt_msat: u64, _chan_capacity_msat: Option<u64>, _source: &NodeId, _target: &NodeId
+		&self, short_channel_id: u64, send_amt_msat: u64, chan_capacity_opt: Option<u64>, _source: &NodeId, _target: &NodeId
 	) -> u64 {
 		let failure_penalty_msat = self.channel_failures
 			.get(&short_channel_id)
 			.map_or(0, |value| value.decayed_penalty_msat(self.params.failure_penalty_half_life));
 
-		self.params.base_penalty_msat + failure_penalty_msat
+		let mut penalty_msat = self.params.base_penalty_msat + failure_penalty_msat;
+
+		if let Some(chan_capacity_msat) = chan_capacity_opt {
+			let send_1024ths = send_amt_msat.checked_mul(1024).unwrap_or(u64::max_value()) / chan_capacity_msat;
+
+			if send_1024ths > self.params.overuse_penalty_start_1024th as u64 {
+				penalty_msat = penalty_msat.checked_add(
+						(send_1024ths - self.params.overuse_penalty_start_1024th as u64)
+						.checked_mul(self.params.overuse_penalty_msat_per_1024th).unwrap_or(u64::max_value()))
+					.unwrap_or(u64::max_value());
+			}
+		}
+
+		penalty_msat
 	}
 
 	fn payment_path_failed(&mut self, _path: &[&RouteHop], short_channel_id: u64) {
@@ -414,6 +454,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 512,
 			failure_penalty_half_life: Duration::from_secs(1),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -429,6 +471,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 64,
 			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -450,6 +494,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 512,
 			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -480,6 +526,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 512,
 			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -504,6 +552,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 512,
 			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -531,6 +581,8 @@ mod tests {
 			base_penalty_msat: 1_000,
 			failure_penalty_msat: 512,
 			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
 		});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -548,5 +600,25 @@ mod tests {
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_128);
+	}
+
+	#[test]
+	fn charges_per_1024th_penalty() {
+		let scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 0,
+			failure_penalty_msat: 0,
+			failure_penalty_half_life: Duration::from_secs(0),
+			overuse_penalty_start_1024th: 256,
+			overuse_penalty_msat_per_1024th: 100,
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+
+		assert_eq!(scorer.channel_penalty_msat(42, 1_000, None, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_000, Some(1_024_000), &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 256_999, Some(1_024_000), &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 257_000, Some(1_024_000), &source, &target), 100);
+		assert_eq!(scorer.channel_penalty_msat(42, 258_000, Some(1_024_000), &source, &target), 200);
+		assert_eq!(scorer.channel_penalty_msat(42, 512_000, Some(1_024_000), &source, &target), 256 * 100);
 	}
 }
