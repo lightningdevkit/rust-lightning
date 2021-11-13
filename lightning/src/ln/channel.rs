@@ -401,6 +401,17 @@ pub(super) struct MonitorRestoreUpdates {
 	pub funding_locked: Option<msgs::FundingLocked>,
 }
 
+/// The return value of `channel_reestablish`
+pub(super) struct ReestablishResponses {
+	pub funding_locked: Option<msgs::FundingLocked>,
+	pub raa: Option<msgs::RevokeAndACK>,
+	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub order: RAACommitmentOrder,
+	pub mon_update: Option<ChannelMonitorUpdate>,
+	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
+	pub shutdown_msg: Option<msgs::Shutdown>,
+}
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -3501,7 +3512,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L) -> Result<(Option<msgs::FundingLocked>, Option<msgs::RevokeAndACK>, Option<msgs::CommitmentUpdate>, Option<ChannelMonitorUpdate>, RAACommitmentOrder, Vec<(HTLCSource, PaymentHash)>, Option<msgs::Shutdown>), ChannelError> where L::Target: Logger {
+	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L) -> Result<ReestablishResponses, ChannelError> where L::Target: Logger {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -3553,15 +3564,27 @@ impl<Signer: Sign> Channel<Signer> {
 					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet".to_owned()));
 				}
 				// Short circuit the whole handler as there is nothing we can resend them
-				return Ok((None, None, None, None, RAACommitmentOrder::CommitmentFirst, Vec::new(), shutdown_msg));
+				return Ok(ReestablishResponses {
+					funding_locked: None,
+					raa: None, commitment_update: None, mon_update: None,
+					order: RAACommitmentOrder::CommitmentFirst,
+					holding_cell_failed_htlcs: Vec::new(),
+					shutdown_msg
+				});
 			}
 
 			// We have OurFundingLocked set!
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-			return Ok((Some(msgs::FundingLocked {
-				channel_id: self.channel_id(),
-				next_per_commitment_point,
-			}), None, None, None, RAACommitmentOrder::CommitmentFirst, Vec::new(), shutdown_msg));
+			return Ok(ReestablishResponses {
+				funding_locked: Some(msgs::FundingLocked {
+					channel_id: self.channel_id(),
+					next_per_commitment_point,
+				}),
+				raa: None, commitment_update: None, mon_update: None,
+				order: RAACommitmentOrder::CommitmentFirst,
+				holding_cell_failed_htlcs: Vec::new(),
+				shutdown_msg
+			});
 		}
 
 		let required_revoke = if msg.next_remote_commitment_number + 1 == INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
@@ -3585,7 +3608,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// the corresponding revoke_and_ack back yet.
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
 
-		let resend_funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
+		let funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
 			// We should never have to worry about MonitorUpdateFailed resending FundingLocked
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
@@ -3607,18 +3630,39 @@ impl<Signer: Sign> Channel<Signer> {
 				// have received some updates while we were disconnected. Free the holding cell
 				// now!
 				match self.free_holding_cell_htlcs(logger) {
-					Err(ChannelError::Close(msg)) => return Err(ChannelError::Close(msg)),
+					Err(ChannelError::Close(msg)) => Err(ChannelError::Close(msg)),
 					Err(ChannelError::Warn(_)) | Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) =>
 						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
-					Ok((Some((commitment_update, monitor_update)), htlcs_to_fail)) => {
-						return Ok((resend_funding_locked, required_revoke, Some(commitment_update), Some(monitor_update), self.resend_order.clone(), htlcs_to_fail, shutdown_msg));
+					Ok((Some((commitment_update, monitor_update)), holding_cell_failed_htlcs)) => {
+						Ok(ReestablishResponses {
+							funding_locked, shutdown_msg,
+							raa: required_revoke,
+							commitment_update: Some(commitment_update),
+							order: self.resend_order.clone(),
+							mon_update: Some(monitor_update),
+							holding_cell_failed_htlcs,
+						})
 					},
-					Ok((None, htlcs_to_fail)) => {
-						return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), htlcs_to_fail, shutdown_msg));
+					Ok((None, holding_cell_failed_htlcs)) => {
+						Ok(ReestablishResponses {
+							funding_locked, shutdown_msg,
+							raa: required_revoke,
+							commitment_update: None,
+							order: self.resend_order.clone(),
+							mon_update: None,
+							holding_cell_failed_htlcs,
+						})
 					},
 				}
 			} else {
-				return Ok((resend_funding_locked, required_revoke, None, None, self.resend_order.clone(), Vec::new(), shutdown_msg));
+				Ok(ReestablishResponses {
+					funding_locked, shutdown_msg,
+					raa: required_revoke,
+					commitment_update: None,
+					order: self.resend_order.clone(),
+					mon_update: None,
+					holding_cell_failed_htlcs: Vec::new(),
+				})
 			}
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() {
@@ -3629,12 +3673,24 @@ impl<Signer: Sign> Channel<Signer> {
 
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
-				return Ok((resend_funding_locked, None, None, None, self.resend_order.clone(), Vec::new(), shutdown_msg));
+				Ok(ReestablishResponses {
+					funding_locked, shutdown_msg,
+					commitment_update: None, raa: None, mon_update: None,
+					order: self.resend_order.clone(),
+					holding_cell_failed_htlcs: Vec::new(),
+				})
+			} else {
+				Ok(ReestablishResponses {
+					funding_locked, shutdown_msg,
+					raa: required_revoke,
+					commitment_update: Some(self.get_last_commitment_update(logger)),
+					order: self.resend_order.clone(),
+					mon_update: None,
+					holding_cell_failed_htlcs: Vec::new(),
+				})
 			}
-
-			return Ok((resend_funding_locked, required_revoke, Some(self.get_last_commitment_update(logger)), None, self.resend_order.clone(), Vec::new(), shutdown_msg));
 		} else {
-			return Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction".to_owned()));
+			Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction".to_owned()))
 		}
 	}
 

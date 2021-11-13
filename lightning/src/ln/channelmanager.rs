@@ -4722,10 +4722,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// disconnect, so Channel's reestablish will never hand us any holding cell
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, htlcs_failed_forward, shutdown) =
-						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
+					let responses = try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
 					let mut channel_update = None;
-					if let Some(msg) = shutdown {
+					if let Some(msg) = responses.shutdown_msg {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
 							msg,
@@ -4740,11 +4739,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						});
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
-					chan_restoration_res = handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked);
+					chan_restoration_res = handle_chan_restoration_locked!(
+						self, channel_state_lock, channel_state, chan, responses.raa, responses.commitment_update, responses.order,
+						responses.mon_update, Vec::new(), None, responses.funding_locked);
 					if let Some(upd) = channel_update {
 						channel_state.pending_msg_events.push(upd);
 					}
-					(htlcs_failed_forward, need_lnd_workaround)
+					(responses.holding_cell_failed_htlcs, need_lnd_workaround)
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
