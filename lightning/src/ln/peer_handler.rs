@@ -811,6 +811,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 													log_given_level!(self.logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													continue
 												},
+												msgs::ErrorAction::IgnoreDuplicateGossip => continue, // Don't even bother logging these
 												msgs::ErrorAction::IgnoreError => {
 													log_debug!(self.logger, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
 													continue;
@@ -1351,23 +1352,31 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 						log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-						if self.message_handler.route_handler.handle_channel_announcement(&msg).is_ok() {
-							self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None);
+						match self.message_handler.route_handler.handle_channel_announcement(&msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None),
+							_ => {},
 						}
-						if self.message_handler.route_handler.handle_channel_update(&update_msg).is_ok() {
-							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None);
+						match self.message_handler.route_handler.handle_channel_update(&update_msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None),
+							_ => {},
 						}
 					},
 					MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
 						log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
-						if self.message_handler.route_handler.handle_node_announcement(&msg).is_ok() {
-							self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None);
+						match self.message_handler.route_handler.handle_node_announcement(&msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None),
+							_ => {},
 						}
 					},
 					MessageSendEvent::BroadcastChannelUpdate { msg } => {
 						log_debug!(self.logger, "Handling BroadcastChannelUpdate event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-						if self.message_handler.route_handler.handle_channel_update(&msg).is_ok() {
-							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None);
+						match self.message_handler.route_handler.handle_channel_update(&msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
+							_ => {},
 						}
 					},
 					MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
@@ -1400,6 +1409,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							msgs::ErrorAction::IgnoreAndLog(level) => {
 								log_given_level!(self.logger, level, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
 							},
+							msgs::ErrorAction::IgnoreDuplicateGossip => {},
 							msgs::ErrorAction::IgnoreError => {
 								log_debug!(self.logger, "Received a HandleError event to be ignored for node {}", log_pubkey!(node_id));
 							},

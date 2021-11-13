@@ -847,8 +847,10 @@ impl NetworkGraph {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
-					if node_info.last_update  >= msg.timestamp {
+					if node_info.last_update  > msg.timestamp {
 						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
+					} else if node_info.last_update  == msg.timestamp {
+						return Err(LightningError{err: "Update had the same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 					}
 				}
 
@@ -977,7 +979,7 @@ impl NetworkGraph {
 					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), msg.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)})
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -1082,8 +1084,10 @@ impl NetworkGraph {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
-							if existing_chan_info.last_update >= msg.timestamp {
+							if existing_chan_info.last_update > msg.timestamp {
 								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
+							} else if existing_chan_info.last_update == msg.timestamp {
+								return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
 						} else {
@@ -1720,7 +1724,7 @@ mod tests {
 
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Update older than last processed update")
+			Err(e) => assert_eq!(e.err, "Update had same timestamp as last processed update")
 		};
 		unsigned_channel_update.timestamp += 500;
 

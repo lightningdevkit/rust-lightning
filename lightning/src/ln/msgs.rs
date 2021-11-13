@@ -715,6 +715,10 @@ pub enum ErrorAction {
 	/// The peer did something harmless that we weren't able to meaningfully process.
 	/// If the error is logged, log it at the given level.
 	IgnoreAndLog(logger::Level),
+	/// The peer provided us with a gossip message which we'd already seen. In most cases this
+	/// should be ignored, but it may result in the message being forwarded if it is a duplicate of
+	/// our own channel announcements.
+	IgnoreDuplicateGossip,
 	/// The peer did something incorrect. Tell them.
 	SendErrorMessage {
 		/// The message to send.
