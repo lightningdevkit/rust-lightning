@@ -7313,9 +7313,9 @@ fn test_announce_disable_channels() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let short_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let short_id_2 = create_announced_chan_between_nodes(&nodes, 1, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let short_id_3 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 1, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Disconnect peers
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
@@ -7325,13 +7325,13 @@ fn test_announce_disable_channels() {
 	nodes[0].node.timer_tick_occurred(); // DisabledStaged -> Disabled
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
-	let mut chans_disabled: HashSet<u64> = [short_id_1, short_id_2, short_id_3].iter().map(|a| *a).collect();
+	let mut chans_disabled = HashMap::new();
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				assert_eq!(msg.contents.flags & (1<<1), 1<<1); // The "channel disabled" bit should be set
 				// Check that each channel gets updated exactly once
-				if !chans_disabled.remove(&msg.contents.short_channel_id) {
+				if chans_disabled.insert(msg.contents.short_channel_id, msg.contents.timestamp).is_some() {
 					panic!("Generated ChannelUpdate for wrong chan!");
 				}
 			},
@@ -7367,19 +7367,22 @@ fn test_announce_disable_channels() {
 	nodes[0].node.timer_tick_occurred();
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
-	chans_disabled = [short_id_1, short_id_2, short_id_3].iter().map(|a| *a).collect();
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				assert_eq!(msg.contents.flags & (1<<1), 0); // The "channel disabled" bit should be off
-				// Check that each channel gets updated exactly once
-				if !chans_disabled.remove(&msg.contents.short_channel_id) {
-					panic!("Generated ChannelUpdate for wrong chan!");
+				match chans_disabled.remove(&msg.contents.short_channel_id) {
+					// Each update should have a higher timestamp than the previous one, replacing
+					// the old one.
+					Some(prev_timestamp) => assert!(msg.contents.timestamp > prev_timestamp),
+					None => panic!("Generated ChannelUpdate for wrong chan!"),
 				}
 			},
 			_ => panic!("Unexpected event"),
 		}
 	}
+	// Check that each channel gets updated exactly once
+	assert!(chans_disabled.is_empty());
 }
 
 #[test]

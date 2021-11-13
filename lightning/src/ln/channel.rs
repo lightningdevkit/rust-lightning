@@ -4167,6 +4167,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn set_channel_update_status(&mut self, status: ChannelUpdateStatus) {
+		self.update_time_counter += 1;
 		self.channel_update_status = status;
 	}
 

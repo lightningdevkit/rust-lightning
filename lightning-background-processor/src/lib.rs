@@ -493,9 +493,10 @@ mod tests {
 
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr, $expected_bytes: expr) => {
-				match $node.write(&mut $expected_bytes) {
-					Ok(()) => {
-						loop {
+				loop {
+					$expected_bytes.clear();
+					match $node.write(&mut $expected_bytes) {
+						Ok(()) => {
 							match std::fs::read($filepath) {
 								Ok(bytes) => {
 									if bytes == $expected_bytes {
@@ -506,9 +507,9 @@ mod tests {
 								},
 								Err(_) => continue
 							}
-						}
-					},
-					Err(e) => panic!("Unexpected error: {}", e)
+						},
+						Err(e) => panic!("Unexpected error: {}", e)
+					}
 				}
 			}
 		}
