@@ -1351,8 +1351,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 						log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
-						if self.message_handler.route_handler.handle_channel_announcement(&msg).is_ok() && self.message_handler.route_handler.handle_channel_update(&update_msg).is_ok() {
+						if self.message_handler.route_handler.handle_channel_announcement(&msg).is_ok() {
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None);
+						}
+						if self.message_handler.route_handler.handle_channel_update(&update_msg).is_ok() {
 							self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None);
 						}
 					},
