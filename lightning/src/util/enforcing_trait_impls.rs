@@ -190,7 +190,8 @@ impl BaseSign for EnforcingSigner {
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
 	}
 
-	fn sign_channel_announcement(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+	fn sign_channel_announcement(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
+	-> Result<(Signature, Signature), ()> {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
