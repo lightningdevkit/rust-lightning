@@ -2896,20 +2896,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			log_trace!(self.logger, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
 			return None
 		}
-
-		let (announcement, our_bitcoin_sig) = match chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
-			Ok(res) => res,
-			Err(_) => return None, // Only in case of state precondition violations eg channel is closing
-		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
-
-		Some(msgs::AnnouncementSignatures {
-			channel_id: chan.channel_id(),
-			short_channel_id: chan.get_short_channel_id().unwrap(),
-			node_signature: our_node_sig,
-			bitcoin_signature: our_bitcoin_sig,
-		})
+		chan.get_announcement_sigs(self.get_our_node_id(), self.genesis_hash.clone()).ok()
 	}
 
 	#[allow(dead_code)]
@@ -2969,7 +2956,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut announced_chans = false;
 		for (_, chan) in channel_state.by_id.iter() {
-			if let Some(msg) = chan.get_signed_channel_announcement(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone()) {
+			if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg,
 					update_msg: match self.get_channel_update_for_broadcast(chan) {
@@ -4674,7 +4661,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone(), msg), channel_state, chan),
+					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(self.get_our_node_id(), self.genesis_hash.clone(), msg), channel_state, chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
 					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),

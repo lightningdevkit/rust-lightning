@@ -4596,17 +4596,19 @@ impl<Signer: Sign> Channel<Signer> {
 		})
 	}
 
-	/// Gets an UnsignedChannelAnnouncement, as well as a signature covering it using our
-	/// bitcoin_key, if available, for this channel. The channel must be publicly announceable and
-	/// available for use (have exchanged FundingLocked messages in both directions). Should be used
-	/// for both loose and in response to an AnnouncementSignatures message from the remote peer.
+	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
+	/// announceable and available for use (have exchanged FundingLocked messages in both
+	/// directions). Should be used for both loose and in response to an AnnouncementSignatures
+	/// message from the remote peer.
+	///
 	/// Will only fail if we're not in a state where channel_announcement may be sent (including
 	/// closing).
+	///
 	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
 	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
 	///
 	/// This will only return ChannelError::Ignore upon failure.
-	pub fn get_channel_announcement(&self, node_id: PublicKey, chain_hash: BlockHash) -> Result<(msgs::UnsignedChannelAnnouncement, Signature), ChannelError> {
+	fn get_channel_announcement(&self, node_id: PublicKey, chain_hash: BlockHash) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> {
 		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
@@ -4630,19 +4632,30 @@ impl<Signer: Sign> Channel<Signer> {
 			excess_data: Vec::new(),
 		};
 
-		let sig = self.holder_signer.sign_channel_announcement(&msg, &self.secp_ctx)
+		Ok(msg)
+	}
+
+	pub fn get_announcement_sigs(&self, node_pk: PublicKey, genesis_block_hash: BlockHash) -> Result<msgs::AnnouncementSignatures, ChannelError> {
+		let announcement = self.get_channel_announcement(node_pk, genesis_block_hash)?;
+		let (our_node_sig, our_bitcoin_sig) = self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx)
 			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 
-		Ok((msg, sig))
+		Ok(msgs::AnnouncementSignatures {
+			channel_id: self.channel_id(),
+			short_channel_id: self.get_short_channel_id().unwrap(),
+			node_signature: our_node_sig,
+			bitcoin_signature: our_bitcoin_sig,
+		})
 	}
 
 	/// Signs the given channel announcement, returning a ChannelError::Ignore if no keys are
 	/// available.
-	fn sign_channel_announcement(&self, our_node_secret: &SecretKey, our_node_id: PublicKey, msghash: secp256k1::Message, announcement: msgs::UnsignedChannelAnnouncement, our_bitcoin_sig: Signature) -> Result<msgs::ChannelAnnouncement, ChannelError> {
+	fn sign_channel_announcement(&self, our_node_id: PublicKey, announcement: msgs::UnsignedChannelAnnouncement) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.announcement_sigs {
 			let were_node_one = announcement.node_id_1 == our_node_id;
 
-			let our_node_sig = self.secp_ctx.sign(&msghash, our_node_secret);
+			let (our_node_sig, our_bitcoin_sig) = self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx)
+				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 			Ok(msgs::ChannelAnnouncement {
 				node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
 				node_signature_2: if were_node_one { their_node_sig } else { our_node_sig },
@@ -4658,8 +4671,8 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Processes an incoming announcement_signatures message, providing a fully-signed
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
-	pub fn announcement_signatures(&mut self, our_node_secret: &SecretKey, our_node_id: PublicKey, chain_hash: BlockHash, msg: &msgs::AnnouncementSignatures) -> Result<msgs::ChannelAnnouncement, ChannelError> {
-		let (announcement, our_bitcoin_sig) = self.get_channel_announcement(our_node_id.clone(), chain_hash)?;
+	pub fn announcement_signatures(&mut self, our_node_id: PublicKey, chain_hash: BlockHash, msg: &msgs::AnnouncementSignatures) -> Result<msgs::ChannelAnnouncement, ChannelError> {
+		let announcement = self.get_channel_announcement(our_node_id.clone(), chain_hash)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
 
@@ -4676,18 +4689,17 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
 
-		self.sign_channel_announcement(our_node_secret, our_node_id, msghash, announcement, our_bitcoin_sig)
+		self.sign_channel_announcement(our_node_id, announcement)
 	}
 
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
-	pub fn get_signed_channel_announcement(&self, our_node_secret: &SecretKey, our_node_id: PublicKey, chain_hash: BlockHash) -> Option<msgs::ChannelAnnouncement> {
-		let (announcement, our_bitcoin_sig) = match self.get_channel_announcement(our_node_id.clone(), chain_hash) {
+	pub fn get_signed_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash) -> Option<msgs::ChannelAnnouncement> {
+		let announcement = match self.get_channel_announcement(our_node_id.clone(), chain_hash) {
 			Ok(res) => res,
 			Err(_) => return None,
 		};
-		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
-		match self.sign_channel_announcement(our_node_secret, our_node_id, msghash, announcement, our_bitcoin_sig) {
+		match self.sign_channel_announcement(our_node_id, announcement) {
 			Ok(res) => Some(res),
 			Err(_) => None,
 		}
@@ -6270,6 +6282,7 @@ mod tests {
 
 		let mut signer = InMemorySigner::new(
 			&secp_ctx,
+			SecretKey::from_slice(&hex::decode("4242424242424242424242424242424242424242424242424242424242424242").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),

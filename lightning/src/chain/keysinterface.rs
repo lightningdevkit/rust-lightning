@@ -31,7 +31,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
-use util::ser::{Writeable, Writer, Readable};
+use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use chain::transaction::OutPoint;
 use ln::{chan_utils, PaymentPreimage};
@@ -346,13 +346,17 @@ pub trait BaseSign {
 	/// chosen to forgo their output as dust.
 	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
-	/// Signs a channel announcement message with our funding key, proving it comes from one
-	/// of the channel participants.
+	/// Signs a channel announcement message with our funding key and our node secret key (aka
+	/// node_id or network_key), proving it comes from one of the channel participants.
+	///
+	/// The first returned signature should be from our node secret key, the second from our
+	/// funding key.
 	///
 	/// Note that if this fails or is rejected, the channel will not be publicly announced and
 	/// our counterparty may (though likely will not) close the channel on us for violating the
 	/// protocol.
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
+		-> Result<(Signature, Signature), ()>;
 
 	/// Set the counterparty static channel data, including basepoints,
 	/// counterparty_selected/holder_selected_contest_delay and funding outpoint.
@@ -447,6 +451,8 @@ pub struct InMemorySigner {
 	pub commitment_seed: [u8; 32],
 	/// Holder public keys and basepoints
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
+	/// Private key of our node secret, used for signing channel announcements
+	node_secret: SecretKey,
 	/// Counterparty public keys and counterparty/holder selected_contest_delay, populated on channel acceptance
 	channel_parameters: Option<ChannelTransactionParameters>,
 	/// The total value of this channel
@@ -459,6 +465,7 @@ impl InMemorySigner {
 	/// Create a new InMemorySigner
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>,
+		node_secret: SecretKey,
 		funding_key: SecretKey,
 		revocation_base_key: SecretKey,
 		payment_key: SecretKey,
@@ -478,6 +485,7 @@ impl InMemorySigner {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
+			node_secret,
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			channel_parameters: None,
@@ -720,9 +728,10 @@ impl BaseSign for InMemorySigner {
 		Ok(closing_tx.trust().sign(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
 	}
 
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
+	-> Result<(Signature, Signature), ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok(secp_ctx.sign(&msghash, &self.funding_key))
+		Ok((secp_ctx.sign(&msghash, &self.node_secret), secp_ctx.sign(&msghash, &self.funding_key)))
 	}
 
 	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
@@ -757,8 +766,8 @@ impl Writeable for InMemorySigner {
 	}
 }
 
-impl Readable for InMemorySigner {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+impl ReadableArgs<SecretKey> for InMemorySigner {
+	fn read<R: io::Read>(reader: &mut R, node_secret: SecretKey) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let funding_key = Readable::read(reader)?;
@@ -784,6 +793,7 @@ impl Readable for InMemorySigner {
 			payment_key,
 			delayed_payment_base_key,
 			htlc_base_key,
+			node_secret,
 			commitment_seed,
 			channel_value_satoshis,
 			holder_channel_pubkeys,
@@ -937,6 +947,7 @@ impl KeysManager {
 
 		InMemorySigner::new(
 			&self.secp_ctx,
+			self.node_secret,
 			funding_key,
 			revocation_base_key,
 			payment_key,
@@ -1119,7 +1130,7 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader))
+		InMemorySigner::read(&mut io::Cursor::new(reader), self.get_node_secret())
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
