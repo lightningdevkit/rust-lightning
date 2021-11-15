@@ -3807,15 +3807,7 @@ fn test_funding_peer_disconnect() {
 
 	confirm_transaction(&nodes[0], &tx);
 	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
-	let chan_id;
-	assert_eq!(events_1.len(), 1);
-	match events_1[0] {
-		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
-			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			chan_id = msg.channel_id;
-		},
-		_ => panic!("Unexpected event"),
-	}
+	assert!(events_1.is_empty());
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -3824,53 +3816,107 @@ fn test_funding_peer_disconnect() {
 
 	confirm_transaction(&nodes[1], &tx);
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_2.len(), 2);
-	let funding_locked = match events_2[0] {
+	assert!(events_2.is_empty());
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+	let as_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty() });
+	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+
+	// nodes[0] hasn't yet received a funding_locked, so it only sends that on reconnect.
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
+	let events_3 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_3.len(), 1);
+	let as_funding_locked = match events_3[0] {
 		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
-			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			msg.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events_3[0]),
 	};
-	let bs_announcement_sigs = match events_2[1] {
+
+	// nodes[1] received nodes[0]'s funding_locked on the first reconnect above, so it should send
+	// announcement_signatures as well as channel_update.
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
+	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_4.len(), 3);
+	let chan_id;
+	let bs_funding_locked = match events_4[0] {
+		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			chan_id = msg.channel_id;
+			msg.clone()
+		},
+		_ => panic!("Unexpected event {:?}", events_4[0]),
+	};
+	let bs_announcement_sigs = match events_4[1] {
 		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			msg.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events_4[1]),
+	};
+	match events_4[2] {
+		MessageSendEvent::SendChannelUpdate { ref node_id, msg: _ } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event {:?}", events_4[2]),
+	}
+
+	// Re-deliver nodes[0]'s funding_locked, which nodes[1] can safely ignore. It currently
+	// generates a duplicative announcement_signatures
+	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+	let events_5 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_5.len(), 1);
+	match events_5[0] {
+		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(*msg, bs_announcement_sigs);
+		},
+		_ => panic!("Unexpected event {:?}", events_5[0]),
 	};
 
-	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-
-	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &funding_locked);
-	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs);
-	let events_3 = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_3.len(), 2);
-	let as_announcement_sigs = match events_3[0] {
+	// When we deliver nodes[1]'s funding_locked, however, nodes[0] will generate its
+	// announcement_signatures.
+	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &bs_funding_locked);
+	let events_6 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_6.len(), 1);
+	let as_announcement_sigs = match events_6[0] {
 		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			msg.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events_6[0]),
 	};
-	let (as_announcement, as_update) = match events_3[1] {
+
+	// When we deliver nodes[1]'s announcement_signatures to nodes[0], nodes[0] should immediately
+	// broadcast the channel announcement globally, as well as re-send its (now-public)
+	// channel_update.
+	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs);
+	let events_7 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_7.len(), 1);
+	let (chan_announcement, as_update) = match events_7[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			(msg.clone(), update_msg.clone())
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events_7[0]),
 	};
 
+	// Finally, deliver nodes[0]'s announcement_signatures to nodes[1] and make sure it creates the
+	// same channel_announcement.
 	nodes[1].node.handle_announcement_signatures(&nodes[0].node.get_our_node_id(), &as_announcement_sigs);
-	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_4.len(), 1);
-	let (_, bs_update) = match events_4[0] {
+	let events_8 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_8.len(), 1);
+	let bs_update = match events_8[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
-			(msg.clone(), update_msg.clone())
+			assert_eq!(*msg, chan_announcement);
+			update_msg.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events_8[0]),
 	};
 
-	nodes[0].net_graph_msg_handler.handle_channel_announcement(&as_announcement).unwrap();
+	// Provide the channel announcement and public updates to the network graph
+	nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).unwrap();
 	nodes[0].net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
 	nodes[0].net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
 
@@ -3918,14 +3964,14 @@ fn test_funding_peer_disconnect() {
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
-	// as_announcement should be re-generated exactly by broadcast_node_announcement.
+	// The channel announcement should be re-generated exactly by broadcast_node_announcement.
 	nodes[0].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
 	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	let mut found_announcement = false;
 	for event in msgs.iter() {
 		match event {
 			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
-				if *msg == as_announcement { found_announcement = true; }
+				if *msg == chan_announcement { found_announcement = true; }
 			},
 			MessageSendEvent::BroadcastNodeAnnouncement { .. } => {},
 			_ => panic!("Unexpected event"),

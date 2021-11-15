@@ -4343,11 +4343,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		if need_commitment_update {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
-				let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-				return Some(msgs::FundingLocked {
-					channel_id: self.channel_id,
-					next_per_commitment_point,
-				});
+				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
+					let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+					return Some(msgs::FundingLocked {
+						channel_id: self.channel_id,
+						next_per_commitment_point,
+					});
+				}
 			} else {
 				self.monitor_pending_funding_locked = true;
 			}
