@@ -1495,6 +1495,7 @@ mod tests {
 	use chain::keysinterface::{KeysInterface, BaseSign};
 	use bitcoin::Network;
 	use ln::PaymentHash;
+	use bitcoin::hashes::hex::ToHex;
 
 	#[test]
 	fn test_anchors() {
@@ -1598,6 +1599,10 @@ mod tests {
 		assert_eq!(tx.built.transaction.output.len(), 3);
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh().to_hex(),
+				   "002085cf52e41ba7c099a39df504e7b61f6de122971ceb53b06731876eaeb85e8dc5");
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh().to_hex(),
+				   "002049f0736bb335c61a04d2623a24df878a7592a3c51fa7258d41b2c85318265e73");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
 		channel_parameters.opt_anchors = Some(());
@@ -1613,6 +1618,10 @@ mod tests {
 		assert_eq!(tx.built.transaction.output.len(), 5);
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh().to_hex(),
+				   "002067114123af3f95405bae4fd930fc95de03e3c86baaee8b2dd29b43dd26cf613c");
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh().to_hex(),
+				   "0020a06e3b0d4fcf704f2b9c41e16a70099e39989466c3142b8573a1154542f28f57");
 	}
 
 	#[test]
