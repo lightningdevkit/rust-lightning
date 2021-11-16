@@ -636,7 +636,7 @@ pub(crate) fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &
 /// <>
 /// (empty vector required to satisfy compliance with MINIMALIF-standard rule)
 #[inline]
-pub(crate) fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
+pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
 	Builder::new().push_slice(&funding_pubkey.serialize()[..])
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.push_opcode(opcodes::all::OP_IFDUP)
@@ -773,6 +773,11 @@ impl<'a> DirectedChannelTransactionParameters<'a> {
 	/// The funding outpoint
 	pub fn funding_outpoint(&self) -> OutPoint {
 		self.inner.funding_outpoint.unwrap().into_bitcoin_outpoint()
+	}
+
+	/// Whether to use anchors for this channel
+	pub fn opt_anchors(&self) -> bool {
+		self.inner.opt_anchors.is_some()
 	}
 }
 
