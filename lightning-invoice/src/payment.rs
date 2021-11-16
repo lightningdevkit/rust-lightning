@@ -629,6 +629,30 @@ mod tests {
 	}
 
 	#[test]
+	fn pays_invoice_on_partial_failure() {
+		let event_handler = |_: &_| { panic!() };
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let retry = TestRouter::retry_for_invoice(&invoice);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new()
+			.fails_with_partial_failure(retry.clone(), OnAttempt(1))
+			.fails_with_partial_failure(retry, OnAttempt(2))
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		assert!(invoice_payer.pay_invoice(&invoice).is_ok());
+	}
+
+	#[test]
 	fn retries_payment_path_for_unknown_payment() {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
@@ -1233,7 +1257,7 @@ mod tests {
 	struct TestPayer {
 		expectations: core::cell::RefCell<VecDeque<Amount>>,
 		attempts: core::cell::RefCell<usize>,
-		failing_on_attempt: Option<usize>,
+		failing_on_attempt: core::cell::RefCell<HashMap<usize, PaymentSendFailure>>,
 	}
 
 	#[derive(Clone, Debug, PartialEq, Eq)]
@@ -1243,12 +1267,14 @@ mod tests {
 		OnRetry(u64),
 	}
 
+	struct OnAttempt(usize);
+
 	impl TestPayer {
 		fn new() -> Self {
 			Self {
 				expectations: core::cell::RefCell::new(VecDeque::new()),
 				attempts: core::cell::RefCell::new(0),
-				failing_on_attempt: None,
+				failing_on_attempt: core::cell::RefCell::new(HashMap::new()),
 			}
 		}
 
@@ -1258,20 +1284,30 @@ mod tests {
 		}
 
 		fn fails_on_attempt(self, attempt: usize) -> Self {
-			Self {
-				expectations: core::cell::RefCell::new(self.expectations.borrow().clone()),
-				attempts: core::cell::RefCell::new(0),
-				failing_on_attempt: Some(attempt),
-			}
+			let failure = PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed);
+			self.fails_with(failure, OnAttempt(attempt))
+		}
+
+		fn fails_with_partial_failure(self, retry: RouteParameters, attempt: OnAttempt) -> Self {
+			self.fails_with(PaymentSendFailure::PartialFailure {
+				results: vec![],
+				failed_paths_retry: Some(retry),
+				payment_id: PaymentId([1; 32]),
+			}, attempt)
+		}
+
+		fn fails_with(self, failure: PaymentSendFailure, attempt: OnAttempt) -> Self {
+			self.failing_on_attempt.borrow_mut().insert(attempt.0, failure);
+			self
 		}
 
 		fn check_attempts(&self) -> Result<PaymentId, PaymentSendFailure> {
 			let mut attempts = self.attempts.borrow_mut();
 			*attempts += 1;
-			match self.failing_on_attempt {
+
+			match self.failing_on_attempt.borrow_mut().remove(&*attempts) {
+				Some(failure) => Err(failure),
 				None => Ok(PaymentId([1; 32])),
-				Some(attempt) if attempt != *attempts => Ok(PaymentId([1; 32])),
-				Some(_) => Err(PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed)),
 			}
 		}
 
@@ -1279,6 +1315,8 @@ mod tests {
 			let expected_value_msats = self.expectations.borrow_mut().pop_front();
 			if let Some(expected_value_msats) = expected_value_msats {
 				assert_eq!(actual_value_msats, expected_value_msats);
+			} else {
+				panic!("Unexpected amount: {:?}", actual_value_msats);
 			}
 		}
 	}
