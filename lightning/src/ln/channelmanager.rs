@@ -6552,7 +6552,7 @@ pub mod bench {
 	use ln::msgs::{ChannelMessageHandler, Init};
 	use routing::network_graph::NetworkGraph;
 	use routing::router::{Payee, get_route};
-	use routing::scorer::Scorer;
+	use routing::scoring::Scorer;
 	use util::test_utils;
 	use util::config::UserConfig;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};

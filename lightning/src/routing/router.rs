@@ -17,7 +17,7 @@ use bitcoin::secp256k1::key::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing;
+use routing::scoring::Score;
 use routing::network_graph::{NetworkGraph, NodeId, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::{Level, Logger};
@@ -529,7 +529,7 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 ///
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-pub fn find_route<L: Deref, S: routing::Score>(
+pub fn find_route<L: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, params: &RouteParameters, network: &NetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S
 ) -> Result<Route, LightningError>
@@ -540,7 +540,7 @@ where L::Target: Logger {
 	)
 }
 
-pub(crate) fn get_route<L: Deref, S: routing::Score>(
+pub(crate) fn get_route<L: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, payee: &Payee, network: &NetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv_expiry_delta: u32,
 	logger: L, scorer: &S
@@ -892,9 +892,9 @@ where L::Target: Logger {
 								}
 							}
 
-							let path_penalty_msat = $next_hops_path_penalty_msat
-								.checked_add(scorer.channel_penalty_msat($chan_id.clone(), &$src_node_id, &$dest_node_id))
-								.unwrap_or_else(|| u64::max_value());
+							let path_penalty_msat = $next_hops_path_penalty_msat.checked_add(
+								scorer.channel_penalty_msat($chan_id.clone(), amount_to_transfer_over_msat, Some(*available_liquidity_msat),
+									&$src_node_id, &$dest_node_id)).unwrap_or_else(|| u64::max_value());
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1121,7 +1121,7 @@ where L::Target: Logger {
 					let src_node_id = NodeId::from_pubkey(&hop.src_node_id);
 					let dest_node_id = NodeId::from_pubkey(&prev_hop_id);
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, &src_node_id, &dest_node_id))
+						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, None, &src_node_id, &dest_node_id))
 						.unwrap_or_else(|| u64::max_value());
 
 					// We assume that the recipient only included route hints for routes which had
@@ -1472,7 +1472,7 @@ where L::Target: Logger {
 
 #[cfg(test)]
 mod tests {
-	use routing;
+	use routing::scoring::Score;
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
 	use routing::router::{get_route, Payee, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees};
 	use chain::transaction::OutPoint;
@@ -4549,8 +4549,8 @@ mod tests {
 		short_channel_id: u64,
 	}
 
-	impl routing::Score for BadChannelScorer {
-		fn channel_penalty_msat(&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId) -> u64 {
+	impl Score for BadChannelScorer {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
@@ -4561,8 +4561,8 @@ mod tests {
 		node_id: NodeId,
 	}
 
-	impl routing::Score for BadNodeScorer {
-		fn channel_penalty_msat(&self, _short_channel_id: u64, _source: &NodeId, target: &NodeId) -> u64 {
+	impl Score for BadNodeScorer {
+		fn channel_penalty_msat(&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, target: &NodeId) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
@@ -4787,7 +4787,7 @@ pub(crate) mod test_utils {
 #[cfg(all(test, feature = "unstable", not(feature = "no-std")))]
 mod benches {
 	use super::*;
-	use routing::scorer::Scorer;
+	use routing::scoring::Scorer;
 	use util::logger::{Logger, Record};
 
 	use test::Bencher;
