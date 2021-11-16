@@ -45,6 +45,20 @@ pub(crate) const MAX_HTLCS: u16 = 483;
 pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 
+/// Gets the weight for an HTLC-Success transaction.
+#[inline]
+pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_SUCCESS_ANCHOR_TX_WEIGHT: u64 = 706;
+	if opt_anchors { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
+}
+
+/// Gets the weight for an HTLC-Timeout transaction.
+#[inline]
+pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
+	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
+}
+
 #[derive(PartialEq)]
 pub(crate) enum HTLCType {
 	AcceptedHTLC,
@@ -598,11 +612,12 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 		witness: Vec::new(),
 	});
 
-	let total_fee = if htlc.offered {
-			feerate_per_kw as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000
-		} else {
-			feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000
-		};
+	let weight = if htlc.offered {
+		htlc_timeout_tx_weight(opt_anchors)
+	} else {
+		htlc_success_tx_weight(opt_anchors)
+	};
+	let total_fee = feerate_per_kw as u64 * weight / 1000;
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(TxOut {
