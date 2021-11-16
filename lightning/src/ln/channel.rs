@@ -481,8 +481,13 @@ pub(super) struct Channel<Signer: Sign> {
 	holding_cell_update_fee: Option<u32>,
 	next_holder_htlc_id: u64,
 	next_counterparty_htlc_id: u64,
-	update_time_counter: u32,
 	feerate_per_kw: u32,
+
+	/// The timestamp set on our latest `channel_update` message for this channel. It is updated
+	/// when the channel is updated in ways which may impact the `channel_update` message or when a
+	/// new block is received, ensuring it's always at least moderately close to the current real
+	/// time.
+	update_time_counter: u32,
 
 	#[cfg(debug_assertions)]
 	/// Max to_local and to_remote outputs in a locally-generated commitment transaction
