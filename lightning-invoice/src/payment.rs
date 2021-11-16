@@ -7,12 +7,13 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! A module for paying Lightning invoices.
+//! A module for paying Lightning invoices and sending spontaneous payments.
 //!
-//! Defines an [`InvoicePayer`] utility for paying invoices, parameterized by [`Payer`] and
+//! Defines an [`InvoicePayer`] utility for sending payments, parameterized by [`Payer`] and
 //! [`Router`] traits. Implementations of [`Payer`] provide the payer's node id, channels, and means
 //! to send a payment over a [`Route`]. Implementations of [`Router`] find a [`Route`] between payer
-//! and payee using information provided by the payer and from the payee's [`Invoice`].
+//! and payee using information provided by the payer and from the payee's [`Invoice`], when
+//! applicable.
 //!
 //! [`InvoicePayer`] is capable of retrying failed payments. It accomplishes this by implementing
 //! [`EventHandler`] which decorates a user-provided handler. It will intercept any
@@ -27,7 +28,7 @@
 //! # extern crate lightning_invoice;
 //! # extern crate secp256k1;
 //! #
-//! # use lightning::ln::{PaymentHash, PaymentSecret};
+//! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing;
@@ -53,6 +54,9 @@
 //! #     fn send_payment(
 //! #         &self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
 //! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
+//! #     fn send_spontaneous_payment(
+//! #         &self, route: &Route, payment_preimage: PaymentPreimage
+//! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
 //! #     fn retry_payment(
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
@@ -61,7 +65,7 @@
 //! # struct FakeRouter {};
 //! # impl<S: routing::Score> Router<S> for FakeRouter {
 //! #     fn find_route(
-//! #         &self, payer: &PublicKey, params: &RouteParameters,
+//! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
 //! #         first_hops: Option<&[&ChannelDetails]>, scorer: &S
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
 //! # }
@@ -113,8 +117,9 @@
 use crate::Invoice;
 
 use bitcoin_hashes::Hash;
+use bitcoin_hashes::sha256::Hash as Sha256;
 
-use lightning::ln::{PaymentHash, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing;
@@ -130,7 +135,7 @@ use std::ops::Deref;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-/// A utility for paying [`Invoice]`s.
+/// A utility for paying [`Invoice`]s and sending spontaneous payments.
 pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E>
 where
 	P::Target: Payer,
@@ -144,6 +149,7 @@ where
 	scorer: S,
 	logger: L,
 	event_handler: E,
+	/// Caches the overall attempts at making a payment, which is updated prior to retrying.
 	payment_cache: Mutex<HashMap<PaymentHash, usize>>,
 	retry_attempts: RetryAttempts,
 }
@@ -161,6 +167,11 @@ pub trait Payer {
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
 	) -> Result<PaymentId, PaymentSendFailure>;
 
+	/// Sends a spontaneous payment over the Lightning Network using the given [`Route`].
+	fn send_spontaneous_payment(
+		&self, route: &Route, payment_preimage: PaymentPreimage
+	) -> Result<PaymentId, PaymentSendFailure>;
+
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;
 }
@@ -169,8 +180,8 @@ pub trait Payer {
 pub trait Router<S: routing::Score> {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		scorer: &S
+		&self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
+		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError>;
 }
 
@@ -228,7 +239,7 @@ where
 		if invoice.amount_milli_satoshis().is_none() {
 			Err(PaymentError::Invoice("amount missing"))
 		} else {
-			self.pay_invoice_internal(invoice, None, 0)
+			self.pay_invoice_using_amount(invoice, None)
 		}
 	}
 
@@ -244,140 +255,166 @@ where
 		if invoice.amount_milli_satoshis().is_some() {
 			Err(PaymentError::Invoice("amount unexpected"))
 		} else {
-			self.pay_invoice_internal(invoice, Some(amount_msats), 0)
+			self.pay_invoice_using_amount(invoice, Some(amount_msats))
 		}
 	}
 
-	fn pay_invoice_internal(
-		&self, invoice: &Invoice, amount_msats: Option<u64>, retry_count: usize
+	fn pay_invoice_using_amount(
+		&self, invoice: &Invoice, amount_msats: Option<u64>
 	) -> Result<PaymentId, PaymentError> {
 		debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
-		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
-		if invoice.is_expired() {
-			log_trace!(self.logger, "Invoice expired prior to first send for payment {}", log_bytes!(payment_hash.0));
-			return Err(PaymentError::Invoice("Invoice expired prior to send"));
-		}
-		let retry_data_payment_id = loop {
-			let mut payment_cache = self.payment_cache.lock().unwrap();
-			match payment_cache.entry(payment_hash) {
-				hash_map::Entry::Vacant(entry) => {
-					let payer = self.payer.node_id();
-					let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
-						.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
-						.with_route_hints(invoice.route_hints());
-					if let Some(features) = invoice.features() {
-						payee = payee.with_features(features.clone());
-					}
-					let params = RouteParameters {
-						payee,
-						final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
-						final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
-					};
-					let first_hops = self.payer.first_hops();
-					let route = self.router.find_route(
-						&payer,
-						&params,
-						Some(&first_hops.iter().collect::<Vec<_>>()),
-						&self.scorer.lock(),
-					).map_err(|e| PaymentError::Routing(e))?;
 
-					let payment_secret = Some(invoice.payment_secret().clone());
-					let payment_id = match self.payer.send_payment(&route, payment_hash, &payment_secret) {
-						Ok(payment_id) => payment_id,
-						Err(PaymentSendFailure::ParameterError(e)) =>
-							return Err(PaymentError::Sending(PaymentSendFailure::ParameterError(e))),
-						Err(PaymentSendFailure::PathParameterError(e)) =>
-							return Err(PaymentError::Sending(PaymentSendFailure::PathParameterError(e))),
-						Err(PaymentSendFailure::AllFailedRetrySafe(e)) => {
-							if retry_count >= self.retry_attempts.0 {
-								return Err(PaymentError::Sending(PaymentSendFailure::AllFailedRetrySafe(e)))
-							}
-							break None;
-						},
-						Err(PaymentSendFailure::PartialFailure { results: _, failed_paths_retry, payment_id }) => {
-							if let Some(retry_data) = failed_paths_retry {
-								entry.insert(retry_count);
-								break Some((retry_data, payment_id));
-							} else {
-								// This may happen if we send a payment and some paths fail, but
-								// only due to a temporary monitor failure or the like, implying
-								// they're really in-flight, but we haven't sent the initial
-								// HTLC-Add messages yet.
-								payment_id
-							}
-						},
-					};
-					entry.insert(retry_count);
-					return Ok(payment_id);
-				},
-				hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
-			}
+		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
+		match self.payment_cache.lock().unwrap().entry(payment_hash) {
+			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
+			hash_map::Entry::Vacant(entry) => entry.insert(0),
 		};
-		if let Some((retry_data, payment_id)) = retry_data_payment_id {
-			// Some paths were sent, even if we failed to send the full MPP value our recipient may
-			// misbehave and claim the funds, at which point we have to consider the payment sent,
-			// so return `Ok()` here, ignoring any retry errors.
-			let _ = self.retry_payment(payment_id, payment_hash, &retry_data);
-			Ok(payment_id)
-		} else {
-			self.pay_invoice_internal(invoice, amount_msats, retry_count + 1)
+
+		let payment_secret = Some(invoice.payment_secret().clone());
+		let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
+			.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
+			.with_route_hints(invoice.route_hints());
+		if let Some(features) = invoice.features() {
+			payee = payee.with_features(features.clone());
 		}
+		let params = RouteParameters {
+			payee,
+			final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
+			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+		};
+
+		let send_payment = |route: &Route| {
+			self.payer.send_payment(route, payment_hash, &payment_secret)
+		};
+		self.pay_internal(&params, payment_hash, send_payment)
+			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
 	}
 
-	fn retry_payment(&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters)
-	-> Result<(), ()> {
-		let route;
-		{
-			let mut payment_cache = self.payment_cache.lock().unwrap();
-			let entry = loop {
-				let entry = payment_cache.entry(payment_hash);
-				match entry {
-					hash_map::Entry::Occupied(_) => break entry,
-					hash_map::Entry::Vacant(entry) => entry.insert(0),
-				};
-			};
-			if let hash_map::Entry::Occupied(mut entry) = entry {
-				let max_payment_attempts = self.retry_attempts.0 + 1;
-				let attempts = entry.get_mut();
-				*attempts += 1;
+	/// Pays `pubkey` an amount using the hash of the given preimage, caching it for later use in
+	/// case a retry is needed.
+	///
+	/// You should ensure that `payment_preimage` is unique and that its `payment_hash` has never
+	/// been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so for you.
+	pub fn pay_pubkey(
+		&self, pubkey: PublicKey, payment_preimage: PaymentPreimage, amount_msats: u64,
+		final_cltv_expiry_delta: u32
+	) -> Result<PaymentId, PaymentError> {
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		match self.payment_cache.lock().unwrap().entry(payment_hash) {
+			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
+			hash_map::Entry::Vacant(entry) => entry.insert(0),
+		};
 
-				if *attempts >= max_payment_attempts {
-					log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					return Err(());
-				} else if has_expired(params) {
-					log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					return Err(());
-				}
+		let params = RouteParameters {
+			payee: Payee::for_keysend(pubkey),
+			final_value_msat: amount_msats,
+			final_cltv_expiry_delta,
+		};
 
-				let payer = self.payer.node_id();
-				let first_hops = self.payer.first_hops();
-				route = self.router.find_route(&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), &self.scorer.lock());
-				if route.is_err() {
-					log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-					return Err(());
-				}
-			} else {
-				unreachable!();
-			}
+		let send_payment = |route: &Route| {
+			self.payer.send_spontaneous_payment(route, payment_preimage)
+		};
+		self.pay_internal(&params, payment_hash, send_payment)
+			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
+	}
+
+	fn pay_internal<F: FnOnce(&Route) -> Result<PaymentId, PaymentSendFailure> + Copy>(
+		&self, params: &RouteParameters, payment_hash: PaymentHash, send_payment: F,
+	) -> Result<PaymentId, PaymentError> {
+		if has_expired(params) {
+			log_trace!(self.logger, "Invoice expired prior to send for payment {}", log_bytes!(payment_hash.0));
+			return Err(PaymentError::Invoice("Invoice expired prior to send"));
 		}
 
-		let retry_res = self.payer.retry_payment(&route.unwrap(), payment_id);
-		match retry_res {
+		let payer = self.payer.node_id();
+		let first_hops = self.payer.first_hops();
+		let route = self.router.find_route(
+			&payer, params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
+			&self.scorer.lock()
+		).map_err(|e| PaymentError::Routing(e))?;
+
+		match send_payment(&route) {
+			Ok(payment_id) => Ok(payment_id),
+			Err(e) => match e {
+				PaymentSendFailure::ParameterError(_) => Err(e),
+				PaymentSendFailure::PathParameterError(_) => Err(e),
+				PaymentSendFailure::AllFailedRetrySafe(_) => {
+					let mut payment_cache = self.payment_cache.lock().unwrap();
+					let retry_count = payment_cache.get_mut(&payment_hash).unwrap();
+					if *retry_count >= self.retry_attempts.0 {
+						Err(e)
+					} else {
+						*retry_count += 1;
+						std::mem::drop(payment_cache);
+						Ok(self.pay_internal(params, payment_hash, send_payment)?)
+					}
+				},
+				PaymentSendFailure::PartialFailure { failed_paths_retry, payment_id, .. } => {
+					if let Some(retry_data) = failed_paths_retry {
+						// Some paths were sent, even if we failed to send the full MPP value our
+						// recipient may misbehave and claim the funds, at which point we have to
+						// consider the payment sent, so return `Ok()` here, ignoring any retry
+						// errors.
+						let _ = self.retry_payment(payment_id, payment_hash, &retry_data);
+						Ok(payment_id)
+					} else {
+						// This may happen if we send a payment and some paths fail, but
+						// only due to a temporary monitor failure or the like, implying
+						// they're really in-flight, but we haven't sent the initial
+						// HTLC-Add messages yet.
+						Ok(payment_id)
+					}
+				},
+			},
+		}.map_err(|e| PaymentError::Sending(e))
+	}
+
+	fn retry_payment(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters
+	) -> Result<(), ()> {
+		let max_payment_attempts = self.retry_attempts.0 + 1;
+		let attempts = *self.payment_cache.lock().unwrap()
+			.entry(payment_hash)
+			.and_modify(|attempts| *attempts += 1)
+			.or_insert(1);
+
+		if attempts >= max_payment_attempts {
+			log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+			return Err(());
+		}
+
+		if has_expired(params) {
+			log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+			return Err(());
+		}
+
+		let payer = self.payer.node_id();
+		let first_hops = self.payer.first_hops();
+		let route = self.router.find_route(
+			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
+			&self.scorer.lock()
+		);
+		if route.is_err() {
+			log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+			return Err(());
+		}
+
+		match self.payer.retry_payment(&route.unwrap(), payment_id) {
 			Ok(()) => Ok(()),
 			Err(PaymentSendFailure::ParameterError(_)) |
 			Err(PaymentSendFailure::PathParameterError(_)) => {
 				log_trace!(self.logger, "Failed to retry for payment {} due to bogus route/payment data, not retrying.", log_bytes!(payment_hash.0));
-				return Err(());
+				Err(())
 			},
 			Err(PaymentSendFailure::AllFailedRetrySafe(_)) => {
 				self.retry_payment(payment_id, payment_hash, params)
 			},
-			Err(PaymentSendFailure::PartialFailure { results: _, failed_paths_retry, .. }) => {
+			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, .. }) => {
 				if let Some(retry) = failed_paths_retry {
-					self.retry_payment(payment_id, payment_hash, &retry)
-				} else {
-					Ok(())
+					// Always return Ok for the same reason as noted in pay_internal.
+					let _ = self.retry_payment(payment_id, payment_hash, &retry);
 				}
+				Ok(())
 			},
 		}
 	}
@@ -412,25 +449,25 @@ where
 	fn handle_event(&self, event: &Event) {
 		match event {
 			Event::PaymentPathFailed {
-				all_paths_failed, payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
+				all_paths_failed, payment_id, payment_hash, rejected_by_dest, path,
+				short_channel_id, retry, ..
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
-					let t = path.iter().collect::<Vec<_>>();
-					self.scorer.lock().payment_path_failed(&t, *short_channel_id);
+					let path = path.iter().collect::<Vec<_>>();
+					self.scorer.lock().payment_path_failed(&path, *short_channel_id);
 				}
 
 				if *rejected_by_dest {
 					log_trace!(self.logger, "Payment {} rejected by destination; not retrying", log_bytes!(payment_hash.0));
 				} else if payment_id.is_none() {
 					log_trace!(self.logger, "Payment {} has no id; not retrying", log_bytes!(payment_hash.0));
-				} else if let Some(params) = retry {
-					if self.retry_payment(payment_id.unwrap(), *payment_hash, params).is_ok() {
-						// We retried at least somewhat, don't provide the PaymentPathFailed event to the user.
-						return;
-					}
-				} else {
+				} else if retry.is_none() {
 					log_trace!(self.logger, "Payment {} missing retry params; not retrying", log_bytes!(payment_hash.0));
+				} else if self.retry_payment(payment_id.unwrap(), *payment_hash, retry.as_ref().unwrap()).is_ok() {
+					// We retried at least somewhat, don't provide the PaymentPathFailed event to the user.
+					return;
 				}
+
 				if *all_paths_failed { self.payment_cache.lock().unwrap().remove(payment_hash); }
 			},
 			Event::PaymentSent { payment_hash, .. } => {
@@ -518,6 +555,10 @@ mod tests {
 			.unwrap()
 	}
 
+	fn pubkey() -> PublicKey {
+		PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap()
+	}
+
 	#[test]
 	fn pays_invoice_on_first_attempt() {
 		let event_handled = core::cell::RefCell::new(false);
@@ -526,8 +567,9 @@ mod tests {
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
 
-		let payer = TestPayer::new();
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -555,8 +597,8 @@ mod tests {
 		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
 
 		let payer = TestPayer::new()
-			.expect_value_msat(final_value_msat)
-			.expect_value_msat(final_value_msat / 2);
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -588,6 +630,30 @@ mod tests {
 	}
 
 	#[test]
+	fn pays_invoice_on_partial_failure() {
+		let event_handler = |_: &_| { panic!() };
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let retry = TestRouter::retry_for_invoice(&invoice);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new()
+			.fails_with_partial_failure(retry.clone(), OnAttempt(1))
+			.fails_with_partial_failure(retry, OnAttempt(2))
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		assert!(invoice_payer.pay_invoice(&invoice).is_ok());
+	}
+
+	#[test]
 	fn retries_payment_path_for_unknown_payment() {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
@@ -597,7 +663,9 @@ mod tests {
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
 		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
 
-		let payer = TestPayer::new();
+		let payer = TestPayer::new()
+			.expect_send(Amount::OnRetry(final_value_msat / 2))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -640,9 +708,9 @@ mod tests {
 		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
 
 		let payer = TestPayer::new()
-			.expect_value_msat(final_value_msat)
-			.expect_value_msat(final_value_msat / 2)
-			.expect_value_msat(final_value_msat / 2);
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -692,15 +760,17 @@ mod tests {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
 
-		let payer = TestPayer::new();
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
 
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
@@ -743,15 +813,17 @@ mod tests {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
 
-		let payer = TestPayer::new();
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
 
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
@@ -785,7 +857,8 @@ mod tests {
 
 		let payer = TestPayer::new()
 			.fails_on_attempt(2)
-			.expect_value_msat(final_value_msat);
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -815,15 +888,17 @@ mod tests {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
 
-		let payer = TestPayer::new();
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
 
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
@@ -847,15 +922,19 @@ mod tests {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
 
-		let payer = TestPayer::new();
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new()
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(0));
 
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 
 		// Cannot repay an invoice pending payment.
@@ -906,15 +985,19 @@ mod tests {
 
 	#[test]
 	fn fails_paying_invoice_with_sending_errors() {
-		let payer = TestPayer::new().fails_on_attempt(1);
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new()
+			.fails_on_attempt(1)
+			.expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, |_: &_| {}, RetryAttempts(0));
 
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
 		match invoice_payer.pay_invoice(&invoice) {
 			Err(PaymentError::Sending(_)) => {},
 			Err(_) => panic!("unexpected error"),
@@ -932,7 +1015,7 @@ mod tests {
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
 		let final_value_msat = 100;
 
-		let payer = TestPayer::new().expect_value_msat(final_value_msat);
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new());
 		let logger = TestLogger::new();
@@ -974,6 +1057,57 @@ mod tests {
 	}
 
 	#[test]
+	fn pays_pubkey_with_amount() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let pubkey = pubkey();
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		let final_value_msat = 100;
+		let final_cltv_expiry_delta = 42;
+
+		let payer = TestPayer::new()
+			.expect_send(Amount::Spontaneous(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat));
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		let payment_id = Some(invoice_payer.pay_pubkey(
+				pubkey, payment_preimage, final_value_msat, final_cltv_expiry_delta
+			).unwrap());
+		assert_eq!(*payer.attempts.borrow(), 1);
+
+		let retry = RouteParameters {
+			payee: Payee::for_keysend(pubkey),
+			final_value_msat,
+			final_cltv_expiry_delta,
+		};
+		let event = Event::PaymentPathFailed {
+			payment_id,
+			payment_hash,
+			network_update: None,
+			rejected_by_dest: false,
+			all_paths_failed: false,
+			path: vec![],
+			short_channel_id: None,
+			retry: Some(retry),
+		};
+		invoice_payer.handle_event(&event);
+		assert_eq!(*event_handled.borrow(), false);
+		assert_eq!(*payer.attempts.borrow(), 2);
+
+		invoice_payer.handle_event(&Event::PaymentSent {
+			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
+		});
+		assert_eq!(*event_handled.borrow(), true);
+		assert_eq!(*payer.attempts.borrow(), 2);
+	}
+
+	#[test]
 	fn scores_failed_channel() {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
@@ -986,7 +1120,9 @@ mod tests {
 		let short_channel_id = Some(path[0].short_channel_id);
 
 		// Expect that scorer is given short_channel_id upon handling the event.
-		let payer = TestPayer::new();
+		let payer = TestPayer::new()
+			.expect_send(Amount::ForInvoice(final_value_msat))
+			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new().expect_channel_failure(short_channel_id.unwrap()));
 		let logger = TestLogger::new();
@@ -1052,11 +1188,8 @@ mod tests {
 
 	impl<S: routing::Score> Router<S> for TestRouter {
 		fn find_route(
-			&self,
-			_payer: &PublicKey,
-			params: &RouteParameters,
-			_first_hops: Option<&[&ChannelDetails]>,
-			_scorer: &S,
+			&self, _payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
 		) -> Result<Route, LightningError> {
 			Ok(Route {
 				payee: Some(params.payee.clone()), ..Self::route_for_value(params.final_value_msat)
@@ -1068,11 +1201,8 @@ mod tests {
 
 	impl<S: routing::Score> Router<S> for FailingRouter {
 		fn find_route(
-			&self,
-			_payer: &PublicKey,
-			_params: &RouteParameters,
-			_first_hops: Option<&[&ChannelDetails]>,
-			_scorer: &S,
+			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
@@ -1120,48 +1250,68 @@ mod tests {
 	}
 
 	struct TestPayer {
-		expectations: core::cell::RefCell<VecDeque<u64>>,
+		expectations: core::cell::RefCell<VecDeque<Amount>>,
 		attempts: core::cell::RefCell<usize>,
-		failing_on_attempt: Option<usize>,
+		failing_on_attempt: core::cell::RefCell<HashMap<usize, PaymentSendFailure>>,
 	}
+
+	#[derive(Clone, Debug, PartialEq, Eq)]
+	enum Amount {
+		ForInvoice(u64),
+		Spontaneous(u64),
+		OnRetry(u64),
+	}
+
+	struct OnAttempt(usize);
 
 	impl TestPayer {
 		fn new() -> Self {
 			Self {
 				expectations: core::cell::RefCell::new(VecDeque::new()),
 				attempts: core::cell::RefCell::new(0),
-				failing_on_attempt: None,
+				failing_on_attempt: core::cell::RefCell::new(HashMap::new()),
 			}
 		}
 
-		fn expect_value_msat(self, value_msat: u64) -> Self {
+		fn expect_send(self, value_msat: Amount) -> Self {
 			self.expectations.borrow_mut().push_back(value_msat);
 			self
 		}
 
 		fn fails_on_attempt(self, attempt: usize) -> Self {
-			Self {
-				expectations: core::cell::RefCell::new(self.expectations.borrow().clone()),
-				attempts: core::cell::RefCell::new(0),
-				failing_on_attempt: Some(attempt),
-			}
+			let failure = PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed);
+			self.fails_with(failure, OnAttempt(attempt))
 		}
 
-		fn check_attempts(&self) -> bool {
+		fn fails_with_partial_failure(self, retry: RouteParameters, attempt: OnAttempt) -> Self {
+			self.fails_with(PaymentSendFailure::PartialFailure {
+				results: vec![],
+				failed_paths_retry: Some(retry),
+				payment_id: PaymentId([1; 32]),
+			}, attempt)
+		}
+
+		fn fails_with(self, failure: PaymentSendFailure, attempt: OnAttempt) -> Self {
+			self.failing_on_attempt.borrow_mut().insert(attempt.0, failure);
+			self
+		}
+
+		fn check_attempts(&self) -> Result<PaymentId, PaymentSendFailure> {
 			let mut attempts = self.attempts.borrow_mut();
 			*attempts += 1;
-			match self.failing_on_attempt {
-				None => true,
-				Some(attempt) if attempt != *attempts => true,
-				Some(_) => false,
+
+			match self.failing_on_attempt.borrow_mut().remove(&*attempts) {
+				Some(failure) => Err(failure),
+				None => Ok(PaymentId([1; 32])),
 			}
 		}
 
-		fn check_value_msats(&self, route: &Route) {
+		fn check_value_msats(&self, actual_value_msats: Amount) {
 			let expected_value_msats = self.expectations.borrow_mut().pop_front();
 			if let Some(expected_value_msats) = expected_value_msats {
-				let actual_value_msats = route.get_total_amount();
 				assert_eq!(actual_value_msats, expected_value_msats);
+			} else {
+				panic!("Unexpected amount: {:?}", actual_value_msats);
 			}
 		}
 	}
@@ -1189,28 +1339,25 @@ mod tests {
 		}
 
 		fn send_payment(
-			&self,
-			route: &Route,
-			_payment_hash: PaymentHash,
+			&self, route: &Route, _payment_hash: PaymentHash,
 			_payment_secret: &Option<PaymentSecret>
 		) -> Result<PaymentId, PaymentSendFailure> {
-			if self.check_attempts() {
-				self.check_value_msats(route);
-				Ok(PaymentId([1; 32]))
-			} else {
-				Err(PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed))
-			}
+			self.check_value_msats(Amount::ForInvoice(route.get_total_amount()));
+			self.check_attempts()
+		}
+
+		fn send_spontaneous_payment(
+			&self, route: &Route, _payment_preimage: PaymentPreimage,
+		) -> Result<PaymentId, PaymentSendFailure> {
+			self.check_value_msats(Amount::Spontaneous(route.get_total_amount()));
+			self.check_attempts()
 		}
 
 		fn retry_payment(
 			&self, route: &Route, _payment_id: PaymentId
 		) -> Result<(), PaymentSendFailure> {
-			if self.check_attempts() {
-				self.check_value_msats(route);
-				Ok(())
-			} else {
-				Err(PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed))
-			}
+			self.check_value_msats(Amount::OnRetry(route.get_total_amount()));
+			self.check_attempts().map(|_| ())
 		}
 	}
 
@@ -1218,8 +1365,10 @@ mod tests {
 	struct ManualRouter(RefCell<VecDeque<Result<Route, LightningError>>>);
 
 	impl<S: routing::Score> Router<S> for ManualRouter {
-		fn find_route(&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>, _scorer: &S)
-		-> Result<Route, LightningError> {
+		fn find_route(
+			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
+			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
+		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
 	}
