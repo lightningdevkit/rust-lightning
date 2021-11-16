@@ -341,7 +341,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
 				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 					//TODO: should we panic on signer failure ?
 					if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
 						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
@@ -353,7 +353,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
 				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
 						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
@@ -365,7 +365,7 @@ impl PackageSolvingData {
 			},
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
 				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 					bumped_tx.lock_time = outp.htlc.cltv_expiry; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {

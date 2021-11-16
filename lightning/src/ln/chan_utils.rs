@@ -482,10 +482,10 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 });
 
 #[inline]
-pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
+pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommitment, opt_anchors: bool, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
 	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
-		Builder::new().push_opcode(opcodes::all::OP_DUP)
+		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
 		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
@@ -509,11 +509,16 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_slice(&payment_hash160)
 		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF)
-		              .push_opcode(opcodes::all::OP_ENDIF)
-		              .into_script()
+		              .push_opcode(opcodes::all::OP_ENDIF);
+		if opt_anchors {
+			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
+				.push_opcode(opcodes::all::OP_CSV)
+				.push_opcode(opcodes::all::OP_DROP);
+		}
+		bldr.push_opcode(opcodes::all::OP_ENDIF)
+			.into_script()
 	} else {
-		Builder::new().push_opcode(opcodes::all::OP_DUP)
+			let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
 		              .push_opcode(opcodes::all::OP_HASH160)
 		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
 		              .push_opcode(opcodes::all::OP_EQUAL)
@@ -540,17 +545,22 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 		              .push_opcode(opcodes::all::OP_CLTV)
 		              .push_opcode(opcodes::all::OP_DROP)
 		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF)
-		              .push_opcode(opcodes::all::OP_ENDIF)
-		              .into_script()
+		              .push_opcode(opcodes::all::OP_ENDIF);
+		if opt_anchors {
+			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
+				.push_opcode(opcodes::all::OP_CSV)
+				.push_opcode(opcodes::all::OP_DROP);
+		}
+		bldr.push_opcode(opcodes::all::OP_ENDIF)
+			.into_script()
 	}
 }
 
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
 /// does not need to have its previous_output_index filled.
 #[inline]
-pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, keys: &TxCreationKeys) -> Script {
-	get_htlc_redeemscript_with_explicit_keys(htlc, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
+pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, opt_anchors: bool, keys: &TxCreationKeys) -> Script {
+	get_htlc_redeemscript_with_explicit_keys(htlc, opt_anchors, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
@@ -656,6 +666,8 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
+	/// Are anchors used for this channel.  Boolean is serialization backwards-compatible
+	pub opt_anchors: Option<()>
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
@@ -709,6 +721,7 @@ impl_writeable_tlv_based!(ChannelTransactionParameters, {
 	(4, is_outbound_from_holder, required),
 	(6, counterparty_parameters, option),
 	(8, funding_outpoint, option),
+	(10, opt_anchors, option),
 });
 
 /// Static channel fields used to build transactions given per-commitment fields, organized by
@@ -824,7 +837,8 @@ impl HolderCommitmentTransaction {
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 })
+			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 }),
+			opt_anchors: None
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
 		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
@@ -1196,7 +1210,7 @@ impl CommitmentTransaction {
 
 		let mut htlcs = Vec::with_capacity(htlcs_with_aux.len());
 		for (htlc, _) in htlcs_with_aux {
-			let script = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+			let script = chan_utils::get_htlc_redeemscript(&htlc, opt_anchors, &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
 				value: htlc.amount_msat / 1000,
@@ -1350,6 +1364,11 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		&self.inner.keys
 	}
 
+	/// Should anchors be used.
+	pub fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
+	}
+
 	/// Get a signature for each HTLC which was included in the commitment transaction (ie for
 	/// which HTLCOutputInCommitment::transaction_output_index.is_some()).
 	///
@@ -1365,7 +1384,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
+			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 			let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, SigHashType::All)[..]);
 			ret.push(secp_ctx.sign(&sighash, &holder_htlc_key));
@@ -1387,7 +1406,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
+		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		htlc_tx.input[0].witness.push(Vec::new());
@@ -1450,7 +1469,7 @@ mod tests {
 	use super::CounterpartyCommitmentSecrets;
 	use ::{hex, chain};
 	use prelude::*;
-	use ln::chan_utils::{get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use util::test_utils;
 	use chain::keysinterface::{KeysInterface, BaseSign};
@@ -1473,12 +1492,13 @@ mod tests {
 		let holder_pubkeys = signer.pubkeys();
 		let counterparty_pubkeys = counterparty_signer.pubkeys();
 		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint).unwrap();
-		let channel_parameters = ChannelTransactionParameters {
+		let mut channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: holder_pubkeys.clone(),
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 })
+			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 }),
+			opt_anchors: None
 		};
 
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
@@ -1529,25 +1549,50 @@ mod tests {
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
 
-		// Generate broadcaster output, an HTLC output and two anchors
-		let payment_hash = PaymentHash([42; 32]);
-		let htlc_info = HTLCOutputInCommitment {
+		let received_htlc = HTLCOutputInCommitment {
 			offered: false,
-			amount_msat: 1000000,
+			amount_msat: 400000,
 			cltv_expiry: 100,
-			payment_hash,
+			payment_hash: PaymentHash([42; 32]),
 			transaction_output_index: None,
 		};
 
+		let offered_htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 600000,
+			cltv_expiry: 100,
+			payment_hash: PaymentHash([43; 32]),
+			transaction_output_index: None,
+		};
+
+		// Generate broadcaster output and received and offered HTLC outputs,  w/o anchors
+		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+			0, 3000, 0,
+			false,
+			holder_pubkeys.funding_pubkey,
+			counterparty_pubkeys.funding_pubkey,
+			keys.clone(), 1,
+			&mut vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())],
+			&channel_parameters.as_holder_broadcastable()
+		);
+		assert_eq!(tx.built.transaction.output.len(), 3);
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh());
+
+		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
+		channel_parameters.opt_anchors = Some(());
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			0, 3000, 0,
 			true,
 			holder_pubkeys.funding_pubkey,
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
-			&mut vec![(htlc_info, ())], &channel_parameters.as_holder_broadcastable()
+			&mut vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())],
+			&channel_parameters.as_holder_broadcastable()
 		);
-		assert_eq!(tx.built.transaction.output.len(), 4);
+		assert_eq!(tx.built.transaction.output.len(), 5);
+		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh());
 	}
 
 	#[test]
