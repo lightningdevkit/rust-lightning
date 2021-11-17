@@ -16,6 +16,7 @@
 
 use chain::keysinterface::SpendableOutputDescriptor;
 use ln::channelmanager::PaymentId;
+use ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -101,6 +102,8 @@ pub enum ClosureReason {
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
 	CommitmentTxConfirmed,
+	/// The funding transaction failed to confirm in a timely manner on an inbound channel.
+	FundingTimedOut,
 	/// Closure generated from processing an event, likely a HTLC forward/relay/reception.
 	ProcessingError {
 		/// A developer-readable error message which we generated.
@@ -118,8 +121,31 @@ pub enum ClosureReason {
 	OutdatedChannelManager
 }
 
+impl core::fmt::Display for ClosureReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		f.write_str("Channel closed because ")?;
+		match self {
+			ClosureReason::CounterpartyForceClosed { peer_msg } => {
+				f.write_str("counterparty force-closed with message ")?;
+				f.write_str(&peer_msg)
+			},
+			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
+			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
+			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
+			ClosureReason::ProcessingError { err } => {
+				f.write_str("of an exception: ")?;
+				f.write_str(&err)
+			},
+			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
+			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(0, CounterpartyForceClosed) => { (1, peer_msg, required) },
+	(1, FundingTimedOut) => {},
 	(2, HolderForceClosed) => {},
 	(6, CommitmentTxConfirmed) => {},
 	(4, CooperativeClosure) => {},

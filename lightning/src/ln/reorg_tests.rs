@@ -219,9 +219,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			disconnect_all_blocks(&nodes[0]);
 		}
 		if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
-			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
 		} else {
-			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		}
 		check_added_monitors!(nodes[1], 1);
 		{
@@ -287,9 +287,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			disconnect_all_blocks(&nodes[0]);
 		}
 		if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
-			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.");
 		} else {
-			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
+			handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		}
 		check_added_monitors!(nodes[1], 1);
 		{
@@ -303,12 +303,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
-	if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs.".to_string() });
+	let expected_err = if connect_style == ConnectStyle::FullBlockViaListen && !use_funding_unconfirmed {
+		"Funding transaction was un-confirmed. Locked at 6 confs, now have 2 confs."
 	} else {
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.".to_string() });
-	}
+		"Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs."
+	};
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Channel closed because of an exception: ".to_owned() + expected_err });
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() });
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 

@@ -35,6 +35,7 @@ use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{Sign, KeysInterface};
+use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
@@ -378,6 +379,11 @@ pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 #[cfg(not(fuzzing))]
 const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 
+/// If we fail to see a funding transaction confirmed on-chain within this many blocks after the
+/// channel creation on an inbound channel, we simply force-close and move on.
+/// This constant is the one suggested in BOLT 2.
+pub(crate) const FUNDING_CONF_DEADLINE_BLOCKS: u32 = 2016;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -475,6 +481,10 @@ pub(super) struct Channel<Signer: Sign> {
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
 	short_channel_id: Option<u64>,
+	/// Either the height at which this channel was created or the height at which it was last
+	/// serialized if it was serialized by versions prior to 0.0.103.
+	/// We use this to close if funding is never broadcasted.
+	channel_creation_height: u32,
 
 	counterparty_dust_limit_satoshis: u64,
 	#[cfg(test)]
@@ -646,7 +656,10 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, APIError>
+	pub fn new_outbound<K: Deref, F: Deref>(
+		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
+		channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig, current_chain_height: u32
+	) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
@@ -734,6 +747,7 @@ impl<Signer: Sign> Channel<Signer> {
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: feerate,
 			counterparty_dust_limit_satoshis: 0,
@@ -807,7 +821,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref>(fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig) -> Result<Channel<Signer>, ChannelError>
+	pub fn new_from_req<K: Deref, F: Deref>(
+		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
+		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32
+	) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
           F::Target: FeeEstimator
 	{
@@ -1020,6 +1037,7 @@ impl<Signer: Sign> Channel<Signer> {
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
+			channel_creation_height: current_chain_height,
 
 			feerate_per_kw: msg.feerate_per_kw,
 			channel_value_satoshis: msg.funding_satoshis,
@@ -4117,7 +4135,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
-			-> Result<Option<msgs::FundingLocked>, msgs::ErrorMessage> where L::Target: Logger {
+	-> Result<Option<msgs::FundingLocked>, ClosureReason> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		for &(index_in_block, tx) in txdata.iter() {
 			if let Some(funding_txo) = self.get_funding_txo() {
@@ -4138,10 +4156,8 @@ impl<Signer: Sign> Channel<Signer> {
 								panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 							}
 							self.update_time_counter += 1;
-							return Err(msgs::ErrorMessage {
-								channel_id: self.channel_id(),
-								data: "funding tx had wrong script/value or output index".to_owned()
-							});
+							let err_reason = "funding tx had wrong script/value or output index";
+							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						} else {
 							if self.is_outbound() {
 								for input in tx.input.iter() {
@@ -4172,10 +4188,7 @@ impl<Signer: Sign> Channel<Signer> {
 				for inp in tx.input.iter() {
 					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
 						log_info!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, log_bytes!(self.channel_id()));
-						return Err(msgs::ErrorMessage {
-							channel_id: self.channel_id(),
-							data: "Commitment or closing transaction was confirmed on chain.".to_owned()
-						});
+						return Err(ClosureReason::CommitmentTxConfirmed);
 					}
 				}
 			}
@@ -4195,7 +4208,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
 	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, logger: &L)
-			-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), msgs::ErrorMessage> where L::Target: Logger {
+	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), ClosureReason> where L::Target: Logger {
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -4236,11 +4249,17 @@ impl<Signer: Sign> Channel<Signer> {
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
 			if funding_tx_confirmations < self.minimum_depth.unwrap() as i64 / 2 {
-				return Err(msgs::ErrorMessage {
-					channel_id: self.channel_id(),
-					data: format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.", self.minimum_depth.unwrap(), funding_tx_confirmations),
-				});
+				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
+					self.minimum_depth.unwrap(), funding_tx_confirmations);
+				return Err(ClosureReason::ProcessingError { err: err_reason });
 			}
+		} else if !self.is_outbound() && self.funding_tx_confirmed_in.is_none() &&
+				height >= self.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
+			log_info!(logger, "Closing channel {} due to funding timeout", log_bytes!(self.channel_id));
+			// If funding_tx_confirmed_in is unset, the channel must not be active
+			assert!(non_shutdown_state <= ChannelState::ChannelFunded as u32);
+			assert_eq!(non_shutdown_state & ChannelState::OurFundingLocked as u32, 0);
+			return Err(ClosureReason::FundingTimedOut);
 		}
 
 		Ok((None, timed_out_htlcs))
@@ -4249,7 +4268,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
 	/// before the channel has reached funding_locked and we can just wait for more blocks.
-	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), msgs::ErrorMessage> where L::Target: Logger {
+	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
 		if self.funding_tx_confirmation_height != 0 {
 			// We handle the funding disconnection by calling best_block_updated with a height one
 			// below where our funding was connected, implying a reorg back to conf_height - 1.
@@ -5279,6 +5298,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(7, self.shutdown_scriptpubkey, option),
 			(9, self.target_closing_feerate_sats_per_kw, option),
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
+			(13, self.channel_creation_height, required),
 		});
 
 		Ok(())
@@ -5286,9 +5306,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
+impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		where K::Target: KeysInterface<Signer = Signer> {
-	fn read<R : io::Read>(reader: &mut R, keys_source: &'a K) -> Result<Self, DecodeError> {
+	fn read<R : io::Read>(reader: &mut R, args: (&'a K, u32)) -> Result<Self, DecodeError> {
+		let (keys_source, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let user_id = Readable::read(reader)?;
@@ -5516,6 +5537,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
+		let mut channel_creation_height = Some(serialized_height);
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5525,6 +5547,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			(7, shutdown_scriptpubkey, option),
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
+			(13, channel_creation_height, option),
 		});
 
 		let chan_features = channel_type.as_ref().unwrap();
@@ -5589,6 +5612,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<&'a K> for Channel<Signer>
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height,
 			short_channel_id,
+			channel_creation_height: channel_creation_height.unwrap(),
 
 			counterparty_dust_limit_satoshis,
 			holder_dust_limit_satoshis,
@@ -5737,7 +5761,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config) {
+		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0) {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
@@ -5759,7 +5783,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -5784,13 +5808,13 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
@@ -5854,7 +5878,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
 
 		let commitment_tx_fee_0_htlcs = chan.commit_tx_fee_msat(0);
 		let commitment_tx_fee_1_htlc = chan.commit_tx_fee_msat(1);
@@ -5903,12 +5927,12 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
@@ -5965,7 +5989,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -6029,7 +6053,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config, 0).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
