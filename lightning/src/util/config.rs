@@ -302,6 +302,9 @@ pub struct UserConfig {
 	///
 	/// Default value: false.
 	pub accept_forwards_to_priv_channels: bool,
+	/// If this is set to false, we do not accept inbound requests to open a new channel.
+	/// Default value: true.
+	pub accept_inbound_channels: bool,
 }
 
 impl Default for UserConfig {
@@ -311,6 +314,7 @@ impl Default for UserConfig {
 			peer_channel_config_limits: ChannelHandshakeLimits::default(),
 			channel_options: ChannelConfig::default(),
 			accept_forwards_to_priv_channels: false,
+			accept_inbound_channels: true,
 		}
 	}
 }
