@@ -551,6 +551,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 
@@ -1090,12 +1091,12 @@ fn test_monitor_update_fail_reestablish() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
-	let (our_payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	assert!(nodes[2].node.claim_funds(our_payment_preimage));
+	assert!(nodes[2].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[2], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -1159,13 +1160,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentSent { payment_preimage, .. } => assert_eq!(payment_preimage, our_payment_preimage),
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent!(nodes[0], payment_preimage);
 }
 
 #[test]
@@ -1300,7 +1295,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -1395,16 +1390,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
-			assert_eq!(*payment_preimage, payment_preimage_1);
-			assert_eq!(*payment_hash, payment_hash_1);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent!(nodes[0], payment_preimage_1);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
@@ -1766,7 +1752,7 @@ fn monitor_update_claim_fail_no_response() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
 	// Forward a payment for B to claim
-	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
+	let (payment_preimage_1, _, _) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Now start forwarding a second payment, skipping the last RAA so B is in AwaitingRAA
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
@@ -1802,16 +1788,7 @@ fn monitor_update_claim_fail_no_response() {
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false);
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
-			assert_eq!(*payment_preimage, payment_preimage_1);
-			assert_eq!(*payment_hash, payment_hash_1);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent!(nodes[0], payment_preimage_1);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
@@ -2323,7 +2300,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			assert!(updates.update_fee.is_none());
 			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 			nodes[1].node.handle_update_fulfill_htlc(&nodes[0].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-			expect_payment_sent!(nodes[1], payment_preimage_0);
+			expect_payment_sent_without_paths!(nodes[1], payment_preimage_0);
 			assert_eq!(updates.update_add_htlcs.len(), 1);
 			nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 			updates.commitment_signed
@@ -2342,7 +2319,18 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
 
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		Event::PendingHTLCsForwardable { .. } => { },
+		_ => panic!("Unexpected event"),
+	};
+	match events[1] {
+		Event::PaymentPathSuccessful { .. } => { },
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 100000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
@@ -2427,9 +2415,10 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 		if htlc_status == HTLCStatusAtDupClaim::Cleared {
 			commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
+			expect_payment_path_successful!(nodes[0]);
 		}
 	} else {
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -2453,10 +2442,11 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		bs_updates = Some(get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id()));
 		assert_eq!(bs_updates.as_ref().unwrap().update_fulfill_htlcs.len(), 1);
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.as_ref().unwrap().update_fulfill_htlcs[0]);
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 	}
 	if htlc_status != HTLCStatusAtDupClaim::Cleared {
 		commitment_signed_dance!(nodes[0], nodes[1], &bs_updates.as_ref().unwrap().commitment_signed, false);
+		expect_payment_path_successful!(nodes[0]);
 	}
 }
 
@@ -2620,7 +2610,7 @@ fn double_temp_error() {
 	assert_eq!(node_id, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_1);
 	check_added_monitors!(nodes[0], 0);
-	expect_payment_sent!(nodes[0], payment_preimage_1);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage_1);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed_b1);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node.process_pending_htlc_forwards();
@@ -2658,6 +2648,7 @@ fn double_temp_error() {
 	};
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa_b2);
 	check_added_monitors!(nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
 
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_2);
 	check_added_monitors!(nodes[0], 0);

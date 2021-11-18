@@ -829,6 +829,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
+						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::PendingHTLCsForwardable { .. } => {

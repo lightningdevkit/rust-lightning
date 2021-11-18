@@ -1904,7 +1904,7 @@ fn channel_reserve_in_flight_removes() {
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_removes.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-	expect_payment_sent!(nodes[0], payment_preimage_1);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage_1);
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_1.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_1.commitment_msg);
@@ -1933,7 +1933,7 @@ fn channel_reserve_in_flight_removes() {
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 	let as_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-	expect_payment_sent!(nodes[0], payment_preimage_2);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage_2);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
@@ -1946,6 +1946,7 @@ fn channel_reserve_in_flight_removes() {
 	// resolve the second HTLC from A's point of view.
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
 	let as_cs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
 	// Now that B doesn't have the second RAA anymore, but A still does, send a payment from B back
@@ -1975,6 +1976,7 @@ fn channel_reserve_in_flight_removes() {
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
 	let as_cs = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs.commitment_signed);
@@ -2654,7 +2656,7 @@ fn test_htlc_on_chain_success() {
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
+	assert_eq!(events.len(), 5);
 	let mut first_claimed = false;
 	for event in events {
 		match event {
@@ -2667,6 +2669,7 @@ fn test_htlc_on_chain_success() {
 					assert_eq!(payment_hash, payment_hash_2);
 				}
 			},
+			Event::PaymentPathSuccessful { .. } => {},
 			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {},
 			_ => panic!("Unexpected event"),
 		}
@@ -3301,13 +3304,13 @@ fn test_dup_events_on_peer_disconnect() {
 	check_added_monitors!(nodes[1], 1);
 	let claim_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &claim_msgs.update_fulfill_htlcs[0]);
-	expect_payment_sent!(nodes[0], payment_preimage);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
-	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	expect_payment_path_successful!(nodes[0]);
 }
 
 #[test]
@@ -3347,7 +3350,7 @@ fn test_simple_peer_disconnect() {
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
 	{
 		let events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
+		assert_eq!(events.len(), 3);
 		match events[0] {
 			Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 				assert_eq!(payment_preimage, payment_preimage_3);
@@ -3360,6 +3363,10 @@ fn test_simple_peer_disconnect() {
 				assert_eq!(payment_hash, payment_hash_5);
 				assert!(rejected_by_dest);
 			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[2] {
+			Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -3551,15 +3558,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	if messages_delivered < 2 {
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		if messages_delivered < 1 {
-			let events_4 = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events_4.len(), 1);
-			match events_4[0] {
-				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
-					assert_eq!(payment_preimage_1, *payment_preimage);
-					assert_eq!(payment_hash_1, *payment_hash);
-				},
-				_ => panic!("Unexpected event"),
-			}
+			expect_payment_sent!(nodes[0], payment_preimage_1);
 		} else {
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		}
@@ -3577,9 +3576,17 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	}
 
+	if messages_delivered == 1 || messages_delivered == 2 {
+		expect_payment_path_successful!(nodes[0]);
+	}
+
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	if messages_delivered > 2 {
+		expect_payment_path_successful!(nodes[0]);
+	}
 
 	// Channel should still work fine...
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
@@ -3892,6 +3899,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 
+	expect_payment_path_successful!(nodes[0]);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
@@ -5559,24 +5567,16 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
+	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1]], if use_dust { 50000 } else { 3000000 });
 
 	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
 	// present in B's local commitment transaction, but none of A's commitment transactions.
-	assert!(nodes[1].node.claim_funds(our_payment_preimage));
+	assert!(nodes[1].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentSent { payment_preimage, payment_hash, .. } => {
-			assert_eq!(payment_preimage, our_payment_preimage);
-			assert_eq!(payment_hash, our_payment_hash);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
 	check_added_monitors!(nodes[0], 1);
@@ -5998,15 +5998,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let update_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_msgs.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], update_msgs.commitment_signed, false, true);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
-			assert_eq!(*payment_preimage, payment_preimage_1);
-			assert_eq!(*payment_hash, payment_hash_1);
-		}
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent!(nodes[0], payment_preimage_1);
 }
 
 // Test that if we fail to forward an HTLC that is being freed from the holding cell that the

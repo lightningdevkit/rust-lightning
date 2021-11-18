@@ -449,6 +449,7 @@ pub(crate) enum PendingOutboundPayment {
 	/// and add a pending payment that was already fulfilled.
 	Fulfilled {
 		session_privs: HashSet<[u8; 32]>,
+		payment_hash: Option<PaymentHash>,
 	},
 }
 
@@ -472,15 +473,24 @@ impl PendingOutboundPayment {
 		}
 	}
 
+	fn payment_hash(&self) -> Option<PaymentHash> {
+		match self {
+			PendingOutboundPayment::Legacy { .. } => None,
+			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
+			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
+		}
+	}
+
 	fn mark_fulfilled(&mut self) {
 		let mut session_privs = HashSet::new();
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs }
+			PendingOutboundPayment::Fulfilled { session_privs, .. }
 				=> session_privs
 		});
-		*self = PendingOutboundPayment::Fulfilled { session_privs };
+		let payment_hash = self.payment_hash();
+		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash };
 	}
 
 	/// panics if path is None and !self.is_fulfilled
@@ -488,7 +498,7 @@ impl PendingOutboundPayment {
 		let remove_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs } => {
+			PendingOutboundPayment::Fulfilled { session_privs, .. } => {
 				session_privs.remove(session_priv)
 			}
 		};
@@ -529,7 +539,7 @@ impl PendingOutboundPayment {
 		match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs } => {
+			PendingOutboundPayment::Fulfilled { session_privs, .. } => {
 				session_privs.len()
 			}
 		}
@@ -3491,14 +3501,23 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn finalize_claims(&self, mut sources: Vec<HTLCSource>) {
+		let mut pending_events = self.pending_events.lock().unwrap();
 		for source in sources.drain(..) {
-			if let HTLCSource::OutboundRoute { session_priv, payment_id, .. } = source {
+			if let HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } = source {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 					assert!(payment.get().is_fulfilled());
-					payment.get_mut().remove(&session_priv_bytes, None);
+					if payment.get_mut().remove(&session_priv_bytes, None) {
+						pending_events.push(
+							events::Event::PaymentPathSuccessful {
+								payment_id,
+								payment_hash: payment.get().payment_hash(),
+								path,
+							}
+						);
+					}
 					if payment.get().remaining_parts() == 0 {
 						payment.remove();
 					}
@@ -3515,9 +3534,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-					let found_payment = !payment.get().is_fulfilled();
-					let fee_paid_msat = payment.get().get_pending_fee_msat();
-					payment.get_mut().mark_fulfilled();
+					let mut pending_events = self.pending_events.lock().unwrap();
+					if !payment.get().is_fulfilled() {
+						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+						let fee_paid_msat = payment.get().get_pending_fee_msat();
+						pending_events.push(
+							events::Event::PaymentSent {
+								payment_id: Some(payment_id),
+								payment_preimage,
+								payment_hash,
+								fee_paid_msat,
+							}
+						);
+						payment.get_mut().mark_fulfilled();
+					}
+
 					if from_onchain {
 						// We currently immediately remove HTLCs which were fulfilled on-chain.
 						// This could potentially lead to removing a pending payment too early,
@@ -3525,21 +3556,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// restart.
 						// TODO: We should have a second monitor event that informs us of payments
 						// irrevocably fulfilled.
-						payment.get_mut().remove(&session_priv_bytes, Some(&path));
+						if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
+							let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).into_inner()));
+							pending_events.push(
+								events::Event::PaymentPathSuccessful {
+									payment_id,
+									payment_hash,
+									path,
+								}
+							);
+						}
+
 						if payment.get().remaining_parts() == 0 {
 							payment.remove();
 						}
-					}
-					if found_payment {
-						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-						self.pending_events.lock().unwrap().push(
-							events::Event::PaymentSent {
-								payment_id: Some(payment_id),
-								payment_preimage,
-								payment_hash: payment_hash,
-								fee_paid_msat,
-							}
-						);
 					}
 				} else {
 					log_trace!(self.logger, "Received duplicative fulfill for HTLC with payment_preimage {}", log_bytes!(payment_preimage.0));
@@ -4635,6 +4665,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn has_pending_payments(&self) -> bool {
 		!self.pending_outbound_payments.lock().unwrap().is_empty()
 	}
+
+	#[cfg(test)]
+	pub fn clear_pending_payments(&self) {
+		self.pending_outbound_payments.lock().unwrap().clear()
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
@@ -5559,6 +5594,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(1, Fulfilled) => {
 		(0, session_privs, required),
+		(1, payment_hash, option),
 	},
 	(2, Retryable) => {
 		(0, session_privs, required),
@@ -6325,14 +6361,31 @@ mod tests {
 		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
 		check_added_monitors!(nodes[0], 1);
 
-		// Note that successful MPP payments will generate 1 event upon the first path's success. No
-		// further events will be generated for subsequence path successes.
+		// Note that successful MPP payments will generate a single PaymentSent event upon the first
+		// path's success and a PaymentPathSuccessful event for each path's success.
 		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 3);
 		match events[0] {
 			Event::PaymentSent { payment_id: ref id, payment_preimage: ref preimage, payment_hash: ref hash, .. } => {
 				assert_eq!(Some(payment_id), *id);
 				assert_eq!(payment_preimage, *preimage);
 				assert_eq!(our_payment_hash, *hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[1] {
+			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path } => {
+				assert_eq!(payment_id, *actual_payment_id);
+				assert_eq!(our_payment_hash, *payment_hash.as_ref().unwrap());
+				assert_eq!(route.paths[0], *path);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[2] {
+			Event::PaymentPathSuccessful { payment_id: ref actual_payment_id, ref payment_hash, ref path } => {
+				assert_eq!(payment_id, *actual_payment_id);
+				assert_eq!(our_payment_hash, *payment_hash.as_ref().unwrap());
+				assert_eq!(route.paths[0], *path);
 			},
 			_ => panic!("Unexpected event"),
 		}
