@@ -4259,7 +4259,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
 		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
-		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32)
+		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32) && !self.monitor_pending_funding_locked
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -4670,11 +4670,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
-		if self.channel_state & (ChannelState::ChannelFunded as u32) == 0 {
-			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement until the channel funding has been locked".to_owned()));
-		}
-		if (self.channel_state & (ChannelState::LocalShutdownSent as u32 | ChannelState::ShutdownComplete as u32)) != 0 {
-			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement once the channel is closing".to_owned()));
+		if !self.is_usable() {
+			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
 		let were_node_one = node_id.serialize()[..] < self.counterparty_node_id.serialize()[..];
