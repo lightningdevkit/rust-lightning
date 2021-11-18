@@ -305,6 +305,26 @@ pub(super) enum ChannelUpdateStatus {
 	Disabled,
 }
 
+/// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
+#[derive(PartialEq)]
+pub enum AnnouncementSigsState {
+	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
+	/// we sent the last `AnnouncementSignatures`.
+	NotSent,
+	/// We sent an `AnnouncementSignatures` to our peer since the last time our peer disconnected.
+	/// This state never appears on disk - instead we write `NotSent`.
+	MessageSent,
+	/// We sent a `CommitmentSigned` after the last `AnnouncementSignatures` we sent. Because we
+	/// only ever have a single `CommitmentSigned` pending at once, if we sent one after sending
+	/// `AnnouncementSignatures` then we know the peer received our `AnnouncementSignatures` if
+	/// they send back a `RevokeAndACK`.
+	/// This state never appears on disk - instead we write `NotSent`.
+	Committed,
+	/// We received a `RevokeAndACK`, effectively ack-ing our `AnnouncementSignatures`, at this
+	/// point we no longer need to re-send our `AnnouncementSignatures` again on reconnect.
+	PeerReceived,
+}
+
 /// An enum indicating whether the local or remote side offered a given HTLC.
 enum HTLCInitiator {
 	LocalOffered,
@@ -399,6 +419,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub funding_locked: Option<msgs::FundingLocked>,
+	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 }
 
 /// The return value of `channel_reestablish`
@@ -409,6 +430,7 @@ pub(super) struct ReestablishResponses {
 	pub order: RAACommitmentOrder,
 	pub mon_update: Option<ChannelMonitorUpdate>,
 	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
+	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
 
@@ -466,6 +488,19 @@ pub(super) struct Channel<Signer: Sign> {
 
 	channel_id: [u8; 32],
 	channel_state: u32,
+
+	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
+	// our peer. However, we want to make sure they received it, or else rebroadcast it when we
+	// next connect.
+	// We do so here, see `AnnouncementSigsSent` for more details on the state(s).
+	// Note that a number of our tests were written prior to the behavior here which retransmits
+	// AnnouncementSignatures until after an RAA completes, so the behavior is short-circuited in
+	// many tests.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) announcement_sigs_state: AnnouncementSigsState,
+	#[cfg(not(any(test, feature = "_test_utils")))]
+	announcement_sigs_state: AnnouncementSigsState,
+
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
@@ -803,6 +838,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
+			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
 			channel_value_satoshis,
 
@@ -1101,6 +1137,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
+			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
 
 			latest_monitor_update_id: 0,
@@ -2068,7 +2105,10 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap()))
 	}
 
-	pub fn funding_locked<L: Deref>(&mut self, msg: &msgs::FundingLocked, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+	/// Handles a funding_locked message from our peer. If we've already sent our funding_locked
+	/// and the channel is now usable (and public), this may generate an announcement_signatures to
+	/// reply with.
+	pub fn funding_locked<L: Deref>(&mut self, msg: &msgs::FundingLocked, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block: &BestBlock, logger: &L) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError> where L::Target: Logger {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			self.workaround_lnd_bug_4006 = Some(msg.clone());
 			return Err(ChannelError::Ignore("Peer sent funding_locked when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
@@ -2092,7 +2132,7 @@ impl<Signer: Sign> Channel<Signer> {
 				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point".to_owned()));
 			}
 			// They probably disconnected/reconnected and re-sent the funding_locked, which is required
-			return Ok(());
+			return Ok(None);
 		} else {
 			return Err(ChannelError::Close("Peer sent a funding_locked at a strange time".to_owned()));
 		}
@@ -2102,7 +2142,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_info!(logger, "Received funding_locked from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok(())
+		Ok(self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height()).ok())
 	}
 
 	/// Returns transaction if there is pending funding transaction that is yet to broadcast
@@ -2992,6 +3032,10 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 		self.cur_counterparty_commitment_transaction_number -= 1;
 
+		if self.announcement_sigs_state == AnnouncementSigsState::Committed {
+			self.announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		}
+
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", log_bytes!(self.channel_id()));
 		let mut to_forward_infos = Vec::new();
 		let mut revoked_htlcs = Vec::new();
@@ -3268,6 +3312,11 @@ impl<Signer: Sign> Channel<Signer> {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
 			return;
 		}
+
+		if self.announcement_sigs_state == AnnouncementSigsState::MessageSent || self.announcement_sigs_state == AnnouncementSigsState::Committed {
+			self.announcement_sigs_state = AnnouncementSigsState::NotSent;
+		}
+
 		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
 		// will be retransmitted.
 		self.last_sent_closing_fee = None;
@@ -3344,7 +3393,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L) -> MonitorRestoreUpdates where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block_height: u32) -> MonitorRestoreUpdates where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
@@ -3367,6 +3416,8 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
+		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block_height).ok();
+
 		let mut accepted_htlcs = Vec::new();
 		mem::swap(&mut accepted_htlcs, &mut self.monitor_pending_forwards);
 		let mut failed_htlcs = Vec::new();
@@ -3379,7 +3430,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked
+				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked, announcement_sigs
 			};
 		}
 
@@ -3398,7 +3449,7 @@ impl<Signer: Sign> Channel<Signer> {
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked, announcement_sigs
 		}
 	}
 
@@ -3512,7 +3563,9 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
-	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L) -> Result<ReestablishResponses, ChannelError> where L::Target: Logger {
+	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L,
+		node_pk: PublicKey, genesis_block_hash: BlockHash, best_block: &BestBlock)
+	-> Result<ReestablishResponses, ChannelError> where L::Target: Logger {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -3556,6 +3609,8 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
+		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height()).ok();
+
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any funding_locked's.
 			if self.channel_state & (ChannelState::OurFundingLocked as u32) == 0 ||
@@ -3569,7 +3624,7 @@ impl<Signer: Sign> Channel<Signer> {
 					raa: None, commitment_update: None, mon_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
 					holding_cell_failed_htlcs: Vec::new(),
-					shutdown_msg
+					shutdown_msg, announcement_sigs,
 				});
 			}
 
@@ -3583,7 +3638,7 @@ impl<Signer: Sign> Channel<Signer> {
 				raa: None, commitment_update: None, mon_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				holding_cell_failed_htlcs: Vec::new(),
-				shutdown_msg
+				shutdown_msg, announcement_sigs,
 			});
 		}
 
@@ -3635,7 +3690,7 @@ impl<Signer: Sign> Channel<Signer> {
 						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok((Some((commitment_update, monitor_update)), holding_cell_failed_htlcs)) => {
 						Ok(ReestablishResponses {
-							funding_locked, shutdown_msg,
+							funding_locked, shutdown_msg, announcement_sigs,
 							raa: required_revoke,
 							commitment_update: Some(commitment_update),
 							order: self.resend_order.clone(),
@@ -3645,7 +3700,7 @@ impl<Signer: Sign> Channel<Signer> {
 					},
 					Ok((None, holding_cell_failed_htlcs)) => {
 						Ok(ReestablishResponses {
-							funding_locked, shutdown_msg,
+							funding_locked, shutdown_msg, announcement_sigs,
 							raa: required_revoke,
 							commitment_update: None,
 							order: self.resend_order.clone(),
@@ -3656,7 +3711,7 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			} else {
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg,
+					funding_locked, shutdown_msg, announcement_sigs,
 					raa: required_revoke,
 					commitment_update: None,
 					order: self.resend_order.clone(),
@@ -3674,14 +3729,14 @@ impl<Signer: Sign> Channel<Signer> {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg,
+					funding_locked, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None, mon_update: None,
 					order: self.resend_order.clone(),
 					holding_cell_failed_htlcs: Vec::new(),
 				})
 			} else {
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg,
+					funding_locked, shutdown_msg, announcement_sigs,
 					raa: required_revoke,
 					commitment_update: Some(self.get_last_commitment_update(logger)),
 					order: self.resend_order.clone(),
@@ -4360,8 +4415,9 @@ impl<Signer: Sign> Channel<Signer> {
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
-	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData, logger: &L)
-	-> Result<Option<msgs::FundingLocked>, ClosureReason> where L::Target: Logger {
+	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32,
+		txdata: &TransactionData, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
+	-> Result<(Option<msgs::FundingLocked>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		for &(index_in_block, tx) in txdata.iter() {
 			if let Some(funding_txo) = self.get_funding_txo() {
@@ -4408,7 +4464,8 @@ impl<Signer: Sign> Channel<Signer> {
 					// may have already happened for this block).
 					if let Some(funding_locked) = self.check_get_funding_locked(height) {
 						log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
-						return Ok(Some(funding_locked));
+						let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok();
+						return Ok((Some(funding_locked), announcement_sigs));
 					}
 				}
 				for inp in tx.input.iter() {
@@ -4419,7 +4476,7 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			}
 		}
-		Ok(None)
+		Ok((None, None))
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -4433,8 +4490,13 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, logger: &L)
-	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), ClosureReason> where L::Target: Logger {
+	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
+	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+		self.do_best_block_updated(height, highest_header_time, Some((genesis_block_hash, node_pk)), logger)
+	}
+
+	fn do_best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_node_pk: Option<(BlockHash, PublicKey)>, logger: &L)
+	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -4455,8 +4517,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
 
 		if let Some(funding_locked) = self.check_get_funding_locked(height) {
+			let announcement_sigs = if let Some((genesis_block_hash, node_pk)) = genesis_node_pk {
+				self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok()
+			} else { None };
 			log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
-			return Ok((Some(funding_locked), timed_out_htlcs));
+			return Ok((Some(funding_locked), timed_out_htlcs, announcement_sigs));
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
@@ -4488,7 +4553,10 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ClosureReason::FundingTimedOut);
 		}
 
-		Ok((None, timed_out_htlcs))
+		let announcement_sigs = if let Some((genesis_block_hash, node_pk)) = genesis_node_pk {
+			self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok()
+		} else { None };
+		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
 
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
@@ -4503,10 +4571,11 @@ impl<Signer: Sign> Channel<Signer> {
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.update_time_counter;
-			match self.best_block_updated(reorg_height, best_time, logger) {
-				Ok((funding_locked, timed_out_htlcs)) => {
+			match self.do_best_block_updated(reorg_height, best_time, None, logger) {
+				Ok((funding_locked, timed_out_htlcs, announcement_sigs)) => {
 					assert!(funding_locked.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
+					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
 					Ok(())
 				},
 				Err(e) => Err(e)
@@ -4690,10 +4759,27 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(msg)
 	}
 
-	pub fn get_announcement_sigs(&self, node_pk: PublicKey, genesis_block_hash: BlockHash) -> Result<msgs::AnnouncementSignatures, ChannelError> {
+	fn get_announcement_sigs(&mut self, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block_height: u32) -> Result<msgs::AnnouncementSignatures, ChannelError> {
+		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
+			return Err(ChannelError::Ignore("Funding not yet fully confirmed".to_owned()));
+		}
+
+		if !self.is_usable() {
+			return Err(ChannelError::Ignore("Channel not yet available for use".to_owned()));
+		}
+
+		if self.channel_state & ChannelState::PeerDisconnected as u32 != 0 {
+			return Err(ChannelError::Ignore("Peer currently disconnected".to_owned()));
+		}
+
+		if self.announcement_sigs_state != AnnouncementSigsState::NotSent {
+			return Err(ChannelError::Ignore("Announcement signatures already sent".to_owned()));
+		}
+
 		let announcement = self.get_channel_announcement(node_pk, genesis_block_hash)?;
 		let (our_node_sig, our_bitcoin_sig) = self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx)
 			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
+		self.announcement_sigs_state = AnnouncementSigsState::MessageSent;
 
 		Ok(msgs::AnnouncementSignatures {
 			channel_id: self.channel_id(),
@@ -4726,7 +4812,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Processes an incoming announcement_signatures message, providing a fully-signed
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
-	pub fn announcement_signatures(&mut self, our_node_id: PublicKey, chain_hash: BlockHash, msg: &msgs::AnnouncementSignatures) -> Result<msgs::ChannelAnnouncement, ChannelError> {
+	pub fn announcement_signatures(&mut self, our_node_id: PublicKey, chain_hash: BlockHash, best_block_height: u32, msg: &msgs::AnnouncementSignatures) -> Result<msgs::ChannelAnnouncement, ChannelError> {
 		let announcement = self.get_channel_announcement(our_node_id.clone(), chain_hash)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
@@ -4743,13 +4829,20 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		self.announcement_sigs = Some((msg.node_signature, msg.bitcoin_signature));
+		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
+			return Err(ChannelError::Ignore(
+				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
+		}
 
 		self.sign_channel_announcement(our_node_id, announcement)
 	}
 
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
-	pub fn get_signed_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash) -> Option<msgs::ChannelAnnouncement> {
+	pub fn get_signed_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash, best_block_height: u32) -> Option<msgs::ChannelAnnouncement> {
+		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
+			return None;
+		}
 		let announcement = match self.get_channel_announcement(our_node_id.clone(), chain_hash) {
 			Ok(res) => res,
 			Err(_) => return None,
@@ -5030,6 +5123,10 @@ impl<Signer: Sign> Channel<Signer> {
 			Err(e) => return Err(e),
 		};
 
+		if self.announcement_sigs_state == AnnouncementSigsState::MessageSent {
+			self.announcement_sigs_state = AnnouncementSigsState::Committed;
+		}
+
 		self.latest_monitor_update_id += 1;
 		let monitor_update = ChannelMonitorUpdate {
 			update_id: self.latest_monitor_update_id,
@@ -5284,6 +5381,29 @@ impl Readable for ChannelUpdateStatus {
 		Ok(match <u8 as Readable>::read(reader)? {
 			0 => ChannelUpdateStatus::Enabled,
 			1 => ChannelUpdateStatus::Disabled,
+			_ => return Err(DecodeError::InvalidValue),
+		})
+	}
+}
+
+impl Writeable for AnnouncementSigsState {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// We only care about writing out the current state as if we had just disconnected, at
+		// which point we always set anything but AnnouncementSigsReceived to NotSent.
+		match self {
+			AnnouncementSigsState::NotSent => 0u8.write(writer),
+			AnnouncementSigsState::MessageSent => 0u8.write(writer),
+			AnnouncementSigsState::Committed => 0u8.write(writer),
+			AnnouncementSigsState::PeerReceived => 1u8.write(writer),
+		}
+	}
+}
+
+impl Readable for AnnouncementSigsState {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(match <u8 as Readable>::read(reader)? {
+			0 => AnnouncementSigsState::NotSent,
+			1 => AnnouncementSigsState::PeerReceived,
 			_ => return Err(DecodeError::InvalidValue),
 		})
 	}
@@ -5557,6 +5677,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
 			(13, self.channel_creation_height, required),
 			(15, preimages, vec_type),
+			(17, self.announcement_sigs_state, required),
 		});
 
 		Ok(())
@@ -5809,6 +5930,10 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let mut channel_creation_height = Some(serialized_height);
 		let mut preimages_opt: Option<Vec<Option<PaymentPreimage>>> = None;
 
+		// If we read an old Channel, for simplicity we just treat it as "we never sent an
+		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
+		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5822,6 +5947,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(11, monitor_pending_finalized_fulfills, vec_type),
 			(13, channel_creation_height, option),
 			(15, preimages_opt, vec_type),
+			(17, announcement_sigs_state, option),
 		});
 
 		if let Some(preimages) = preimages_opt {
@@ -5864,6 +5990,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			config: config.unwrap(),
 			channel_id,
 			channel_state,
+			announcement_sigs_state: announcement_sigs_state.unwrap(),
 			secp_ctx,
 			channel_value_satoshis,
 

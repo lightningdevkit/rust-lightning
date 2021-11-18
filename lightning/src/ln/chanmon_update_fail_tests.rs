@@ -20,6 +20,7 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use chain::{ChannelMonitorUpdateErr, Listen, Watch};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
+use ln::channel::AnnouncementSigsState;
 use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
@@ -1402,6 +1403,11 @@ fn monitor_failed_no_reestablish_response() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	{
+		let mut lock;
+		get_channel_ref!(nodes[0], lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[1], lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+	}
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
 	// on receipt).
