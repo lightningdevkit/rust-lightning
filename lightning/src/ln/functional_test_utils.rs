@@ -600,7 +600,14 @@ pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_r
 pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(node_recv: &Node<'a, 'b, 'c>, node_conf: &Node<'a, 'b, 'c>) -> ((msgs::FundingLocked, msgs::AnnouncementSignatures), [u8; 32]) {
 	let channel_id;
 	let events_6 = node_conf.node.get_and_clear_pending_msg_events();
-	assert_eq!(events_6.len(), 2);
+	assert_eq!(events_6.len(), 3);
+	let announcement_sigs_idx = if let MessageSendEvent::SendChannelUpdate { ref node_id, msg: _ } = events_6[1] {
+		assert_eq!(*node_id, node_recv.node.get_our_node_id());
+		2
+	} else if let MessageSendEvent::SendChannelUpdate { ref node_id, msg: _ } = events_6[2] {
+		assert_eq!(*node_id, node_recv.node.get_our_node_id());
+		1
+	} else { panic!("Unexpected event: {:?}", events_6[1]); };
 	((match events_6[0] {
 		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
 			channel_id = msg.channel_id.clone();
@@ -608,7 +615,7 @@ pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(node_recv
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
-	}, match events_6[1] {
+	}, match events_6[announcement_sigs_idx] {
 		MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } => {
 			assert_eq!(*node_id, node_recv.node.get_our_node_id());
 			msg.clone()
@@ -2002,8 +2009,7 @@ macro_rules! handle_chan_reestablish_msgs {
 						idx += 1;
 						RAACommitmentOrder::CommitmentFirst
 					},
-					&MessageSendEvent::SendChannelUpdate { .. } => RAACommitmentOrder::CommitmentFirst,
-					_ => panic!("Unexpected event"),
+					_ => RAACommitmentOrder::CommitmentFirst,
 				}
 			} else {
 				RAACommitmentOrder::CommitmentFirst
@@ -2023,15 +2029,17 @@ macro_rules! handle_chan_reestablish_msgs {
 						commitment_update = Some(updates.clone());
 						idx += 1;
 					},
-					&MessageSendEvent::SendChannelUpdate { .. } => {},
-					_ => panic!("Unexpected event"),
+					_ => {},
 				}
 			}
 
 			if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, ref msg }) = msg_events.get(idx) {
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				idx += 1;
 				assert_eq!(msg.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
 			}
+
+			assert_eq!(msg_events.len(), idx);
 
 			(funding_locked, revoke_and_ack, commitment_update, order)
 		}
@@ -2105,9 +2113,9 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 			let announcement_event = node_a.node.get_and_clear_pending_msg_events();
 			if !announcement_event.is_empty() {
 				assert_eq!(announcement_event.len(), 1);
-				if let MessageSendEvent::SendAnnouncementSignatures { .. } = announcement_event[0] {
+				if let MessageSendEvent::SendChannelUpdate { .. } = announcement_event[0] {
 					//TODO: Test announcement_sigs re-sending
-				} else { panic!("Unexpected event!"); }
+				} else { panic!("Unexpected event! {:?}", announcement_event[0]); }
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
@@ -2162,9 +2170,11 @@ pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 
 			let announcement_event = node_b.node.get_and_clear_pending_msg_events();
 			if !announcement_event.is_empty() {
 				assert_eq!(announcement_event.len(), 1);
-				if let MessageSendEvent::SendAnnouncementSignatures { .. } = announcement_event[0] {
-					//TODO: Test announcement_sigs re-sending
-				} else { panic!("Unexpected event!"); }
+				match announcement_event[0] {
+					MessageSendEvent::SendChannelUpdate { .. } => {},
+					MessageSendEvent::SendAnnouncementSignatures { .. } => {},
+					_ => panic!("Unexpected event {:?}!", announcement_event[0]),
+				}
 			}
 		} else {
 			assert!(chan_msgs.0.is_none());
