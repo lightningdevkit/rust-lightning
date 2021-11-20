@@ -707,6 +707,14 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
 		{
+			$(
+			for outp in $spends_txn.output.iter() {
+				assert!(outp.value >= outp.script_pubkey.dust_value().as_sat(), "Input tx output didn't meet dust limit");
+			}
+			)*
+			for outp in $tx.output.iter() {
+				assert!(outp.value >= outp.script_pubkey.dust_value().as_sat(), "Spending tx output didn't meet dust limit");
+			}
 			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
 				$(
 					if out_point.txid == $spends_txn.txid() {

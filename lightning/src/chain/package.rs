@@ -636,26 +636,25 @@ impl PackageTemplate {
 		}
 		current_height + LOW_FREQUENCY_BUMP_INTERVAL
 	}
-	/// Returns value in satoshis to be included as package outgoing output amount and feerate with which package finalization should be done.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+
+	/// Returns value in satoshis to be included as package outgoing output amount and feerate
+	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
+	/// value.
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, dust_limit_sats: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
 		where F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
 		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
+		assert!(dust_limit_sats as i64 > 0, "Output script must be broadcastable/have a 'real' dust limit.");
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {
-				// If new computed fee is superior at the whole claimable amount burn all in fees
-				if new_fee > input_amounts {
-					return Some((0, feerate));
-				} else {
-					return Some((input_amounts - new_fee, feerate));
-				}
+				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
 		} else {
 			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
-				return Some((input_amounts - new_fee, feerate));
+				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
 		}
 		None
