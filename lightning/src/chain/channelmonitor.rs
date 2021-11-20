@@ -2355,7 +2355,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				let prevout = &tx.input[0].previous_output;
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
 					let mut balance_spendable_csv = None;
-					log_info!(logger, "Channel closed by funding output spend in txid {}.", log_bytes!(tx.txid()));
+					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
+						log_bytes!(self.funding_info.0.to_channel_id()), tx.txid());
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs) = self.check_spend_counterparty_transaction(&tx, height, &logger);
 						if !new_outputs.1.is_empty() {
