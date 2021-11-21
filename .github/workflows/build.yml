@@ -115,6 +115,14 @@ jobs:
           cargo test --verbose --color always  -p lightning
           cargo test --verbose --color always  -p lightning-invoice
           cargo build --verbose  --color always -p lightning-persister
+          cargo build --verbose  --color always -p lightning-background-processor
+      - name: Test C Bindings Modifications on Rust ${{ matrix.toolchain }}
+        if: "! matrix.build-net-tokio"
+        run: |
+          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning
+          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning-invoice
+          RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-persister
+          RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-background-processor
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |

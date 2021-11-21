@@ -86,32 +86,45 @@ impl Level {
 
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
-/// (C-not exported) - we convert to a const char* instead
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
+	#[cfg(not(c_bindings))]
 	/// The message body.
 	pub args: fmt::Arguments<'a>,
+	#[cfg(c_bindings)]
+	/// The message body.
+	pub args: String,
 	/// The module path of the message.
-	pub module_path: &'a str,
+	pub module_path: &'static str,
 	/// The source file containing the message.
-	pub file: &'a str,
+	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
+
+	#[cfg(c_bindings)]
+	/// We don't actually use the lifetime parameter in C bindings (as there is no good way to
+	/// communicate a lifetime to a C, or worse, Java user).
+	_phantom: core::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> Record<'a> {
 	/// Returns a new Record.
 	/// (C-not exported) as fmt can't be used in C
 	#[inline]
-	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'a str, file: &'a str, line: u32) -> Record<'a> {
+	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32) -> Record<'a> {
 		Record {
 			level,
+			#[cfg(not(c_bindings))]
 			args,
+			#[cfg(c_bindings)]
+			args: format!("{}", args),
 			module_path,
 			file,
-			line
+			line,
+			#[cfg(c_bindings)]
+			_phantom: core::marker::PhantomData,
 		}
 	}
 }
