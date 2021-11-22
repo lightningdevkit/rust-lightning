@@ -299,7 +299,7 @@ where C::Target: chain::Access, L::Target: Logger
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
-		log_trace!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
+		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -848,7 +848,7 @@ impl NetworkGraph {
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					if node_info.last_update  >= msg.timestamp {
-						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
+						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 					}
 				}
 
@@ -977,7 +977,7 @@ impl NetworkGraph {
 					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), msg.short_channel_id);
 					*entry.get_mut() = chan_info;
 				} else {
-					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)})
+					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)})
 				}
 			},
 			BtreeEntry::Vacant(entry) => {
@@ -1083,7 +1083,7 @@ impl NetworkGraph {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
 							if existing_chan_info.last_update >= msg.timestamp {
-								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Trace)});
+								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 							}
 							chan_was_enabled = existing_chan_info.enabled;
 						} else {

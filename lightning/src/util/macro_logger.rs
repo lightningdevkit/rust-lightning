@@ -174,6 +174,8 @@ macro_rules! log_given_level {
 			$crate::util::logger::Level::Debug => log_internal!($logger, $lvl, $($arg)*),
 			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug")))]
 			$crate::util::logger::Level::Trace => log_internal!($logger, $lvl, $($arg)*),
+			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug", feature = "max_level_trace")))]
+			$crate::util::logger::Level::Gossip => log_internal!($logger, $lvl, $($arg)*),
 
 			#[cfg(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug"))]
 			_ => {
@@ -214,5 +216,12 @@ macro_rules! log_debug {
 macro_rules! log_trace {
 	($logger: expr, $($arg:tt)*) => (
 		log_given_level!($logger, $crate::util::logger::Level::Trace, $($arg)*)
+	)
+}
+
+/// Log a gossip log.
+macro_rules! log_gossip {
+	($logger: expr, $($arg:tt)*) => (
+		log_given_level!($logger, $crate::util::logger::Level::Gossip, $($arg)*);
 	)
 }
