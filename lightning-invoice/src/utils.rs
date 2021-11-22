@@ -63,7 +63,6 @@ where
 	let (payment_hash, payment_secret) = channelmanager.create_inbound_payment(
 		amt_msat,
 		DEFAULT_EXPIRY_TIME.try_into().unwrap(),
-		0,
 	);
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let mut invoice = InvoiceBuilder::new(network)
