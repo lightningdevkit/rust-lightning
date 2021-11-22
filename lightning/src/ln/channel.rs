@@ -294,6 +294,7 @@ struct HTLCStats {
 	on_counterparty_tx_dust_exposure_msat: u64,
 	on_holder_tx_dust_exposure_msat: u64,
 	holding_cell_msat: u64,
+	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
 /// An enum gathering stats on commitment transaction, either local or remote.
@@ -2024,6 +2025,7 @@ impl<Signer: Sign> Channel<Signer> {
 			on_counterparty_tx_dust_exposure_msat: 0,
 			on_holder_tx_dust_exposure_msat: 0,
 			holding_cell_msat: 0,
+			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
 		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_TIMEOUT_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
@@ -2048,6 +2050,7 @@ impl<Signer: Sign> Channel<Signer> {
 			on_counterparty_tx_dust_exposure_msat: 0,
 			on_holder_tx_dust_exposure_msat: 0,
 			holding_cell_msat: 0,
+			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
 		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000) + self.counterparty_dust_limit_satoshis;
@@ -2072,6 +2075,8 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 				if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
 					stats.on_holder_tx_dust_exposure_msat += amount_msat;
+				} else {
+					stats.on_holder_tx_holding_cell_htlcs_count += 1;
 				}
 			}
 		}
@@ -3099,7 +3104,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = if let Ok(keys) = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number) { keys } else { return None; };
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
-		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize) * 1000;
+		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
