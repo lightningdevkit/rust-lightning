@@ -24,6 +24,7 @@ use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
+use ln::wire::Encode;
 use util::atomic_counter::AtomicCounter;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
@@ -757,7 +758,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let mut buffer = VecWriter(Vec::with_capacity(2048));
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
-		log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+
+		if is_gossip_msg(message.type_id()) {
+			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+		} else {
+			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
+		}
 		self.enqueue_encoded_message(peer, &buffer.0);
 	}
 
@@ -892,7 +898,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 												match e {
 													msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::UnknownRequiredFeature => {
-														log_trace!(self.logger, "Got a channel/node announcement with an known required feature flag, you may want to update!");
+														log_gossip!(self.logger, "Got a channel/node announcement with an unknown required feature flag, you may want to update!");
 														continue;
 													}
 													msgs::DecodeError::InvalidValue => {
@@ -906,7 +912,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
 													msgs::DecodeError::UnsupportedCompression => {
-														log_trace!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
+														log_gossip!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
 														continue;
 													}
 												}
@@ -953,7 +959,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		peer: &mut Peer,
 		message: wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>
 	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError> {
-		log_trace!(self.logger, "Received message {:?} from {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+		if is_gossip_msg(message.type_id()) {
+			log_gossip!(self.logger, "Received message {:?} from {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+		} else {
+			log_trace!(self.logger, "Received message {:?} from {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+		}
+
 		peer.received_message_since_timer_tick = true;
 
 		// Need an Init as first message
@@ -1132,7 +1143,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	fn forward_broadcast_msg(&self, peers: &mut PeerHolder<Descriptor>, msg: &wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>, except_node: Option<&PublicKey>) {
 		match msg {
 			wire::Message::ChannelAnnouncement(ref msg) => {
-				log_trace!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
+				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced channel's counterparties: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1143,7 +1154,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
 						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
 					{
-						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
+						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id_1) ||
@@ -1157,7 +1168,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
-				log_trace!(self.logger, "Sending message to all peers except {:?} or the announced node: {:?}", except_node, msg);
+				log_gossip!(self.logger, "Sending message to all peers except {:?} or the announced node: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1168,7 +1179,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
 						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
 					{
-						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
+						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id) {
@@ -1181,7 +1192,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
-				log_trace!(self.logger, "Sending message to all peers except {:?}: {:?}", except_node, msg);
+				log_gossip!(self.logger, "Sending message to all peers except {:?}: {:?}", except_node, msg);
 				let encoded_msg = encode_msg!(msg);
 
 				for (_, peer) in peers.peers.iter_mut() {
@@ -1192,7 +1203,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
 						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
 					{
-						log_trace!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
+						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
@@ -1377,7 +1388,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 											// room in the send buffer, put the error message there...
 											self.do_attempt_write_data(&mut descriptor, &mut peer);
 										} else {
-											log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
+											log_gossip!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 										}
 									}
 									descriptor.disconnect_socket();
@@ -1405,7 +1416,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
 					MessageSendEvent::SendReplyChannelRange { ref node_id, ref msg } => {
-						log_trace!(self.logger, "Handling SendReplyChannelRange event in peer_handler for node {} with num_scids={} first_blocknum={} number_of_blocks={}, sync_complete={}",
+						log_gossip!(self.logger, "Handling SendReplyChannelRange event in peer_handler for node {} with num_scids={} first_blocknum={} number_of_blocks={}, sync_complete={}",
 							log_pubkey!(node_id),
 							msg.short_channel_ids.len(),
 							msg.first_blocknum,
@@ -1585,6 +1596,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				descriptor.disconnect_socket();
 			}
 		}
+	}
+}
+
+fn is_gossip_msg(type_id: u16) -> bool {
+	match type_id {
+		msgs::ChannelAnnouncement::TYPE |
+		msgs::ChannelUpdate::TYPE |
+		msgs::NodeAnnouncement::TYPE => true,
+		_ => false
 	}
 }
 

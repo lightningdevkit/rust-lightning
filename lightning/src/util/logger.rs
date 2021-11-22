@@ -17,11 +17,13 @@
 use core::cmp;
 use core::fmt;
 
-static LOG_LEVEL_NAMES: [&'static str; 5] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
 /// An enum representing the available verbosity levels of the logger.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum Level {
+	/// Designates extremely verbose information, including gossip-induced messages
+	Gossip,
 	/// Designates very low priority, often extremely verbose, information
 	Trace,
 	/// Designates lower priority information
@@ -78,7 +80,7 @@ impl Level {
 	/// Returns the most verbose logging level.
 	#[inline]
 	pub fn max() -> Level {
-		Level::Trace
+		Level::Gossip
 	}
 }
 
@@ -163,13 +165,14 @@ mod tests {
 			log_info!(self.logger, "This is an info");
 			log_debug!(self.logger, "This is a debug");
 			log_trace!(self.logger, "This is a trace");
+			log_gossip!(self.logger, "This is a gossip");
 		}
 	}
 
 	#[test]
 	fn test_logging_macros() {
 		let mut logger = TestLogger::new();
-		logger.enable(Level::Trace);
+		logger.enable(Level::Gossip);
 		let logger : Arc<Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();
@@ -189,7 +192,10 @@ mod tests {
 		assert!(Level::Debug > Level::Trace);
 		assert!(Level::Debug >= Level::Trace);
 		assert!(Level::Debug >= Level::Debug);
+		assert!(Level::Trace > Level::Gossip);
+		assert!(Level::Trace >= Level::Gossip);
 		assert!(Level::Trace >= Level::Trace);
+		assert!(Level::Gossip >= Level::Gossip);
 
 		assert!(Level::Error <= Level::Error);
 		assert!(Level::Warn < Level::Error);
@@ -204,5 +210,8 @@ mod tests {
 		assert!(Level::Trace < Level::Debug);
 		assert!(Level::Trace <= Level::Debug);
 		assert!(Level::Trace <= Level::Trace);
+		assert!(Level::Gossip < Level::Trace);
+		assert!(Level::Gossip <= Level::Trace);
+		assert!(Level::Gossip <= Level::Gossip);
 	}
 }
