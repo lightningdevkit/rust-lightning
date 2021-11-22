@@ -50,8 +50,7 @@ use lightning::util::events::MessageSendEventsProvider;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::routing::router::{Route, RouteHop};
 
-
-use utils::test_logger;
+use utils::test_logger::{self, Output};
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
@@ -339,7 +338,8 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 }
 
 #[inline]
-pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
+	let out = SearchingOutput::new(underlying_out);
 	let broadcast = Arc::new(TestBroadcaster{});
 
 	macro_rules! make_node {
@@ -734,7 +734,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							// force-close which we should detect as an error).
 							assert_eq!(msg.contents.flags & 2, 0);
 						},
-						_ => panic!("Unhandled message event {:?}", event),
+						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
+							return;
+						} else {
+							panic!("Unhandled message event {:?}", event)
+						},
 					}
 					if $limit_events != ProcessMessages::AllMessages {
 						break;
@@ -766,7 +770,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
 							},
-							_ => panic!("Unhandled message event"),
+							_ => if out.may_fail.load(atomic::Ordering::Acquire) {
+								return;
+							} else {
+								panic!("Unhandled message event")
+							},
 						}
 					}
 					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(0));
@@ -783,7 +791,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
 							},
-							_ => panic!("Unhandled message event"),
+							_ => if out.may_fail.load(atomic::Ordering::Acquire) {
+								return;
+							} else {
+								panic!("Unhandled message event")
+							},
 						}
 					}
 					push_excess_b_events!(nodes[1].get_and_clear_pending_msg_events().drain(..), Some(2));
@@ -834,7 +846,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						events::Event::PendingHTLCsForwardable { .. } => {
 							nodes[$node].process_pending_htlc_forwards();
 						},
-						_ => panic!("Unhandled event"),
+						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
+							return;
+						} else {
+							panic!("Unhandled event")
+						},
 					}
 				}
 				had_events
@@ -1125,7 +1141,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					break;
 				}
 
-				// Finally, make sure that at least one end of each channel can make a substantial payment.
+				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
 					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id) ||
 					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id));
@@ -1152,7 +1168,29 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	}
 }
 
-pub fn chanmon_consistency_test<Out: test_logger::Output>(data: &[u8], out: Out) {
+/// We actually have different behavior based on if a certain log string has been seen, so we have
+/// to do a bit more tracking.
+#[derive(Clone)]
+struct SearchingOutput<O: Output> {
+	output: O,
+	may_fail: Arc<atomic::AtomicBool>,
+}
+impl<O: Output> Output for SearchingOutput<O> {
+	fn locked_write(&self, data: &[u8]) {
+		// We hit a design limitation of LN state machine (see CONCURRENT_INBOUND_HTLC_FEE_BUFFER)
+		if std::str::from_utf8(data).unwrap().contains("Outbound update_fee HTLC buffer overflow - counterparty should force-close this channel") {
+			self.may_fail.store(true, atomic::Ordering::Release);
+		}
+		self.output.locked_write(data)
+	}
+}
+impl<O: Output> SearchingOutput<O> {
+	pub fn new(output: O) -> Self {
+		Self { output, may_fail: Arc::new(atomic::AtomicBool::new(false)) }
+	}
+}
+
+pub fn chanmon_consistency_test<Out: Output>(data: &[u8], out: Out) {
 	do_test(data, out);
 }
 
