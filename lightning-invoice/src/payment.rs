@@ -36,6 +36,7 @@
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! # use lightning::util::logger::{Logger, Record};
+//! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
 //! # use lightning_invoice::payment::{InvoicePayer, Payer, RetryAttempts, Router};
 //! # use secp256k1::key::PublicKey;
@@ -71,6 +72,9 @@
 //! # }
 //! #
 //! # struct FakeScorer {};
+//! # impl Writeable for FakeScorer {
+//! #     fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> { unimplemented!(); }
+//! # }
 //! # impl Score for FakeScorer {
 //! #     fn channel_penalty_msat(
 //! #         &self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
@@ -1224,6 +1228,10 @@ mod tests {
 		}
 	}
 
+	#[cfg(c_bindings)]
+	impl lightning::util::ser::Writeable for TestScorer {
+		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), std::io::Error> { unreachable!(); }
+	}
 	impl Score for TestScorer {
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId

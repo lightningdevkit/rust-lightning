@@ -63,10 +63,22 @@ use core::ops::{DerefMut, Sub};
 use core::time::Duration;
 use io::{self, Read}; use sync::{Mutex, MutexGuard};
 
+/// We define Score ever-so-slightly differently based on whether we are being built for C bindings
+/// or not. For users, `LockableScore` must somehow be writeable to disk. For Rust users, this is
+/// no problem - you move a `Score` that implements `Writeable` into a `Mutex`, lock it, and now
+/// you have the original, concrete, `Score` type, which presumably implements `Writeable`.
+///
+/// For C users, once you've moved the `Score` into a `LockableScore` all you have after locking it
+/// is an opaque trait object with an opaque pointer with no type info. Users could take the unsafe
+/// approach of blindly casting that opaque pointer to a concrete type and calling `Writeable` from
+/// there, but other languages downstream of the C bindings (e.g. Java) can't even do that.
+/// Instead, we really want `Score` and `LockableScore` to implement `Writeable` directly, which we
+/// do here by defining `Score` differently for `cfg(c_bindings)`.
+macro_rules! define_score { ($($supertrait: path)*) => {
 /// An interface used to score payment channels for path finding.
 ///
 ///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
-pub trait Score {
+pub trait Score $(: $supertrait)* {
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
 	///
@@ -85,6 +97,22 @@ pub trait Score {
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
 }
 
+impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
+	}
+
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.deref_mut().payment_path_failed(path, short_channel_id)
+	}
+}
+} }
+
+#[cfg(c_bindings)]
+define_score!(Writeable);
+#[cfg(not(c_bindings))]
+define_score!();
+
 /// A scorer that is accessed under a lock.
 ///
 /// Needed so that calls to [`Score::channel_penalty_msat`] in [`find_route`] can be made while
@@ -101,6 +129,7 @@ pub trait LockableScore<'a> {
 	fn lock(&'a self) -> Self::Locked;
 }
 
+/// (C-not exported)
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
 
@@ -117,13 +146,34 @@ impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 	}
 }
 
-impl<S: Score, T: DerefMut<Target=S>> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
-	}
+#[cfg(c_bindings)]
+/// A concrete implementation of [`LockableScore`] which supports multi-threading.
+pub struct MultiThreadedLockableScore<S: Score> {
+	score: Mutex<S>,
+}
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
+	type Locked = MutexGuard<'a, T>;
 
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
-		self.deref_mut().payment_path_failed(path, short_channel_id)
+	fn lock(&'a self) -> MutexGuard<'a, T> {
+		Mutex::lock(&self.score).unwrap()
+	}
+}
+
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		T::write(&**self, writer)
+	}
+}
+
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		S::write(&**self, writer)
 	}
 }
 
