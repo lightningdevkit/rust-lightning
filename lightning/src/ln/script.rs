@@ -17,7 +17,7 @@ use io;
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
 /// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
 /// An error occurring when converting from [`Script`] to [`ShutdownScript`].
@@ -29,7 +29,7 @@ pub struct InvalidShutdownScript {
 	pub script: Script
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum ShutdownScriptImpl {
 	/// [`PublicKey`] used to form a P2WPKH script pubkey. Used to support backward-compatible
 	/// serialization.

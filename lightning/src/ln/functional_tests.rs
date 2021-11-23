@@ -18,7 +18,7 @@ use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PER
 use chain::transaction::OutPoint;
 use chain::keysinterface::BaseSign;
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC};
+use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
@@ -584,12 +584,19 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let channel_value = 1977;
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 700000, InitFeatures::known(), InitFeatures::known());
+	let channel_value = 5000;
+	let push_sats = 700;
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, push_sats * 1000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
+	let bs_channel_reserve_sats = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value);
 
-	let feerate = 260;
+	// Calculate the maximum feerate that A can afford. Note that we don't send an update_fee
+	// CONCURRENT_INBOUND_HTLC_FEE_BUFFER HTLCs before actually running out of local balance, so we
+	// calculate two different feerates here - the expected local limit as well as the expected
+	// remote limit.
+	let feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / (COMMITMENT_TX_BASE_WEIGHT + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC)) as u32;
+	let non_buffer_feerate = ((channel_value - bs_channel_reserve_sats - push_sats) * 1000 / COMMITMENT_TX_BASE_WEIGHT) as u32;
 	{
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 		*feerate_lock = feerate;
@@ -602,27 +609,25 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	commitment_signed_dance!(nodes[1], nodes[0], update_msg.commitment_signed, false);
 
-	//Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate of 260 set above.
-	//This value results in a fee that is exactly what the funder can afford (277 sat + 1000 sat channel reserve)
+	// Confirm that the new fee based on the last local commitment txn is what we expected based on the feerate set above.
 	{
 		let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id)[0].clone();
 
-		//We made sure neither party's funds are below the dust limit so -2 non-HTLC txns from number of outputs
-		let num_htlcs = commitment_tx.output.len() - 2;
-		let total_fee: u64 = feerate as u64 * (COMMITMENT_TX_BASE_WEIGHT + (num_htlcs as u64) * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+		//We made sure neither party's funds are below the dust limit and there are no HTLCs here
+		assert_eq!(commitment_tx.output.len(), 2);
+		let total_fee: u64 = commit_tx_fee_msat(feerate, 0) / 1000;
 		let mut actual_fee = commitment_tx.output.iter().fold(0, |acc, output| acc + output.value);
 		actual_fee = channel_value - actual_fee;
 		assert_eq!(total_fee, actual_fee);
 	}
 
-	//Add 2 to the previous fee rate to the final fee increases by 1 (with no HTLCs the fee is essentially
-	//fee_rate*(724/1000) so the increment of 1*0.724 is rounded back down)
 	{
+		// Increment the feerate by a small constant, accounting for rounding errors
 		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
-		*feerate_lock = feerate + 2;
+		*feerate_lock += 4;
 	}
 	nodes[0].node.timer_tick_occurred();
-	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 2), 1);
+	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot afford to send new feerate at {}", feerate + 4), 1);
 	check_added_monitors!(nodes[0], 0);
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = 281474976710654;
@@ -658,11 +663,11 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
-			700,
-			999,
+			push_sats,
+			channel_value - push_sats - commit_tx_fee_msat(non_buffer_feerate + 4, 0) / 1000,
 			false, local_funding, remote_funding,
 			commit_tx_keys.clone(),
-			feerate + 124,
+			non_buffer_feerate + 4,
 			&mut htlcs,
 			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
@@ -677,7 +682,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	let update_fee = msgs::UpdateFee {
 		channel_id: chan.2,
-		feerate_per_kw: feerate + 124,
+		feerate_per_kw: non_buffer_feerate + 4,
 	};
 
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);
@@ -1446,21 +1451,21 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	// sending any above-dust amount would result in a channel reserve violation.
 	// In this test we check that we would be prevented from sending an HTLC in
 	// this situation.
-	let feerate_per_kw = 253;
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
+	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let mut push_amt = 100_000_000;
-	push_amt -= feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000 * 1000;
+	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64);
 	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt, InitFeatures::known(), InitFeatures::known());
 
 	// Sending exactly enough to hit the reserve amount should be accepted
-	let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
+		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	}
 
 	// However one more HTLC should be significantly over the reserve amount and fail.
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1_000_000);
@@ -1473,30 +1478,36 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 #[test]
 fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
-	// Set the fee rate for the channel very high, to the point where the funder
-	// receiving 1 update_add_htlc would result in them closing the channel due
-	// to channel reserve violation. This close could also happen if the fee went
-	// up a more realistic amount, but many HTLCs were outstanding at the time of
-	// the update_add_htlc.
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(6000) };
+	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 1000);
+	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
+	// channel reserve violation (so their balance is channel reserve (1000 sats) + commitment
+	// transaction fee with 0 HTLCs (183 sats)).
+	let mut push_amt = 100_000_000;
+	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64);
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt, InitFeatures::known(), InitFeatures::known());
+
+	// Send four HTLCs to cover the initial push_msat buffer we're required to include
+	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
+		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	}
+
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 700_000);
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 1000, &Some(payment_secret), cur_height, &None).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 700_000, &Some(payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
-		htlc_id: 1,
-		amount_msat: htlc_msat + 1,
+		htlc_id: MIN_AFFORDABLE_HTLC_COUNT as u64,
+		amount_msat: htlc_msat,
 		payment_hash: payment_hash,
 		cltv_expiry: htlc_cltv,
 		onion_routing_packet: onion_packet,
@@ -1517,9 +1528,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// Test that if we receive many dust HTLCs over an outbound channel, they don't count when
 	// calculating our commitment transaction fee (this was previously broken).
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
-	let feerate_per_kw = 253;
-	chanmon_cfgs[0].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
-	chanmon_cfgs[1].fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(feerate_per_kw) };
+	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
 
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
@@ -1529,7 +1538,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// channel reserve violation (so their balance is channel reserve (1000 sats) + commitment
 	// transaction fee with 0 HTLCs (183 sats)).
 	let mut push_amt = 100_000_000;
-	push_amt -= feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT) / 1000 * 1000;
+	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64);
 	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt, InitFeatures::known(), InitFeatures::known());
 
@@ -1540,10 +1549,50 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// commitment transaction fee.
 	let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], dust_amt);
 
+	// Send four HTLCs to cover the initial push_msat buffer we're required to include
+	for _ in 0..MIN_AFFORDABLE_HTLC_COUNT {
+		let (_, _, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+	}
+
 	// One more than the dust amt should fail, however.
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], dust_amt + 1);
 	unwrap_send_err!(nodes[1].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Cannot send value that would put counterparty balance under holder-announced channel reserve value"));
+}
+
+#[test]
+fn test_chan_init_feerate_unaffordability() {
+	// Test that we will reject channel opens which do not leave enough to pay for any HTLCs due to
+	// channel reserve and feerate requirements.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let feerate_per_kw = *chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Set the push_msat amount such that nodes[0] will not be able to afford to add even a single
+	// HTLC.
+	let mut push_amt = 100_000_000;
+	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64);
+	assert_eq!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt + 1, 42, None).unwrap_err(),
+		APIError::APIMisuseError { err: "Funding amount (356) can't even pay fee for initial commitment transaction fee of 357.".to_string() });
+
+	// During open, we don't have a "counterparty channel reserve" to check against, so that
+	// requirement only comes into play on the open_channel handling side.
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt, 42, None).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	open_channel_msg.push_msat += 1;
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel_msg);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+			assert_eq!(msg.data, "Insufficient funding amount for initial reserve");
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
 
 #[test]
@@ -4508,7 +4557,7 @@ fn test_claim_sizeable_push_msat() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
 	nodes[1].node.force_close_channel(&chan.2).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -4537,7 +4586,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 99000000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
 	nodes[0].node.force_close_channel(&chan.2).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
