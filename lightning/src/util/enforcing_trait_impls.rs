@@ -79,6 +79,8 @@ impl EnforcingSigner {
 		}
 	}
 
+	pub fn opt_anchors(&self) -> bool { self.inner.opt_anchors() }
+
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
@@ -154,9 +156,9 @@ impl BaseSign for EnforcingSigner {
 		for (this_htlc, sig) in trusted_tx.htlcs().iter().zip(&commitment_tx.counterparty_htlc_sigs) {
 			assert!(this_htlc.transaction_output_index.is_some());
 			let keys = trusted_tx.keys();
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, trusted_tx.feerate_per_kw(), holder_csv, &this_htlc, self.opt_anchors(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, &keys);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
 
 			let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, SigHashType::All)[..]);
 			secp_ctx.verify(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();

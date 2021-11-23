@@ -786,6 +786,10 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		htlc_tx
 	}
 
+	pub(crate) fn opt_anchors(&self) -> bool {
+		self.channel_transaction_parameters.opt_anchors.is_some()
+	}
+
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
 	pub(crate) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let latest_had_sigs = self.holder_htlc_sigs.is_some();

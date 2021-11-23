@@ -679,6 +679,10 @@ impl<Signer: Sign> Channel<Signer> {
 		cmp::min(channel_value_satoshis, cmp::max(q, 1000)) //TODO
 	}
 
+	pub(crate) fn opt_anchors(&self) -> bool {
+		self.channel_transaction_parameters.opt_anchors.is_some()
+	}
+
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
@@ -790,7 +794,8 @@ impl<Signer: Sign> Channel<Signer> {
 				holder_selected_contest_delay: config.own_channel_config.our_to_self_delay,
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
-				funding_outpoint: None
+				funding_outpoint: None,
+				opt_anchors: None,
 			},
 			funding_transaction: None,
 
@@ -1084,7 +1089,8 @@ impl<Signer: Sign> Channel<Signer> {
 					selected_contest_delay: msg.to_self_delay,
 					pubkeys: counterparty_pubkeys,
 				}),
-				funding_outpoint: None
+				funding_outpoint: None,
+				opt_anchors: None
 			},
 			funding_transaction: None,
 
@@ -1311,7 +1317,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
 		                                                             value_to_a as u64,
 		                                                             value_to_b as u64,
-		                                                             false,
+		                                                             self.channel_transaction_parameters.opt_anchors.is_some(),
 		                                                             funding_pubkey_a,
 		                                                             funding_pubkey_b,
 		                                                             keys.clone(),
@@ -2575,10 +2581,10 @@ impl<Signer: Sign> Channel<Signer> {
 		for (idx, (htlc, source)) in htlcs_cloned.drain(..).enumerate() {
 			if let Some(_) = htlc.transaction_output_index {
 				let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_stats.feerate_per_kw,
-					self.get_counterparty_selected_contest_delay().unwrap(), &htlc,
+					self.get_counterparty_selected_contest_delay().unwrap(), &htlc, self.opt_anchors(),
 					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
-				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
 				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.serialize()),
@@ -4921,8 +4927,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
 				log_trace!(logger, "Signed remote HTLC tx {} with redeemscript {} with pubkey {} -> {} in channel {}",
-					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.get_holder_selected_contest_delay(), htlc, &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
-					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, &counterparty_keys)),
+					encode::serialize_hex(&chan_utils::build_htlc_transaction(&counterparty_commitment_txid, commitment_stats.feerate_per_kw, self.get_holder_selected_contest_delay(), htlc, self.opt_anchors(), &counterparty_keys.broadcaster_delayed_payment_key, &counterparty_keys.revocation_key)),
+					encode::serialize_hex(&chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &counterparty_keys)),
 					log_bytes!(counterparty_keys.broadcaster_htlc_key.serialize()),
 					log_bytes!(htlc_sig.serialize_compact()[..]), log_bytes!(self.channel_id()));
 			}
@@ -5626,6 +5632,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			return Err(DecodeError::UnknownRequiredFeature);
 		}
 
+		if channel_parameters.opt_anchors.is_some() {
+			// Relax this check when ChannelTypeFeatures supports anchors.
+			return Err(DecodeError::InvalidValue);
+		}
+
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
 
@@ -6212,10 +6223,11 @@ mod tests {
 					let remote_signature = Signature::from_der(&hex::decode($counterparty_htlc_sig_hex).unwrap()[..]).unwrap();
 
 					let ref htlc = htlcs[$htlc_idx];
+					let opt_anchors = false;
 					let htlc_tx = chan_utils::build_htlc_transaction(&unsigned_tx.txid, chan.feerate_per_kw,
 						chan.get_counterparty_selected_contest_delay().unwrap(),
-						&htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+						&htlc, opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, opt_anchors, &keys);
 					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]).unwrap();
 					secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).unwrap();
 

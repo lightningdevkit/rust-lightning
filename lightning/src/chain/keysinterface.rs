@@ -505,6 +505,12 @@ impl InMemorySigner {
 		self.channel_parameters.as_ref().unwrap()
 	}
 
+	/// Whether anchors should be used.
+	/// Will panic if ready_channel wasn't called.
+	pub fn opt_anchors(&self) -> bool {
+		self.get_channel_parameters().opt_anchors.is_some()
+	}
+
 	/// Sign the single input of spend_tx at index `input_idx` which spends the output
 	/// described by descriptor, returning the witness stack for the input.
 	///
@@ -593,8 +599,8 @@ impl BaseSign for InMemorySigner {
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
-			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &keys);
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
 			let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, SigHashType::All)[..]);
 			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key).map_err(|_| ())?;
 			htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &holder_htlc_key));
@@ -648,7 +654,7 @@ impl BaseSign for InMemorySigner {
 		let witness_script = {
 			let counterparty_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint).map_err(|_| ())?;
 			let holder_htlcpubkey = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint).map_err(|_| ())?;
-			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
+			chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &holder_htlcpubkey, &revocation_pubkey)
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
@@ -660,7 +666,7 @@ impl BaseSign for InMemorySigner {
 			let witness_script = if let Ok(revocation_pubkey) = chan_utils::derive_public_revocation_key(&secp_ctx, &per_commitment_point, &self.pubkeys().revocation_basepoint) {
 				if let Ok(counterparty_htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.counterparty_pubkeys().htlc_basepoint) {
 					if let Ok(htlcpubkey) = chan_utils::derive_public_key(&secp_ctx, &per_commitment_point, &self.pubkeys().htlc_basepoint) {
-						chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey)
+						chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, self.opt_anchors(), &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey)
 					} else { return Err(()) }
 				} else { return Err(()) }
 			} else { return Err(()) };
