@@ -249,7 +249,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	if prev_commitment_tx {
 		// To build a previous commitment transaction, deliver one round of commitment messages.
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.update_fulfill_htlcs[0]);
-		expect_payment_sent!(nodes[0], payment_preimage);
+		expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &b_htlc_msgs.commitment_signed);
 		check_added_monitors!(nodes[0], 1);
 		let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -400,7 +400,9 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// After broadcasting the HTLC claim transaction, node A will still consider the HTLC
 	// possibly-claimable up to ANTI_REORG_DELAY, at which point it will drop it.
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
-	if !prev_commitment_tx {
+	if prev_commitment_tx {
+		expect_payment_path_successful!(nodes[0]);
+	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
 	assert_eq!(sorted_vec(vec![Balance::MaybeClaimableHTLCAwaitingTimeout {

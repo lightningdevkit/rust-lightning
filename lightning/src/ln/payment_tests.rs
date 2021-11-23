@@ -664,7 +664,7 @@ fn test_fulfill_restart_failure() {
 	check_added_monitors!(nodes[1], 1);
 	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
-	expect_payment_sent!(nodes[0], payment_preimage);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
 	// Now reload nodes[1]...
 	persister = test_utils::TestPersister::new();
@@ -707,4 +707,5 @@ fn test_fulfill_restart_failure() {
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, false);
 	// nodes[0] shouldn't generate any events here, while it just got a payment failure completion
 	// it had already considered the payment fulfilled, and now they just got free money.
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }

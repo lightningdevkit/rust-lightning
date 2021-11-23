@@ -1087,23 +1087,64 @@ macro_rules! expect_payment_received {
 	}
 }
 
-macro_rules! expect_payment_sent {
+#[cfg(test)]
+macro_rules! expect_payment_sent_without_paths {
 	($node: expr, $expected_payment_preimage: expr) => {
-		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>);
+		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, false);
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
+		expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, false);
+	}
+}
+
+macro_rules! expect_payment_sent {
+	($node: expr, $expected_payment_preimage: expr) => {
+		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true);
+	};
+	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
+		expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true);
+	};
+	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		let expected_payment_hash = PaymentHash(Sha256::hash(&$expected_payment_preimage.0).into_inner());
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentSent { payment_id: _, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+		if $expect_paths {
+			assert!(events.len() > 1);
+		} else {
+			assert_eq!(events.len(), 1);
+		}
+		let expected_payment_id = match events[0] {
+			Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
 				assert_eq!(expected_payment_hash, *payment_hash);
 				assert!(fee_paid_msat.is_some());
 				if $expected_fee_msat_opt.is_some() {
 					assert_eq!(*fee_paid_msat, $expected_fee_msat_opt);
 				}
+				payment_id.unwrap()
 			},
+			_ => panic!("Unexpected event"),
+		};
+		if $expect_paths {
+			for i in 1..events.len() {
+				match events[i] {
+					Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
+						assert_eq!(payment_id, expected_payment_id);
+						assert_eq!(payment_hash, Some(expected_payment_hash));
+					},
+					_ => panic!("Unexpected event"),
+				}
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+macro_rules! expect_payment_path_successful {
+	($node: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}

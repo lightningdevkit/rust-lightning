@@ -841,6 +841,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
+						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::PendingHTLCsForwardable { .. } => {

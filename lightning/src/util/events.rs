@@ -207,7 +207,7 @@ pub enum Event {
 		/// Note that this serves as a payment receipt, if you wish to have such a thing, you must
 		/// store it somehow!
 		payment_preimage: PaymentPreimage,
-		/// The hash which was given to [`ChannelManager::send_payment`].
+		/// The hash that was given to [`ChannelManager::send_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: PaymentHash,
@@ -231,7 +231,9 @@ pub enum Event {
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
 		payment_id: Option<PaymentId>,
-		/// The hash which was given to ChannelManager::send_payment.
+		/// The hash that was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: PaymentHash,
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
 		/// the payment has failed, not just the route in question. If this is not set, you may
@@ -329,7 +331,27 @@ pub enum Event {
 		channel_id: [u8; 32],
 		/// The full transaction received from the user
 		transaction: Transaction
-	}
+	},
+	/// Indicates that a path for an outbound payment was successful.
+	///
+	/// Always generated after [`Event::PaymentSent`] and thus useful for scoring channels. See
+	/// [`Event::PaymentSent`] for obtaining the payment preimage.
+	PaymentPathSuccessful {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: PaymentId,
+		/// The hash that was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		payment_hash: Option<PaymentHash>,
+		/// The payment path that was successful.
+		///
+		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
+		path: Vec<RouteHop>,
+	},
 }
 
 impl Writeable for Event {
@@ -425,6 +447,14 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(2, transaction, required)
+				})
+			},
+			&Event::PaymentPathSuccessful { ref payment_id, ref payment_hash, ref path } => {
+				13u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_id, required),
+					(2, payment_hash, option),
+					(4, path, vec_type)
 				})
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -583,6 +613,24 @@ impl MaybeReadable for Event {
 						(2, transaction, required),
 					});
 					Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
+				};
+				f()
+			},
+			13u8 => {
+				let f = || {
+					let mut payment_id = PaymentId([0; 32]);
+					let mut payment_hash = None;
+					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
+					read_tlv_fields!(reader, {
+						(0, payment_id, required),
+						(2, payment_hash, option),
+						(4, path, vec_type),
+					});
+					Ok(Some(Event::PaymentPathSuccessful {
+						payment_id,
+						payment_hash,
+						path: path.unwrap(),
+					}))
 				};
 				f()
 			},
