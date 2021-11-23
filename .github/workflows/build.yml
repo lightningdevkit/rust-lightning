@@ -43,6 +43,7 @@ jobs:
             build-no-std: true
           - toolchain: 1.36.0
             build-no-std: false
+            test-log-variants: true
           - toolchain: 1.41.0
             build-no-std: false
           - toolchain: 1.45.2
@@ -73,6 +74,13 @@ jobs:
           cargo build --verbose  --color always -p lightning
           cargo build --verbose  --color always -p lightning-invoice
           cargo build --verbose  --color always -p lightning-persister
+      - name: Build on Rust ${{ matrix.toolchain }} with all Log-Limiting features
+        if: matrix.test-log-variants
+        run: |
+          cd lightning
+          for FEATURE in $(cat Cargo.toml | grep '^max_level_' | awk '{ print $1 }'); do
+            cargo build --verbose --color always --features $FEATURE
+          done
       - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: |
