@@ -177,7 +177,7 @@ macro_rules! log_given_level {
 			#[cfg(not(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug", feature = "max_level_trace")))]
 			$crate::util::logger::Level::Gossip => log_internal!($logger, $lvl, $($arg)*),
 
-			#[cfg(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug"))]
+			#[cfg(any(feature = "max_level_off", feature = "max_level_error", feature = "max_level_warn", feature = "max_level_info", feature = "max_level_debug", feature = "max_level_trace"))]
 			_ => {
 				// The level is disabled at compile-time
 			},
