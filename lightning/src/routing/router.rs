@@ -1488,6 +1488,8 @@ mod tests {
 	use ln::channelmanager;
 	use util::test_utils;
 	use util::ser::Writeable;
+	#[cfg(c_bindings)]
+	use util::ser::Writer;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
@@ -4653,6 +4655,10 @@ mod tests {
 		short_channel_id: u64,
 	}
 
+	#[cfg(c_bindings)]
+	impl Writeable for BadChannelScorer {
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
+	}
 	impl Score for BadChannelScorer {
 		fn channel_penalty_msat(&self, short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
@@ -4663,6 +4669,11 @@ mod tests {
 
 	struct BadNodeScorer {
 		node_id: NodeId,
+	}
+
+	#[cfg(c_bindings)]
+	impl Writeable for BadNodeScorer {
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
 	}
 
 	impl Score for BadNodeScorer {

@@ -46,9 +46,8 @@
 //!
 //! # Note
 //!
-//! If persisting [`Scorer`], it must be restored using the same [`Time`] parameterization. Using a
-//! different type results in undefined behavior. Specifically, persisting when built with feature
-//! `no-std` and restoring without it, or vice versa, uses different types and thus is undefined.
+//! Persisting when built with feature `no-std` and restoring without it, or vice versa, uses
+//! different types and thus is undefined.
 //!
 //! [`find_route`]: crate::routing::router::find_route
 
@@ -59,14 +58,27 @@ use util::ser::{Readable, Writeable, Writer};
 
 use prelude::*;
 use core::cell::{RefCell, RefMut};
-use core::ops::{DerefMut, Sub};
+use core::ops::DerefMut;
 use core::time::Duration;
-use io::{self, Read}; use sync::{Mutex, MutexGuard};
+use io::{self, Read};
+use sync::{Mutex, MutexGuard};
 
+/// We define Score ever-so-slightly differently based on whether we are being built for C bindings
+/// or not. For users, `LockableScore` must somehow be writeable to disk. For Rust users, this is
+/// no problem - you move a `Score` that implements `Writeable` into a `Mutex`, lock it, and now
+/// you have the original, concrete, `Score` type, which presumably implements `Writeable`.
+///
+/// For C users, once you've moved the `Score` into a `LockableScore` all you have after locking it
+/// is an opaque trait object with an opaque pointer with no type info. Users could take the unsafe
+/// approach of blindly casting that opaque pointer to a concrete type and calling `Writeable` from
+/// there, but other languages downstream of the C bindings (e.g. Java) can't even do that.
+/// Instead, we really want `Score` and `LockableScore` to implement `Writeable` directly, which we
+/// do here by defining `Score` differently for `cfg(c_bindings)`.
+macro_rules! define_score { ($($supertrait: path)*) => {
 /// An interface used to score payment channels for path finding.
 ///
 ///	Scoring is in terms of fees willing to be paid in order to avoid routing through a channel.
-pub trait Score {
+pub trait Score $(: $supertrait)* {
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
 	///
@@ -85,6 +97,22 @@ pub trait Score {
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
 }
 
+impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
+	}
+
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.deref_mut().payment_path_failed(path, short_channel_id)
+	}
+}
+} }
+
+#[cfg(c_bindings)]
+define_score!(Writeable);
+#[cfg(not(c_bindings))]
+define_score!();
+
 /// A scorer that is accessed under a lock.
 ///
 /// Needed so that calls to [`Score::channel_penalty_msat`] in [`find_route`] can be made while
@@ -101,6 +129,7 @@ pub trait LockableScore<'a> {
 	fn lock(&'a self) -> Self::Locked;
 }
 
+/// (C-not exported)
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
 
@@ -117,13 +146,34 @@ impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 	}
 }
 
-impl<S: Score, T: DerefMut<Target=S>> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
-	}
+#[cfg(c_bindings)]
+/// A concrete implementation of [`LockableScore`] which supports multi-threading.
+pub struct MultiThreadedLockableScore<S: Score> {
+	score: Mutex<S>,
+}
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
+	type Locked = MutexGuard<'a, T>;
 
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
-		self.deref_mut().payment_path_failed(path, short_channel_id)
+	fn lock(&'a self) -> MutexGuard<'a, T> {
+		Mutex::lock(&self.score).unwrap()
+	}
+}
+
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		T::write(&**self, writer)
+	}
+}
+
+#[cfg(c_bindings)]
+/// (C-not exported)
+impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		S::write(&**self, writer)
 	}
 }
 
@@ -135,23 +185,33 @@ impl<S: Score, T: DerefMut<Target=S>> Score for T {
 /// See [module-level documentation] for usage.
 ///
 /// [module-level documentation]: crate::routing::scoring
-pub type Scorer = ScorerUsingTime::<DefaultTime>;
-
-/// Time used by [`Scorer`].
 #[cfg(not(feature = "no-std"))]
-pub type DefaultTime = std::time::Instant;
-
-/// Time used by [`Scorer`].
+pub type Scorer = ScorerUsingTime::<std::time::Instant>;
+/// [`Score`] implementation that provides reasonable default behavior.
+///
+/// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
+/// slightly higher fees are available. Will further penalize channels that fail to relay payments.
+///
+/// See [module-level documentation] for usage.
+///
+/// [module-level documentation]: crate::routing::scoring
 #[cfg(feature = "no-std")]
-pub type DefaultTime = Eternity;
+pub type Scorer = ScorerUsingTime::<time::Eternity>;
 
-/// [`Score`] implementation parameterized by [`Time`].
+// Note that ideally we'd hide ScorerUsingTime from public view by sealing it as well, but rustdoc
+// doesn't handle this well - instead exposing a `Scorer` which has no trait implementation(s) or
+// methods at all.
+
+/// [`Score`] implementation.
 ///
 /// See [`Scorer`] for details.
 ///
 /// # Note
 ///
-/// Mixing [`Time`] types between serialization and deserialization results in undefined behavior.
+/// Mixing the `no-std` feature between serialization and deserialization results in undefined
+/// behavior.
+///
+/// (C-not exported) generally all users should use the [`Scorer`] type alias.
 pub struct ScorerUsingTime<T: Time> {
 	params: ScoringParameters,
 	// TODO: Remove entries of closed channels.
@@ -197,8 +257,8 @@ pub struct ScoringParameters {
 	///
 	/// # Note
 	///
-	/// When time is an [`Eternity`], as is default when enabling feature `no-std`, it will never
-	/// elapse. Therefore, this penalty will never decay.
+	/// When built with the `no-std` feature, time will never elapse. Therefore, this penalty will
+	/// never decay.
 	///
 	/// [`failure_penalty_msat`]: Self::failure_penalty_msat
 	pub failure_penalty_half_life: Duration,
@@ -221,20 +281,6 @@ struct ChannelFailure<T: Time> {
 
 	/// Last time the channel failed. Used to decay `undecayed_penalty_msat`.
 	last_failed: T,
-}
-
-/// A measurement of time.
-pub trait Time: Sub<Duration, Output = Self> where Self: Sized {
-	/// Returns an instance corresponding to the current moment.
-	fn now() -> Self;
-
-	/// Returns the amount of time elapsed since `self` was created.
-	fn elapsed(&self) -> Duration;
-
-	/// Returns the amount of time passed since the beginning of [`Time`].
-	///
-	/// Used during (de-)serialization.
-	fn duration_since_epoch() -> Duration;
 }
 
 impl<T: Time> ScorerUsingTime<T> {
@@ -333,48 +379,6 @@ impl<T: Time> Score for ScorerUsingTime<T> {
 	}
 }
 
-#[cfg(not(feature = "no-std"))]
-impl Time for std::time::Instant {
-	fn now() -> Self {
-		std::time::Instant::now()
-	}
-
-	fn duration_since_epoch() -> Duration {
-		use std::time::SystemTime;
-		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
-	}
-
-	fn elapsed(&self) -> Duration {
-		std::time::Instant::elapsed(self)
-	}
-}
-
-/// A state in which time has no meaning.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Eternity;
-
-impl Time for Eternity {
-	fn now() -> Self {
-		Self
-	}
-
-	fn duration_since_epoch() -> Duration {
-		Duration::from_secs(0)
-	}
-
-	fn elapsed(&self) -> Duration {
-		Duration::from_secs(0)
-	}
-}
-
-impl Sub<Duration> for Eternity {
-	type Output = Self;
-
-	fn sub(self, _other: Duration) -> Self {
-		self
-	}
-}
-
 impl<T: Time> Writeable for ScorerUsingTime<T> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -425,9 +429,72 @@ impl<T: Time> Readable for ChannelFailure<T> {
 	}
 }
 
+pub(crate) mod time {
+	use core::ops::Sub;
+	use core::time::Duration;
+	/// A measurement of time.
+	pub trait Time: Sub<Duration, Output = Self> where Self: Sized {
+		/// Returns an instance corresponding to the current moment.
+		fn now() -> Self;
+
+		/// Returns the amount of time elapsed since `self` was created.
+		fn elapsed(&self) -> Duration;
+
+		/// Returns the amount of time passed since the beginning of [`Time`].
+		///
+		/// Used during (de-)serialization.
+		fn duration_since_epoch() -> Duration;
+	}
+
+	/// A state in which time has no meaning.
+	#[derive(Debug, PartialEq, Eq)]
+	pub struct Eternity;
+
+	#[cfg(not(feature = "no-std"))]
+	impl Time for std::time::Instant {
+		fn now() -> Self {
+			std::time::Instant::now()
+		}
+
+		fn duration_since_epoch() -> Duration {
+			use std::time::SystemTime;
+			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
+		}
+
+		fn elapsed(&self) -> Duration {
+			std::time::Instant::elapsed(self)
+		}
+	}
+
+	impl Time for Eternity {
+		fn now() -> Self {
+			Self
+		}
+
+		fn duration_since_epoch() -> Duration {
+			Duration::from_secs(0)
+		}
+
+		fn elapsed(&self) -> Duration {
+			Duration::from_secs(0)
+		}
+	}
+
+	impl Sub<Duration> for Eternity {
+		type Output = Self;
+
+		fn sub(self, _other: Duration) -> Self {
+			self
+		}
+	}
+}
+
+pub(crate) use self::time::Time;
+
 #[cfg(test)]
 mod tests {
-	use super::{Eternity, ScoringParameters, ScorerUsingTime, Time};
+	use super::{ScoringParameters, ScorerUsingTime, Time};
+	use super::time::Eternity;
 
 	use routing::scoring::Score;
 	use routing::network_graph::NodeId;
