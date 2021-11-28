@@ -935,4 +935,27 @@ mod tests {
 		do_chainsync_pauses_events(false);
 		do_chainsync_pauses_events(true);
 	}
+
+	#[test]
+	fn update_during_chainsync_fails_channel() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
+		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
+
+		connect_blocks(&nodes[0], 1);
+		// Before processing events, the ChannelManager will still think the Channel is open and
+		// there won't be any ChannelMonitorUpdates
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+		check_added_monitors!(nodes[0], 0);
+		// ... however once we get events once, the channel will close, creating a channel-closed
+		// ChannelMonitorUpdate.
+		check_closed_broadcast!(nodes[0], true);
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() });
+		check_added_monitors!(nodes[0], 1);
+	}
 }
