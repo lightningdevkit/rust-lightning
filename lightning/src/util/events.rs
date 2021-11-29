@@ -476,7 +476,7 @@ impl MaybeReadable for Event {
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
 					let mut amt = 0;
-					let mut _user_payment_id = None; // For compatibility with 0.0.103 and earlier
+					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(2, payment_secret, option),
