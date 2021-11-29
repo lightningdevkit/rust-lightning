@@ -940,6 +940,7 @@ impl BuiltCommitmentTransaction {
 ///
 /// This class can be used inside a signer implementation to generate a signature given the relevant
 /// secret key.
+#[derive(Clone, Hash, PartialEq)]
 pub struct ClosingTransaction {
 	to_holder_value_sat: u64,
 	to_counterparty_value_sat: u64,
