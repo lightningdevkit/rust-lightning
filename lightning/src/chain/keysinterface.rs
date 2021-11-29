@@ -43,6 +43,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use io::{self, Error};
 use ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 
+/// Used as initial key material, to be expanded into multiple secret keys (but not to be used
+/// directly). This is used within LDK to encrypt/decrypt inbound payment data.
+/// (C-not exported) as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct KeyMaterial(pub [u8; 32]);
+
 /// Information about a spendable output to a P2WSH script. See
 /// SpendableOutputDescriptor::DelayedPaymentOutput for more details on how to spend this.
 #[derive(Clone, Debug, PartialEq)]
@@ -397,6 +403,11 @@ pub trait KeysInterface {
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
 	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()>;
+
+	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
+	///
+	/// This method must return the same value each time it is called.
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 }
 
 #[derive(Clone)]
@@ -766,6 +777,7 @@ impl Readable for InMemorySigner {
 pub struct KeysManager {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
+	inbound_payment_key: KeyMaterial,
 	destination_script: Script,
 	shutdown_pubkey: PublicKey,
 	channel_master_key: ExtendedPrivKey,
@@ -821,6 +833,9 @@ impl KeysManager {
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
 				let rand_bytes_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
+				let inbound_payment_key: SecretKey = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted").private_key.key;
+				let mut inbound_pmt_key_bytes = [0; 32];
+				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
 
 				let mut rand_bytes_unique_start = Sha256::engine();
 				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
@@ -830,6 +845,7 @@ impl KeysManager {
 				let mut res = KeysManager {
 					secp_ctx,
 					node_secret,
+					inbound_payment_key: KeyMaterial(inbound_pmt_key_bytes),
 
 					destination_script,
 					shutdown_pubkey,
@@ -1036,6 +1052,10 @@ impl KeysInterface for KeysManager {
 
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
+	}
+
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
 	}
 
 	fn get_destination_script(&self) -> Script {

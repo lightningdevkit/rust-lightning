@@ -5816,7 +5816,7 @@ mod tests {
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT};
 	use chain::BestBlock;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-	use chain::keysinterface::{InMemorySigner, KeysInterface, BaseSign};
+	use chain::keysinterface::{InMemorySigner, KeyMaterial, KeysInterface, BaseSign};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
 	use util::enforcing_trait_impls::EnforcingSigner;
@@ -5857,6 +5857,7 @@ mod tests {
 		type Signer = InMemorySigner;
 
 		fn get_node_secret(&self) -> SecretKey { panic!(); }
+		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();

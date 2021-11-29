@@ -31,7 +31,7 @@ use lightning::chain::{BestBlock, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemorySigner, KeysInterface};
+use lightning::chain::keysinterface::{InMemorySigner, KeyMaterial, KeysInterface};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
@@ -56,6 +56,7 @@ use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, hash_map};
+use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
@@ -257,6 +258,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 
 struct KeyProvider {
 	node_secret: SecretKey,
+	inbound_payment_key: KeyMaterial,
 	counter: AtomicU64,
 }
 impl KeysInterface for KeyProvider {
@@ -264,6 +266,10 @@ impl KeysInterface for KeyProvider {
 
 	fn get_node_secret(&self) -> SecretKey {
 		self.node_secret.clone()
+	}
+
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
 	}
 
 	fn get_destination_script(&self) -> Script {
@@ -365,11 +371,13 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		Err(_) => return,
 	};
 
+	let inbound_payment_key = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42];
+
 	let broadcast = Arc::new(TestBroadcaster{ txn_broadcasted: Mutex::new(Vec::new()) });
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(),
 		Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) })));
 
-	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), counter: AtomicU64::new(0) });
+	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();
 	config.channel_options.forwarding_fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_options.announced_channel = get_slice!(1)[0] != 0;

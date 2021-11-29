@@ -34,7 +34,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateErr, chainmonitor, channel
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeysInterface, InMemorySigner};
+use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -162,6 +162,10 @@ impl KeysInterface for KeyProvider {
 
 	fn get_node_secret(&self) -> SecretKey {
 		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap()
+	}
+
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		KeyMaterial([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id])
 	}
 
 	fn get_destination_script(&self) -> Script {
