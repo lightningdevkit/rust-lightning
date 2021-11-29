@@ -115,14 +115,6 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-/// General Err type for ChannelMonitor actions. Generally, this implies that the data provided is
-/// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
-/// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
-/// corrupted.
-/// Contains a developer-readable error message.
-#[derive(Clone, Debug)]
-pub struct MonitorUpdateError(pub &'static str);
-
 /// An event to be processed by the ChannelManager.
 #[derive(Clone, PartialEq)]
 pub enum MonitorEvent {
@@ -1052,7 +1044,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		self.inner.lock().unwrap().provide_secret(idx, secret)
 	}
 
@@ -1074,12 +1066,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 	#[cfg(test)]
 	fn provide_latest_holder_commitment_tx(
-		&self,
-		holder_commitment_tx: HolderCommitmentTransaction,
+		&self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-	) -> Result<(), MonitorUpdateError> {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(
-			holder_commitment_tx, htlc_outputs)
+	) -> Result<(), ()> {
+		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs).map_err(|_| ())
 	}
 
 	#[cfg(test)]
@@ -1120,7 +1110,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: &B,
 		fee_estimator: &F,
 		logger: &L,
-	) -> Result<(), MonitorUpdateError>
+	) -> Result<(), ()>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1695,9 +1685,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
-			return Err(MonitorUpdateError("Previous secret did not match new one"));
+			return Err("Previous secret did not match new one");
 		}
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
@@ -1789,7 +1779,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
-	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
+	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), &'static str> {
 		// block for Rust 1.34 compat
 		let mut new_holder_commitment_tx = {
 			let trusted_tx = holder_commitment_tx.trust();
@@ -1812,7 +1802,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		if self.holder_tx_signed {
-			return Err(MonitorUpdateError("Latest holder commitment signed has already been signed, update is rejected"));
+			return Err("Latest holder commitment signed has already been signed, update is rejected");
 		}
 		Ok(())
 	}
@@ -1876,7 +1866,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
 
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), ()>
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
@@ -1902,8 +1892,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					if self.lockdown_from_offchain { panic!(); }
 					if let Err(e) = self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone()) {
 						log_error!(logger, "Providing latest holder commitment transaction failed/was refused:");
-						log_error!(logger, "    {}", e.0);
-						ret = Err(e);
+						log_error!(logger, "    {}", e);
+						ret = Err(());
 					}
 				}
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_revocation_point } => {
@@ -1918,8 +1908,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
 					if let Err(e) = self.provide_secret(*idx, *secret) {
 						log_error!(logger, "Providing latest counterparty commitment secret failed/was refused:");
-						log_error!(logger, "    {}", e.0);
-						ret = Err(e);
+						log_error!(logger, "    {}", e);
+						ret = Err(());
 					}
 				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
@@ -1947,9 +1937,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.latest_update_id = updates.update_id;
 
 		if ret.is_ok() && self.funding_spend_seen {
-			ret = Err(MonitorUpdateError("Counterparty attempted to update commitment after funding was spent"));
-		}
-		ret
+			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
+			Err(())
+		} else { ret }
 	}
 
 	pub fn get_latest_update_id(&self) -> u64 {

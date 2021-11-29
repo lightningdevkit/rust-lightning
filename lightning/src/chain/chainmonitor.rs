@@ -639,8 +639,8 @@ where C::Target: chain::Filter,
 				let monitor = &monitor_state.monitor;
 				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
-				if let Err(e) = &update_res {
-					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}: {:?}", log_funding_info!(monitor), e);
+				if update_res.is_err() {
+					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}.", log_funding_info!(monitor));
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
