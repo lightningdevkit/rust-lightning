@@ -18,7 +18,7 @@ use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PER
 use chain::transaction::OutPoint;
 use chain::keysinterface::BaseSign;
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, MIN_AFFORDABLE_HTLC_COUNT};
+use ln::channel::{COMMITMENT_TX_BASE_WEIGHT, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
@@ -108,8 +108,6 @@ fn test_insane_channel_opens() {
 
 	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.dust_limit_satoshis = msg.funding_satoshis + 1 ; msg });
 
-	insane_open_helper(r"Bogus; channel reserve \(\d+\) is less than dust limit \(\d+\)", |mut msg| { msg.dust_limit_satoshis = msg.channel_reserve_satoshis + 1; msg });
-
 	insane_open_helper(r"Minimum htlc value \(\d+\) was larger than full channel value \(\d+\)", |mut msg| { msg.htlc_minimum_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
 
 	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
@@ -117,6 +115,67 @@ fn test_insane_channel_opens() {
 	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| { msg.max_accepted_htlcs = 0; msg });
 
 	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
+}
+
+fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
+	// A peer providing a channel_reserve_satoshis of 0 (or less than our dust limit) is insecure,
+	// but only for them. Because some LSPs do it with some level of trust of the clients (for a
+	// substantial UX improvement), we explicitly allow it. Because it's unlikely to happen often
+	// in normal testing, we test it explicitly here.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Have node0 initiate a channel to node1 with aforementioned parameters
+	let mut push_amt = 100_000_000;
+	let feerate_per_kw = 253;
+	push_amt -= feerate_per_kw as u64 * (COMMITMENT_TX_BASE_WEIGHT + 4 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000 * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, if send_from_initiator { 0 } else { push_amt }, 42, None).unwrap();
+	let mut open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	if !send_from_initiator {
+		open_channel_message.channel_reserve_satoshis = 0;
+		open_channel_message.max_htlc_value_in_flight_msat = 100_000_000;
+	}
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel_message);
+
+	// Extract the channel accept message from node1 to node0
+	let mut accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	if send_from_initiator {
+		accept_channel_message.channel_reserve_satoshis = 0;
+		accept_channel_message.max_htlc_value_in_flight_msat = 100_000_000;
+	}
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel_message);
+	{
+		let mut lock;
+		let mut chan = get_channel_ref!(if send_from_initiator { &nodes[1] } else { &nodes[0] }, lock, temp_channel_id);
+		chan.holder_selected_channel_reserve_satoshis = 0;
+		chan.holder_max_htlc_value_in_flight_msat = 100_000_000;
+	}
+
+	let funding_tx = sign_funding_transaction(&nodes[0], &nodes[1], 100_000, temp_channel_id);
+	let funding_msgs = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
+	create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_msgs.0);
+
+	// nodes[0] should now be able to send the full balance to nodes[1], violating nodes[1]'s
+	// security model if it ever tries to send funds back to nodes[0] (but that's not our problem).
+	if send_from_initiator {
+		send_payment(&nodes[0], &[&nodes[1]], 100_000_000
+			// Note that for outbound channels we have to consider the commitment tx fee and the
+			// "fee spike buffer", which is currently a multiple of the total commitment tx fee as
+			// well as an additional HTLC.
+			- FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * commit_tx_fee_msat(feerate_per_kw, 2));
+	} else {
+		send_payment(&nodes[1], &[&nodes[0]], push_amt);
+	}
+}
+
+#[test]
+fn test_counterparty_no_reserve() {
+	do_test_counterparty_no_reserve(true);
+	do_test_counterparty_no_reserve(false);
 }
 
 #[test]
@@ -7089,7 +7148,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &low_our_to_self_config, 0) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &low_our_to_self_config, 0, &nodes[0].logger) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7118,7 +7177,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &high_their_to_self_config, 0) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &high_their_to_self_config, 0, &nodes[0].logger) {
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),

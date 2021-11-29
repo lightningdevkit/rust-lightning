@@ -526,19 +526,16 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 		_ => panic!("Unexpected event"),
 	}
 }
-
-pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> Transaction {
-	let create_chan_id = node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None).unwrap();
-	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
-	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
-
+pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: [u8; 32]) -> Transaction {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
-	assert_eq!(temporary_channel_id, create_chan_id);
+	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
 	node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
-	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
+	let funding_created_msg = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
+	assert_eq!(funding_created_msg.temporary_channel_id, expected_temporary_channel_id);
+	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &funding_created_msg);
 	{
 		let mut added_monitors = node_b.chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
@@ -562,6 +559,18 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 	node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	tx
+}
+
+pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> Transaction {
+	let create_chan_id = node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None).unwrap();
+	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id());
+	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &open_channel_msg);
+	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id());
+	assert_eq!(accept_channel_msg.temporary_channel_id, create_chan_id);
+	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &accept_channel_msg);
+
+	sign_funding_transaction(node_a, node_b, channel_value, create_chan_id)
 }
 
 pub fn create_chan_between_nodes_with_value_confirm_first<'a, 'b, 'c, 'd>(node_recv: &'a Node<'b, 'c, 'c>, node_conf: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
