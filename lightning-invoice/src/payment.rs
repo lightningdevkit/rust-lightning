@@ -63,7 +63,7 @@
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
 //! # }
 //! #
-//! # struct FakeRouter {};
+//! # struct FakeRouter {}
 //! # impl<S: Score> Router<S> for FakeRouter {
 //! #     fn find_route(
 //! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
@@ -71,7 +71,7 @@
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
 //! # }
 //! #
-//! # struct FakeScorer {};
+//! # struct FakeScorer {}
 //! # impl Writeable for FakeScorer {
 //! #     fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> { unimplemented!(); }
 //! # }
@@ -82,7 +82,7 @@
 //! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 //! # }
 //! #
-//! # struct FakeLogger {};
+//! # struct FakeLogger {}
 //! # impl Logger for FakeLogger {
 //! #     fn log(&self, record: &Record) { unimplemented!() }
 //! # }
@@ -102,12 +102,13 @@
 //! let invoice_payer = InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
 //!
 //! let invoice = "...";
-//! let invoice = invoice.parse::<Invoice>().unwrap();
-//! invoice_payer.pay_invoice(&invoice).unwrap();
+//! if let Ok(invoice) = invoice.parse::<Invoice>() {
+//!     invoice_payer.pay_invoice(&invoice).unwrap();
 //!
 //! # let event_provider = FakeEventProvider {};
-//! loop {
-//!     event_provider.process_pending_events(&invoice_payer);
+//!     loop {
+//!         event_provider.process_pending_events(&invoice_payer);
+//!     }
 //! }
 //! # }
 //! ```
