@@ -95,6 +95,9 @@ pub trait Score $(: $supertrait)* {
 
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
+
+	/// Handles updating channel penalties after successfully routing along a path.
+	fn payment_path_successful(&mut self, path: &[&RouteHop]);
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
@@ -104,6 +107,10 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
+	}
+
+	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+		self.deref_mut().payment_path_successful(path)
 	}
 }
 } }
@@ -377,6 +384,8 @@ impl<T: Time> Score for ScorerUsingTime<T> {
 			.and_modify(|failure| failure.add_penalty(failure_penalty_msat, half_life))
 			.or_insert_with(|| ChannelFailure::new(failure_penalty_msat));
 	}
+
+	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 }
 
 impl<T: Time> Writeable for ScorerUsingTime<T> {

@@ -4665,6 +4665,7 @@ mod tests {
 		}
 
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 	}
 
 	struct BadNodeScorer {
@@ -4682,6 +4683,7 @@ mod tests {
 		}
 
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 	}
 
 	#[test]

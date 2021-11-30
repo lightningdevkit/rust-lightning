@@ -15,6 +15,10 @@
 //! and payee using information provided by the payer and from the payee's [`Invoice`], when
 //! applicable.
 //!
+//! [`InvoicePayer`] is parameterized by a [`LockableScore`], which it uses for scoring failed and
+//! successful payment paths upon receiving [`Event::PaymentPathFailed`] and
+//! [`Event::PaymentPathSuccessful`] events, respectively.
+//!
 //! [`InvoicePayer`] is capable of retrying failed payments. It accomplishes this by implementing
 //! [`EventHandler`] which decorates a user-provided handler. It will intercept any
 //! [`Event::PaymentPathFailed`] events and retry the failed paths for a fixed number of total
@@ -80,6 +84,7 @@
 //! #         &self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 //! #     ) -> u64 { 0 }
 //! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+//! #     fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 //! # }
 //! #
 //! # struct FakeLogger {};
@@ -139,6 +144,10 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 /// A utility for paying [`Invoice`]s and sending spontaneous payments.
+///
+/// See [module-level documentation] for details.
+///
+/// [module-level documentation]: crate::payment
 pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E>
 where
 	P::Target: Payer,
@@ -472,6 +481,10 @@ where
 				}
 
 				if *all_paths_failed { self.payment_cache.lock().unwrap().remove(payment_hash); }
+			},
+			Event::PaymentPathSuccessful { path, .. } => {
+				let path = path.iter().collect::<Vec<_>>();
+				self.scorer.lock().payment_path_successful(&path);
 			},
 			Event::PaymentSent { payment_hash, .. } => {
 				let mut payment_cache = self.payment_cache.lock().unwrap();
@@ -1127,7 +1140,9 @@ mod tests {
 			.expect_send(Amount::ForInvoice(final_value_msat))
 			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new().expect_channel_failure(short_channel_id.unwrap()));
+		let scorer = RefCell::new(TestScorer::new().expect(PaymentPath::Failure {
+			path: path.clone(), short_channel_id: path[0].short_channel_id,
+		}));
 		let logger = TestLogger::new();
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
@@ -1142,6 +1157,39 @@ mod tests {
 			path,
 			short_channel_id,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
+		};
+		invoice_payer.handle_event(&event);
+	}
+
+	#[test]
+	fn scores_successful_channels() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let payment_hash = Some(PaymentHash(invoice.payment_hash().clone().into_inner()));
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+		let route = TestRouter::route_for_value(final_value_msat);
+
+		// Expect that scorer is given short_channel_id upon handling the event.
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new()
+			.expect(PaymentPath::Success { path: route.paths[0].clone() })
+			.expect(PaymentPath::Success { path: route.paths[1].clone() })
+		);
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		let payment_id = invoice_payer.pay_invoice(&invoice).unwrap();
+		let event = Event::PaymentPathSuccessful {
+			payment_id, payment_hash, path: route.paths[0].clone()
+		};
+		invoice_payer.handle_event(&event);
+		let event = Event::PaymentPathSuccessful {
+			payment_id, payment_hash, path: route.paths[1].clone()
 		};
 		invoice_payer.handle_event(&event);
 	}
@@ -1212,18 +1260,24 @@ mod tests {
 	}
 
 	struct TestScorer {
-		expectations: VecDeque<u64>,
+		expectations: Option<VecDeque<PaymentPath>>,
+	}
+
+	#[derive(Debug)]
+	enum PaymentPath {
+		Failure { path: Vec<RouteHop>, short_channel_id: u64 },
+		Success { path: Vec<RouteHop> },
 	}
 
 	impl TestScorer {
 		fn new() -> Self {
 			Self {
-				expectations: VecDeque::new(),
+				expectations: None,
 			}
 		}
 
-		fn expect_channel_failure(mut self, short_channel_id: u64) -> Self {
-			self.expectations.push_back(short_channel_id);
+		fn expect(mut self, expectation: PaymentPath) -> Self {
+			self.expectations.get_or_insert_with(|| VecDeque::new()).push_back(expectation);
 			self
 		}
 	}
@@ -1232,14 +1286,38 @@ mod tests {
 	impl lightning::util::ser::Writeable for TestScorer {
 		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), std::io::Error> { unreachable!(); }
 	}
+
 	impl Score for TestScorer {
 		fn channel_penalty_msat(
 			&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: Option<u64>, _source: &NodeId, _target: &NodeId
 		) -> u64 { 0 }
 
-		fn payment_path_failed(&mut self, _path: &[&RouteHop], short_channel_id: u64) {
-			if let Some(expected_short_channel_id) = self.expectations.pop_front() {
-				assert_eq!(short_channel_id, expected_short_channel_id);
+		fn payment_path_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
+			if let Some(expectations) = &mut self.expectations {
+				match expectations.pop_front() {
+					Some(PaymentPath::Failure { path, short_channel_id }) => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_short_channel_id, short_channel_id);
+					},
+					Some(PaymentPath::Success { path }) => {
+						panic!("Unexpected successful payment path: {:?}", path)
+					},
+					None => panic!("Unexpected payment_path_failed call: {:?}", actual_path),
+				}
+			}
+		}
+
+		fn payment_path_successful(&mut self, actual_path: &[&RouteHop]) {
+			if let Some(expectations) = &mut self.expectations {
+				match expectations.pop_front() {
+					Some(PaymentPath::Failure { path, .. }) => {
+						panic!("Unexpected payment path failure: {:?}", path)
+					},
+					Some(PaymentPath::Success { path }) => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+					},
+					None => panic!("Unexpected payment_path_successful call: {:?}", actual_path),
+				}
 			}
 		}
 	}
@@ -1250,8 +1328,10 @@ mod tests {
 				return;
 			}
 
-			if !self.expectations.is_empty() {
-				panic!("Unsatisfied channel failure expectations: {:?}", self.expectations);
+			if let Some(expectations) = &self.expectations {
+				if !expectations.is_empty() {
+					panic!("Unsatisfied scorer expectations: {:?}", expectations);
+				}
 			}
 		}
 	}
