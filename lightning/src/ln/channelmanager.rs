@@ -49,14 +49,14 @@ use routing::router::{Payee, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, OptionalField};
+use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
 use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::chacha20::{ChaCha20, ChaChaReader};
-use util::logger::{Logger, Level};
+use util::logger::{Level, Logger};
 use util::errors::APIError;
 
 use io;
@@ -71,6 +71,258 @@ use core::ops::Deref;
 
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
+
+mod inbound_payment {
+	use bitcoin::hashes::{Hash, HashEngine};
+	use bitcoin::hashes::cmp::fixed_time_eq;
+	use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+	use bitcoin::hashes::sha256::Hash as Sha256;
+	use chain::keysinterface::{KeyMaterial, KeysInterface, Sign};
+	use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+	use ln::msgs;
+	use ln::msgs::MAX_VALUE_MSAT;
+	use util::chacha20::ChaCha20;
+	use util::logger::Logger;
+
+	use core::convert::TryInto;
+	use core::ops::Deref;
+
+	const IV_LEN: usize = 16;
+	const METADATA_LEN: usize = 16;
+	const METADATA_KEY_LEN: usize = 32;
+	const AMT_MSAT_LEN: usize = 8;
+	// Used to shift the payment type bits to take up the top 3 bits of the metadata bytes, or to
+	// retrieve said payment type bits.
+	const METHOD_TYPE_OFFSET: usize = 5;
+
+	/// A set of keys that were HKDF-expanded from an initial call to
+	/// [`KeysInterface::get_inbound_payment_key_material`].
+	///
+	/// [`KeysInterface::get_inbound_payment_key_material`]: crate::chain::keysinterface::KeysInterface::get_inbound_payment_key_material
+	pub(super) struct ExpandedKey {
+		/// The key used to encrypt the bytes containing the payment metadata (i.e. the amount and
+		/// expiry, included for payment verification on decryption).
+		metadata_key: [u8; 32],
+		/// The key used to authenticate an LDK-provided payment hash and metadata as previously
+		/// registered with LDK.
+		ldk_pmt_hash_key: [u8; 32],
+		/// The key used to authenticate a user-provided payment hash and metadata as previously
+		/// registered with LDK.
+		user_pmt_hash_key: [u8; 32],
+	}
+
+	impl ExpandedKey {
+		pub(super) fn new(key_material: &KeyMaterial) -> ExpandedKey {
+			hkdf_extract_expand(&vec![0], &key_material)
+		}
+	}
+
+	enum Method {
+		LdkPaymentHash = 0,
+		UserPaymentHash = 1,
+	}
+
+	impl Method {
+		fn from_bits(bits: u8) -> Result<Method, u8> {
+			match bits {
+				bits if bits == Method::LdkPaymentHash as u8 => Ok(Method::LdkPaymentHash),
+				bits if bits == Method::UserPaymentHash as u8 => Ok(Method::UserPaymentHash),
+				unknown => Err(unknown),
+			}
+		}
+	}
+
+	pub(super) fn create<Signer: Sign, K: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, keys_manager: &K, highest_seen_timestamp: u64) -> Result<(PaymentHash, PaymentSecret), ()>
+		where K::Target: KeysInterface<Signer = Signer>
+	{
+		let metadata_bytes = construct_metadata_bytes(min_value_msat, Method::LdkPaymentHash, invoice_expiry_delta_secs, highest_seen_timestamp)?;
+
+		let mut iv_bytes = [0 as u8; IV_LEN];
+		let rand_bytes = keys_manager.get_secure_random_bytes();
+		iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
+
+		let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
+		hmac.input(&iv_bytes);
+		hmac.input(&metadata_bytes);
+		let payment_preimage_bytes = Hmac::from_engine(hmac).into_inner();
+
+		let ldk_pmt_hash = PaymentHash(Sha256::hash(&payment_preimage_bytes).into_inner());
+		let payment_secret = construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key);
+		Ok((ldk_pmt_hash, payment_secret))
+	}
+
+	pub(super) fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment_hash: PaymentHash, invoice_expiry_delta_secs: u32, highest_seen_timestamp: u64) -> Result<PaymentSecret, ()> {
+		let metadata_bytes = construct_metadata_bytes(min_value_msat, Method::UserPaymentHash, invoice_expiry_delta_secs, highest_seen_timestamp)?;
+
+		let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
+		hmac.input(&metadata_bytes);
+		hmac.input(&payment_hash.0);
+		let hmac_bytes = Hmac::from_engine(hmac).into_inner();
+
+		let mut iv_bytes = [0 as u8; IV_LEN];
+		iv_bytes.copy_from_slice(&hmac_bytes[..IV_LEN]);
+
+		Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
+	}
+
+	fn construct_metadata_bytes(min_value_msat: Option<u64>, payment_type: Method, invoice_expiry_delta_secs: u32, highest_seen_timestamp: u64) -> Result<[u8; METADATA_LEN], ()> {
+		if min_value_msat.is_some() && min_value_msat.unwrap() > MAX_VALUE_MSAT {
+			return Err(());
+		}
+
+		let mut min_amt_msat_bytes: [u8; AMT_MSAT_LEN] = match min_value_msat {
+			Some(amt) => amt.to_be_bytes(),
+			None => [0; AMT_MSAT_LEN],
+		};
+		min_amt_msat_bytes[0] |= (payment_type as u8) << METHOD_TYPE_OFFSET;
+
+		// We assume that highest_seen_timestamp is pretty close to the current time - it's updated when
+		// we receive a new block with the maximum time we've seen in a header. It should never be more
+		// than two hours in the future.  Thus, we add two hours here as a buffer to ensure we
+		// absolutely never fail a payment too early.
+		// Note that we assume that received blocks have reasonably up-to-date timestamps.
+		let expiry_bytes = (highest_seen_timestamp + invoice_expiry_delta_secs as u64 + 7200).to_be_bytes();
+
+		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
+		metadata_bytes[..AMT_MSAT_LEN].copy_from_slice(&min_amt_msat_bytes);
+		metadata_bytes[AMT_MSAT_LEN..].copy_from_slice(&expiry_bytes);
+
+		Ok(metadata_bytes)
+	}
+
+	fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METADATA_LEN], metadata_key: &[u8; METADATA_KEY_LEN]) -> PaymentSecret {
+		let mut payment_secret_bytes: [u8; 32] = [0; 32];
+		let (iv_slice, encrypted_metadata_slice) = payment_secret_bytes.split_at_mut(IV_LEN);
+		iv_slice.copy_from_slice(iv_bytes);
+
+		let chacha_block = ChaCha20::get_single_block(metadata_key, iv_bytes);
+		for i in 0..METADATA_LEN {
+			encrypted_metadata_slice[i] = chacha_block[i] ^ metadata_bytes[i];
+		}
+		PaymentSecret(payment_secret_bytes)
+	}
+
+	/// Check that an inbound payment's `payment_data` field is sane.
+	///
+	/// LDK does not store any data for pending inbound payments. Instead, we construct our payment
+	/// secret (and, if supplied by LDK, our payment preimage) to include encrypted metadata about the
+	/// payment.
+	///
+	/// The metadata is constructed as:
+	///   payment method (3 bits) || payment amount (8 bytes - 3 bits) || expiry (8 bytes)
+	/// and encrypted using a key derived from [`KeysInterface::get_inbound_payment_key_material`].
+	///
+	/// Then on payment receipt, we verify in this method that the payment preimage and payment secret
+	/// match what was constructed.
+	///
+	/// [`create_inbound_payment`] and [`create_inbound_payment_for_hash`] are called by the user to
+	/// construct the payment secret and/or payment hash that this method is verifying. If the former
+	/// method is called, then the payment method bits mentioned above are represented internally as
+	/// [`Method::LdkPaymentHash`]. If the latter, [`Method::UserPaymentHash`].
+	///
+	/// For the former method, the payment preimage is constructed as an HMAC of payment metadata and
+	/// random bytes. Because the payment secret is also encoded with these random bytes and metadata
+	/// (with the metadata encrypted with a block cipher), we're able to authenticate the preimage on
+	/// payment receipt.
+	///
+	/// For the latter, the payment secret instead contains an HMAC of the user-provided payment hash
+	/// and payment metadata (encrypted with a block cipher), allowing us to authenticate the payment
+	/// hash and metadata on payment receipt.
+	///
+	/// See [`ExpandedKey`] docs for more info on the individual keys used.
+	///
+	/// [`KeysInterface::get_inbound_payment_key_material`]: crate::chain::keysinterface::KeysInterface::get_inbound_payment_key_material
+	/// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+	/// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+	pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: msgs::FinalOnionHopData, highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L) -> Result<Option<PaymentPreimage>, ()>
+		where L::Target: Logger
+	{
+		let mut iv_bytes = [0; IV_LEN];
+		let (iv_slice, encrypted_metadata_bytes) = payment_data.payment_secret.0.split_at(IV_LEN);
+		iv_bytes.copy_from_slice(iv_slice);
+
+		let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
+		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
+		for i in 0..METADATA_LEN {
+			metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
+		}
+
+		let payment_type_res = Method::from_bits((metadata_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET);
+		let mut amt_msat_bytes = [0; AMT_MSAT_LEN];
+		amt_msat_bytes.copy_from_slice(&metadata_bytes[..AMT_MSAT_LEN]);
+		// Zero out the bits reserved to indicate the payment type.
+		amt_msat_bytes[0] &= 0b00011111;
+		let min_amt_msat: u64 = u64::from_be_bytes(amt_msat_bytes.into());
+		let expiry = u64::from_be_bytes(metadata_bytes[AMT_MSAT_LEN..].try_into().unwrap());
+
+		// Make sure to check to check the HMAC before doing the other checks below, to mitigate timing
+		// attacks.
+		let mut payment_preimage = None;
+		match payment_type_res {
+			Ok(Method::UserPaymentHash) => {
+				let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
+				hmac.input(&metadata_bytes[..]);
+				hmac.input(&payment_hash.0);
+				if !fixed_time_eq(&iv_bytes, &Hmac::from_engine(hmac).into_inner().split_at_mut(IV_LEN).0) {
+					log_trace!(logger, "Failing HTLC with user-generated payment_hash {}: unexpected payment_secret", log_bytes!(payment_hash.0));
+					return Err(())
+				}
+			},
+			Ok(Method::LdkPaymentHash) => {
+				let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
+				hmac.input(&iv_bytes);
+				hmac.input(&metadata_bytes);
+				let decoded_payment_preimage = Hmac::from_engine(hmac).into_inner();
+				if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).into_inner()) {
+					log_trace!(logger, "Failing HTLC with payment_hash {}: payment preimage {} did not match", log_bytes!(payment_hash.0), log_bytes!(decoded_payment_preimage));
+					return Err(())
+				}
+				payment_preimage = Some(PaymentPreimage(decoded_payment_preimage));
+			},
+			Err(unknown_bits) => {
+				log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", log_bytes!(payment_hash.0), unknown_bits);
+				return Err(());
+			}
+		}
+
+		if payment_data.total_msat < min_amt_msat {
+			log_trace!(logger, "Failing HTLC with payment_hash {} due to total_msat {} being less than the minimum amount of {} msat", log_bytes!(payment_hash.0), payment_data.total_msat, min_amt_msat);
+			return Err(())
+		}
+
+		if expiry < highest_seen_timestamp {
+			log_trace!(logger, "Failing HTLC with payment_hash {}: expired payment", log_bytes!(payment_hash.0));
+			return Err(())
+		}
+
+		Ok(payment_preimage)
+	}
+
+	fn hkdf_extract_expand(salt: &[u8], ikm: &KeyMaterial) -> ExpandedKey {
+		let mut hmac = HmacEngine::<Sha256>::new(salt);
+		hmac.input(&ikm.0);
+		let prk = Hmac::from_engine(hmac).into_inner();
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&[1; 1]);
+		let metadata_key = Hmac::from_engine(hmac).into_inner();
+
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&metadata_key);
+		hmac.input(&[2; 1]);
+		let ldk_pmt_hash_key = Hmac::from_engine(hmac).into_inner();
+
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&ldk_pmt_hash_key);
+		hmac.input(&[3; 1]);
+		let user_pmt_hash_key = Hmac::from_engine(hmac).into_inner();
+
+		ExpandedKey {
+			metadata_key,
+			ldk_pmt_hash_key,
+			user_pmt_hash_key,
+		}
+	}
+}
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -691,6 +943,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 
 	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
+
+	inbound_payment_key: inbound_payment::ExpandedKey,
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
@@ -1385,7 +1639,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
-
+		let inbound_pmt_key_material = keys_manager.get_inbound_payment_key_material();
+		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 		ChannelManager {
 			default_configuration: config.clone(),
 			genesis_hash: genesis_block(params.network).header.block_hash(),
@@ -1408,6 +1663,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			our_network_key: keys_manager.get_node_secret(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()),
 			secp_ctx,
+
+			inbound_payment_key: expanded_inbound_key,
 
 			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
@@ -2976,9 +3233,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
 										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice(_) => {
-												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we didn't have a corresponding inbound payment.", log_bytes!(payment_hash.0));
-												fail_htlc!(claimable_htlc);
+											OnionPayload::Invoice(ref payment_data) => {
+												let payment_preimage = match inbound_payment::verify(payment_hash, payment_data.clone(), self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
+													Ok(payment_preimage) => payment_preimage,
+													Err(()) => {
+														fail_htlc!(claimable_htlc);
+														continue
+													}
+												};
+												let payment_data_total_msat = payment_data.total_msat;
+												let payment_secret = payment_data.payment_secret.clone();
+												check_total_value!(payment_data_total_msat, payment_secret, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
 												match channel_state.claimable_htlcs.entry(payment_hash) {
@@ -4681,6 +4946,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn set_payment_hash_secret_map(&self, payment_hash: PaymentHash, payment_preimage: Option<PaymentPreimage>, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
 		assert!(invoice_expiry_delta_secs <= 60*60*24*365); // Sadly bitcoin timestamps are u32s, so panic before 2106
 
+		if min_value_msat.is_some() && min_value_msat.unwrap() > MAX_VALUE_MSAT {
+			return Err(APIError::APIMisuseError { err: format!("min_value_msat of {} greater than total 21 million bitcoin supply", min_value_msat.unwrap()) });
+		}
+
 		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -4691,7 +4960,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					payment_secret, min_value_msat, payment_preimage,
 					user_payment_id: 0, // For compatibility with version 0.0.103 and earlier
 					// We assume that highest_seen_timestamp is pretty close to the current time -
-					// its updated when we receive a new block with the maximum time we've seen in
+					// it's updated when we receive a new block with the maximum time we've seen in
 					// a header. It should never be more than two hours in the future.
 					// Thus, we add two hours here as a buffer to ensure we absolutely
 					// never fail a payment too early.
@@ -4709,7 +4978,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// to pay us.
 	///
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
-	/// [`PaymentHash`] and [`PaymentPreimage`] for you, returning the first and storing the second.
+	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
 	///
 	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentReceived`], which
 	/// will have the [`PaymentReceived::payment_preimage`] field filled in. That should then be
@@ -4717,17 +4986,37 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
 	///
+	/// Note that a malicious eavesdropper can intuit whether an inbound payment was created by
+	/// `create_inbound_payment` or `create_inbound_payment_for_hash` based on runtime.
+	///
+	/// # Note
+	///
+	/// If you register an inbound payment with this method, then serialize the `ChannelManager`, then
+	/// deserialize it with a node running 0.0.103 and earlier, the payment will fail to be received.
+	///
+	/// Errors if `min_value_msat` is greater than total bitcoin supply.
+	///
 	/// [`claim_funds`]: Self::claim_funds
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
 	/// [`PaymentReceived::payment_preimage`]: events::Event::PaymentReceived::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> (PaymentHash, PaymentSecret) {
+	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), ()> {
+		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs, &self.keys_manager, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+	}
+
+	/// Legacy version of [`create_inbound_payment`]. Use this method if you wish to share
+	/// serialized state with LDK node(s) running 0.0.103 and earlier.
+	///
+	/// # Note
+	/// This method is deprecated and will be removed soon.
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	#[deprecated]
+	pub fn create_inbound_payment_legacy(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), APIError> {
 		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-
-		(payment_hash,
-			self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)
-				.expect("RNG Generated Duplicate PaymentHash"))
+		let payment_secret = self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)?;
+		Ok((payment_hash, payment_secret))
 	}
 
 	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
@@ -4757,18 +5046,36 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
 	/// [`PaymentReceived`].
 	///
-	/// Pending inbound payments are stored in memory and in serialized versions of this
-	/// [`ChannelManager`]. If potentially unbounded numbers of inbound payments may exist and
-	/// space is limited, you may wish to rate-limit inbound payment creation.
-	///
 	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
 	///
 	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
 	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
 	///
+	/// Note that a malicious eavesdropper can intuit whether an inbound payment was created by
+	/// `create_inbound_payment` or `create_inbound_payment_for_hash` based on runtime.
+	///
+	/// # Note
+	///
+	/// If you register an inbound payment with this method, then serialize the `ChannelManager`, then
+	/// deserialize it with a node running 0.0.103 and earlier, the payment will fail to be received.
+	///
+	/// Errors if `min_value_msat` is greater than total bitcoin supply.
+	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentReceived`]: events::Event::PaymentReceived
-	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
+	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, ()> {
+		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash, invoice_expiry_delta_secs, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+	}
+
+	/// Legacy version of [`create_inbound_payment_for_hash`]. Use this method if you wish to share
+	/// serialized state with LDK node(s) running 0.0.103 and earlier.
+	///
+	/// # Note
+	/// This method is deprecated and will be removed soon.
+	///
+	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	#[deprecated]
+	pub fn create_inbound_payment_for_hash_legacy(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
 	}
 
@@ -6219,6 +6526,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_events_read.append(&mut channel_closures);
 		}
 
+		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
+		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
@@ -6234,6 +6543,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
+			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
@@ -6272,8 +6582,10 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::time::Duration;
+	use core::sync::atomic::Ordering;
 	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use ln::channelmanager::{PaymentId, PaymentSendFailure};
+	use ln::channelmanager::inbound_payment;
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
 	use ln::msgs;
@@ -6288,7 +6600,7 @@ mod tests {
 	fn test_wait_timeout() {
 		use ln::channelmanager::PersistenceNotifier;
 		use sync::Arc;
-		use core::sync::atomic::{AtomicBool, Ordering};
+		use core::sync::atomic::AtomicBool;
 		use std::thread;
 
 		let persistence_notifier = Arc::new(PersistenceNotifier::new());
@@ -6733,6 +7045,35 @@ mod tests {
 				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))			},
 			_ => panic!("unexpected error")
 		}
+	}
+
+	#[test]
+	fn bad_inbound_payment_hash() {
+		// Add coverage for checking that a user-provided payment hash matches the payment secret.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[0]);
+		let payment_data = msgs::FinalOnionHopData {
+			payment_secret,
+			total_msat: 100_000,
+		};
+
+		// Ensure that if the payment hash given to `inbound_payment::verify` differs from the original,
+		// payment verification fails as expected.
+		let mut bad_payment_hash = payment_hash.clone();
+		bad_payment_hash.0[0] += 1;
+		match inbound_payment::verify(bad_payment_hash, payment_data.clone(), nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
+			Ok(_) => panic!("Unexpected ok"),
+			Err(()) => {
+				nodes[0].logger.assert_log_contains("lightning::ln::channelmanager::inbound_payment".to_string(), "Failing HTLC with user-generated payment_hash".to_string(), 1);
+			}
+		}
+
+		// Check that using the original payment hash succeeds.
+		assert!(inbound_payment::verify(payment_hash, payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 }
 
