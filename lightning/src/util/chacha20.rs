@@ -151,6 +151,14 @@ mod real_chacha {
 			ChaCha20{ state: ChaCha20::expand(key, nonce), output: [0u8; BLOCK_SIZE], offset: 64 }
 		}
 
+		/// Get one block from a ChaCha stream.
+		pub fn get_single_block(key: &[u8; 32], nonce: &[u8; 16]) -> [u8; 32] {
+			let mut chacha = ChaCha20 { state: ChaCha20::expand(key, nonce), output: [0u8; BLOCK_SIZE], offset: 64 };
+			let mut chacha_bytes = [0; 32];
+			chacha.process_in_place(&mut chacha_bytes);
+			chacha_bytes
+		}
+
 		fn expand(key: &[u8], nonce: &[u8]) -> ChaChaState {
 			let constant = match key.len() {
 				16 => b"expand 16-byte k",
@@ -256,6 +264,12 @@ mod real_chacha {
 				self.offset += count;
 			}
 		}
+
+		#[cfg(test)]
+		pub fn seek_to_block(&mut self, block_offset: u32) {
+			self.state.d.0 = block_offset;
+			self.update();
+		}
 	}
 }
 #[cfg(not(feature = "fuzztarget"))]
@@ -270,6 +284,10 @@ mod fuzzy_chacha {
 			assert!(key.len() == 16 || key.len() == 32);
 			assert!(nonce.len() == 8 || nonce.len() == 12);
 			Self {}
+		}
+
+		pub fn get_single_block(_key: &[u8; 32], _nonce: &[u8; 16]) -> [u8; 32] {
+			[0; 32]
 		}
 
 		pub fn process(&mut self, input: &[u8], output: &mut [u8]) {
@@ -302,6 +320,7 @@ mod test {
 	use core::iter::repeat;
 
 	use super::ChaCha20;
+	use std::convert::TryInto;
 
 	#[test]
 	fn test_chacha20_256_tls_vectors() {
@@ -571,5 +590,32 @@ mod test {
 			c.process(&input[..], &mut output[..]);
 			assert_eq!(output, tv.keystream);
 		}
+	}
+
+	#[test]
+	fn get_single_block() {
+		// Test that `get_single_block` (which takes a 16-byte nonce) is equivalent to getting a block
+		// using a 12-byte nonce, with the block starting at the counter offset given by the remaining 4
+		// bytes.
+		let key = [
+			0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+			0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+		];
+		let nonce_16bytes = [
+			0x00, 0x01, 0x02, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b
+		];
+		let counter_pos = &nonce_16bytes[..4];
+		let nonce_12bytes = &nonce_16bytes[4..];
+
+		// Initialize a ChaCha20 instance with its counter starting at 0.
+		let mut chacha20 = ChaCha20::new(&key, nonce_12bytes);
+		// Seek its counter to the block at counter_pos.
+		chacha20.seek_to_block(u32::from_le_bytes(counter_pos.try_into().unwrap()));
+		let mut block_bytes = [0; 32];
+		chacha20.process_in_place(&mut block_bytes);
+
+		assert_eq!(ChaCha20::get_single_block(&key, &nonce_16bytes), block_bytes);
 	}
 }
