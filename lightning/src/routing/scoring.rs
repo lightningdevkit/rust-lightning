@@ -199,7 +199,7 @@ pub type Scorer = ScorerUsingTime::<std::time::Instant>;
 /// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
 /// slightly higher fees are available. Will further penalize channels that fail to relay payments.
 ///
-/// See [module-level documentation] for usage.
+/// See [module-level documentation] for usage and [`ScoringParameters`] for customization.
 ///
 /// [module-level documentation]: crate::routing::scoring
 #[cfg(feature = "no-std")]
@@ -235,7 +235,7 @@ pub struct ScoringParameters {
 	/// A penalty in msats to apply to a channel upon failing to relay a payment.
 	///
 	/// This accumulates for each failure but may be reduced over time based on
-	/// [`failure_penalty_half_life`].
+	/// [`failure_penalty_half_life`] or when successfully routing through a channel.
 	///
 	/// Default value: 1,024,000 msat
 	///
@@ -262,6 +262,8 @@ pub struct ScoringParameters {
 	/// The time required to elapse before any accumulated [`failure_penalty_msat`] penalties are
 	/// cut in half.
 	///
+	/// Successfully routing through a channel will immediately cut the penalty in half as well.
+	///
 	/// # Note
 	///
 	/// When built with the `no-std` feature, time will never elapse. Therefore, this penalty will
@@ -283,11 +285,12 @@ impl_writeable_tlv_based!(ScoringParameters, {
 ///
 /// Penalties decay over time, though accumulate as more failures occur.
 struct ChannelFailure<T: Time> {
-	/// Accumulated penalty in msats for the channel as of `last_failed`.
+	/// Accumulated penalty in msats for the channel as of `last_updated`.
 	undecayed_penalty_msat: u64,
 
-	/// Last time the channel failed. Used to decay `undecayed_penalty_msat`.
-	last_failed: T,
+	/// Last time the channel either failed to route or successfully routed a payment. Used to decay
+	/// `undecayed_penalty_msat`.
+	last_updated: T,
 }
 
 impl<T: Time> ScorerUsingTime<T> {
@@ -316,17 +319,22 @@ impl<T: Time> ChannelFailure<T> {
 	fn new(failure_penalty_msat: u64) -> Self {
 		Self {
 			undecayed_penalty_msat: failure_penalty_msat,
-			last_failed: T::now(),
+			last_updated: T::now(),
 		}
 	}
 
 	fn add_penalty(&mut self, failure_penalty_msat: u64, half_life: Duration) {
 		self.undecayed_penalty_msat = self.decayed_penalty_msat(half_life) + failure_penalty_msat;
-		self.last_failed = T::now();
+		self.last_updated = T::now();
+	}
+
+	fn reduce_penalty(&mut self, half_life: Duration) {
+		self.undecayed_penalty_msat = self.decayed_penalty_msat(half_life) >> 1;
+		self.last_updated = T::now();
 	}
 
 	fn decayed_penalty_msat(&self, half_life: Duration) -> u64 {
-		let decays = self.last_failed.elapsed().as_secs().checked_div(half_life.as_secs());
+		let decays = self.last_updated.elapsed().as_secs().checked_div(half_life.as_secs());
 		match decays {
 			Some(decays) => self.undecayed_penalty_msat >> decays,
 			None => 0,
@@ -385,7 +393,14 @@ impl<T: Time> Score for ScorerUsingTime<T> {
 			.or_insert_with(|| ChannelFailure::new(failure_penalty_msat));
 	}
 
-	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+		let half_life = self.params.failure_penalty_half_life;
+		for hop in path.iter() {
+			self.channel_failures
+				.entry(hop.short_channel_id)
+				.and_modify(|failure| failure.reduce_penalty(half_life));
+		}
+	}
 }
 
 impl<T: Time> Writeable for ScorerUsingTime<T> {
@@ -413,7 +428,7 @@ impl<T: Time> Readable for ScorerUsingTime<T> {
 impl<T: Time> Writeable for ChannelFailure<T> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		let duration_since_epoch = T::duration_since_epoch() - self.last_failed.elapsed();
+		let duration_since_epoch = T::duration_since_epoch() - self.last_updated.elapsed();
 		write_tlv_fields!(w, {
 			(0, self.undecayed_penalty_msat, required),
 			(2, duration_since_epoch, required),
@@ -433,7 +448,7 @@ impl<T: Time> Readable for ChannelFailure<T> {
 		});
 		Ok(Self {
 			undecayed_penalty_msat,
-			last_failed: T::now() - (T::duration_since_epoch() - duration_since_epoch),
+			last_updated: T::now() - (T::duration_since_epoch() - duration_since_epoch),
 		})
 	}
 }
@@ -505,8 +520,10 @@ mod tests {
 	use super::{ScoringParameters, ScorerUsingTime, Time};
 	use super::time::Eternity;
 
+	use ln::features::{ChannelFeatures, NodeFeatures};
 	use routing::scoring::Score;
 	use routing::network_graph::NodeId;
+	use routing::router::RouteHop;
 	use util::ser::{Readable, Writeable};
 
 	use bitcoin::secp256k1::PublicKey;
@@ -683,6 +700,40 @@ mod tests {
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_384);
+	}
+
+	#[test]
+	fn reduces_channel_failure_penalties_after_success() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+
+		let hop = RouteHop {
+			pubkey: PublicKey::from_slice(target.as_slice()).unwrap(),
+			node_features: NodeFeatures::known(),
+			short_channel_id: 42,
+			channel_features: ChannelFeatures::known(),
+			fee_msat: 1,
+			cltv_expiry_delta: 18,
+		};
+		scorer.payment_path_successful(&[&hop]);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_128);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_064);
 	}
 
 	#[test]
