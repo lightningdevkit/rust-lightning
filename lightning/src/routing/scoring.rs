@@ -334,11 +334,10 @@ impl<T: Time> ChannelFailure<T> {
 	}
 
 	fn decayed_penalty_msat(&self, half_life: Duration) -> u64 {
-		let decays = self.last_updated.elapsed().as_secs().checked_div(half_life.as_secs());
-		match decays {
-			Some(decays) => self.undecayed_penalty_msat >> decays,
-			None => 0,
-		}
+		self.last_updated.elapsed().as_secs()
+			.checked_div(half_life.as_secs())
+			.and_then(|decays| self.undecayed_penalty_msat.checked_shr(decays as u32))
+			.unwrap_or(0)
 	}
 }
 
@@ -670,6 +669,31 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_001);
 
 		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+
+		SinceEpoch::advance(Duration::from_secs(10));
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+	}
+
+	#[test]
+	fn decays_channel_failure_penalties_without_shift_overflow() {
+		let mut scorer = Scorer::new(ScoringParameters {
+			base_penalty_msat: 1_000,
+			failure_penalty_msat: 512,
+			failure_penalty_half_life: Duration::from_secs(10),
+			overuse_penalty_start_1024th: 1024,
+			overuse_penalty_msat_per_1024th: 0,
+		});
+		let source = source_node_id();
+		let target = target_node_id();
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+
+		scorer.payment_path_failed(&[], 42);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+
+		// An unchecked right shift 64 bits or more in ChannelFailure::decayed_penalty_msat would
+		// cause an overflow.
+		SinceEpoch::advance(Duration::from_secs(10 * 64));
 		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
