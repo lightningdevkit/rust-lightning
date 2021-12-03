@@ -454,6 +454,17 @@ pub(crate) enum PendingOutboundPayment {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: Option<PaymentHash>,
 	},
+	/// When a payer gives up trying to retry a payment, they inform us, letting us generate a
+	/// `PaymentFailed` event when all HTLCs have irrevocably failed. This avoids a number of race
+	/// conditions in MPP-aware payment retriers (1), where the possibility of multiple
+	/// `PaymentPathFailed` events with `all_paths_failed` can be pending at once, confusing a
+	/// downstream event handler as to when a payment has actually failed.
+	///
+	/// (1) https://github.com/lightningdevkit/rust-lightning/issues/1164
+	Abandoned {
+		session_privs: HashSet<[u8; 32]>,
+		payment_hash: PaymentHash,
+	},
 }
 
 impl PendingOutboundPayment {
@@ -469,6 +480,12 @@ impl PendingOutboundPayment {
 			_ => false,
 		}
 	}
+	fn abandoned(&self) -> bool {
+		match self {
+			PendingOutboundPayment::Abandoned { .. } => true,
+			_ => false,
+		}
+	}
 	fn get_pending_fee_msat(&self) -> Option<u64> {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
@@ -481,6 +498,7 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
+			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
 		}
 	}
 
@@ -489,11 +507,29 @@ impl PendingOutboundPayment {
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs, .. }
-				=> session_privs
+			PendingOutboundPayment::Fulfilled { session_privs, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, .. }
+				=> session_privs,
 		});
 		let payment_hash = self.payment_hash();
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash };
+	}
+
+	fn mark_abandoned(&mut self) -> Result<(), ()> {
+		let mut session_privs = HashSet::new();
+		let our_payment_hash;
+		core::mem::swap(&mut session_privs, match self {
+			PendingOutboundPayment::Legacy { .. } |
+			PendingOutboundPayment::Fulfilled { .. } =>
+				return Err(()),
+			PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
+				our_payment_hash = *payment_hash;
+				session_privs
+			},
+		});
+		*self = PendingOutboundPayment::Abandoned { session_privs, payment_hash: our_payment_hash };
+		Ok(())
 	}
 
 	/// panics if path is None and !self.is_fulfilled
@@ -501,7 +537,8 @@ impl PendingOutboundPayment {
 		let remove_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs, .. } => {
+			PendingOutboundPayment::Fulfilled { session_privs, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, .. } => {
 				session_privs.remove(session_priv)
 			}
 		};
@@ -524,7 +561,8 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Retryable { session_privs, .. } => {
 				session_privs.insert(session_priv)
 			}
-			PendingOutboundPayment::Fulfilled { .. } => false
+			PendingOutboundPayment::Fulfilled { .. } => false,
+			PendingOutboundPayment::Abandoned { .. } => false,
 		};
 		if insert_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
@@ -542,7 +580,8 @@ impl PendingOutboundPayment {
 		match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 			PendingOutboundPayment::Retryable { session_privs, .. } |
-			PendingOutboundPayment::Fulfilled { session_privs, .. } => {
+			PendingOutboundPayment::Fulfilled { session_privs, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, .. } => {
 				session_privs.len()
 			}
 		}
@@ -2313,10 +2352,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Errors returned are a superset of those returned from [`send_payment`], so see
 	/// [`send_payment`] documentation for more details on errors. This method will also error if the
-	/// retry amount puts the payment more than 10% over the payment's total amount, or if the payment
-	/// for the given `payment_id` cannot be found (likely due to timeout or success).
+	/// retry amount puts the payment more than 10% over the payment's total amount, if the payment
+	/// for the given `payment_id` cannot be found (likely due to timeout or success), or if
+	/// further retries have been disabled with [`abandon_payment`].
 	///
 	/// [`send_payment`]: [`ChannelManager::send_payment`]
+	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
 	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 		for path in route.paths.iter() {
@@ -2352,6 +2393,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							err: "Payment already completed"
 						}));
 					},
+					PendingOutboundPayment::Abandoned { .. } => {
+						return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+							err: "Payment already abandoned (with some HTLCs still pending)".to_owned()
+						}));
+					},
 				}
 			} else {
 				return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
@@ -2360,6 +2406,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		return self.send_payment_internal(route, payment_hash, &payment_secret, None, Some(payment_id), Some(total_msat)).map(|_| ())
+	}
+
+	/// Signals that no further retries for the given payment will occur.
+	///
+	/// After this method returns, any future calls to [`retry_payment`] for the given `payment_id`
+	/// will fail with [`PaymentSendFailure::ParameterError`].
+	///
+	/// [`retry_payment`]: Self::retry_payment
+	pub fn abandon_payment(&self, payment_id: PaymentId) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
+			let _ = payment.get_mut().mark_abandoned();
+		}
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
@@ -5605,6 +5666,10 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(8, pending_amt_msat, required),
 		(10, starting_block_height, required),
 	},
+	(3, Abandoned) => {
+		(0, session_privs, required),
+		(2, payment_hash, required),
+	},
 );
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
@@ -5698,7 +5763,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		// For backwards compat, write the session privs and their total length.
 		let mut num_pending_outbounds_compat: u64 = 0;
 		for (_, outbound) in pending_outbound_payments.iter() {
-			if !outbound.is_fulfilled() {
+			if !outbound.is_fulfilled() && !outbound.abandoned() {
 				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
 			}
 		}
@@ -5712,6 +5777,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 					}
 				}
 				PendingOutboundPayment::Fulfilled { .. } => {},
+				PendingOutboundPayment::Abandoned { .. } => {},
 			}
 		}
 
