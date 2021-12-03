@@ -153,10 +153,13 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 #[derive(Clone, Debug)]
 pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
-	/// parameters and then call ChannelManager::funding_transaction_generated.
-	/// Generated in ChannelManager message handling.
+	/// parameters and then call [`ChannelManager::funding_transaction_generated`].
+	/// Generated in [`ChannelManager`] message handling.
 	/// Note that *all inputs* in the funding transaction must spend SegWit outputs or your
 	/// counterparty can steal your funds!
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	FundingGenerationReady {
 		/// The random channel_id we picked which you'll need to pass into
 		/// ChannelManager::funding_transaction_generated.
@@ -271,8 +274,10 @@ pub enum Event {
 #[cfg(test)]
 		error_data: Option<Vec<u8>>,
 	},
-	/// Used to indicate that ChannelManager::process_pending_htlc_forwards should be called at a
-	/// time in the future.
+	/// Used to indicate that [`ChannelManager::process_pending_htlc_forwards`] should be called at
+	/// a time in the future.
+	///
+	/// [`ChannelManager::process_pending_htlc_forwards`]: crate::ln::channelmanager::ChannelManager::process_pending_htlc_forwards
 	PendingHTLCsForwardable {
 		/// The minimum amount of time that should be waited prior to calling
 		/// process_pending_htlc_forwards. To increase the effort required to correlate payments,
