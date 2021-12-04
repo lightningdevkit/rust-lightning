@@ -101,8 +101,8 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// 	let mut cache = UnboundedCache::new();
 /// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
 /// 	let listeners = vec![
-/// 		(monitor_block_hash, &mut monitor_listener as &mut dyn chain::Listen),
-/// 		(manager_block_hash, &mut manager as &mut dyn chain::Listen),
+/// 		(monitor_block_hash, &monitor_listener as &dyn chain::Listen),
+/// 		(manager_block_hash, &manager as &dyn chain::Listen),
 /// 	];
 /// 	let chain_tip = init::synchronize_listeners(
 /// 		block_source, Network::Bitcoin, &mut cache, listeners).await.unwrap();
@@ -125,7 +125,7 @@ pub async fn synchronize_listeners<B: BlockSource, C: Cache>(
 	block_source: &mut B,
 	network: Network,
 	header_cache: &mut C,
-	mut chain_listeners: Vec<(BlockHash, &mut dyn chain::Listen)>,
+	mut chain_listeners: Vec<(BlockHash, &dyn chain::Listen)>,
 ) -> BlockSourceResult<ValidatedBlockHeader> {
 	let best_header = validate_best_block_header(block_source).await?;
 
@@ -198,7 +198,7 @@ impl<'a, C: Cache> Cache for ReadOnlyCache<'a, C> {
 }
 
 /// Wrapper for supporting dynamically sized chain listeners.
-struct DynamicChainListener<'a>(&'a mut dyn chain::Listen);
+struct DynamicChainListener<'a>(&'a dyn chain::Listen);
 
 impl<'a> chain::Listen for DynamicChainListener<'a> {
 	fn block_connected(&self, _block: &Block, _height: u32) {
@@ -211,7 +211,7 @@ impl<'a> chain::Listen for DynamicChainListener<'a> {
 }
 
 /// A set of dynamically sized chain listeners, each paired with a starting block height.
-struct ChainListenerSet<'a>(Vec<(u32, &'a mut dyn chain::Listen)>);
+struct ChainListenerSet<'a>(Vec<(u32, &'a dyn chain::Listen)>);
 
 impl<'a> chain::Listen for ChainListenerSet<'a> {
 	fn block_connected(&self, block: &Block, height: u32) {
@@ -238,20 +238,20 @@ mod tests {
 	async fn sync_from_same_chain() {
 		let mut chain = Blockchain::default().with_height(4);
 
-		let mut listener_1 = MockChainListener::new()
+		let listener_1 = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(2))
 			.expect_block_connected(*chain.at_height(3))
 			.expect_block_connected(*chain.at_height(4));
-		let mut listener_2 = MockChainListener::new()
+		let listener_2 = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(3))
 			.expect_block_connected(*chain.at_height(4));
-		let mut listener_3 = MockChainListener::new()
+		let listener_3 = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(4));
 
 		let listeners = vec![
-			(chain.at_height(1).block_hash, &mut listener_1 as &mut dyn chain::Listen),
-			(chain.at_height(2).block_hash, &mut listener_2 as &mut dyn chain::Listen),
-			(chain.at_height(3).block_hash, &mut listener_3 as &mut dyn chain::Listen),
+			(chain.at_height(1).block_hash, &listener_1 as &dyn chain::Listen),
+			(chain.at_height(2).block_hash, &listener_2 as &dyn chain::Listen),
+			(chain.at_height(3).block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = chain.header_cache(0..=4);
 		match synchronize_listeners(&mut chain, Network::Bitcoin, &mut cache, listeners).await {
@@ -267,26 +267,26 @@ mod tests {
 		let fork_chain_2 = main_chain.fork_at_height(2);
 		let fork_chain_3 = main_chain.fork_at_height(3);
 
-		let mut listener_1 = MockChainListener::new()
+		let listener_1 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_1.at_height(4))
 			.expect_block_disconnected(*fork_chain_1.at_height(3))
 			.expect_block_disconnected(*fork_chain_1.at_height(2))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
-		let mut listener_2 = MockChainListener::new()
+		let listener_2 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_2.at_height(4))
 			.expect_block_disconnected(*fork_chain_2.at_height(3))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
-		let mut listener_3 = MockChainListener::new()
+		let listener_3 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_3.at_height(4))
 			.expect_block_connected(*main_chain.at_height(4));
 
 		let listeners = vec![
-			(fork_chain_1.tip().block_hash, &mut listener_1 as &mut dyn chain::Listen),
-			(fork_chain_2.tip().block_hash, &mut listener_2 as &mut dyn chain::Listen),
-			(fork_chain_3.tip().block_hash, &mut listener_3 as &mut dyn chain::Listen),
+			(fork_chain_1.tip().block_hash, &listener_1 as &dyn chain::Listen),
+			(fork_chain_2.tip().block_hash, &listener_2 as &dyn chain::Listen),
+			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
@@ -304,21 +304,21 @@ mod tests {
 		let fork_chain_2 = fork_chain_1.fork_at_height(2);
 		let fork_chain_3 = fork_chain_2.fork_at_height(3);
 
-		let mut listener_1 = MockChainListener::new()
+		let listener_1 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_1.at_height(4))
 			.expect_block_disconnected(*fork_chain_1.at_height(3))
 			.expect_block_disconnected(*fork_chain_1.at_height(2))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
-		let mut listener_2 = MockChainListener::new()
+		let listener_2 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_2.at_height(4))
 			.expect_block_disconnected(*fork_chain_2.at_height(3))
 			.expect_block_disconnected(*fork_chain_2.at_height(2))
 			.expect_block_connected(*main_chain.at_height(2))
 			.expect_block_connected(*main_chain.at_height(3))
 			.expect_block_connected(*main_chain.at_height(4));
-		let mut listener_3 = MockChainListener::new()
+		let listener_3 = MockChainListener::new()
 			.expect_block_disconnected(*fork_chain_3.at_height(4))
 			.expect_block_disconnected(*fork_chain_3.at_height(3))
 			.expect_block_disconnected(*fork_chain_3.at_height(2))
@@ -327,9 +327,9 @@ mod tests {
 			.expect_block_connected(*main_chain.at_height(4));
 
 		let listeners = vec![
-			(fork_chain_1.tip().block_hash, &mut listener_1 as &mut dyn chain::Listen),
-			(fork_chain_2.tip().block_hash, &mut listener_2 as &mut dyn chain::Listen),
-			(fork_chain_3.tip().block_hash, &mut listener_3 as &mut dyn chain::Listen),
+			(fork_chain_1.tip().block_hash, &listener_1 as &dyn chain::Listen),
+			(fork_chain_2.tip().block_hash, &listener_2 as &dyn chain::Listen),
+			(fork_chain_3.tip().block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
@@ -347,11 +347,11 @@ mod tests {
 		let new_tip = main_chain.tip();
 		let old_tip = fork_chain.tip();
 
-		let mut listener = MockChainListener::new()
+		let listener = MockChainListener::new()
 			.expect_block_disconnected(*old_tip)
 			.expect_block_connected(*new_tip);
 
-		let listeners = vec![(old_tip.block_hash, &mut listener as &mut dyn chain::Listen)];
+		let listeners = vec![(old_tip.block_hash, &listener as &dyn chain::Listen)];
 		let mut cache = fork_chain.header_cache(2..=2);
 		match synchronize_listeners(&mut main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(_) => {
