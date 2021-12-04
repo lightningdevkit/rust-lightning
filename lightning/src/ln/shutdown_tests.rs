@@ -13,7 +13,6 @@ use chain::keysinterface::KeysInterface;
 use chain::transaction::OutPoint;
 use ln::channelmanager::PaymentSendFailure;
 use routing::router::{Payee, get_route};
-use routing::network_graph::NetworkUpdate;
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ErrorAction};

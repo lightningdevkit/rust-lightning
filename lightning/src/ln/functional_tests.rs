@@ -23,7 +23,7 @@ use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAAC
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::{HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, HTLCOutputInCommitment};
-use routing::network_graph::{NetworkUpdate, RoutingFees};
+use routing::network_graph::RoutingFees;
 use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;

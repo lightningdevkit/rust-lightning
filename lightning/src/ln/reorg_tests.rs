@@ -15,7 +15,6 @@ use chain::{Confirm, Watch};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::ChannelMessageHandler;
-use routing::network_graph::NetworkUpdate;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::test_utils;
