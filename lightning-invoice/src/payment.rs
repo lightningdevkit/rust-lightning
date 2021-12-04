@@ -65,6 +65,7 @@
 //! #     fn retry_payment(
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
+//! #     fn abandon_payment(&self, payment_id: PaymentId) { unimplemented!() }
 //! # }
 //! #
 //! # struct FakeRouter {}
@@ -187,6 +188,9 @@ pub trait Payer {
 
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;
+
+	/// Signals that no further retries for the given payment will occur.
+	fn abandon_payment(&self, payment_id: PaymentId);
 }
 
 /// A trait defining behavior for routing an [`Invoice`] payment.
@@ -462,26 +466,30 @@ where
 	fn handle_event(&self, event: &Event) {
 		match event {
 			Event::PaymentPathFailed {
-				all_paths_failed, payment_id, payment_hash, rejected_by_dest, path,
-				short_channel_id, retry, ..
+				payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
 					let path = path.iter().collect::<Vec<_>>();
 					self.scorer.lock().payment_path_failed(&path, *short_channel_id);
 				}
 
-				if *rejected_by_dest {
-					log_trace!(self.logger, "Payment {} rejected by destination; not retrying", log_bytes!(payment_hash.0));
-				} else if payment_id.is_none() {
+				if payment_id.is_none() {
 					log_trace!(self.logger, "Payment {} has no id; not retrying", log_bytes!(payment_hash.0));
+				} else if *rejected_by_dest {
+					log_trace!(self.logger, "Payment {} rejected by destination; not retrying", log_bytes!(payment_hash.0));
+					self.payer.abandon_payment(payment_id.unwrap());
 				} else if retry.is_none() {
 					log_trace!(self.logger, "Payment {} missing retry params; not retrying", log_bytes!(payment_hash.0));
+					self.payer.abandon_payment(payment_id.unwrap());
 				} else if self.retry_payment(payment_id.unwrap(), *payment_hash, retry.as_ref().unwrap()).is_ok() {
 					// We retried at least somewhat, don't provide the PaymentPathFailed event to the user.
 					return;
+				} else {
+					self.payer.abandon_payment(payment_id.unwrap());
 				}
-
-				if *all_paths_failed { self.payment_cache.lock().unwrap().remove(payment_hash); }
+			},
+			Event::PaymentFailed { payment_hash, .. } => {
+				self.remove_cached_payment(&payment_hash);
 			},
 			Event::PaymentPathSuccessful { path, .. } => {
 				let path = path.iter().collect::<Vec<_>>();
@@ -511,12 +519,12 @@ mod tests {
 	use lightning::ln::PaymentPreimage;
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::{ErrorAction, LightningError};
+	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::network_graph::NodeId;
 	use lightning::routing::router::{Payee, Route, RouteHop};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
-	use lightning::util::events::{Event, MessageSendEventsProvider};
+	use lightning::util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use std::cell::RefCell;
 	use std::collections::VecDeque;
@@ -1447,6 +1455,8 @@ mod tests {
 			self.check_value_msats(Amount::OnRetry(route.get_total_amount()));
 			self.check_attempts().map(|_| ())
 		}
+
+		fn abandon_payment(&self, _payment_id: PaymentId) { }
 	}
 
 	// *** Full Featured Functional Tests with a Real ChannelManager ***
@@ -1568,5 +1578,178 @@ mod tests {
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
 		check_added_monitors!(nodes[0], 2);
+	}
+
+	#[test]
+	fn no_extra_retries_on_back_to_back_fail() {
+		// In a previous release, we had a race where we may exceed the payment retry count if we
+		// get two failures in a row with the second having `all_paths_failed` set.
+		// Generally, when we give up trying to retry a payment, we don't know for sure what the
+		// current state of the ChannelManager event queue is. Specifically, we cannot be sure that
+		// there are not multiple additional `PaymentPathFailed` or even `PaymentSent` events
+		// pending which we will see later. Thus, when we previously removed the retry tracking map
+		// entry after a `all_paths_failed` `PaymentPathFailed` event, we may have dropped the
+		// retry entry even though more events for the same payment were still pending. This led to
+		// us retrying a payment again even though we'd already given up on it.
+		//
+		// We now have a separate event - `PaymentFailed` which indicates no HTLCs remain and which
+		// is used to remove the payment retry counter entries instead. This tests for the specific
+		// excess-retry case while also testing `PaymentFailed` generation.
+
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+
+		let mut route = Route {
+			paths: vec![
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chan_1_scid,
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 0,
+					cltv_expiry_delta: 100,
+				}, RouteHop {
+					pubkey: nodes[2].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chan_2_scid,
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 100_000_000,
+					cltv_expiry_delta: 100,
+				}],
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chan_1_scid,
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 0,
+					cltv_expiry_delta: 100,
+				}, RouteHop {
+					pubkey: nodes[2].node.get_our_node_id(),
+					node_features: NodeFeatures::known(),
+					short_channel_id: chan_2_scid,
+					channel_features: ChannelFeatures::known(),
+					fee_msat: 100_000_000,
+					cltv_expiry_delta: 100,
+				}]
+			],
+			payee: Some(Payee::from_node_id(nodes[2].node.get_our_node_id())),
+		};
+		let router = ManualRouter(RefCell::new(VecDeque::new()));
+		router.expect_find_route(Ok(route.clone()));
+		// On retry, we'll only be asked for one path
+		route.paths.remove(1);
+		router.expect_find_route(Ok(route.clone()));
+
+		let expected_events: RefCell<VecDeque<&dyn Fn(&Event)>> = RefCell::new(VecDeque::new());
+		let event_handler = |event: &Event| {
+			let event_checker = expected_events.borrow_mut().pop_front().unwrap();
+			event_checker(event);
+		};
+		let scorer = RefCell::new(TestScorer::new());
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
+
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+			.is_ok());
+		let htlc_updates = SendEvent::from_node(&nodes[0]);
+		check_added_monitors!(nodes[0], 1);
+		assert_eq!(htlc_updates.msgs.len(), 1);
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &htlc_updates.msgs[0]);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &htlc_updates.commitment_msg);
+		check_added_monitors!(nodes[1], 1);
+		let (bs_first_raa, bs_first_cs) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+		check_added_monitors!(nodes[0], 1);
+		let second_htlc_updates = SendEvent::from_node(&nodes[0]);
+
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_cs);
+		check_added_monitors!(nodes[0], 1);
+		let as_first_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &second_htlc_updates.msgs[0]);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &second_htlc_updates.commitment_msg);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+		check_added_monitors!(nodes[1], 1);
+		let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_fail_update.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (as_second_raa, as_third_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_third_cs);
+		check_added_monitors!(nodes[1], 1);
+		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_second_fail_update.update_fail_htlcs[0]);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_fail_update.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_third_raa);
+		check_added_monitors!(nodes[0], 1);
+		let (as_third_raa, as_fourth_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_third_raa);
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_fourth_cs);
+		check_added_monitors!(nodes[1], 1);
+		let bs_fourth_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_fourth_raa);
+		check_added_monitors!(nodes[0], 1);
+
+		// At this point A has sent two HTLCs which both failed due to lack of fee. It now has two
+		// pending `PaymentPathFailed` events, one with `all_paths_failed` unset, and the second
+		// with it set. The first event will use up the only retry we are allowed, with the second
+		// `PaymentPathFailed` being passed up to the user (us, in this case). Previously, we'd
+		// treated this as "HTLC complete" and dropped the retry counter, causing us to retry again
+		// if the final HTLC failed.
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentPathFailed { rejected_by_dest, all_paths_failed, .. } = ev {
+				assert!(!rejected_by_dest);
+				assert!(all_paths_failed);
+			} else { panic!("Unexpected event"); }
+		});
+		nodes[0].node.process_pending_events(&invoice_payer);
+		assert!(expected_events.borrow().is_empty());
+
+		let retry_htlc_updates = SendEvent::from_node(&nodes[0]);
+		check_added_monitors!(nodes[0], 1);
+
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &retry_htlc_updates.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], &retry_htlc_updates.commitment_msg, false, true);
+		let bs_fail_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], &bs_fail_update.commitment_signed, false, true);
+
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentPathFailed { rejected_by_dest, all_paths_failed, .. } = ev {
+				assert!(!rejected_by_dest);
+				assert!(all_paths_failed);
+			} else { panic!("Unexpected event"); }
+		});
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentFailed { .. } = ev {
+			} else { panic!("Unexpected event"); }
+		});
+		nodes[0].node.process_pending_events(&invoice_payer);
+		assert!(expected_events.borrow().is_empty());
 	}
 }
