@@ -14,11 +14,10 @@
 use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
-use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, PaymentId, PaymentSendFailure};
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, ErrorAction};
+use ln::msgs::ChannelMessageHandler;
 use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
 use util::errors::APIError;
@@ -26,8 +25,6 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::ser::{ReadableArgs, Writeable};
 use io;
 
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use bitcoin::{Block, BlockHeader, BlockHash};
 
 use prelude::*;

@@ -11,7 +11,6 @@
 
 use chain::keysinterface::KeysInterface;
 use chain::transaction::OutPoint;
-use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::PaymentSendFailure;
 use routing::router::{Payee, get_route};
 use routing::network_graph::NetworkUpdate;
@@ -27,9 +26,6 @@ use util::config::UserConfig;
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
-
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 
 use regex;
 

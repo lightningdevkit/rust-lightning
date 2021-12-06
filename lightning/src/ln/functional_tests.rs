@@ -42,9 +42,6 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
-
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::key::{PublicKey,SecretKey};
 

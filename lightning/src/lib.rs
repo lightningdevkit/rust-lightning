@@ -18,7 +18,7 @@
 //! generated/etc. This makes it a good candidate for tight integration into an existing wallet
 //! instead of having a rather-separate lightning appendage to a wallet.
 
-#![cfg_attr(not(any(feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
+#![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), forbid(unsafe_code))]
 #![deny(broken_intra_doc_links)]
 

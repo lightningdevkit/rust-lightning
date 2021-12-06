@@ -33,8 +33,6 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::secp256k1::key::PublicKey;
@@ -337,9 +335,11 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 	(announcement, as_update, bs_update, channel_id, tx)
 }
 
+#[macro_export]
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
 		{
+			use util::events::MessageSendEvent;
 			let events = $node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 2);
 			(match events[0] {
@@ -401,13 +401,14 @@ macro_rules! get_event {
 }
 
 #[cfg(test)]
+#[macro_export]
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		{
 			let events = $node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				$crate::util::events::MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 					assert_eq!(*node_id, $node_id);
 					(*updates).clone()
 				},
@@ -713,6 +714,7 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 	}
 }
 
+#[macro_export]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
 		{
@@ -777,6 +779,9 @@ macro_rules! get_closing_signed_broadcast {
 #[macro_export]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {{
+		use $crate::util::events::MessageSendEvent;
+		use $crate::ln::msgs::ErrorAction;
+
 		let msg_events = $node.node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), if $with_error_msg { 2 } else { 1 });
 		match msg_events[0] {
@@ -804,6 +809,8 @@ macro_rules! check_closed_event {
 		check_closed_event!($node, $events, $reason, false);
 	};
 	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {{
+		use $crate::util::events::Event;
+
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), $events);
 		let expected_reason = $reason;
@@ -1012,10 +1019,12 @@ macro_rules! get_payment_preimage_hash {
 	};
 	($dest_node: expr, $min_value_msat: expr) => {
 		{
+			use bitcoin::hashes::Hash as _;
 			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
-			let payment_preimage = PaymentPreimage([*payment_count; 32]);
+			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
 			*payment_count += 1;
-			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+			let payment_hash = $crate::ln::PaymentHash(
+				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
 			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200).unwrap();
 			(payment_preimage, payment_hash, payment_secret)
 		}
@@ -1023,17 +1032,18 @@ macro_rules! get_payment_preimage_hash {
 }
 
 #[cfg(test)]
+#[macro_export]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		get_route_and_payment_hash!($send_node, $recv_node, vec![], $recv_value, TEST_FINAL_CLTV)
+		$crate::get_route_and_payment_hash!($send_node, $recv_node, vec![], $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
-		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!($recv_node, Some($recv_value));
+		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
 		let payee = $crate::routing::router::Payee::from_node_id($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
-		let scorer = ::util::test_utils::TestScorer::with_fixed_penalty(0);
-		let route = ::routing::router::get_route(
+		let scorer = $crate::util::test_utils::TestScorer::with_fixed_penalty(0);
+		let route = $crate::routing::router::get_route(
 			&$send_node.node.get_our_node_id(), &payee, $send_node.network_graph,
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 			$recv_value, $cltv, $send_node.logger, &scorer
@@ -1097,6 +1107,7 @@ macro_rules! expect_payment_received {
 }
 
 #[cfg(test)]
+#[macro_export]
 macro_rules! expect_payment_sent_without_paths {
 	($node: expr, $expected_payment_preimage: expr) => {
 		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, false);
@@ -1106,23 +1117,26 @@ macro_rules! expect_payment_sent_without_paths {
 	}
 }
 
+#[macro_export]
 macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr) => {
-		expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true);
+		$crate::expect_payment_sent!($node, $expected_payment_preimage, None::<u64>, true);
 	};
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
-		expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true);
+		$crate::expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true);
 	};
-	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
+	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => { {
+		use bitcoin::hashes::Hash as _;
 		let events = $node.node.get_and_clear_pending_events();
-		let expected_payment_hash = PaymentHash(Sha256::hash(&$expected_payment_preimage.0).into_inner());
+		let expected_payment_hash = $crate::ln::PaymentHash(
+			bitcoin::hashes::sha256::Hash::hash(&$expected_payment_preimage.0).into_inner());
 		if $expect_paths {
 			assert!(events.len() > 1);
 		} else {
 			assert_eq!(events.len(), 1);
 		}
 		let expected_payment_id = match events[0] {
-			Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+			$crate::util::events::Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
 				assert_eq!(expected_payment_hash, *payment_hash);
 				assert!(fee_paid_msat.is_some());
@@ -1136,7 +1150,7 @@ macro_rules! expect_payment_sent {
 		if $expect_paths {
 			for i in 1..events.len() {
 				match events[i] {
-					Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
+					$crate::util::events::Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
 						assert_eq!(payment_id, expected_payment_id);
 						assert_eq!(payment_hash, Some(expected_payment_hash));
 					},
@@ -1144,16 +1158,17 @@ macro_rules! expect_payment_sent {
 				}
 			}
 		}
-	}
+	} }
 }
 
 #[cfg(test)]
+#[macro_export]
 macro_rules! expect_payment_path_successful {
 	($node: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentPathSuccessful { .. } => {},
+			$crate::util::events::Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}

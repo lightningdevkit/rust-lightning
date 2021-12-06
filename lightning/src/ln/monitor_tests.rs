@@ -11,15 +11,12 @@
 
 use chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use chain::transaction::OutPoint;
-use ln::{channel, PaymentPreimage, PaymentHash};
+use ln::channel;
 use ln::channelmanager::BREAKDOWN_TIMEOUT;
 use ln::features::InitFeatures;
-use ln::msgs::{ChannelMessageHandler, ErrorAction};
+use ln::msgs::ChannelMessageHandler;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use routing::network_graph::NetworkUpdate;
-
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;

@@ -115,14 +115,6 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-/// General Err type for ChannelMonitor actions. Generally, this implies that the data provided is
-/// inconsistent with the ChannelMonitor being called. eg for ChannelMonitor::update_monitor this
-/// means you tried to update a monitor for a different channel or the ChannelMonitorUpdate was
-/// corrupted.
-/// Contains a developer-readable error message.
-#[derive(Clone, Debug)]
-pub struct MonitorUpdateError(pub &'static str);
-
 /// An event to be processed by the ChannelManager.
 #[derive(Clone, PartialEq)]
 pub enum MonitorEvent {
@@ -695,6 +687,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// remote monitor out-of-order with regards to the block view.
 	holder_tx_signed: bool,
 
+	// If a spend of the funding output is seen, we set this to true and reject any further
+	// updates. This prevents any further changes in the offchain state no matter the order
+	// of block connection between ChannelMonitors and the ChannelManager.
+	funding_spend_seen: bool,
+
 	funding_spend_confirmed: Option<Txid>,
 	/// The set of HTLCs which have been either claimed or failed on chain and have reached
 	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
@@ -760,6 +757,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.outputs_to_watch != other.outputs_to_watch ||
 			self.lockdown_from_offchain != other.lockdown_from_offchain ||
 			self.holder_tx_signed != other.holder_tx_signed ||
+			self.funding_spend_seen != other.funding_spend_seen ||
 			self.funding_spend_confirmed != other.funding_spend_confirmed ||
 			self.htlcs_resolved_on_chain != other.htlcs_resolved_on_chain
 		{
@@ -935,6 +933,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			(1, self.funding_spend_confirmed, option),
 			(3, self.htlcs_resolved_on_chain, vec_type),
 			(5, self.pending_monitor_events, vec_type),
+			(7, self.funding_spend_seen, required),
 		});
 
 		Ok(())
@@ -1033,6 +1032,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 				lockdown_from_offchain: false,
 				holder_tx_signed: false,
+				funding_spend_seen: false,
 				funding_spend_confirmed: None,
 				htlcs_resolved_on_chain: Vec::new(),
 
@@ -1044,7 +1044,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		self.inner.lock().unwrap().provide_secret(idx, secret)
 	}
 
@@ -1066,12 +1066,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 
 	#[cfg(test)]
 	fn provide_latest_holder_commitment_tx(
-		&self,
-		holder_commitment_tx: HolderCommitmentTransaction,
+		&self, holder_commitment_tx: HolderCommitmentTransaction,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>,
-	) -> Result<(), MonitorUpdateError> {
-		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(
-			holder_commitment_tx, htlc_outputs)
+	) -> Result<(), ()> {
+		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs).map_err(|_| ())
 	}
 
 	#[cfg(test)]
@@ -1112,7 +1110,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: &B,
 		fee_estimator: &F,
 		logger: &L,
-	) -> Result<(), MonitorUpdateError>
+	) -> Result<(), ()>
 	where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
@@ -1687,9 +1685,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
-	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), MonitorUpdateError> {
+	fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		if let Err(()) = self.commitment_secrets.provide_secret(idx, secret) {
-			return Err(MonitorUpdateError("Previous secret did not match new one"));
+			return Err("Previous secret did not match new one");
 		}
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
@@ -1781,7 +1779,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// is important that any clones of this channel monitor (including remote clones) by kept
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
-	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), MonitorUpdateError> {
+	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>) -> Result<(), &'static str> {
 		// block for Rust 1.34 compat
 		let mut new_holder_commitment_tx = {
 			let trusted_tx = holder_commitment_tx.trust();
@@ -1804,7 +1802,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		if self.holder_tx_signed {
-			return Err(MonitorUpdateError("Latest holder commitment signed has already been signed, update is rejected"));
+			return Err("Latest holder commitment signed has already been signed, update is rejected");
 		}
 		Ok(())
 	}
@@ -1868,7 +1866,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
 
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), MonitorUpdateError>
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), ()>
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
@@ -1886,12 +1884,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		} else if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
+		let mut ret = Ok(());
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest holder commitment transaction info");
 					if self.lockdown_from_offchain { panic!(); }
-					self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone())?
+					if let Err(e) = self.provide_latest_holder_commitment_tx(commitment_tx.clone(), htlc_outputs.clone()) {
+						log_error!(logger, "Providing latest holder commitment transaction failed/was refused:");
+						log_error!(logger, "    {}", e);
+						ret = Err(());
+					}
 				}
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_revocation_point } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
@@ -1903,7 +1906,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
-					self.provide_secret(*idx, *secret)?
+					if let Err(e) = self.provide_secret(*idx, *secret) {
+						log_error!(logger, "Providing latest counterparty commitment secret failed/was refused:");
+						log_error!(logger, "    {}", e);
+						ret = Err(());
+					}
 				},
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
@@ -1928,7 +1935,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 		self.latest_update_id = updates.update_id;
-		Ok(())
+
+		if ret.is_ok() && self.funding_spend_seen {
+			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
+			Err(())
+		} else { ret }
 	}
 
 	pub fn get_latest_update_id(&self) -> u64 {
@@ -2357,6 +2368,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
 						log_bytes!(self.funding_info.0.to_channel_id()), tx.txid());
+					self.funding_spend_seen = true;
 					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs) = self.check_spend_counterparty_transaction(&tx, height, &logger);
 						if !new_outputs.1.is_empty() {
@@ -3206,10 +3218,12 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
+		let mut funding_spend_seen = Some(false);
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
 			(5, pending_monitor_events, vec_type),
+			(7, funding_spend_seen, option),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3259,6 +3273,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 				lockdown_from_offchain,
 				holder_tx_signed,
+				funding_spend_seen: funding_spend_seen.unwrap(),
 				funding_spend_confirmed,
 				htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 
@@ -3272,6 +3287,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
@@ -3280,23 +3296,127 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::hash_types::Txid;
+	use bitcoin::hash_types::{BlockHash, Txid};
 	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::Secp256k1;
+
 	use hex;
-	use chain::BestBlock;
+
+	use super::ChannelMonitorUpdateStep;
+	use ::{check_added_monitors, check_closed_broadcast, check_closed_event, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
+	use chain::{BestBlock, Confirm};
 	use chain::channelmonitor::ChannelMonitor;
 	use chain::package::{WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC, WEIGHT_REVOKED_OUTPUT};
 	use chain::transaction::OutPoint;
+	use chain::keysinterface::InMemorySigner;
 	use ln::{PaymentPreimage, PaymentHash};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
+	use ln::channelmanager::PaymentSendFailure;
+	use ln::features::InitFeatures;
+	use ln::functional_test_utils::*;
 	use ln::script::ShutdownScript;
+	use util::errors::APIError;
+	use util::events::{ClosureReason, MessageSendEventsProvider};
 	use util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
-	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
-	use bitcoin::secp256k1::Secp256k1;
+	use util::ser::{ReadableArgs, Writeable};
 	use sync::{Arc, Mutex};
-	use chain::keysinterface::InMemorySigner;
+	use io;
 	use prelude::*;
+
+	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
+		// Previously, monitor updates were allowed freely even after a funding-spend transaction
+		// confirmed. This would allow a race condition where we could receive a payment (including
+		// the counterparty revoking their broadcasted state!) and accept it without recourse as
+		// long as the ChannelMonitor receives the block first, the full commitment update dance
+		// occurs after the block is connected, and before the ChannelManager receives the block.
+		// Obviously this is an incredibly contrived race given the counterparty would be risking
+		// their full channel balance for it, but its worth fixing nonetheless as it makes the
+		// potential ChannelMonitor states simpler to reason about.
+		//
+		// This test checks said behavior, as well as ensuring a ChannelMonitorUpdate with multiple
+		// updates is handled correctly in such conditions.
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+		let channel = create_announced_chan_between_nodes(
+			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes(
+			&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+
+		// Rebalance somewhat
+		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+		// First route two payments for testing at the end
+		let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000).0;
+		let payment_preimage_2 = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000).0;
+
+		let local_txn = get_local_commitment_txn!(nodes[1], channel.2);
+		assert_eq!(local_txn.len(), 1);
+		let remote_txn = get_local_commitment_txn!(nodes[0], channel.2);
+		assert_eq!(remote_txn.len(), 3); // Commitment and two HTLC-Timeouts
+		check_spends!(remote_txn[1], remote_txn[0]);
+		check_spends!(remote_txn[2], remote_txn[0]);
+		let broadcast_tx = if use_local_txn { &local_txn[0] } else { &remote_txn[0] };
+
+		// Connect a commitment transaction, but only to the ChainMonitor/ChannelMonitor. The
+		// channel is now closed, but the ChannelManager doesn't know that yet.
+		let new_header = BlockHeader {
+			version: 2, time: 0, bits: 0, nonce: 0,
+			prev_blockhash: nodes[0].best_block_info().0,
+			merkle_root: Default::default() };
+		let conf_height = nodes[0].best_block_info().1 + 1;
+		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
+			&[(0, broadcast_tx)], conf_height);
+
+		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<InMemorySigner>)>::read(
+						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
+						&nodes[1].keys_manager.backing).unwrap();
+
+		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
+		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
+		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
+		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)),
+			true, APIError::ChannelUnavailable { ref err },
+			assert!(err.contains("ChannelMonitor storage failure")));
+		check_added_monitors!(nodes[1], 2); // After the failure we generate a close-channel monitor update
+		check_closed_broadcast!(nodes[1], true);
+		check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+
+		// Build a new ChannelMonitorUpdate which contains both the failing commitment tx update
+		// and provides the claim preimages for the two pending HTLCs. The first update generates
+		// an error, but the point of this test is to ensure the later updates are still applied.
+		let monitor_updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
+		let mut replay_update = monitor_updates.get(&channel.2).unwrap().iter().rev().skip(1).next().unwrap().clone();
+		assert_eq!(replay_update.updates.len(), 1);
+		if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
+		} else { panic!(); }
+		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_1 });
+		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_2 });
+
+		let broadcaster = TestBroadcaster::new(Arc::clone(&nodes[1].blocks));
+		assert!(
+			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
+			.is_err());
+		// Even though we error'd on the first update, we should still have generated an HTLC claim
+		// transaction
+		let txn_broadcasted = broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert!(txn_broadcasted.len() >= 2);
+		let htlc_txn = txn_broadcasted.iter().filter(|tx| {
+			assert_eq!(tx.input.len(), 1);
+			tx.input[0].previous_output.txid == broadcast_tx.txid()
+		}).collect::<Vec<_>>();
+		assert_eq!(htlc_txn.len(), 2);
+		check_spends!(htlc_txn[0], broadcast_tx);
+		check_spends!(htlc_txn[1], broadcast_tx);
+	}
+	#[test]
+	fn test_funding_spend_refuses_updates() {
+		do_test_funding_spend_refuses_updates(true);
+		do_test_funding_spend_refuses_updates(false);
+	}
 
 	#[test]
 	fn test_prune_preimages() {

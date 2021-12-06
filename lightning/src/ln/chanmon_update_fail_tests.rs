@@ -19,20 +19,16 @@ use bitcoin::network::constants::Network;
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use chain::{ChannelMonitorUpdateErr, Listen, Watch};
-use ln::{PaymentPreimage, PaymentHash};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, ErrorAction, RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 use util::test_utils::TestBroadcaster;
-
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 
 use ln::functional_test_utils::*;
 

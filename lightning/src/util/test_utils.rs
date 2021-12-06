@@ -91,6 +91,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
+	pub monitor_updates: Mutex<HashMap<[u8; 32], Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<[u8; 32], (OutPoint, u64, MonitorUpdateId)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<EnforcingSigner, &'a TestChainSource, &'a chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a chainmonitor::Persist<EnforcingSigner>>,
 	pub keys_manager: &'a TestKeysInterface,
@@ -103,6 +104,7 @@ impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a chainmonitor::Persist<EnforcingSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
+			monitor_updates: Mutex::new(HashMap::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
@@ -131,6 +133,8 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		update.write(&mut w).unwrap();
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
 				&mut io::Cursor::new(&w.0)).unwrap() == update);
+
+		self.monitor_updates.lock().unwrap().entry(funding_txo.to_channel_id()).or_insert(Vec::new()).push(update.clone());
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(funding_txo.to_channel_id(), exp.0);
@@ -168,6 +172,9 @@ pub struct TestPersister {
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
 	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
+	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
+	/// MonitorUpdateId here.
+	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
 }
 impl TestPersister {
 	pub fn new() -> Self {
@@ -175,6 +182,7 @@ impl TestPersister {
 			update_ret: Mutex::new(Ok(())),
 			next_update_ret: Mutex::new(None),
 			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
+			offchain_monitor_updates: Mutex::new(HashMap::new()),
 		}
 	}
 
@@ -202,6 +210,8 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 		}
 		if update.is_none() {
 			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+		} else {
+			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
 		}
 		ret
 	}
@@ -211,6 +221,13 @@ pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
 	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
 }
+
+impl TestBroadcaster {
+	pub fn new(blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>) -> TestBroadcaster {
+		TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks }
+	}
+}
+
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
 		assert!(tx.lock_time < 1_500_000_000);

@@ -12,10 +12,9 @@
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use chain::transaction::OutPoint;
 use chain::{Confirm, Watch};
-use ln::PaymentHash;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
-use ln::msgs::{ChannelMessageHandler, ErrorAction};
+use ln::msgs::ChannelMessageHandler;
 use routing::network_graph::NetworkUpdate;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -25,8 +24,6 @@ use util::ser::{ReadableArgs, Writeable};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::secp256k1::Secp256k1;
 

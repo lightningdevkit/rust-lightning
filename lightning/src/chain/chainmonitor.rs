@@ -639,8 +639,8 @@ where C::Target: chain::Filter,
 				let monitor = &monitor_state.monitor;
 				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger);
-				if let Err(e) = &update_res {
-					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}: {:?}", log_funding_info!(monitor), e);
+				if update_res.is_err() {
+					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}.", log_funding_info!(monitor));
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
@@ -727,10 +727,18 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 
 #[cfg(test)]
 mod tests {
-	use ::{check_added_monitors, get_local_commitment_txn};
+	use bitcoin::BlockHeader;
+	use ::{check_added_monitors, check_closed_broadcast, check_closed_event};
+	use ::{expect_payment_sent, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
+	use ::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
+	use chain::{ChannelMonitorUpdateErr, Confirm, Watch};
+	use chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
+	use ln::channelmanager::PaymentSendFailure;
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
-	use util::events::MessageSendEventsProvider;
+	use ln::msgs::ChannelMessageHandler;
+	use util::errors::APIError;
+	use util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils::{OnRegisterOutput, TxOutReference};
 
 	/// Tests that in-block dependent transactions are processed by `block_connected` when not
@@ -774,5 +782,180 @@ mod tests {
 		check_added_monitors!(nodes[1], 1);
 		nodes[1].node.get_and_clear_pending_msg_events();
 		nodes[1].node.get_and_clear_pending_events();
+	}
+
+	#[test]
+	fn test_async_ooo_offchain_updates() {
+		// Test that if we have multiple offchain updates being persisted and they complete
+		// out-of-order, the ChainMonitor waits until all have completed before informing the
+		// ChannelManager.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		// Route two payments to be claimed at the same time.
+		let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+		let payment_preimage_2 = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+
+		chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clear();
+		chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+
+		nodes[1].node.claim_funds(payment_preimage_1);
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.claim_funds(payment_preimage_2);
+		check_added_monitors!(nodes[1], 1);
+
+		chanmon_cfgs[1].persister.set_update_ret(Ok(()));
+
+		let persistences = chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clone();
+		assert_eq!(persistences.len(), 1);
+		let (funding_txo, updates) = persistences.iter().next().unwrap();
+		assert_eq!(updates.len(), 2);
+
+		// Note that updates is a HashMap so the ordering here is actually random. This shouldn't
+		// fail either way but if it fails intermittently it's depending on the ordering of updates.
+		let mut update_iter = updates.iter();
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
+		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
+
+		// Now manually walk the commitment signed dance - because we claimed two payments
+		// back-to-back it doesn't fit into the neat walk commitment_signed_dance does.
+
+		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+		expect_payment_sent_without_paths!(nodes[0], payment_preimage_1);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (as_first_raa, as_first_update) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_first_raa);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_first_update);
+		check_added_monitors!(nodes[1], 1);
+		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_second_updates.update_fulfill_htlcs[0]);
+		expect_payment_sent_without_paths!(nodes[0], payment_preimage_2);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_updates.commitment_signed);
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_first_raa);
+		expect_payment_path_successful!(nodes[0]);
+		check_added_monitors!(nodes[0], 1);
+		let (as_second_raa, as_second_update) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
+		check_added_monitors!(nodes[1], 1);
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_second_update);
+		check_added_monitors!(nodes[1], 1);
+		let bs_second_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
+		expect_payment_path_successful!(nodes[0]);
+		check_added_monitors!(nodes[0], 1);
+	}
+
+	fn do_chainsync_pauses_events(block_timeout: bool) {
+		// When a chainsync monitor update occurs, any MonitorUpdates should be held before being
+		// passed upstream to a `ChannelManager` via `Watch::release_pending_monitor_events`. This
+		// tests that behavior, as well as some ways it might go wrong.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let channel = create_announced_chan_between_nodes(
+			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		// Get a route for later and rebalance the channel somewhat
+		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+		let (route, second_payment_hash, _, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+
+		// First route a payment that we will claim on chain and give the recipient the preimage.
+		let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+		nodes[1].node.claim_funds(payment_preimage);
+		nodes[1].node.get_and_clear_pending_msg_events();
+		check_added_monitors!(nodes[1], 1);
+		let remote_txn = get_local_commitment_txn!(nodes[1], channel.2);
+		assert_eq!(remote_txn.len(), 2);
+
+		// Temp-fail the block connection which will hold the channel-closed event
+		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
+		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+
+		// Connect B's commitment transaction, but only to the ChainMonitor/ChannelMonitor. The
+		// channel is now closed, but the ChannelManager doesn't know that yet.
+		let new_header = BlockHeader {
+			version: 2, time: 0, bits: 0, nonce: 0,
+			prev_blockhash: nodes[0].best_block_info().0,
+			merkle_root: Default::default() };
+		nodes[0].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
+			&[(0, &remote_txn[0]), (1, &remote_txn[1])], nodes[0].best_block_info().1 + 1);
+		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
+		nodes[0].chain_monitor.chain_monitor.best_block_updated(&new_header, nodes[0].best_block_info().1 + 1);
+		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
+
+		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
+		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
+		chanmon_cfgs[0].persister.set_update_ret(Ok(()));
+		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret)),
+			true, APIError::ChannelUnavailable { ref err },
+			assert!(err.contains("ChannelMonitor storage failure")));
+		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
+		check_closed_broadcast!(nodes[0], true);
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
+
+		// However, as the ChainMonitor is still waiting for the original persistence to complete,
+		// it won't yet release the MonitorEvents.
+		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
+
+		if block_timeout {
+			// After three blocks, pending MontiorEvents should be released either way.
+			let latest_header = BlockHeader {
+				version: 2, time: 0, bits: 0, nonce: 0,
+				prev_blockhash: nodes[0].best_block_info().0,
+				merkle_root: Default::default() };
+			nodes[0].chain_monitor.chain_monitor.best_block_updated(&latest_header, nodes[0].best_block_info().1 + LATENCY_GRACE_PERIOD_BLOCKS);
+		} else {
+			for (funding_outpoint, update_ids) in chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().iter() {
+				for update_id in update_ids {
+					nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(*funding_outpoint, *update_id).unwrap();
+				}
+			}
+		}
+
+		expect_payment_sent!(nodes[0], payment_preimage);
+	}
+
+	#[test]
+	fn chainsync_pauses_events() {
+		do_chainsync_pauses_events(false);
+		do_chainsync_pauses_events(true);
+	}
+
+	#[test]
+	fn update_during_chainsync_fails_channel() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
+		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
+
+		connect_blocks(&nodes[0], 1);
+		// Before processing events, the ChannelManager will still think the Channel is open and
+		// there won't be any ChannelMonitorUpdates
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+		check_added_monitors!(nodes[0], 0);
+		// ... however once we get events once, the channel will close, creating a channel-closed
+		// ChannelMonitorUpdate.
+		check_closed_broadcast!(nodes[0], true);
+		check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() });
+		check_added_monitors!(nodes[0], 1);
 	}
 }
