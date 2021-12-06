@@ -126,6 +126,10 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
+			// Byte 5
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -136,6 +140,10 @@ mod sealed {
 			BasicMPP,
 			// Byte 3
 			ShutdownAnySegwit,
+			// Byte 4
+			,
+			// Byte 5
+			ChannelType,
 		],
 	});
 	define_context!(NodeContext {
@@ -167,7 +175,7 @@ mod sealed {
 			// Byte 4
 			,
 			// Byte 5
-			,
+			ChannelType,
 			// Byte 6
 			Keysend,
 		],
@@ -379,6 +387,9 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	define_feature!(45, ChannelType, [InitContext, NodeContext],
+		"Feature flags for `option_channel_type`.", set_channel_type_optional,
+		set_channel_type_required, supports_channel_type, requires_channel_type);
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
@@ -807,6 +818,11 @@ mod tests {
 		assert!(!NodeFeatures::known().requires_basic_mpp());
 		assert!(!InvoiceFeatures::known().requires_basic_mpp());
 
+		assert!(InitFeatures::known().supports_channel_type());
+		assert!(NodeFeatures::known().supports_channel_type());
+		assert!(!InitFeatures::known().requires_channel_type());
+		assert!(!NodeFeatures::known().requires_channel_type());
+
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
 
@@ -845,11 +861,15 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp
 			// - opt_shutdown_anysegwit
-			assert_eq!(node_features.flags.len(), 4);
+			// -
+			// - option_channel_type
+			assert_eq!(node_features.flags.len(), 6);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
 			assert_eq!(node_features.flags[3], 0b00001000);
+			assert_eq!(node_features.flags[4], 0b00000000);
+			assert_eq!(node_features.flags[5], 0b00100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
