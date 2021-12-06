@@ -394,12 +394,10 @@ pub enum NetAddress {
 		port: u16,
 	},
 	/// An old-style Tor onion address/port on which the peer is listening.
-	OnionV2 {
-		/// The bytes (usually encoded in base32 with ".onion" appended)
-		addr: [u8; 10],
-		/// The port on which the node is listening
-		port: u16,
-	},
+	///
+	/// This field is deprecated and the Tor network generally no longer supports V2 Onion
+	/// addresses. Thus, the details are not parsed here.
+	OnionV2([u8; 12]),
 	/// A new-style Tor onion address/port on which the peer is listening.
 	/// To create the human-readable "hostname", concatenate ed25519_pubkey, checksum, and version,
 	/// wrap as base32 and append ".onion".
@@ -421,7 +419,7 @@ impl NetAddress {
 		match self {
 			&NetAddress::IPv4 {..} => { 1 },
 			&NetAddress::IPv6 {..} => { 2 },
-			&NetAddress::OnionV2 {..} => { 3 },
+			&NetAddress::OnionV2(_) => { 3 },
 			&NetAddress::OnionV3 {..} => { 4 },
 		}
 	}
@@ -431,7 +429,7 @@ impl NetAddress {
 		match self {
 			&NetAddress::IPv4 { .. } => { 6 },
 			&NetAddress::IPv6 { .. } => { 18 },
-			&NetAddress::OnionV2 { .. } => { 12 },
+			&NetAddress::OnionV2(_) => { 12 },
 			&NetAddress::OnionV3 { .. } => { 37 },
 		}
 	}
@@ -453,10 +451,9 @@ impl Writeable for NetAddress {
 				addr.write(writer)?;
 				port.write(writer)?;
 			},
-			&NetAddress::OnionV2 { ref addr, ref port } => {
+			&NetAddress::OnionV2(bytes) => {
 				3u8.write(writer)?;
-				addr.write(writer)?;
-				port.write(writer)?;
+				bytes.write(writer)?;
 			},
 			&NetAddress::OnionV3 { ref ed25519_pubkey, ref checksum, ref version, ref port } => {
 				4u8.write(writer)?;
@@ -486,12 +483,7 @@ impl Readable for Result<NetAddress, u8> {
 					port: Readable::read(reader)?,
 				}))
 			},
-			3 => {
-				Ok(Ok(NetAddress::OnionV2 {
-					addr: Readable::read(reader)?,
-					port: Readable::read(reader)?,
-				}))
-			},
+			3 => Ok(Ok(NetAddress::OnionV2(Readable::read(reader)?))),
 			4 => {
 				Ok(Ok(NetAddress::OnionV3 {
 					ed25519_pubkey: Readable::read(reader)?,
@@ -1922,10 +1914,9 @@ mod tests {
 			});
 		}
 		if onionv2 {
-			addresses.push(msgs::NetAddress::OnionV2 {
-				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246],
-				port: 9735
-			});
+			addresses.push(msgs::NetAddress::OnionV2(
+				[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]
+			));
 		}
 		if onionv3 {
 			addresses.push(msgs::NetAddress::OnionV3 {
