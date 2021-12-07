@@ -862,8 +862,12 @@ impl<Signer: Sign> Channel<Signer> {
 		where F::Target: FeeEstimator
 	{
 		let lower_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		if feerate_per_kw < lower_limit {
-			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
+		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
+		// occasional issues with feerate disagreements between an initiator that wants a feerate
+		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
+		// sat/kw before the comparison here.
+		if feerate_per_kw + 250 < lower_limit {
+			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {} (- 250)", feerate_per_kw, lower_limit)));
 		}
 		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
 		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
