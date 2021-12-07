@@ -126,6 +126,10 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
+			// Byte 5
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -136,6 +140,10 @@ mod sealed {
 			BasicMPP,
 			// Byte 3
 			ShutdownAnySegwit,
+			// Byte 4
+			,
+			// Byte 5
+			ChannelType,
 		],
 	});
 	define_context!(NodeContext {
@@ -167,7 +175,7 @@ mod sealed {
 			// Byte 4
 			,
 			// Byte 5
-			,
+			ChannelType,
 			// Byte 6
 			Keysend,
 		],
@@ -223,7 +231,7 @@ mod sealed {
 	/// useful for manipulating feature flags.
 	macro_rules! define_feature {
 		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
-		 $required_setter: ident) => {
+		 $required_setter: ident, $supported_getter: ident) => {
 			#[doc = $doc]
 			///
 			/// See [BOLT #9] for details.
@@ -320,6 +328,11 @@ mod sealed {
 					<T as $feature>::set_required_bit(&mut self.flags);
 					self
 				}
+
+				/// Checks if this feature is supported.
+				pub fn $supported_getter(&self) -> bool {
+					<T as $feature>::supports_feature(&self.flags)
+				}
 			}
 
 			$(
@@ -331,41 +344,60 @@ mod sealed {
 					const ASSERT_ODD_BIT_PARITY: usize = (<Self as $feature>::ODD_BIT % 2) - 1;
 				}
 			)*
-
+		};
+		($odd_bit: expr, $feature: ident, [$($context: ty),+], $doc: expr, $optional_setter: ident,
+		 $required_setter: ident, $supported_getter: ident, $required_getter: ident) => {
+			define_feature!($odd_bit, $feature, [$($context),+], $doc, $optional_setter, $required_setter, $supported_getter);
+			impl <T: $feature> Features<T> {
+				/// Checks if this feature is required.
+				pub fn $required_getter(&self) -> bool {
+					<T as $feature>::requires_feature(&self.flags)
+				}
+			}
 		}
 	}
 
 	define_feature!(1, DataLossProtect, [InitContext, NodeContext],
 		"Feature flags for `option_data_loss_protect`.", set_data_loss_protect_optional,
-		set_data_loss_protect_required);
+		set_data_loss_protect_required, supports_data_loss_protect, requires_data_loss_protect);
 	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
 	define_feature!(3, InitialRoutingSync, [InitContext], "Feature flags for `initial_routing_sync`.",
-		set_initial_routing_sync_optional, set_initial_routing_sync_required);
+		set_initial_routing_sync_optional, set_initial_routing_sync_required,
+		initial_routing_sync);
 	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
 		"Feature flags for `option_upfront_shutdown_script`.", set_upfront_shutdown_script_optional,
-		set_upfront_shutdown_script_required);
+		set_upfront_shutdown_script_required, supports_upfront_shutdown_script,
+		requires_upfront_shutdown_script);
 	define_feature!(7, GossipQueries, [InitContext, NodeContext],
-		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required);
+		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required,
+		supports_gossip_queries, requires_gossip_queries);
 	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
-		set_variable_length_onion_required);
+		set_variable_length_onion_required, supports_variable_length_onion,
+		requires_variable_length_onion);
 	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
-		set_static_remote_key_required);
+		set_static_remote_key_required, supports_static_remote_key, requires_static_remote_key);
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
-		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required);
+		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
+		supports_payment_secret, requires_payment_secret);
 	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
-		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required);
+		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
+		supports_basic_mpp, requires_basic_mpp);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
-		set_shutdown_any_segwit_required);
+		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	define_feature!(45, ChannelType, [InitContext, NodeContext],
+		"Feature flags for `option_channel_type`.", set_channel_type_optional,
+		set_channel_type_required, supports_channel_type, requires_channel_type);
 	define_feature!(55, Keysend, [NodeContext],
-		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required);
+		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
+		supports_keysend, requires_keysend);
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
-		set_unknown_feature_required);
+		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -662,25 +694,7 @@ impl<T: sealed::Context> Features<T> {
 	}
 }
 
-impl<T: sealed::DataLossProtect> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn requires_data_loss_protect(&self) -> bool {
-		<T as sealed::DataLossProtect>::requires_feature(&self.flags)
-	}
-	#[cfg(test)]
-	pub(crate) fn supports_data_loss_protect(&self) -> bool {
-		<T as sealed::DataLossProtect>::supports_feature(&self.flags)
-	}
-}
-
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn requires_upfront_shutdown_script(&self) -> bool {
-		<T as sealed::UpfrontShutdownScript>::requires_feature(&self.flags)
-	}
-	pub(crate) fn supports_upfront_shutdown_script(&self) -> bool {
-		<T as sealed::UpfrontShutdownScript>::supports_feature(&self.flags)
-	}
 	#[cfg(test)]
 	pub(crate) fn clear_upfront_shutdown_script(mut self) -> Self {
 		<T as sealed::UpfrontShutdownScript>::clear_bits(&mut self.flags);
@@ -691,43 +705,13 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 
 impl<T: sealed::GossipQueries> Features<T> {
 	#[cfg(test)]
-	pub(crate) fn requires_gossip_queries(&self) -> bool {
-		<T as sealed::GossipQueries>::requires_feature(&self.flags)
-	}
-	pub(crate) fn supports_gossip_queries(&self) -> bool {
-		<T as sealed::GossipQueries>::supports_feature(&self.flags)
-	}
-	#[cfg(test)]
 	pub(crate) fn clear_gossip_queries(mut self) -> Self {
 		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
 		self
 	}
 }
 
-impl<T: sealed::VariableLengthOnion> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn requires_variable_length_onion(&self) -> bool {
-		<T as sealed::VariableLengthOnion>::requires_feature(&self.flags)
-	}
-	pub(crate) fn supports_variable_length_onion(&self) -> bool {
-		<T as sealed::VariableLengthOnion>::supports_feature(&self.flags)
-	}
-}
-
-impl<T: sealed::StaticRemoteKey> Features<T> {
-	pub(crate) fn supports_static_remote_key(&self) -> bool {
-		<T as sealed::StaticRemoteKey>::supports_feature(&self.flags)
-	}
-	#[cfg(test)]
-	pub(crate) fn requires_static_remote_key(&self) -> bool {
-		<T as sealed::StaticRemoteKey>::requires_feature(&self.flags)
-	}
-}
-
 impl<T: sealed::InitialRoutingSync> Features<T> {
-	pub(crate) fn initial_routing_sync(&self) -> bool {
-		<T as sealed::InitialRoutingSync>::supports_feature(&self.flags)
-	}
 	// We are no longer setting initial_routing_sync now that gossip_queries
 	// is enabled. This feature is ignored by a peer when gossip_queries has 
 	// been negotiated.
@@ -737,32 +721,7 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	}
 }
 
-impl<T: sealed::PaymentSecret> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn requires_payment_secret(&self) -> bool {
-		<T as sealed::PaymentSecret>::requires_feature(&self.flags)
-	}
-	/// Returns whether the `payment_secret` feature is supported.
-	pub fn supports_payment_secret(&self) -> bool {
-		<T as sealed::PaymentSecret>::supports_feature(&self.flags)
-	}
-}
-
-impl<T: sealed::BasicMPP> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn requires_basic_mpp(&self) -> bool {
-		<T as sealed::BasicMPP>::requires_feature(&self.flags)
-	}
-	// We currently never test for this since we don't actually *generate* multipath routes.
-	pub(crate) fn supports_basic_mpp(&self) -> bool {
-		<T as sealed::BasicMPP>::supports_feature(&self.flags)
-	}
-}
-
 impl<T: sealed::ShutdownAnySegwit> Features<T> {
-	pub(crate) fn supports_shutdown_anysegwit(&self) -> bool {
-		<T as sealed::ShutdownAnySegwit>::supports_feature(&self.flags)
-	}
 	#[cfg(test)]
 	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
 		<T as sealed::ShutdownAnySegwit>::clear_bits(&mut self.flags);
@@ -859,6 +818,11 @@ mod tests {
 		assert!(!NodeFeatures::known().requires_basic_mpp());
 		assert!(!InvoiceFeatures::known().requires_basic_mpp());
 
+		assert!(InitFeatures::known().supports_channel_type());
+		assert!(NodeFeatures::known().supports_channel_type());
+		assert!(!InitFeatures::known().requires_channel_type());
+		assert!(!NodeFeatures::known().requires_channel_type());
+
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
 
@@ -897,11 +861,15 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp
 			// - opt_shutdown_anysegwit
-			assert_eq!(node_features.flags.len(), 4);
+			// -
+			// - option_channel_type
+			assert_eq!(node_features.flags.len(), 6);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
 			assert_eq!(node_features.flags[3], 0b00001000);
+			assert_eq!(node_features.flags[4], 0b00000000);
+			assert_eq!(node_features.flags[5], 0b00100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
