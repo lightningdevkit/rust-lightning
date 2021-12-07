@@ -2443,7 +2443,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
 	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
 	///
-	/// Panics if a funding transaction has already been provided for this channel.
+	/// Returns [`APIError::ChannelUnavailable`] if a funding transaction has already been provided
+	/// for the channel or if the channel has been closed as indicated by [`Event::ChannelClosed`].
 	///
 	/// May panic if the output found in the funding transaction is duplicative with some other
 	/// channel (note that this should be trivially prevented by using unique funding transaction
@@ -2458,6 +2459,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// create a new channel with a conflicting funding transaction.
 	///
 	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
+	/// [`Event::ChannelClosed`]: crate::util::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -3353,19 +3355,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Provides a payment preimage in response to a PaymentReceived event, returning true and
-	/// generating message events for the net layer to claim the payment, if possible. Thus, you
-	/// should probably kick the net layer to go send messages if this returns true!
+	/// Provides a payment preimage in response to [`Event::PaymentReceived`], generating any
+	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
 	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentReceived`
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// May panic if called except in response to a PaymentReceived event.
+	/// Returns whether any HTLCs were claimed, and thus if any new [`MessageSendEvent`]s are now
+	/// pending for processing via [`get_and_clear_pending_msg_events`].
 	///
+	/// [`Event::PaymentReceived`]: crate::util::events::Event::PaymentReceived
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 

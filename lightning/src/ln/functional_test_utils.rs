@@ -531,7 +531,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	assert!(node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).is_ok());
 	check_added_monitors!(node_a, 0);
 
 	let funding_created_msg = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
@@ -558,6 +558,11 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	assert_eq!(node_a.tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
 	node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+
+	// Ensure that funding_transaction_generated is idempotent.
+	assert!(node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).is_err());
+	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(node_a, 0);
 
 	tx
 }
@@ -1067,6 +1072,9 @@ macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
 		expect_pending_htlcs_forwardable_ignore!($node);
 		$node.node.process_pending_htlc_forwards();
+
+		// Ensure process_pending_htlc_forwards is idempotent.
+		$node.node.process_pending_htlc_forwards();
 	}}
 }
 
@@ -1079,6 +1087,9 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 			_ => panic!("Unexpected event"),
 		};
 		if $ignore {
+			$node.node.process_pending_htlc_forwards();
+
+			// Ensure process_pending_htlc_forwards is idempotent.
 			$node.node.process_pending_htlc_forwards();
 		}
 	}}
@@ -1407,6 +1418,12 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
 		}
 	}
+
+	// Ensure that claim_funds is idempotent.
+	assert!(!expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage));
+	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
+
 	expected_total_fee_msat
 }
 pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
@@ -1551,6 +1568,12 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			}
 		}
 	}
+
+	// Ensure that fail_htlc_backwards is idempotent.
+	assert!(!expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
+	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_events().is_empty());
+	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
 }
 
 pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], our_payment_hash: PaymentHash)  {
