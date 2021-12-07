@@ -4419,8 +4419,8 @@ impl<Signer: Sign> Channel<Signer> {
 		txdata: &TransactionData, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
 	-> Result<(Option<msgs::FundingLocked>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		for &(index_in_block, tx) in txdata.iter() {
-			if let Some(funding_txo) = self.get_funding_txo() {
+		if let Some(funding_txo) = self.get_funding_txo() {
+			for &(index_in_block, tx) in txdata.iter() {
 				// If we haven't yet sent a funding_locked, but are in FundingSent (ignoring
 				// whether they've sent a funding_locked or not), check if we should send one.
 				if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
