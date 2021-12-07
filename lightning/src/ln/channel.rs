@@ -2142,7 +2142,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_info!(logger, "Received funding_locked from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok(self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height()).ok())
+		Ok(self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height(), logger))
 	}
 
 	/// Returns transaction if there is pending funding transaction that is yet to broadcast
@@ -3416,7 +3416,7 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block_height).ok();
+		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block_height, logger);
 
 		let mut accepted_htlcs = Vec::new();
 		mem::swap(&mut accepted_htlcs, &mut self.monitor_pending_forwards);
@@ -3609,7 +3609,7 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height()).ok();
+		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height(), logger);
 
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any funding_locked's.
@@ -4464,7 +4464,7 @@ impl<Signer: Sign> Channel<Signer> {
 					// may have already happened for this block).
 					if let Some(funding_locked) = self.check_get_funding_locked(height) {
 						log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
-						let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok();
+						let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, height, logger);
 						return Ok((Some(funding_locked), announcement_sigs));
 					}
 				}
@@ -4518,7 +4518,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		if let Some(funding_locked) = self.check_get_funding_locked(height) {
 			let announcement_sigs = if let Some((genesis_block_hash, node_pk)) = genesis_node_pk {
-				self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok()
+				self.get_announcement_sigs(node_pk, genesis_block_hash, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
 			return Ok((Some(funding_locked), timed_out_htlcs, announcement_sigs));
@@ -4554,7 +4554,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let announcement_sigs = if let Some((genesis_block_hash, node_pk)) = genesis_node_pk {
-			self.get_announcement_sigs(node_pk, genesis_block_hash, height).ok()
+			self.get_announcement_sigs(node_pk, genesis_block_hash, height, logger)
 		} else { None };
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
@@ -4725,8 +4725,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
 	/// announceable and available for use (have exchanged FundingLocked messages in both
-	/// directions). Should be used for both loose and in response to an AnnouncementSignatures
-	/// message from the remote peer.
+	/// directions). Should be used for both broadcasted announcements and in response to an
+	/// AnnouncementSignatures message from the remote peer.
 	///
 	/// Will only fail if we're not in a state where channel_announcement may be sent (including
 	/// closing).
@@ -4759,29 +4759,43 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(msg)
 	}
 
-	fn get_announcement_sigs(&mut self, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block_height: u32) -> Result<msgs::AnnouncementSignatures, ChannelError> {
+	fn get_announcement_sigs<L: Deref>(&mut self, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block_height: u32, logger: &L)
+	-> Option<msgs::AnnouncementSignatures> where L::Target: Logger {
 		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
-			return Err(ChannelError::Ignore("Funding not yet fully confirmed".to_owned()));
+			return None;
 		}
 
 		if !self.is_usable() {
-			return Err(ChannelError::Ignore("Channel not yet available for use".to_owned()));
+			return None;
 		}
 
 		if self.channel_state & ChannelState::PeerDisconnected as u32 != 0 {
-			return Err(ChannelError::Ignore("Peer currently disconnected".to_owned()));
+			log_trace!(logger, "Cannot create an announcement_signatures as our peer is disconnected");
+			return None;
 		}
 
 		if self.announcement_sigs_state != AnnouncementSigsState::NotSent {
-			return Err(ChannelError::Ignore("Announcement signatures already sent".to_owned()));
+			return None;
 		}
 
-		let announcement = self.get_channel_announcement(node_pk, genesis_block_hash)?;
-		let (our_node_sig, our_bitcoin_sig) = self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx)
-			.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
+		log_trace!(logger, "Creating an announcement_signatures message for channel {}", log_bytes!(self.channel_id()));
+		let announcement = match self.get_channel_announcement(node_pk, genesis_block_hash) {
+			Ok(a) => a,
+			Err(_) => {
+				log_trace!(logger, "Cannot create an announcement_signatures as channel is not public.");
+				return None;
+			}
+		};
+		let (our_node_sig, our_bitcoin_sig) = match self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx) {
+			Err(_) => {
+				log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
+				return None;
+			},
+			Ok(v) => v
+		};
 		self.announcement_sigs_state = AnnouncementSigsState::MessageSent;
 
-		Ok(msgs::AnnouncementSignatures {
+		Some(msgs::AnnouncementSignatures {
 			channel_id: self.channel_id(),
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_signature: our_node_sig,
