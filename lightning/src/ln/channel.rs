@@ -2122,6 +2122,8 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
+	/// The channel reserve is subtracted from each balance.
+	/// See also [`Channel::get_balance_msat`]
 	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
 		// Note that we have to handle overflow due to the above case.
 		(
@@ -2135,6 +2137,14 @@ impl<Signer: Sign> Channel<Signer> {
 				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
 			0) as u64
 		)
+	}
+
+	/// Get our total balance in msat.
+	/// This is the amount that would go to us if we close the channel, ignoring any on-chain fees.
+	/// See also [`Channel::get_inbound_outbound_available_balance_msat`]
+	pub fn get_balance_msat(&self) -> u64 {
+		self.value_to_self_msat
+			- self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat
 	}
 
 	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {

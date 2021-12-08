@@ -868,17 +868,30 @@ pub struct ChannelDetails {
 	pub unspendable_punishment_reserve: Option<u64>,
 	/// The `user_channel_id` passed in to create_channel, or 0 if the channel was inbound.
 	pub user_channel_id: u64,
+	/// Our total balance.  This is the amount we would get if we close the channel.
+	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
+	/// amount is not likely to be recoverable on close.
+	///
+	/// This does not include any pending HTLCs which are not yet fully resolved (and, thus, whose
+	/// balance is not available for inclusion in new outbound HTLCs). This further does not include
+	/// any pending outgoing HTLCs which are awaiting some other resolution to be sent.
+	/// This does not consider any on-chain fees.
+	///
+	/// See also [`ChannelDetails::outbound_capacity_msat`]
+	pub balance_msat: u64,
 	/// The available outbound capacity for sending HTLCs to the remote peer. This does not include
-	/// any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
+	/// any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new outbound HTLCs). This further does not include any pending
 	/// outgoing HTLCs which are awaiting some other resolution to be sent.
+	///
+	/// See also [`ChannelDetails::balance_msat`]
 	///
 	/// This value is not exact. Due to various in-flight changes, feerate changes, and our
 	/// conflict-avoidance policy, exactly this amount is not likely to be spendable. However, we
 	/// should be able to spend nearly this amount.
 	pub outbound_capacity_msat: u64,
 	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
-	/// include any pending HTLCs which are not yet fully resolved (and, thus, who's balance is not
+	/// include any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new inbound HTLCs).
 	/// Note that there are some corner cases not fully handled here, so the actual available
 	/// inbound capacity may be slightly higher than this.
@@ -1449,6 +1462,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
 				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
+				let balance_msat = channel.get_balance_msat();
 				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
 				res.push(ChannelDetails {
@@ -1463,6 +1477,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					short_channel_id: channel.get_short_channel_id(),
 					channel_value_satoshis: channel.get_value_satoshis(),
 					unspendable_punishment_reserve: to_self_reserve_satoshis,
+					balance_msat,
 					inbound_capacity_msat,
 					outbound_capacity_msat,
 					user_channel_id: channel.get_user_id(),
