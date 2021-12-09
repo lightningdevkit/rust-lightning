@@ -847,6 +847,9 @@ impl NetworkGraph {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
+					// The timestamp field is somewhat of a misnomer - the BOLTs use it to order
+					// updates to ensure you always have the latest one, only vaguely suggesting
+					// that it be at least the current time.
 					if node_info.last_update  > msg.timestamp {
 						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 					} else if node_info.last_update  == msg.timestamp {
@@ -1084,6 +1087,12 @@ impl NetworkGraph {
 				macro_rules! maybe_update_channel_info {
 					( $target: expr, $src_node: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
+							// The timestamp field is somewhat of a misnomer - the BOLTs use it to
+							// order updates to ensure you always have the latest one, only
+							// suggesting  that it be at least the current time. For
+							// channel_updates specifically, the BOLTs discuss the possibility of
+							// pruning based on the timestamp field being more than two weeks old,
+							// but only in the non-normative section.
 							if existing_chan_info.last_update > msg.timestamp {
 								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 							} else if existing_chan_info.last_update == msg.timestamp {
