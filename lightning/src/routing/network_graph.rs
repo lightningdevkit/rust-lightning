@@ -43,6 +43,13 @@ use sync::Mutex;
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// We remove stale channel directional info two weeks after the last update, per BOLT 7's
+/// suggestion.
+const STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
+
 /// The maximum number of extra bytes which we do not understand in a gossip message before we will
 /// refuse to relay the message.
 const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
@@ -628,6 +635,10 @@ pub struct ChannelInfo {
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
 	pub announcement_message: Option<ChannelAnnouncement>,
+	/// The timestamp when we received the announcement, if we are running with feature = "std"
+	/// (which we can probably assume we are - no-std environments probably won't have a full
+	/// network graph in memory!).
+	announcement_received_time: u64,
 }
 
 impl fmt::Display for ChannelInfo {
@@ -640,6 +651,7 @@ impl fmt::Display for ChannelInfo {
 
 impl_writeable_tlv_based!(ChannelInfo, {
 	(0, features, required),
+	(1, announcement_received_time, (default_value, 0)),
 	(2, node_one, required),
 	(4, one_to_two, required),
 	(6, node_two, required),
@@ -952,6 +964,13 @@ impl NetworkGraph {
 			},
 		};
 
+		#[allow(unused_mut, unused_assignments)]
+		let mut announcement_received_time = 0;
+		#[cfg(feature = "std")]
+		{
+			announcement_received_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+		}
+
 		let chan_info = ChannelInfo {
 				features: msg.features.clone(),
 				node_one: NodeId::from_pubkey(&msg.node_id_1),
@@ -961,6 +980,7 @@ impl NetworkGraph {
 				capacity_sats: utxo_value,
 				announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 					{ full_msg.cloned() } else { None },
+				announcement_received_time,
 			};
 
 		let mut channels = self.channels.write().unwrap();
@@ -1042,6 +1062,67 @@ impl NetworkGraph {
 			// TODO: Wholly remove the node
 		} else {
 			// TODO: downgrade the node
+		}
+	}
+
+	#[cfg(feature = "std")]
+	/// Removes information about channels that we haven't heard any updates about in some time.
+	/// This can be used regularly to prune the network graph of channels that likely no longer
+	/// exist.
+	///
+	/// While there is no formal requirement that nodes regularly re-broadcast their channel
+	/// updates every two weeks, the non-normative section of BOLT 7 currently suggests that
+	/// pruning occur for updates which are at least two weeks old, which we implement here.
+	///
+	///
+	/// This method is only available with the `std` feature. See
+	/// [`NetworkGraph::remove_stale_channels_with_time`] for `no-std` use.
+	pub fn remove_stale_channels(&self) {
+		let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+		self.remove_stale_channels_with_time(time);
+	}
+
+	/// Removes information about channels that we haven't heard any updates about in some time.
+	/// This can be used regularly to prune the network graph of channels that likely no longer
+	/// exist.
+	///
+	/// While there is no formal requirement that nodes regularly re-broadcast their channel
+	/// updates every two weeks, the non-normative section of BOLT 7 currently suggests that
+	/// pruning occur for updates which are at least two weeks old, which we implement here.
+	///
+	/// This function takes the current unix time as an argument. For users with the `std` feature
+	/// enabled, [`NetworkGraph::remove_stale_channels`] may be preferable.
+	pub fn remove_stale_channels_with_time(&self, current_time_unix: u64) {
+		let mut channels = self.channels.write().unwrap();
+		// Time out if we haven't received an update in at least 14 days.
+		if current_time_unix > u32::max_value() as u64 { return; } // Remove by 2106
+		if current_time_unix < STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS { return; }
+		let min_time_unix: u32 = (current_time_unix - STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
+		// Sadly BTreeMap::retain was only stabilized in 1.53 so we can't switch to it for some
+		// time.
+		let mut scids_to_remove = Vec::new();
+		for (scid, info) in channels.iter_mut() {
+			if info.one_to_two.is_some() && info.one_to_two.as_ref().unwrap().last_update < min_time_unix {
+				info.one_to_two = None;
+			}
+			if info.two_to_one.is_some() && info.two_to_one.as_ref().unwrap().last_update < min_time_unix {
+				info.two_to_one = None;
+			}
+			if info.one_to_two.is_none() && info.two_to_one.is_none() {
+				// We check the announcement_received_time here to ensure we don't drop
+				// announcements that we just received and are just waiting for our peer to send a
+				// channel_update for.
+				if info.announcement_received_time < min_time_unix as u64 {
+					scids_to_remove.push(*scid);
+				}
+			}
+		}
+		if !scids_to_remove.is_empty() {
+			let mut nodes = self.nodes.write().unwrap();
+			for scid in scids_to_remove {
+				let info = channels.remove(&scid).expect("We just accessed this scid, it should be present");
+				Self::remove_channel_in_nodes(&mut nodes, &info, scid);
+			}
 		}
 	}
 
@@ -1249,6 +1330,8 @@ mod tests {
 	use util::ser::{Readable, Writeable};
 	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
+
+	use super::STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
@@ -1733,28 +1816,73 @@ mod tests {
 		}
 
 		// Permanent closing deletes a channel
-		{
-			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
-				payment_id: None,
-				payment_hash: PaymentHash([0; 32]),
-				rejected_by_dest: false,
-				all_paths_failed: true,
-				path: vec![],
-				network_update: Some(NetworkUpdate::ChannelClosed {
-					short_channel_id,
-					is_permanent: true,
-				}),
-				short_channel_id: None,
-				retry: None,
-				error_code: None,
-				error_data: None,
-			});
+		net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+			payment_id: None,
+			payment_hash: PaymentHash([0; 32]),
+			rejected_by_dest: false,
+			all_paths_failed: true,
+			path: vec![],
+			network_update: Some(NetworkUpdate::ChannelClosed {
+				short_channel_id,
+				is_permanent: true,
+			}),
+			short_channel_id: None,
+			retry: None,
+			error_code: None,
+			error_data: None,
+		});
 
-			assert_eq!(network_graph.read_only().channels().len(), 0);
-			// Nodes are also deleted because there are no associated channels anymore
-			assert_eq!(network_graph.read_only().nodes().len(), 0);
-		}
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+		// Nodes are also deleted because there are no associated channels anymore
+		assert_eq!(network_graph.read_only().nodes().len(), 0);
 		// TODO: Test NetworkUpdate::NodeFailure, which is not implemented yet.
+	}
+
+	#[test]
+	fn test_channel_timeouts() {
+		// Test the removal of channels with `remove_stale_channels`.
+		let logger = test_utils::TestLogger::new();
+		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash);
+		let net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), &logger);
+		let secp_ctx = Secp256k1::new();
+
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+
+		let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		let short_channel_id = valid_channel_announcement.contents.short_channel_id;
+		let chain_source: Option<&test_utils::TestChainSource> = None;
+		assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source, &secp_ctx).is_ok());
+		assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
+
+		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
+		assert!(net_graph_msg_handler.handle_channel_update(&valid_channel_update).is_ok());
+		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
+
+		network_graph.remove_stale_channels_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		assert_eq!(network_graph.read_only().channels().len(), 1);
+		assert_eq!(network_graph.read_only().nodes().len(), 2);
+
+		network_graph.remove_stale_channels_with_time(101 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		#[cfg(feature = "std")]
+		{
+			// In std mode, a further check is performed before fully removing the channel -
+			// the channel_announcement must have been received at least two weeks ago. We
+			// fudge that here by indicating the time has jumped two weeks. Note that the
+			// directional channel information will have been removed already..
+			assert_eq!(network_graph.read_only().channels().len(), 1);
+			assert_eq!(network_graph.read_only().nodes().len(), 2);
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
+
+			use std::time::{SystemTime, UNIX_EPOCH};
+			let announcement_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			network_graph.remove_stale_channels_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		}
+
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+		assert_eq!(network_graph.read_only().nodes().len(), 0);
 	}
 
 	#[test]
