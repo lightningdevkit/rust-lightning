@@ -11,7 +11,6 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 """
 
 [features]
-allow_wallclock_use = []
 fuzztarget = ["bitcoin/fuzztarget", "regex"]
 # Internal test utilities exposed to other repo crates
 _test_utils = ["hex", "regex", "bitcoin/bitcoinconsensus"]
@@ -53,6 +52,3 @@ secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"]
 version = "0.27"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
-
-[package.metadata.docs.rs]
-features = ["allow_wallclock_use"] # When https://github.com/rust-lang/rust/issues/43781 complies with our MSVR, we can add nice banners in the docs for the methods behind this feature-gate.

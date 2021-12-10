@@ -67,9 +67,10 @@ use io::{Cursor, Read};
 use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
-#[cfg(any(test, feature = "allow_wallclock_use"))]
-use std::time::Instant;
 use core::ops::Deref;
+
+#[cfg(any(test, feature = "std"))]
+use std::time::Instant;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -5110,8 +5111,9 @@ where
 	/// indicating whether persistence is necessary. Only one listener on
 	/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
 	/// up.
-	/// Note that the feature `allow_wallclock_use` must be enabled to use this function.
-	#[cfg(any(test, feature = "allow_wallclock_use"))]
+	///
+	/// Note that this method is not available with the `no-std` feature.
+	#[cfg(any(test, feature = "std"))]
 	pub fn await_persistable_update_timeout(&self, max_wait: Duration) -> bool {
 		self.persistence_notifier.wait_timeout(max_wait)
 	}
@@ -5406,7 +5408,7 @@ impl PersistenceNotifier {
 		}
 	}
 
-	#[cfg(any(test, feature = "allow_wallclock_use"))]
+	#[cfg(any(test, feature = "std"))]
 	fn wait_timeout(&self, max_wait: Duration) -> bool {
 		let current_time = Instant::now();
 		loop {
