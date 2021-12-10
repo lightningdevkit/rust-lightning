@@ -1211,6 +1211,7 @@ pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
 	pub(crate) expected_blamed_scid: Option<u64>,
 	pub(crate) expected_blamed_chan_closed: Option<bool>,
+	pub(crate) expected_mpp_parts_remain: bool,
 }
 
 impl<'a> PaymentFailedConditions<'a> {
@@ -1219,7 +1220,12 @@ impl<'a> PaymentFailedConditions<'a> {
 			expected_htlc_error_data: None,
 			expected_blamed_scid: None,
 			expected_blamed_chan_closed: None,
+			expected_mpp_parts_remain: false,
 		}
+	}
+	pub fn mpp_parts_remain(mut self) -> Self {
+		self.expected_mpp_parts_remain = true;
+		self
 	}
 	pub fn blamed_scid(mut self, scid: u64) -> Self {
 		self.expected_blamed_scid = Some(scid);
@@ -1246,6 +1252,7 @@ macro_rules! expect_payment_failed_with_update {
 #[cfg(test)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+		#[allow(unused_mut)]
 		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
 		$(
 			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
@@ -1259,8 +1266,8 @@ macro_rules! expect_payment_failed_conditions {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $conditions: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data, ref path, ref retry, ref network_update, .. } => {
+		let expected_payment_id = match events[0] {
+			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data, ref path, ref retry, ref payment_id, ref network_update, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(retry.is_some(), "expected retry.is_some()");
@@ -1292,10 +1299,24 @@ macro_rules! expect_payment_failed_conditions {
 						None => panic!("Expected update"),
 					}
 				}
+
+				payment_id.unwrap()
 			},
 			_ => panic!("Unexpected event"),
 		};
-	};
+		if !$conditions.expected_mpp_parts_remain {
+			$node.node.abandon_payment(expected_payment_id);
+			let events = $node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+					assert_eq!(*payment_hash, $expected_payment_hash, "unexpected second payment_hash");
+					assert_eq!(*payment_id, expected_payment_id);
+				}
+				_ => panic!("Unexpected second event"),
+			}
+		}
+	}
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
@@ -1598,16 +1619,29 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			commitment_signed_dance!(origin_node, prev_node, next_msgs.as_ref().unwrap().1, false);
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, .. } => {
+			let expected_payment_id = match events[0] {
+				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, ref payment_id, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(rejected_by_dest);
 					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 					for (idx, hop) in expected_route.iter().enumerate() {
 						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
 					}
+					payment_id.unwrap()
 				},
 				_ => panic!("Unexpected event"),
+			};
+			if i == expected_paths.len() - 1 {
+				origin_node.node.abandon_payment(expected_payment_id);
+				let events = origin_node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+						assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
+						assert_eq!(*payment_id, expected_payment_id);
+					}
+					_ => panic!("Unexpected second event"),
+				}
 			}
 		}
 	}

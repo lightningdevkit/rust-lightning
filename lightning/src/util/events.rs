@@ -225,14 +225,20 @@ pub enum Event {
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
 	},
-	/// Indicates an outbound payment we made failed. Probably some intermediary node dropped
+	/// Indicates an outbound HTLC we sent failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
+	///
+	/// Note that this does *not* indicate that all paths for an MPP payment have failed, see
+	/// [`Event::PaymentFailed`] and [`all_paths_failed`].
+	///
+	/// [`all_paths_failed`]: Self::all_paths_failed
 	PaymentPathFailed {
 		/// The id returned by [`ChannelManager::send_payment`] and used with
-		/// [`ChannelManager::retry_payment`].
+		/// [`ChannelManager::retry_payment`] and [`ChannelManager::abandon_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 		payment_id: Option<PaymentId>,
 		/// The hash that was given to [`ChannelManager::send_payment`].
 		///
@@ -254,6 +260,20 @@ pub enum Event {
 		/// For both single-path and multi-path payments, this is set if all paths of the payment have
 		/// failed. This will be set to false if (1) this is an MPP payment and (2) other parts of the
 		/// larger MPP payment were still in flight when this event was generated.
+		///
+		/// Note that if you are retrying individual MPP parts, using this value to determine if a
+		/// payment has fully failed is race-y. Because multiple failures can happen prior to events
+		/// being processed, you may retry in response to a first failure, with a second failure
+		/// (with `all_paths_failed` set) still pending. Then, when the second failure is processed
+		/// you will see `all_paths_failed` set even though the retry of the first failure still
+		/// has an associated in-flight HTLC. See (1) for an example of such a failure.
+		///
+		/// If you wish to retry individual MPP parts and learn when a payment has failed, you must
+		/// call [`ChannelManager::abandon_payment`] and wait for a [`Event::PaymentFailed`] event.
+		///
+		/// (1) <https://github.com/lightningdevkit/rust-lightning/issues/1164>
+		///
+		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 		all_paths_failed: bool,
 		/// The payment path that failed.
 		path: Vec<RouteHop>,
@@ -273,6 +293,27 @@ pub enum Event {
 		error_code: Option<u16>,
 #[cfg(test)]
 		error_data: Option<Vec<u8>>,
+	},
+	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
+	/// provide failure information for each MPP part in the payment.
+	///
+	/// This event is provided once there are no further pending HTLCs for the payment and the
+	/// payment is no longer retryable, either due to a several-block timeout or because
+	/// [`ChannelManager::abandon_payment`] was previously called for the corresponding payment.
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	PaymentFailed {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`] and [`ChannelManager::abandon_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+		payment_id: PaymentId,
+		/// The hash that was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		payment_hash: PaymentHash,
 	},
 	/// Used to indicate that [`ChannelManager::process_pending_htlc_forwards`] should be called at
 	/// a time in the future.
@@ -462,6 +503,13 @@ impl Writeable for Event {
 					(4, path, vec_type)
 				})
 			},
+			&Event::PaymentFailed { ref payment_id, ref payment_hash } => {
+				15u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_id, required),
+					(2, payment_hash, required),
+				})
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -635,6 +683,21 @@ impl MaybeReadable for Event {
 						payment_id,
 						payment_hash,
 						path: path.unwrap(),
+					}))
+				};
+				f()
+			},
+			15u8 => {
+				let f = || {
+					let mut payment_hash = PaymentHash([0; 32]);
+					let mut payment_id = PaymentId([0; 32]);
+					read_tlv_fields!(reader, {
+						(0, payment_id, required),
+						(2, payment_hash, required),
+					});
+					Ok(Some(Event::PaymentFailed {
+						payment_id,
+						payment_hash,
 					}))
 				};
 				f()
