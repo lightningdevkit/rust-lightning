@@ -237,15 +237,7 @@ mod inbound_payment {
 	pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: msgs::FinalOnionHopData, highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L) -> Result<Option<PaymentPreimage>, ()>
 		where L::Target: Logger
 	{
-		let mut iv_bytes = [0; IV_LEN];
-		let (iv_slice, encrypted_metadata_bytes) = payment_data.payment_secret.0.split_at(IV_LEN);
-		iv_bytes.copy_from_slice(iv_slice);
-
-		let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
-		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
-		for i in 0..METADATA_LEN {
-			metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
-		}
+		let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_data.payment_secret, keys);
 
 		let payment_type_res = Method::from_bits((metadata_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET);
 		let mut amt_msat_bytes = [0; AMT_MSAT_LEN];
@@ -269,15 +261,13 @@ mod inbound_payment {
 				}
 			},
 			Ok(Method::LdkPaymentHash) => {
-				let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
-				hmac.input(&iv_bytes);
-				hmac.input(&metadata_bytes);
-				let decoded_payment_preimage = Hmac::from_engine(hmac).into_inner();
-				if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).into_inner()) {
-					log_trace!(logger, "Failing HTLC with payment_hash {}: payment preimage {} did not match", log_bytes!(payment_hash.0), log_bytes!(decoded_payment_preimage));
-					return Err(())
+				match derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys) {
+					Ok(preimage) => payment_preimage = Some(preimage),
+					Err(bad_preimage_bytes) => {
+						log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes));
+						return Err(())
+					}
 				}
-				payment_preimage = Some(PaymentPreimage(decoded_payment_preimage));
 			},
 			Err(unknown_bits) => {
 				log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", log_bytes!(payment_hash.0), unknown_bits);
@@ -296,6 +286,33 @@ mod inbound_payment {
 		}
 
 		Ok(payment_preimage)
+	}
+
+	fn decrypt_metadata(payment_secret: PaymentSecret, keys: &ExpandedKey) -> ([u8; IV_LEN], [u8; METADATA_LEN]) {
+		let mut iv_bytes = [0; IV_LEN];
+		let (iv_slice, encrypted_metadata_bytes) = payment_secret.0.split_at(IV_LEN);
+		iv_bytes.copy_from_slice(iv_slice);
+
+		let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
+		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
+		for i in 0..METADATA_LEN {
+			metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
+		}
+
+		(iv_bytes, metadata_bytes)
+	}
+
+	// Errors if the payment preimage doesn't match `payment_hash`. Returns the bad preimage bytes in
+	// this case.
+	fn derive_ldk_payment_preimage(payment_hash: PaymentHash, iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METADATA_LEN], keys: &ExpandedKey) -> Result<PaymentPreimage, [u8; 32]> {
+		let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
+		hmac.input(iv_bytes);
+		hmac.input(metadata_bytes);
+		let decoded_payment_preimage = Hmac::from_engine(hmac).into_inner();
+		if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).into_inner()) {
+			return Err(decoded_payment_preimage);
+		}
+		return Ok(PaymentPreimage(decoded_payment_preimage))
 	}
 
 	fn hkdf_extract_expand(salt: &[u8], ikm: &KeyMaterial) -> ExpandedKey {
