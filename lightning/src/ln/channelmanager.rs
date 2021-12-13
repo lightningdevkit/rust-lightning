@@ -73,12 +73,14 @@ use core::ops::Deref;
 use std::time::Instant;
 
 mod inbound_payment {
+	use alloc::string::ToString;
 	use bitcoin::hashes::{Hash, HashEngine};
 	use bitcoin::hashes::cmp::fixed_time_eq;
 	use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use chain::keysinterface::{KeyMaterial, KeysInterface, Sign};
 	use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+	use ln::channelmanager::APIError;
 	use ln::msgs;
 	use ln::msgs::MAX_VALUE_MSAT;
 	use util::chacha20::ChaCha20;
@@ -286,6 +288,23 @@ mod inbound_payment {
 		}
 
 		Ok(payment_preimage)
+	}
+
+	pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: PaymentSecret, keys: &ExpandedKey) -> Result<PaymentPreimage, APIError> {
+		let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_secret, keys);
+
+		match Method::from_bits((metadata_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET) {
+			Ok(Method::LdkPaymentHash) => {
+				derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys)
+					.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
+						err: format!("Payment hash {} did not match decoded preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes))
+					})
+			},
+			Ok(Method::UserPaymentHash) => Err(APIError::APIMisuseError {
+				err: "Expected payment type to be LdkPaymentHash, instead got UserPaymentHash".to_string()
+			}),
+			Err(other) => Err(APIError::APIMisuseError { err: format!("Unknown payment type: {}", other) }),
+		}
 	}
 
 	fn decrypt_metadata(payment_secret: PaymentSecret, keys: &ExpandedKey) -> ([u8; IV_LEN], [u8; METADATA_LEN]) {
@@ -5095,6 +5114,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	#[deprecated]
 	pub fn create_inbound_payment_for_hash_legacy(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
+	}
+
+	/// Gets an LDK-generated payment preimage from a payment hash and payment secret that were
+	/// previously returned from [`create_inbound_payment`].
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
+		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
