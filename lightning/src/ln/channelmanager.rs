@@ -2393,8 +2393,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}))
 					},
 					PendingOutboundPayment::Fulfilled { .. } => {
-						return Err(PaymentSendFailure::ParameterError(APIError::RouteError {
-							err: "Payment already completed"
+						return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+							err: "Payment already completed".to_owned()
 						}));
 					},
 					PendingOutboundPayment::Abandoned { .. } => {
