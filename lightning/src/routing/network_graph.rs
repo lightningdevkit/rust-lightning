@@ -1132,6 +1132,9 @@ impl NetworkGraph {
 	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
+	///
+	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// materially in the future will be rejected.
 	pub fn update_channel<T: secp256k1::Verification>(&self, msg: &msgs::ChannelUpdate, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
 		self.update_channel_intern(&msg.contents, Some(&msg), Some((&msg.signature, secp_ctx)))
 	}
@@ -1139,6 +1142,9 @@ impl NetworkGraph {
 	/// For an already known (from announcement) channel, update info about one of the directions
 	/// of the channel without verifying the associated signatures. Because we aren't given the
 	/// associated signatures here we cannot relay the channel update to any of our peers.
+	///
+	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// materially in the future will be rejected.
 	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
 		self.update_channel_intern(msg, None, None::<(&secp256k1::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
 	}
@@ -1147,6 +1153,19 @@ impl NetworkGraph {
 		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
+
+		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
+		{
+			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
+			// disable this check during tests!
+			let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			if (msg.timestamp as u64) < time - STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS {
+				return Err(LightningError{err: "channel_update is older than two weeks old".to_owned(), action: ErrorAction::IgnoreError});
+			}
+			if msg.timestamp as u64 > time + 60 * 60 * 24 {
+				return Err(LightningError{err: "channel_update has a timestamp more than a day in the future".to_owned(), action: ErrorAction::IgnoreError});
+			}
+		}
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
