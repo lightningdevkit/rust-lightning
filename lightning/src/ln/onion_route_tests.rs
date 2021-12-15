@@ -563,4 +563,13 @@ fn test_onion_failure() {
 		msg.cltv_expiry = htlc_cltv;
 		msg.onion_routing_packet = onion_packet;
 	}, ||{}, true, Some(21), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0][0].pubkey, is_permanent: true}), Some(route.paths[0][0].short_channel_id));
+
+	run_onion_failure_test_with_fail_intercept("mpp_timeout", 200, &nodes, &route, &payment_hash, &payment_secret, |_msg| {}, |msg| {
+		// Tamper returning error message
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+		msg.reason = onion_utils::build_first_hop_failure_packet(&onion_keys[1].shared_secret[..], 23, &[0;0]);
+	}, ||{
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
+	}, true, Some(23), None, None);
 }

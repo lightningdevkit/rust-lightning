@@ -119,6 +119,8 @@ pub(crate) fn get_onion_error_description(error_code: u16) -> (&'static str, &'s
 		_c if _c == 19 => ("The final node indicated the amount in the HTLC does not match the value in the onion", "final_incorrect_htlc_amount"),
 		_c if _c == UPDATE|20 => ("Node indicated the outbound channel has been disabled", "channel_disabled"),
 		_c if _c == 21 => ("Node indicated the CLTV expiry in the HTLC is too far in the future", "expiry_too_far"),
+		_c if _c == PERM|22 => ("Node indicated that the decrypted onion per-hop payload was not understood by it or is incomplete", "invalid_onion_payload"),
+		_c if _c == 23 => ("The final node indicated the complete amount of the multi-part payment was not received within a reasonable time", "mpp_timeout"),
 		_ => ("Unknown", ""),
 	}
 }

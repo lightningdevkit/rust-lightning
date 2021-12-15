@@ -380,7 +380,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						// indicate that payment parameter has failed and no need to
 						// update Route object
 						let payment_failed = match error_code & 0xff {
-							15|16|17|18|19 => true,
+							15|16|17|18|19|23 => true,
 							_ => false,
 						} && is_from_final_node; // PERM bit observed below even if this error is from the intermediate nodes
 
