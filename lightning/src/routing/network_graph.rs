@@ -1254,7 +1254,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::blockdata::script::Builder;
+	use bitcoin::blockdata::script::{Builder, Script};
 	use bitcoin::blockdata::transaction::TxOut;
 	use bitcoin::blockdata::opcodes;
 
@@ -1295,6 +1295,85 @@ mod tests {
 		assert!(!net_graph_msg_handler.should_request_full_sync(&node_id));
 	}
 
+	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
+		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
+		let mut unsigned_announcement = UnsignedNodeAnnouncement {
+			features: NodeFeatures::known(),
+			timestamp: 100,
+			node_id: node_id,
+			rgb: [0; 3],
+			alias: [0; 32],
+			addresses: Vec::new(),
+			excess_address_data: Vec::new(),
+			excess_data: Vec::new(),
+		};
+		f(&mut unsigned_announcement);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+		NodeAnnouncement {
+			signature: secp_ctx.sign(&msghash, node_key),
+			contents: unsigned_announcement
+		}
+	}
+
+	fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelAnnouncement {
+		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_key);
+		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_key);
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+
+		let mut unsigned_announcement = UnsignedChannelAnnouncement {
+			features: ChannelFeatures::known(),
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 0,
+			node_id_1,
+			node_id_2,
+			bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
+			bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+			excess_data: Vec::new(),
+		};
+		f(&mut unsigned_announcement);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
+		ChannelAnnouncement {
+			node_signature_1: secp_ctx.sign(&msghash, node_1_key),
+			node_signature_2: secp_ctx.sign(&msghash, node_2_key),
+			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
+			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+			contents: unsigned_announcement,
+		}
+	}
+
+	fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
+		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
+		Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
+		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
+		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
+		              .push_opcode(opcodes::all::OP_PUSHNUM_2)
+		              .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
+		              .to_v0_p2wsh()
+	}
+
+	fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
+		let mut unsigned_channel_update = UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 0,
+			timestamp: 100,
+			flags: 0,
+			cltv_expiry_delta: 144,
+			htlc_minimum_msat: 1_000_000,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 10_000,
+			fee_proportional_millionths: 20,
+			excess_data: Vec::new()
+		};
+		f(&mut unsigned_channel_update);
+		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
+		ChannelUpdate {
+			signature: secp_ctx.sign(&msghash, node_key),
+			contents: unsigned_channel_update
+		}
+	}
+
 	#[test]
 	fn handling_node_announcements() {
 		let network_graph = create_network_graph();
@@ -1302,29 +1381,9 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
-		let first_announcement_time = 500;
 
-		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::known(),
-			timestamp: first_announcement_time,
-			node_id: node_id_1,
-			rgb: [0; 3],
-			alias: [0; 32],
-			addresses: Vec::new(),
-			excess_address_data: Vec::new(),
-			excess_data: Vec::new(),
-		};
-		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
-		};
-
+		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!("No existing channels for node_announcement", e.err)
@@ -1332,25 +1391,7 @@ mod tests {
 
 		{
 			// Announce a channel to add a corresponding node.
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::known(),
-				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
-				short_channel_id: 0,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-				excess_data: Vec::new(),
-			};
-
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 				Ok(res) => assert!(res),
 				_ => panic!()
@@ -1366,34 +1407,27 @@ mod tests {
 		match net_graph_msg_handler.handle_node_announcement(
 			&NodeAnnouncement {
 				signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
-				contents: unsigned_announcement.clone()
+				contents: valid_announcement.contents.clone()
 		}) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
 		};
 
-		unsigned_announcement.timestamp += 1000;
-		unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let announcement_with_data = NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
-		};
+		let announcement_with_data = get_signed_node_announcement(|unsigned_announcement| {
+			unsigned_announcement.timestamp += 1000;
+			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
+		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data.
 		match net_graph_msg_handler.handle_node_announcement(&announcement_with_data) {
 			Ok(res) => assert!(!res),
 			Err(_) => panic!()
 		};
-		unsigned_announcement.excess_data = Vec::new();
 
 		// Even though previous announcement was not relayed further, we still accepted it,
 		// so we now won't accept announcements before the previous one.
-		unsigned_announcement.timestamp -= 10;
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let outdated_announcement = NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
-		};
+		let outdated_announcement = get_signed_node_announcement(|unsigned_announcement| {
+			unsigned_announcement.timestamp += 1000 - 10;
+		}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_node_announcement(&outdated_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update older than last processed update")
@@ -1407,37 +1441,9 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
-		let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-		   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
-		   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
-		   .push_opcode(opcodes::all::OP_PUSHNUM_2)
-		   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
-
-
-		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
-			short_channel_id: 0,
-			node_id_1,
-			node_id_2,
-			bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-			bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-			excess_data: Vec::new(),
-		};
-
-		let mut msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let good_script = get_channel_script(&secp_ctx);
+		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		// Test if the UTXO lookups were not supported
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
@@ -1448,7 +1454,7 @@ mod tests {
 		};
 
 		{
-			match network_graph.read_only().channels().get(&unsigned_announcement.short_channel_id) {
+			match network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
 			};
@@ -1466,41 +1472,27 @@ mod tests {
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
 		net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
-		unsigned_announcement.short_channel_id += 1;
 
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
-
+		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+			unsigned_announcement.short_channel_id += 1;
+		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
 
 		// Now test if the transaction is found in the UTXO set and the script is correct.
-		unsigned_announcement.short_channel_id += 1;
 		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script.clone() });
-
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+			unsigned_announcement.short_channel_id += 2;
+		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
 
 		{
-			match network_graph.read_only().channels().get(&unsigned_announcement.short_channel_id) {
+			match network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id) {
 				None => panic!(),
 				Some(_) => ()
 			};
@@ -1516,21 +1508,16 @@ mod tests {
 
 		// But if it is confirmed, replace the channel
 		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
-		unsigned_announcement.features = ChannelFeatures::empty();
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+			unsigned_announcement.features = ChannelFeatures::empty();
+			unsigned_announcement.short_channel_id += 2;
+		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
 		{
-			match network_graph.read_only().channels().get(&unsigned_announcement.short_channel_id) {
+			match network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id) {
 				Some(channel_entry) => {
 					assert_eq!(channel_entry.features, ChannelFeatures::empty());
 				},
@@ -1539,43 +1526,23 @@ mod tests {
 		}
 
 		// Don't relay valid channels with excess data
-		unsigned_announcement.short_channel_id += 1;
-		unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+			unsigned_announcement.short_channel_id += 3;
+			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
+		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
 
-		unsigned_announcement.excess_data = Vec::new();
-		let invalid_sig_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_1_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let mut invalid_sig_announcement = valid_announcement.clone();
+		invalid_sig_announcement.contents.excess_data = Vec::new();
 		match net_graph_msg_handler.handle_channel_announcement(&invalid_sig_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
 		};
 
-		unsigned_announcement.node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let channel_to_itself_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_2_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let channel_to_itself_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&channel_to_itself_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
@@ -1592,43 +1559,17 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
-		let zero_hash = Sha256dHash::hash(&[0; 32]);
-		let short_channel_id = 0;
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let amount_sats = 1000_000;
+		let short_channel_id;
 
 		{
 			// Announce a channel we will update
-			let good_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
-			   .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
-			   .push_opcode(opcodes::all::OP_PUSHNUM_2)
-			   .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+			let good_script = get_channel_script(&secp_ctx);
 			*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() });
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::empty(),
-				chain_hash,
-				short_channel_id,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-				excess_data: Vec::new(),
-			};
 
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_channel_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -1636,24 +1577,7 @@ mod tests {
 
 		}
 
-		let mut unsigned_channel_update = UnsignedChannelUpdate {
-			chain_hash,
-			short_channel_id,
-			timestamp: 100,
-			flags: 0,
-			cltv_expiry_delta: 144,
-			htlc_minimum_msat: 1000000,
-			htlc_maximum_msat: OptionalField::Absent,
-			fee_base_msat: 10000,
-			fee_proportional_millionths: 20,
-			excess_data: Vec::new()
-		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
 			_ => panic!()
@@ -1669,85 +1593,63 @@ mod tests {
 			};
 		}
 
-		unsigned_channel_update.timestamp += 100;
-		unsigned_channel_update.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
+		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.timestamp += 100;
+			unsigned_channel_update.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
+		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
-		unsigned_channel_update.timestamp += 10;
 
-		unsigned_channel_update.short_channel_id += 1;
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.timestamp += 110;
+			unsigned_channel_update.short_channel_id += 1;
+		}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Couldn't find channel for update")
 		};
-		unsigned_channel_update.short_channel_id = short_channel_id;
 
-		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
+			unsigned_channel_update.timestamp += 110;
+		}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than maximum possible msats")
 		};
-		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
 
-		unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
+			unsigned_channel_update.timestamp += 110;
+		}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity or capacity is bogus")
 		};
-		unsigned_channel_update.htlc_maximum_msat = OptionalField::Absent;
 
 		// Even though previous update was not relayed further, we still accepted it,
 		// so we now won't accept update before the previous one.
-		unsigned_channel_update.timestamp -= 10;
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.timestamp += 100;
+		}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update had same timestamp as last processed update")
 		};
-		unsigned_channel_update.timestamp += 500;
 
+		let mut invalid_sig_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+			unsigned_channel_update.timestamp += 500;
+		}, node_1_privkey, &secp_ctx);
+		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let fake_msghash = hash_to_message!(&zero_hash);
-		let invalid_sig_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
-			contents: unsigned_channel_update.clone()
-		};
-
+		invalid_sig_channel_update.signature = secp_ctx.sign(&fake_msghash, node_1_privkey);
 		match net_graph_msg_handler.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature from remote node")
 		};
-
 	}
 
 	#[test]
@@ -1761,62 +1663,22 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-
-		let short_channel_id = 0;
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		{
 			// There is no nodes in the table at the beginning.
 			assert_eq!(network_graph.read_only().nodes().len(), 0);
 		}
 
+		let short_channel_id;
 		{
 			// Announce a channel we will update
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::empty(),
-				chain_hash,
-				short_channel_id,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-				excess_data: Vec::new(),
-			};
-
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_channel_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source, &secp_ctx).is_ok());
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
-			let unsigned_channel_update = UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id,
-				timestamp: 100,
-				flags: 0,
-				cltv_expiry_delta: 144,
-				htlc_minimum_msat: 1000000,
-				htlc_maximum_msat: OptionalField::Absent,
-				fee_base_msat: 10000,
-				fee_proportional_millionths: 20,
-				excess_data: Vec::new()
-			};
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-			let valid_channel_update = ChannelUpdate {
-				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_channel_update.clone()
-			};
-
+			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
 			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
@@ -1901,39 +1763,16 @@ mod tests {
 		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-
-		let short_channel_id = 1;
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		// Channels were not announced yet.
 		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(0, 1);
 		assert_eq!(channels_with_announcements.len(), 0);
 
+		let short_channel_id;
 		{
 			// Announce a channel we will update
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::empty(),
-				chain_hash,
-				short_channel_id,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-				excess_data: Vec::new(),
-			};
-
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_channel_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -1954,23 +1793,9 @@ mod tests {
 
 		{
 			// Valid channel update
-			let unsigned_channel_update = UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id,
-				timestamp: 101,
-				flags: 0,
-				cltv_expiry_delta: 144,
-				htlc_minimum_msat: 1000000,
-				htlc_maximum_msat: OptionalField::Absent,
-				fee_base_msat: 10000,
-				fee_proportional_millionths: 20,
-				excess_data: Vec::new()
-			};
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-			let valid_channel_update = ChannelUpdate {
-				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_channel_update.clone()
-			};
+			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+				unsigned_channel_update.timestamp = 101;
+			}, node_1_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -1988,26 +1813,12 @@ mod tests {
 			panic!();
 		}
 
-
 		{
 			// Channel update with excess data.
-			let unsigned_channel_update = UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id,
-				timestamp: 102,
-				flags: 0,
-				cltv_expiry_delta: 144,
-				htlc_minimum_msat: 1000000,
-				htlc_maximum_msat: OptionalField::Absent,
-				fee_base_msat: 10000,
-				fee_proportional_millionths: 20,
-				excess_data: [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec()
-			};
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
-			let valid_channel_update = ChannelUpdate {
-				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_channel_update.clone()
-			};
+			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+				unsigned_channel_update.timestamp = 102;
+				unsigned_channel_update.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
+			}, node_1_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -2037,12 +1848,6 @@ mod tests {
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-
-		let short_channel_id = 1;
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
 		// No nodes yet.
 		let next_announcements = net_graph_msg_handler.get_next_node_announcements(None, 10);
@@ -2050,25 +1855,7 @@ mod tests {
 
 		{
 			// Announce a channel to add 2 nodes
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::empty(),
-				chain_hash,
-				short_channel_id,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-				bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-				excess_data: Vec::new(),
-			};
-
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_channel_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -2081,33 +1868,13 @@ mod tests {
 		assert_eq!(next_announcements.len(), 0);
 
 		{
-			let mut unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::known(),
-				timestamp: 1000,
-				node_id: node_id_1,
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				excess_address_data: Vec::new(),
-				excess_data: Vec::new(),
-			};
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_announcement = NodeAnnouncement {
-				signature: secp_ctx.sign(&msghash, node_1_privkey),
-				contents: unsigned_announcement.clone()
-			};
+			let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 
-			unsigned_announcement.node_id = node_id_2;
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_announcement = NodeAnnouncement {
-				signature: secp_ctx.sign(&msghash, node_2_privkey),
-				contents: unsigned_announcement.clone()
-			};
-
+			let valid_announcement = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
@@ -2123,21 +1890,10 @@ mod tests {
 
 		{
 			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
-			let unsigned_announcement = UnsignedNodeAnnouncement {
-				features: NodeFeatures::known(),
-				timestamp: 1010,
-				node_id: node_id_2,
-				rgb: [0; 3],
-				alias: [0; 32],
-				addresses: Vec::new(),
-				excess_address_data: Vec::new(),
-				excess_data: [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec(),
-			};
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_announcement = NodeAnnouncement {
-				signature: secp_ctx.sign(&msghash, node_2_privkey),
-				contents: unsigned_announcement.clone()
-			};
+			let valid_announcement = get_signed_node_announcement(|unsigned_announcement| {
+				unsigned_announcement.timestamp += 10;
+				unsigned_announcement.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
+			}, node_2_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
 				Ok(res) => assert!(!res),
 				Err(_) => panic!()
@@ -2155,54 +1911,15 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		// Announce a channel to add a corresponding node.
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
-			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
-			short_channel_id: 0,
-			node_id_1,
-			node_id_2,
-			bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-			bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
-			excess_data: Vec::new(),
-		};
-
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-			contents: unsigned_announcement.clone(),
-		};
+		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
 
-
-		let node_id = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-		let unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::known(),
-			timestamp: 100,
-			node_id,
-			rgb: [0; 3],
-			alias: [0; 32],
-			addresses: Vec::new(),
-			excess_address_data: Vec::new(),
-			excess_data: Vec::new(),
-		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-		let valid_announcement = NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_1_privkey),
-			contents: unsigned_announcement.clone()
-		};
-
+		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
 		match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
 			Ok(_) => (),
 			Err(_) => panic!()
@@ -2360,12 +2077,7 @@ mod tests {
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
-		let bitcoin_key_1 = PublicKey::from_secret_key(&secp_ctx, node_1_btckey);
-		let bitcoin_key_2 = PublicKey::from_secret_key(&secp_ctx, node_2_btckey);
 
 		let mut scids: Vec<u64> = vec![
 			scid_from_parts(0xfffffe, 0xffffff, 0xffff).unwrap(), // max
@@ -2381,25 +2093,9 @@ mod tests {
 		scids.push(scid_from_parts(108001, 1, 0).unwrap());
 
 		for scid in scids {
-			let unsigned_announcement = UnsignedChannelAnnouncement {
-				features: ChannelFeatures::known(),
-				chain_hash: chain_hash.clone(),
-				short_channel_id: scid,
-				node_id_1,
-				node_id_2,
-				bitcoin_key_1,
-				bitcoin_key_2,
-				excess_data: Vec::new(),
-			};
-
-			let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
-			let valid_announcement = ChannelAnnouncement {
-				node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-				node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-				bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-				bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
-				contents: unsigned_announcement.clone(),
-			};
+			let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+				unsigned_announcement.short_channel_id = scid;
+			}, node_1_privkey, node_2_privkey, &secp_ctx);
 			match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
 				Ok(_) => (),
 				_ => panic!()
