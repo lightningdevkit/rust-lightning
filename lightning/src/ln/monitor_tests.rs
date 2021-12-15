@@ -16,7 +16,6 @@ use ln::channelmanager::BREAKDOWN_TIMEOUT;
 use ln::features::InitFeatures;
 use ln::msgs::ChannelMessageHandler;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-use routing::network_graph::NetworkUpdate;
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;

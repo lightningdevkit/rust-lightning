@@ -336,10 +336,11 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 }
 
 #[macro_export]
+/// Gets an RAA and CS which were sent in response to a commitment update
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
 		{
-			use util::events::MessageSendEvent;
+			use $crate::util::events::MessageSendEvent;
 			let events = $node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 2);
 			(match events[0] {
@@ -400,8 +401,8 @@ macro_rules! get_event {
 	}
 }
 
-#[cfg(test)]
 #[macro_export]
+/// Gets an UpdateHTLCs MessageSendEvent
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
 		{
@@ -933,6 +934,9 @@ impl SendEvent {
 	}
 }
 
+#[macro_export]
+/// Performs the "commitment signed dance" - the series of message exchanges which occur after a
+/// commitment update.
 macro_rules! commitment_signed_dance {
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
 		{
@@ -999,7 +1003,7 @@ macro_rules! commitment_signed_dance {
 		{
 			commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backwards, true);
 			if $fail_backwards {
-				expect_pending_htlcs_forwardable!($node_a);
+				$crate::expect_pending_htlcs_forwardable!($node_a);
 				check_added_monitors!($node_a, 1);
 
 				let channel_state = $node_a.node.channel_state.lock().unwrap();
@@ -1057,6 +1061,8 @@ macro_rules! get_route_and_payment_hash {
 	}}
 }
 
+#[macro_export]
+/// Clears (and ignores) a PendingHTLCsForwardable event
 macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
 		let events = $node.node.get_and_clear_pending_events();
@@ -1068,9 +1074,11 @@ macro_rules! expect_pending_htlcs_forwardable_ignore {
 	}}
 }
 
+#[macro_export]
+/// Handles a PendingHTLCsForwardable event
 macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
-		expect_pending_htlcs_forwardable_ignore!($node);
+		$crate::expect_pending_htlcs_forwardable_ignore!($node);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
@@ -1199,58 +1207,114 @@ macro_rules! expect_payment_forwarded {
 	}
 }
 
+pub struct PaymentFailedConditions<'a> {
+	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,
+	pub(crate) expected_blamed_scid: Option<u64>,
+	pub(crate) expected_blamed_chan_closed: Option<bool>,
+	pub(crate) expected_mpp_parts_remain: bool,
+}
+
+impl<'a> PaymentFailedConditions<'a> {
+	pub fn new() -> Self {
+		Self {
+			expected_htlc_error_data: None,
+			expected_blamed_scid: None,
+			expected_blamed_chan_closed: None,
+			expected_mpp_parts_remain: false,
+		}
+	}
+	pub fn mpp_parts_remain(mut self) -> Self {
+		self.expected_mpp_parts_remain = true;
+		self
+	}
+	pub fn blamed_scid(mut self, scid: u64) -> Self {
+		self.expected_blamed_scid = Some(scid);
+		self
+	}
+	pub fn blamed_chan_closed(mut self, closed: bool) -> Self {
+		self.expected_blamed_chan_closed = Some(closed);
+		self
+	}
+	pub fn expected_htlc_error_data(mut self, code: u16, data: &'a [u8]) -> Self {
+		self.expected_htlc_error_data = Some((code, data));
+		self
+	}
+}
+
 #[cfg(test)]
 macro_rules! expect_payment_failed_with_update {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $scid: expr, $chan_closed: expr) => {
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref network_update, ref error_code, ref error_data, ref path, ref retry, .. } => {
-				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
-				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
-				assert!(retry.is_some(), "expected retry.is_some()");
-				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
-				assert_eq!(retry.as_ref().unwrap().payee.pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
-				assert!(error_code.is_some(), "expected error_code.is_some() = true");
-				assert!(error_data.is_some(), "expected error_data.is_some() = true");
-				match network_update {
-					&Some(NetworkUpdate::ChannelUpdateMessage { ref msg }) if !$chan_closed => {
-						assert_eq!(msg.contents.short_channel_id, $scid);
-						assert_eq!(msg.contents.flags & 2, 0);
-					},
-					&Some(NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if $chan_closed => {
-						assert_eq!(short_channel_id, $scid);
-						assert!(is_permanent);
-					},
-					Some(_) => panic!("Unexpected update type"),
-					None => panic!("Expected update"),
-				}
-			},
-			_ => panic!("Unexpected event"),
-		}
+		expect_payment_failed_conditions!($node, $expected_payment_hash, $rejected_by_dest,
+			$crate::ln::functional_test_utils::PaymentFailedConditions::new().blamed_scid($scid).blamed_chan_closed($chan_closed));
 	}
 }
 
 #[cfg(test)]
 macro_rules! expect_payment_failed {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+		#[allow(unused_mut)]
+		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
+		$(
+			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
+		)*
+		expect_payment_failed_conditions!($node, $expected_payment_hash, $rejected_by_dest, conditions);
+	};
+}
+
+#[cfg(test)]
+macro_rules! expect_payment_failed_conditions {
+	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $conditions: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
-		match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, network_update: _, ref error_code, ref error_data, ref path, ref retry, .. } => {
+		let expected_payment_id = match events[0] {
+			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data, ref path, ref retry, ref payment_id, ref network_update, .. } => {
 				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(retry.is_some(), "expected retry.is_some()");
 				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
 				assert_eq!(retry.as_ref().unwrap().payee.pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
+
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
-				$(
-					assert_eq!(error_code.unwrap(), $expected_error_code, "unexpected error code");
-					assert_eq!(&error_data.as_ref().unwrap()[..], $expected_error_data, "unexpected error data");
-				)*
+				if let Some((code, data)) = $conditions.expected_htlc_error_data {
+					assert_eq!(error_code.unwrap(), code, "unexpected error code");
+					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
+				}
+
+				if let Some(chan_closed) = $conditions.expected_blamed_chan_closed {
+					match network_update {
+						&Some($crate::routing::network_graph::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
+							if let Some(scid) = $conditions.expected_blamed_scid {
+								assert_eq!(msg.contents.short_channel_id, scid);
+							}
+							assert_eq!(msg.contents.flags & 2, 0);
+						},
+						&Some($crate::routing::network_graph::NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if chan_closed => {
+							if let Some(scid) = $conditions.expected_blamed_scid {
+								assert_eq!(short_channel_id, scid);
+							}
+							assert!(is_permanent);
+						},
+						Some(_) => panic!("Unexpected update type"),
+						None => panic!("Expected update"),
+					}
+				}
+
+				payment_id.unwrap()
 			},
 			_ => panic!("Unexpected event"),
+		};
+		if !$conditions.expected_mpp_parts_remain {
+			$node.node.abandon_payment(expected_payment_id);
+			let events = $node.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events[0] {
+				Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+					assert_eq!(*payment_hash, $expected_payment_hash, "unexpected second payment_hash");
+					assert_eq!(*payment_id, expected_payment_id);
+				}
+				_ => panic!("Unexpected second event"),
+			}
 		}
 	}
 }
@@ -1555,16 +1619,29 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			commitment_signed_dance!(origin_node, prev_node, next_msgs.as_ref().unwrap().1, false);
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, .. } => {
+			let expected_payment_id = match events[0] {
+				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, ref payment_id, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(rejected_by_dest);
 					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 					for (idx, hop) in expected_route.iter().enumerate() {
 						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
 					}
+					payment_id.unwrap()
 				},
 				_ => panic!("Unexpected event"),
+			};
+			if i == expected_paths.len() - 1 {
+				origin_node.node.abandon_payment(expected_payment_id);
+				let events = origin_node.node.get_and_clear_pending_events();
+				assert_eq!(events.len(), 1);
+				match events[0] {
+					Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+						assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
+						assert_eq!(*payment_id, expected_payment_id);
+					}
+					_ => panic!("Unexpected second event"),
+				}
 			}
 		}
 	}

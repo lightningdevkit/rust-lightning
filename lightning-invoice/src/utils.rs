@@ -152,6 +152,10 @@ where
 	) -> Result<(), PaymentSendFailure> {
 		self.retry_payment(route, payment_id)
 	}
+
+	fn abandon_payment(&self, payment_id: PaymentId) {
+		self.abandon_payment(payment_id)
+	}
 }
 
 #[cfg(test)]
