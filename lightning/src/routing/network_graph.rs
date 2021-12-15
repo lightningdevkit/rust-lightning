@@ -249,6 +249,12 @@ where C::Target: chain::Access, L::Target: Logger
 		self.chain_access = chain_access;
 	}
 
+	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
+	/// [`NetGraphMsgHandler::new`].
+	pub fn network_graph(&self) -> &G {
+		&self.network_graph
+	}
+
 	/// Returns true when a full routing table sync should be performed with a peer.
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
 		//TODO: Determine whether to request a full sync based on the network map.
@@ -1074,6 +1080,8 @@ impl NetworkGraph {
 	/// updates every two weeks, the non-normative section of BOLT 7 currently suggests that
 	/// pruning occur for updates which are at least two weeks old, which we implement here.
 	///
+	/// Note that for users of the `lightning-background-processor` crate this method may be
+	/// automatically called regularly for you.
 	///
 	/// This method is only available with the `std` feature. See
 	/// [`NetworkGraph::remove_stale_channels_with_time`] for `no-std` use.
