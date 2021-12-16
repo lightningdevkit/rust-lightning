@@ -11,7 +11,7 @@ edition = "2018"
 
 [dependencies]
 bitcoin = "0.27"
-lightning = { version = "0.0.103", path = "../lightning", features = ["allow_wallclock_use"] }
+lightning = { version = "0.0.103", path = "../lightning", features = ["std"] }
 lightning-persister = { version = "0.0.103", path = "../lightning-persister" }
 
 [dev-dependencies]

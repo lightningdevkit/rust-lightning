@@ -34,6 +34,8 @@ use std::ops::Deref;
 ///   [`ChannelManager`] persistence should be done in the background.
 /// * Calling [`ChannelManager::timer_tick_occurred`] and [`PeerManager::timer_tick_occurred`]
 ///   at the appropriate intervals.
+/// * Calling [`NetworkGraph::remove_stale_channels`] (if a [`NetGraphMsgHandler`] is provided to
+///   [`BackgroundProcessor::start`]).
 ///
 /// It will also call [`PeerManager::process_events`] periodically though this shouldn't be relied
 /// upon as doing so may result in high latency.
@@ -67,6 +69,9 @@ const PING_TIMER: u64 = 5;
 const PING_TIMER: u64 = 30;
 #[cfg(test)]
 const PING_TIMER: u64 = 1;
+
+/// Prune the network graph of stale entries hourly.
+const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
 
 /// Trait which handles persisting a [`ChannelManager`] to disk.
 ///
@@ -203,13 +208,16 @@ impl BackgroundProcessor {
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
-			let event_handler = DecoratingEventHandler { event_handler, net_graph_msg_handler };
+			let event_handler = DecoratingEventHandler { event_handler, net_graph_msg_handler: net_graph_msg_handler.as_ref().map(|t| t.deref()) };
 
 			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
 			channel_manager.timer_tick_occurred();
 
 			let mut last_freshness_call = Instant::now();
 			let mut last_ping_call = Instant::now();
+			let mut last_prune_call = Instant::now();
+			let mut have_pruned = false;
+
 			loop {
 				peer_manager.process_events();
 				channel_manager.process_pending_events(&event_handler);
@@ -246,6 +254,19 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Calling PeerManager's timer_tick_occurred");
 					peer_manager.timer_tick_occurred();
 					last_ping_call = Instant::now();
+				}
+
+				// Note that we want to run a graph prune once not long after startup before
+				// falling back to our usual hourly prunes. This avoids short-lived clients never
+				// pruning their network graph. We run once 60 seconds after startup before
+				// continuing our normal cadence.
+				if last_prune_call.elapsed().as_secs() > if have_pruned { NETWORK_PRUNE_TIMER } else { 60 } {
+					if let Some(ref handler) = net_graph_msg_handler {
+						log_trace!(logger, "Pruning network graph of stale entries");
+						handler.network_graph().remove_stale_channels();
+						last_prune_call = Instant::now();
+						have_pruned = true;
+					}
 				}
 			}
 		});
