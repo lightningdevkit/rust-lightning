@@ -47,6 +47,7 @@ jobs:
           - toolchain: 1.41.0
             build-no-std: false
           - toolchain: 1.45.2
+            build-net-old-tokio: true
             build-net-tokio: true
             build-no-std: false
             coverage: true
@@ -62,6 +63,9 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           override: true
           profile: minimal
+      - name: Pin tokio to 1.14 for Rust 1.45
+        if: "matrix.build-net-old-tokio"
+        run: cargo update -p tokio --precise "1.14.0" --verbose
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo build --verbose --color always
@@ -271,7 +275,7 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.45.2
+      TOOLCHAIN: 1.47.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2
