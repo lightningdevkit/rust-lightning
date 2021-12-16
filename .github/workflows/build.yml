@@ -52,7 +52,7 @@ jobs:
             build-no-std: false
             coverage: true
           - toolchain: 1.47.0
-            build-no-std: false
+            build-no-std: true
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
