@@ -15,9 +15,10 @@ use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, PaymentId, PaymentSendFailure};
-use ln::features::InitFeatures;
+use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
+use routing::router::{Payee, get_route};
 use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
 use util::errors::APIError;
@@ -705,4 +706,35 @@ fn test_fulfill_restart_failure() {
 	// nodes[0] shouldn't generate any events here, while it just got a payment failure completion
 	// it had already considered the payment fulfilled, and now they just got free money.
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn get_ldk_payment_preimage() {
+	// Ensure that `ChannelManager::get_payment_preimage` can successfully be used to claim a payment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	let amt_msat = 60_000;
+	let expiry_secs = 60 * 60;
+	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs).unwrap();
+
+	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(), &payee, &nodes[0].network_graph,
+		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	// Make sure to use `get_payment_preimage`
+	let payment_preimage = nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[1]], amt_msat, payment_hash, Some(payment_secret), events.pop().unwrap(), true, Some(payment_preimage));
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, payment_preimage);
 }

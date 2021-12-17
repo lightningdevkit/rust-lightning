@@ -73,12 +73,14 @@ use core::ops::Deref;
 use std::time::Instant;
 
 mod inbound_payment {
+	use alloc::string::ToString;
 	use bitcoin::hashes::{Hash, HashEngine};
 	use bitcoin::hashes::cmp::fixed_time_eq;
 	use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use chain::keysinterface::{KeyMaterial, KeysInterface, Sign};
 	use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+	use ln::channelmanager::APIError;
 	use ln::msgs;
 	use ln::msgs::MAX_VALUE_MSAT;
 	use util::chacha20::ChaCha20;
@@ -113,7 +115,7 @@ mod inbound_payment {
 
 	impl ExpandedKey {
 		pub(super) fn new(key_material: &KeyMaterial) -> ExpandedKey {
-			hkdf_extract_expand(&vec![0], &key_material)
+			hkdf_extract_expand(b"LDK Inbound Payment Key Expansion", &key_material)
 		}
 	}
 
@@ -237,15 +239,7 @@ mod inbound_payment {
 	pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: msgs::FinalOnionHopData, highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L) -> Result<Option<PaymentPreimage>, ()>
 		where L::Target: Logger
 	{
-		let mut iv_bytes = [0; IV_LEN];
-		let (iv_slice, encrypted_metadata_bytes) = payment_data.payment_secret.0.split_at(IV_LEN);
-		iv_bytes.copy_from_slice(iv_slice);
-
-		let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
-		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
-		for i in 0..METADATA_LEN {
-			metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
-		}
+		let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_data.payment_secret, keys);
 
 		let payment_type_res = Method::from_bits((metadata_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET);
 		let mut amt_msat_bytes = [0; AMT_MSAT_LEN];
@@ -269,15 +263,13 @@ mod inbound_payment {
 				}
 			},
 			Ok(Method::LdkPaymentHash) => {
-				let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
-				hmac.input(&iv_bytes);
-				hmac.input(&metadata_bytes);
-				let decoded_payment_preimage = Hmac::from_engine(hmac).into_inner();
-				if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).into_inner()) {
-					log_trace!(logger, "Failing HTLC with payment_hash {}: payment preimage {} did not match", log_bytes!(payment_hash.0), log_bytes!(decoded_payment_preimage));
-					return Err(())
+				match derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys) {
+					Ok(preimage) => payment_preimage = Some(preimage),
+					Err(bad_preimage_bytes) => {
+						log_trace!(logger, "Failing HTLC with payment_hash {} due to mismatching preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes));
+						return Err(())
+					}
 				}
-				payment_preimage = Some(PaymentPreimage(decoded_payment_preimage));
 			},
 			Err(unknown_bits) => {
 				log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", log_bytes!(payment_hash.0), unknown_bits);
@@ -296,6 +288,50 @@ mod inbound_payment {
 		}
 
 		Ok(payment_preimage)
+	}
+
+	pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: PaymentSecret, keys: &ExpandedKey) -> Result<PaymentPreimage, APIError> {
+		let (iv_bytes, metadata_bytes) = decrypt_metadata(payment_secret, keys);
+
+		match Method::from_bits((metadata_bytes[0] & 0b1110_0000) >> METHOD_TYPE_OFFSET) {
+			Ok(Method::LdkPaymentHash) => {
+				derive_ldk_payment_preimage(payment_hash, &iv_bytes, &metadata_bytes, keys)
+					.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
+						err: format!("Payment hash {} did not match decoded preimage {}", log_bytes!(payment_hash.0), log_bytes!(bad_preimage_bytes))
+					})
+			},
+			Ok(Method::UserPaymentHash) => Err(APIError::APIMisuseError {
+				err: "Expected payment type to be LdkPaymentHash, instead got UserPaymentHash".to_string()
+			}),
+			Err(other) => Err(APIError::APIMisuseError { err: format!("Unknown payment type: {}", other) }),
+		}
+	}
+
+	fn decrypt_metadata(payment_secret: PaymentSecret, keys: &ExpandedKey) -> ([u8; IV_LEN], [u8; METADATA_LEN]) {
+		let mut iv_bytes = [0; IV_LEN];
+		let (iv_slice, encrypted_metadata_bytes) = payment_secret.0.split_at(IV_LEN);
+		iv_bytes.copy_from_slice(iv_slice);
+
+		let chacha_block = ChaCha20::get_single_block(&keys.metadata_key, &iv_bytes);
+		let mut metadata_bytes: [u8; METADATA_LEN] = [0; METADATA_LEN];
+		for i in 0..METADATA_LEN {
+			metadata_bytes[i] = chacha_block[i] ^ encrypted_metadata_bytes[i];
+		}
+
+		(iv_bytes, metadata_bytes)
+	}
+
+	// Errors if the payment preimage doesn't match `payment_hash`. Returns the bad preimage bytes in
+	// this case.
+	fn derive_ldk_payment_preimage(payment_hash: PaymentHash, iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METADATA_LEN], keys: &ExpandedKey) -> Result<PaymentPreimage, [u8; 32]> {
+		let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
+		hmac.input(iv_bytes);
+		hmac.input(metadata_bytes);
+		let decoded_payment_preimage = Hmac::from_engine(hmac).into_inner();
+		if !fixed_time_eq(&payment_hash.0, &Sha256::hash(&decoded_payment_preimage).into_inner()) {
+			return Err(decoded_payment_preimage);
+		}
+		return Ok(PaymentPreimage(decoded_payment_preimage))
 	}
 
 	fn hkdf_extract_expand(salt: &[u8], ikm: &KeyMaterial) -> ExpandedKey {
@@ -5026,8 +5062,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
 	/// the `min_value_msat` provided here, if one is provided.
 	///
-	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
-	/// method may return an Err if another payment with the same payment_hash is still pending.
+	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) should be globally unique, though
+	/// note that LDK will not stop you from registering duplicate payment hashes for inbound
+	/// payments.
 	///
 	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
 	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
@@ -5077,6 +5114,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	#[deprecated]
 	pub fn create_inbound_payment_for_hash_legacy(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, APIError> {
 		self.set_payment_hash_secret_map(payment_hash, None, min_value_msat, invoice_expiry_delta_secs)
+	}
+
+	/// Gets an LDK-generated payment preimage from a payment hash and payment secret that were
+	/// previously returned from [`create_inbound_payment`].
+	///
+	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
+		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
