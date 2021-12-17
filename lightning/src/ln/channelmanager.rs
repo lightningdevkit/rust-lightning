@@ -5026,8 +5026,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
 	/// the `min_value_msat` provided here, if one is provided.
 	///
-	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) must be globally unique. This
-	/// method may return an Err if another payment with the same payment_hash is still pending.
+	/// The [`PaymentHash`] (and corresponding [`PaymentPreimage`]) should be globally unique, though
+	/// note that LDK will not stop you from registering duplicate payment hashes for inbound
+	/// payments.
 	///
 	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
 	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
