@@ -1,3 +1,107 @@
+# 0.0.104 - 2021-12-17
+
+## API Updates
+ * A `PaymentFailed` event is now provided to indicate a payment has failed
+   fully. This event is generated either after
+   `ChannelManager::abandon_payment` is called for a given payment, or the
+   payment times out, and there are no further pending HTLCs for the payment.
+   This event should be used to detect payment failure instead of
+   `PaymentPathFailed::all_paths_failed`, unless no payment retries occur via
+   `ChannelManager::retry_payment` (#1202).
+ * Payment secrets are now generated deterministically using material from
+   the new `KeysInterface::get_inbound_payment_key_material` (#1177).
+ * A `PaymentPathSuccessful` event has been added to ease passing success info
+   to a scorer, along with a `Score::payment_path_successful` method to accept
+   such info (#1178, #1197).
+ * `Score::channel_penalty_msat` has additional arguments describing the
+   channel's capacity and the HTLC amount being sent over the channel (#1166).
+ * A new log level `Gossip` has been added, which is used for verbose
+   information generated during network graph sync. Enabling the
+   `max_level_trace` feature or ignoring `Gossip` log entries reduces log
+   growth during initial start up from many GiB to several MiB (#1145).
+ * The `allow_wallclock_use` feature has been removed in favor of only using
+   the `std` and `no-std` features (#1212).
+ * `NetworkGraph` can now remove channels that we haven't heard updates for in
+   two weeks with `NetworkGraph::remove_stale_channels{,with_time}`. The first
+   is called automatically if a `NetGraphMsgHandler` is passed to
+   `BackgroundProcessor::start` (#1212).
+ * `InvoicePayer::pay_pubkey` was added to enable sending "keysend" payments to
+   supported recipients, using the `InvoicePayer` to handle retires (#1160).
+ * `user_payment_id` has been removed from `PaymentPurpose`, and
+   `ChannelManager::create_inbound_payment{,_for_hash}` (#1180).
+ * Updated documentation for several `ChannelManager` functions to remove stale
+   references to panics which no longer occur (#1201).
+ * The `Score` and `LockableScore` objects have moved into the
+   `routing::scoring` module instead of being in the `routing` module (#1166).
+ * The `Time` parameter to `ScorerWithTime` is no longer longer exposed,
+   instead being fixed based on the `std`/`no-std` feature (#1184).
+ * `ChannelDetails::balance_msat` was added to fetch a channel's balance
+   without subtracting the reserve values, lining up with on-chain claim amounts
+   less on-chain fees (#1203).
+ * An explicit `UserConfig::accept_inbound_channels` flag is now provided,
+   removing the need to set `min_funding_satoshis` to > 21 million BTC (#1173).
+ * Inbound channels that fail to see the funding transaction confirm within
+   2016 blocks are automatically force-closed with
+   `ClosureReason::FundingTimedOut` (#1083).
+ * We now accept a channel_reserve value of 0 from counterparties, as it is
+   insecure for our counterparty but not us (#1163).
+ * `NetAddress::OnionV2` parsing was removed as version 2 onion services are no
+   longer supported in modern Tor (#1204).
+ * Generation and signing of anchor outputs is now supported in the
+   `KeysInterface`, though no support for them exists in the channel itself (#1176)
+
+## Bug Fixes
+ * Fixed a race condition in `InvoicePayer` where paths may be retried after
+   the retry count has been exceeded. In this case the
+   `Event::PaymentPathFailed::all_paths_failed` field is not a reliable payment
+   failure indicator. There was no acceptable alternative indicator,
+   `Event::PaymentFailed` as been added to provide one (#1202).
+ * Reduced the blocks-before-timeout we expect of outgoing HTLCs before
+   refusing to forward. This check was overly strict and resulted in refusing
+   to forward som HTLCs to a next hop that had a lower security threshold than
+   us (#1119).
+ * LDK no longer attempt to update the channel fee for outbound channels when
+   we cannot afford the new fee. This could have caused force-closure by our
+   channel counterparty (#1054).
+ * Fixed several bugs which may have prevented the reliable broadcast of our
+   own channel announcements and updates (#1169).
+ * Fixed a rare bug which may have resulted in spurious route finding failures
+   when using last-hop hints and MPP with large value payments (#1168).
+ * `KeysManager::spend_spendable_outputs` no longer adds a change output that
+   is below the dust threshold for non-standard change scripts (#1131).
+ * Fixed a minor memory leak when attempting to send a payment that fails due
+   to an error when updating the `ChannelMonitor` (#1143).
+ * Fixed a bug where a `FeeEstimator` that returns values rounded to the next
+   sat/vbyte may result in force-closures (#1208).
+ * Handle MPP timeout HTLC error codes, instead of considering the recipient to
+   have sent an invalid error, removing them from the network graph (#1148)
+
+## Serialization Compatibility
+ * All above new events/fields are ignored by prior clients. All above new
+   events/fields are not present when reading objects serialized by prior
+   versions of the library.
+ * Payment secrets are now generated deterministically. This reduces the memory
+   footprint for inbound payments, however, newly-generated inbound payments
+   using `ChannelManager::create_inbound_payment{,_for_hash}` will not be
+   receivable using versions prior to 0.0.104.
+   `ChannelManager::create_inbound_payment{,_for_hash}_legacy` are provided for
+   backwards compatibility (#1177).
+ * `PaymentPurpose::InvoicePayment::user_payment_id` will be 0 when reading
+   objects written with 0.0.104 when read by 0.0.103 and previous (#1180).
+
+In total, this release features 51 files changed, 5356 insertions, 2238
+deletions in 107 commits from 9 authors, in alphabetical order:
+ * Antoine Riard
+ * Conor Okus
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * Ken Sedgwick
+ * Matt Corallo
+ * Valentine Wallace
+
+
 # 0.0.103 - 2021-11-02
 
 ## API Updates

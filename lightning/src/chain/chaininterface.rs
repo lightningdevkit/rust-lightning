@@ -41,10 +41,10 @@ pub enum ConfirmationTarget {
 pub trait FeeEstimator {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///
-	/// Must return a value no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later  
+	/// Must return a value no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later
 	/// round-downs don't put us below 1 satoshi-per-byte).
 	///
-	/// This method can be implemented with the following unit conversions: 
+	/// This method can be implemented with the following unit conversions:
 	///  * max(satoshis-per-byte * 250, 253)
 	///  * max(satoshis-per-kbyte / 4, 253)
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
