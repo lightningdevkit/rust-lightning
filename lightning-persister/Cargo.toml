@@ -1,6 +1,6 @@
 [package]
 name = "lightning-persister"
-version = "0.0.103"
+version = "0.0.104"
 authors = ["Valentine Wallace", "Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-bitcoin/rust-lightning/"
@@ -13,11 +13,11 @@ unstable = ["lightning/unstable"]
 
 [dependencies]
 bitcoin = "0.27"
-lightning = { version = "0.0.103", path = "../lightning" }
+lightning = { version = "0.0.104", path = "../lightning" }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winbase"] }
 
 [dev-dependencies]
-lightning = { version = "0.0.103", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.104", path = "../lightning", features = ["_test_utils"] }
