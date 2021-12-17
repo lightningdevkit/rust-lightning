@@ -142,7 +142,7 @@ use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::scoring::{LockableScore, Score};
+use lightning::routing::scoring::{LockableScore, MultiThreadedLockableScore, Score};
 use lightning::routing::router::{PaymentParameters, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
@@ -160,16 +160,15 @@ use std::time::SystemTime;
 /// See [module-level documentation] for details.
 ///
 /// [module-level documentation]: crate::payment
-pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E: EventHandler>
+pub struct InvoicePayer<P: Deref, S: Score, R: Deref, SR: Deref<Target = MultiThreadedLockableScore<S>>, L: Deref, E: EventHandler>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
-	S::Target: for <'a> LockableScore<'a>,
+	R::Target: Router<S>,
 	L::Target: Logger,
 {
 	payer: P,
 	router: R,
-	scorer: S,
+	scorer: SR,
 	logger: L,
 	event_handler: E,
 	/// Caches the overall attempts at making a payment, which is updated prior to retrying.
@@ -230,11 +229,10 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler> InvoicePayer<P, R, S, L, E>
+impl<P: Deref, S: Score, R: Deref, SR: Deref<Target = MultiThreadedLockableScore<S>>, L: Deref, E: EventHandler> InvoicePayer<P, S, R, SR, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
-	S::Target: for <'a> LockableScore<'a>,
+	R::Target: Router<S>,
 	L::Target: Logger,
 {
 	/// Creates an invoice payer that retries failed payment paths.
@@ -242,7 +240,7 @@ where
 	/// Will forward any [`Event::PaymentPathFailed`] events to the decorated `event_handler` once
 	/// `retry_attempts` has been exceeded for a given [`Invoice`].
 	pub fn new(
-		payer: P, router: R, scorer: S, logger: L, event_handler: E, retry_attempts: RetryAttempts
+		payer: P, router: R, scorer: SR, logger: L, event_handler: E, retry_attempts: RetryAttempts
 	) -> Self {
 		Self {
 			payer,
@@ -468,11 +466,10 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler> EventHandler for InvoicePayer<P, R, S, L, E>
+impl<P: Deref, S: Score, R: Deref, SR: Deref<Target = MultiThreadedLockableScore<S>>, L: Deref, E: EventHandler> EventHandler for InvoicePayer<P, S, R, SR, L, E>
 where
 	P::Target: Payer,
-	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
-	S::Target: for <'a> LockableScore<'a>,
+	R::Target: Router<S>,
 	L::Target: Logger,
 {
 	fn handle_event(&self, event: &Event) {
