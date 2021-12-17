@@ -113,7 +113,7 @@ mod inbound_payment {
 
 	impl ExpandedKey {
 		pub(super) fn new(key_material: &KeyMaterial) -> ExpandedKey {
-			hkdf_extract_expand(&vec![0], &key_material)
+			hkdf_extract_expand(b"LDK Inbound Payment Key Expansion", &key_material)
 		}
 	}
 
