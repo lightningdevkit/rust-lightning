@@ -8194,7 +8194,7 @@ fn test_preimage_storage() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
 	{
-		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200);
+		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200).unwrap();
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -8222,8 +8222,10 @@ fn test_preimage_storage() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_secret_timeout() {
-	// Simple test of payment secret storage time outs
+	// Simple test of payment secret storage time outs. After
+	// `create_inbound_payment(_for_hash)_legacy` is removed, this test will be removed as well.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -8231,11 +8233,11 @@ fn test_secret_timeout() {
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
-	let (payment_hash, payment_secret_1) = nodes[1].node.create_inbound_payment(Some(100_000), 2);
+	let (payment_hash, payment_secret_1) = nodes[1].node.create_inbound_payment_legacy(Some(100_000), 2).unwrap();
 
 	// We should fail to register the same payment hash twice, at least until we've connected a
 	// block with time 7200 + CHAN_CONFIRM_DEPTH + 1.
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2) {
+	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
 	let mut block = {
@@ -8250,7 +8252,7 @@ fn test_secret_timeout() {
 		}
 	};
 	connect_block(&nodes[1], &block);
-	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2) {
+	if let Err(APIError::APIMisuseError { err }) = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2) {
 		assert_eq!(err, "Duplicate payment hash");
 	} else { panic!(); }
 
@@ -8259,7 +8261,7 @@ fn test_secret_timeout() {
 	block.header.prev_blockhash = block.header.block_hash();
 	block.header.time += 1;
 	connect_block(&nodes[1], &block);
-	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(100_000), 2).unwrap();
+	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash_legacy(payment_hash, Some(100_000), 2).unwrap();
 	assert_ne!(payment_secret_1, our_payment_secret);
 
 	{
@@ -8298,7 +8300,7 @@ fn test_bad_secret_hash() {
 
 	let random_payment_hash = PaymentHash([42; 32]);
 	let random_payment_secret = PaymentSecret([43; 32]);
-	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2);
+	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2).unwrap();
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 	// All the below cases should end up being handled exactly identically, so we macro the

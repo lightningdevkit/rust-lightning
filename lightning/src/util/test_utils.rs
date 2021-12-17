@@ -47,7 +47,7 @@ use core::time::Duration;
 use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
-use chain::keysinterface::InMemorySigner;
+use chain::keysinterface::{InMemorySigner, KeyMaterial};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -71,6 +71,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
 	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
@@ -479,6 +480,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
+	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial { self.backing.get_inbound_payment_key_material() }
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {

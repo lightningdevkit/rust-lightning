@@ -1413,6 +1413,9 @@ pub enum CreationError {
 
 	/// The supplied expiry time could cause an overflow if added to a `PositiveTimestamp`
 	ExpiryTimeOutOfBounds,
+
+	/// The supplied millisatoshi amount was greater than the total bitcoin supply.
+	InvalidAmount,
 }
 
 impl Display for CreationError {
@@ -1422,6 +1425,7 @@ impl Display for CreationError {
 			CreationError::RouteTooLong => f.write_str("The specified route has too many hops and can't be encoded"),
 			CreationError::TimestampOutOfBounds => f.write_str("The unix timestamp of the supplied date is <0 or can't be represented as `SystemTime`"),
 			CreationError::ExpiryTimeOutOfBounds => f.write_str("The supplied expiry time could cause an overflow if added to a `PositiveTimestamp`"),
+			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
 		}
 	}
 }

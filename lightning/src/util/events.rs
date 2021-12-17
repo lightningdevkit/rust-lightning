@@ -183,10 +183,15 @@ pub enum Event {
 	/// [`ChannelManager::fail_htlc_backwards`] within the HTLC's timeout, the HTLC will be
 	/// automatically failed.
 	///
+	/// # Note
+	/// LDK will not stop an inbound payment from being paid multiple times, so multiple
+	/// `PaymentReceived` events may be generated for the same payment.
+	///
 	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
 	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
 	PaymentReceived {
-		/// The hash for which the preimage should be handed to the ChannelManager.
+		/// The hash for which the preimage should be handed to the ChannelManager. Note that LDK will
+		/// not stop you from registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
 		/// The value, in thousandths of a satoshi, that this payment is for.
 		amt: u64,

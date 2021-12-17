@@ -1,6 +1,6 @@
 //! Convenient utilities to create an invoice.
 
-use {Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
+use {CreationError, Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
 use payment::{Payer, Router};
 
 use bech32::ToBase32;
@@ -60,10 +60,11 @@ where
 		}]));
 	}
 
+	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
+	// supply.
 	let (payment_hash, payment_secret) = channelmanager.create_inbound_payment(
-		amt_msat,
-		DEFAULT_EXPIRY_TIME.try_into().unwrap(),
-	);
+		amt_msat, DEFAULT_EXPIRY_TIME.try_into().unwrap())
+		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let mut invoice = InvoiceBuilder::new(network)
 		.description(description)
