@@ -97,20 +97,20 @@ where
 }
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G, L: Deref> where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph>, L: Deref> where L::Target: Logger {
 	network_graph: G,
 	logger: L,
 }
 
-impl<G, L: Deref> DefaultRouter<G, L> where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph>, L: Deref> DefaultRouter<G, L> where L::Target: Logger {
 	/// Creates a new router using the given [`NetworkGraph`] and  [`Logger`].
 	pub fn new(network_graph: G, logger: L) -> Self {
 		Self { network_graph, logger }
 	}
 }
 
-impl<G, L: Deref, S: Score> Router<S> for DefaultRouter<G, L>
-where G: Deref<Target = NetworkGraph>, L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph>, L: Deref, S: Score> Router<S> for DefaultRouter<G, L>
+where L::Target: Logger {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
