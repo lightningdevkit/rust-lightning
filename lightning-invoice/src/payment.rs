@@ -150,13 +150,12 @@ use std::time::{Duration, SystemTime};
 /// See [module-level documentation] for details.
 ///
 /// [module-level documentation]: crate::payment
-pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E>
+pub struct InvoicePayer<P: Deref, R, S: Deref, L: Deref, E: EventHandler>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	payer: P,
 	router: R,
@@ -221,13 +220,12 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E> InvoicePayer<P, R, S, L, E>
+impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler> InvoicePayer<P, R, S, L, E>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	/// Creates an invoice payer that retries failed payment paths.
 	///
@@ -455,13 +453,12 @@ fn has_expired(params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R, S: Deref, L: Deref, E> EventHandler for InvoicePayer<P, R, S, L, E>
+impl<P: Deref, R, S: Deref, L: Deref, E: EventHandler> EventHandler for InvoicePayer<P, R, S, L, E>
 where
 	P::Target: Payer,
 	R: for <'a> Router<<<S as Deref>::Target as LockableScore<'a>>::Locked>,
 	S::Target: for <'a> LockableScore<'a>,
 	L::Target: Logger,
-	E: EventHandler,
 {
 	fn handle_event(&self, event: &Event) {
 		match event {
