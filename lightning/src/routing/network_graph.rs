@@ -251,6 +251,8 @@ where C::Target: chain::Access, L::Target: Logger
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
 	/// [`NetGraphMsgHandler::new`].
+	///
+	/// (C-not exported) as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &G {
 		&self.network_graph
 	}

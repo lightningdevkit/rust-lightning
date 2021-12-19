@@ -169,6 +169,14 @@ impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
 }
 
 #[cfg(c_bindings)]
+impl<T: Score> MultiThreadedLockableScore<T> {
+	/// Creates a new [`MultiThreadedLockableScore`] given an underlying [`Score`].
+	pub fn new(score: T) -> Self {
+		MultiThreadedLockableScore { score: Mutex::new(score) }
+	}
+}
+
+#[cfg(c_bindings)]
 /// (C-not exported)
 impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
