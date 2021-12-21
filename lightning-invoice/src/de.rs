@@ -460,6 +460,8 @@ impl FromBase32 for TaggedField {
 				Ok(TaggedField::PrivateRoute(PrivateRoute::from_base32(field_data)?)),
 			constants::TAG_PAYMENT_SECRET =>
 				Ok(TaggedField::PaymentSecret(PaymentSecret::from_base32(field_data)?)),
+			constants::TAG_PAYMENT_METADATA =>
+				Ok(TaggedField::PaymentMetadata(Vec::<u8>::from_base32(field_data)?)),
 			constants::TAG_FEATURES =>
 				Ok(TaggedField::Features(InvoiceFeatures::from_base32(field_data)?)),
 			_ => {

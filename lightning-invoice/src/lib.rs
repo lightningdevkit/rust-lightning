@@ -419,6 +419,7 @@ pub enum TaggedField {
 	Fallback(Fallback),
 	PrivateRoute(PrivateRoute),
 	PaymentSecret(PaymentSecret),
+	PaymentMetadata(Vec<u8>),
 	Features(InvoiceFeatures),
 }
 
@@ -483,6 +484,7 @@ pub mod constants {
 	pub const TAG_FALLBACK: u8 = 9;
 	pub const TAG_PRIVATE_ROUTE: u8 = 3;
 	pub const TAG_PAYMENT_SECRET: u8 = 16;
+	pub const TAG_PAYMENT_METADATA: u8 = 27;
 	pub const TAG_FEATURES: u8 = 5;
 }
 
@@ -954,6 +956,10 @@ impl RawInvoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::PaymentSecret(ref x), x)
 	}
 
+	pub fn payment_metadata(&self) -> Option<&Vec<u8>> {
+		find_extract!(self.known_tagged_fields(), TaggedField::PaymentMetadata(ref x), x)
+	}
+
 	pub fn features(&self) -> Option<&InvoiceFeatures> {
 		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
 	}
@@ -1225,6 +1231,11 @@ impl Invoice {
 		self.signed_invoice.payment_secret().expect("was checked by constructor")
 	}
 
+	/// Get the payment metadata blob if one was included in the invoice
+	pub fn payment_metadata(&self) -> Option<&Vec<u8>> {
+		self.signed_invoice.payment_metadata()
+	}
+
 	/// Get the invoice features if they were included in the invoice
 	pub fn features(&self) -> Option<&InvoiceFeatures> {
 		self.signed_invoice.features()
@@ -1374,6 +1385,7 @@ impl TaggedField {
 			TaggedField::Fallback(_) => constants::TAG_FALLBACK,
 			TaggedField::PrivateRoute(_) => constants::TAG_PRIVATE_ROUTE,
 			TaggedField::PaymentSecret(_) => constants::TAG_PAYMENT_SECRET,
+			TaggedField::PaymentMetadata(_) => constants::TAG_PAYMENT_METADATA,
 			TaggedField::Features(_) => constants::TAG_FEATURES,
 		};
 
