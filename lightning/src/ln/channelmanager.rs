@@ -167,12 +167,16 @@ enum OnionPayload {
 	Spontaneous(PaymentPreimage),
 }
 
+/// HTLCs that are to us and can be failed/claimed by the user
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
+	/// The amount (in msats) of this MPP part
 	value: u64,
 	onion_payload: OnionPayload,
 	timer_ticks: u8,
+	/// The sum total of all MPP parts
+	total_msat: u64,
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -3096,11 +3100,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
 									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
-								let (cltv_expiry, onion_payload, phantom_shared_secret) = match routing {
+								let (cltv_expiry, total_msat, onion_payload, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } =>
-										(incoming_cltv_expiry, OnionPayload::Invoice(payment_data), phantom_shared_secret),
+										(incoming_cltv_expiry, payment_data.total_msat, OnionPayload::Invoice(payment_data), phantom_shared_secret),
 									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
-										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage), None),
+										(incoming_cltv_expiry, amt_to_forward, OnionPayload::Spontaneous(payment_preimage), None),
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
@@ -3115,6 +3119,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									},
 									value: amt_to_forward,
 									timer_ticks: 0,
+									total_msat,
 									cltv_expiry,
 									onion_payload,
 								};
@@ -3153,10 +3158,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										for htlc in htlcs.iter() {
 											total_value += htlc.value;
 											match &htlc.onion_payload {
-												OnionPayload::Invoice(htlc_payment_data) => {
-													if htlc_payment_data.total_msat != $payment_data_total_msat {
+												OnionPayload::Invoice { .. } => {
+													if htlc.total_msat != $payment_data_total_msat {
 														log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-															log_bytes!(payment_hash.0), $payment_data_total_msat, htlc_payment_data.total_msat);
+															log_bytes!(payment_hash.0), $payment_data_total_msat, htlc.total_msat);
 														total_value = msgs::MAX_VALUE_MSAT;
 													}
 													if total_value >= msgs::MAX_VALUE_MSAT { break; }
@@ -3207,9 +3212,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														continue
 													}
 												};
-												let payment_data_total_msat = payment_data.total_msat;
 												let payment_secret = payment_data.payment_secret.clone();
-												check_total_value!(payment_data_total_msat, payment_secret, payment_preimage);
+												check_total_value!(payment_data.total_msat, payment_secret, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
 												match channel_state.claimable_htlcs.entry(payment_hash) {
@@ -6076,13 +6080,14 @@ impl Writeable for ClaimableHTLC {
 			OnionPayload::Invoice(_) => None,
 			OnionPayload::Spontaneous(preimage) => Some(preimage.clone()),
 		};
-		write_tlv_fields!
-		(writer,
-		 {
-		   (0, self.prev_hop, required), (2, self.value, required),
-		   (4, payment_data, option), (6, self.cltv_expiry, required),
-			 (8, keysend_preimage, option),
-		 });
+		write_tlv_fields!(writer, {
+			(0, self.prev_hop, required),
+			(1, self.total_msat, required),
+			(2, self.value, required),
+			(4, payment_data, option),
+			(6, self.cltv_expiry, required),
+			(8, keysend_preimage, option),
+		});
 		Ok(())
 	}
 }
@@ -6093,24 +6098,32 @@ impl Readable for ClaimableHTLC {
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
+		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		read_tlv_fields!
-		(reader,
-		 {
-		   (0, prev_hop, required), (2, value, required),
-		   (4, payment_data, option), (6, cltv_expiry, required),
-			 (8, keysend_preimage, option)
-		 });
+		read_tlv_fields!(reader, {
+			(0, prev_hop, required),
+			(1, total_msat, option),
+			(2, value, required),
+			(4, payment_data, option),
+			(6, cltv_expiry, required),
+			(8, keysend_preimage, option)
+		});
 		let onion_payload = match keysend_preimage {
 			Some(p) => {
 				if payment_data.is_some() {
 					return Err(DecodeError::InvalidValue)
+				}
+				if total_msat.is_none() {
+					total_msat = Some(value);
 				}
 				OnionPayload::Spontaneous(p)
 			},
 			None => {
 				if payment_data.is_none() {
 					return Err(DecodeError::InvalidValue)
+				}
+				if total_msat.is_none() {
+					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
 				OnionPayload::Invoice(payment_data.unwrap())
 			},
@@ -6119,6 +6132,7 @@ impl Readable for ClaimableHTLC {
 			prev_hop: prev_hop.0.unwrap(),
 			timer_ticks: 0,
 			value,
+			total_msat: total_msat.unwrap(),
 			onion_payload,
 			cltv_expiry,
 		})
