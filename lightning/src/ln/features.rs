@@ -275,6 +275,7 @@ mod sealed {
 					}
 
 					flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
+					flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 				}
 
 				/// Sets the feature's optional (odd) bit in the given flags.
