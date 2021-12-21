@@ -3181,6 +3181,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												payment_hash,
 												purpose: events::PaymentPurpose::InvoicePayment {
 													payment_preimage: $payment_preimage,
+													payment_metadata: $payment_data.payment_metadata,
 													payment_secret: $payment_data.payment_secret,
 												},
 												amt: total_value,

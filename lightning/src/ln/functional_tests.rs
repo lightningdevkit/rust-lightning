@@ -8597,10 +8597,11 @@ fn test_secret_timeout() {
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
+	match &events[0] {
+		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, payment_metadata }, .. } => {
 			assert!(payment_preimage.is_none());
-			assert_eq!(payment_secret, our_payment_secret);
+			assert!(payment_metadata.is_none());
+			assert_eq!(*payment_secret, our_payment_secret);
 			// We don't actually have the payment preimage with which to claim this payment!
 		},
 		_ => panic!("Unexpected event"),

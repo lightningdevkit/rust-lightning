@@ -60,6 +60,8 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
+		///XXX
+		payment_metadata: Option<Vec<u8>>,
 	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
@@ -462,10 +464,12 @@ impl Writeable for Event {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
+				let mut payment_metadata = None;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret, payment_metadata: metadata } => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
+						payment_metadata = metadata.as_ref();
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
@@ -473,6 +477,7 @@ impl Writeable for Event {
 				}
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
+					(1, payment_metadata, option),
 					(2, payment_secret, option),
 					(4, amt, required),
 					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
@@ -584,10 +589,12 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
+					let mut payment_metadata = None;
 					let mut amt = 0;
 					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
+						(1, payment_metadata, option),
 						(2, payment_secret, option),
 						(4, amt, required),
 						(6, _user_payment_id, option),
@@ -596,8 +603,10 @@ impl MaybeReadable for Event {
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
 							payment_preimage,
+							payment_metadata,
 							payment_secret: secret
 						},
+						None if payment_metadata.is_some() => return Err(msgs::DecodeError::InvalidValue),
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
