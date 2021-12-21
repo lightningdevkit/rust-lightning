@@ -160,6 +160,14 @@ mod sealed {
 		VariableLengthOnion | PaymentSecret,
 		// Byte 2
 		BasicMPP,
+		// Byte 3
+		,
+		// Byte 4
+		,
+		// Byte 5
+		,
+		// Byte 6
+		PaymentMetadata,
 	]);
 	define_context!(OfferContext, []);
 	define_context!(InvoiceRequestContext, []);
@@ -376,6 +384,9 @@ mod sealed {
 	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
 		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
+	define_feature!(49, PaymentMetadata, [InvoiceContext],
+		"Feature flags for payment metadata in invoices.", set_payment_metadata_optional,
+		set_payment_metadata_required, supports_payment_metadata, requires_payment_metadata);
 	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
 		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
@@ -885,13 +896,13 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
-			<sealed::NodeContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
-		let mut invoice_features = InvoiceFeatures::empty();
-		invoice_features.set_unknown_feature_optional();
-		assert!(invoice_features.supports_unknown_bits());
-		let node_features: NodeFeatures = invoice_features.to_context();
-		assert!(!node_features.supports_unknown_bits());
+		assert!(<sealed::ChannelContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
+			<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
+		let mut channel_features = ChannelFeatures::empty();
+		channel_features.set_unknown_feature_optional();
+		assert!(channel_features.supports_unknown_bits());
+		let invoice_features: InvoiceFeatures = channel_features.to_context_internal();
+		assert!(!invoice_features.supports_unknown_bits());
 	}
 
 	#[test]
