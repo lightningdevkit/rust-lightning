@@ -1922,7 +1922,11 @@ mod test {
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
-		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
+		let mut features = InvoiceFeatures::empty();
+		features.set_payment_secret_required();
+		features.set_variable_length_onion_required();
+		features.set_basic_mpp_optional();
+		assert_eq!(invoice.features(), Some(&features));
 
 		let raw_invoice = builder.build_raw().unwrap();
 		assert_eq!(raw_invoice, *invoice.into_signed_raw().raw_invoice())

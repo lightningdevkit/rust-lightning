@@ -4917,7 +4917,6 @@ mod tests {
 			assert_eq!(route.paths[0][1].short_channel_id, 13);
 			assert_eq!(route.paths[0][1].fee_msat, 90_000);
 			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0][1].node_features.le_flags(), InvoiceFeatures::known().le_flags());
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
