@@ -332,6 +332,56 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 			true, // Different features than set in InvoiceBuilder
 			true, // Some unknown fields
 		),
+		( // Older version of the payment metadata test with a payment_pubkey set
+			"lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqnp4q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66sp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgqy9gw6ymamd20jumvdgpfphkhp8fzhhdhycw36egcmla5vlrtrmhs9t7psfy3hkkdqzm9eq64fjg558znccds5nhsfmxveha5xe0dykgpspdha0".to_owned(),
+			InvoiceBuilder::new(Currency::Bitcoin)
+				.amount_milli_satoshis(1_000_000_000)
+				.duration_since_epoch(Duration::from_secs(1496314658))
+				.payment_hash(sha256::Hash::from_hex(
+					"0001020304050607080900010203040506070809000102030405060708090102"
+				).unwrap())
+				.description("payment metadata inside".to_owned())
+				.payment_metadata(hex::decode("01fafaf0").unwrap())
+				.require_payment_metadata()
+				.payee_pub_key(PublicKey::from_slice(&hex::decode(
+						"03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad"
+					).unwrap()).unwrap())
+				.payment_secret(PaymentSecret([0x11; 32]))
+				.build_raw()
+				.unwrap()
+				.sign(|_| {
+					RecoverableSignature::from_compact(
+						&hex::decode("2150ed137ddb54f9736c6a0290ded709d22bddb7261d1d6518dffb467c6b1eef02afc182491bdacd00b65c83554c914a1c53c61b0a4ef04eccccdfb4365ed259").unwrap(),
+						RecoveryId::from_i32(1).unwrap()
+					)
+				}).unwrap(),
+			false, // Different features than set in InvoiceBuilder
+			true, // Some unknown fields
+		),
+		(
+			"lnbc10m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdp9wpshjmt9de6zqmt9w3skgct5vysxjmnnd9jx2mq8q8a04uqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q2gqqqqqqsgq7hf8he7ecf7n4ffphs6awl9t6676rrclv9ckg3d3ncn7fct63p6s365duk5wrk202cfy3aj5xnnp5gs3vrdvruverwwq7yzhkf5a3xqpd05wjc".to_owned(),
+			InvoiceBuilder::new(Currency::Bitcoin)
+				.amount_milli_satoshis(1_000_000_000)
+				.duration_since_epoch(Duration::from_secs(1496314658))
+				.payment_hash(sha256::Hash::from_hex(
+					"0001020304050607080900010203040506070809000102030405060708090102"
+				).unwrap())
+				.description("payment metadata inside".to_owned())
+				.payment_metadata(hex::decode("01fafaf0").unwrap())
+				.require_payment_metadata()
+				.payment_secret(PaymentSecret([0x11; 32]))
+				.build_raw()
+				.unwrap()
+				.sign(|_| {
+					RecoverableSignature::from_compact(
+						&hex::decode("f5d27be7d9c27d3aa521bc35d77cabd6bda18f1f61716445b19e27e4e17a887508ea8de5a8e1d94f561248f65434e61a221160dac1f1991b9c0f1057b269d898").unwrap(),
+						RecoveryId::from_i32(1).unwrap()
+					)
+				}).unwrap(),
+			false, // Different features than set in InvoiceBuilder
+			true, // Some unknown fields
+		),
+
 	]
 }
 
