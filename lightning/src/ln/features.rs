@@ -192,7 +192,18 @@ mod sealed {
 			VariableLengthOnion | PaymentSecret,
 			// Byte 2
 			,
+			// Byte 3
+			,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			,
 		],
+		// Note that the optional feature bits set here are used to check if a bit is "known", but
+		// the `InvoiceBuilder` in lightning-invoice starts with `empty()` and does not set these
+		// bits unless the relevant data is included in the invoice.
 		optional_features: [
 			// Byte 0
 			,
@@ -200,6 +211,14 @@ mod sealed {
 			,
 			// Byte 2
 			BasicMPP,
+			// Byte 3
+			,
+			// Byte 4
+			,
+			// Byte 5
+			,
+			// Byte 6
+			PaymentMetadata,
 		],
 	});
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
@@ -390,12 +409,15 @@ mod sealed {
 	define_feature!(45, ChannelType, [InitContext, NodeContext],
 		"Feature flags for `option_channel_type`.", set_channel_type_optional,
 		set_channel_type_required, supports_channel_type, requires_channel_type);
+	define_feature!(49, PaymentMetadata, [InvoiceContext],
+		"Feature flags for payment metadata in invoices.", set_payment_metadata_optional,
+		set_payment_metadata_required, supports_payment_metadata, requires_payment_metadata);
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
+	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InitContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -885,10 +907,10 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(InvoiceFeatures::known().flags.len() < NodeFeatures::known().flags.len());
-		let invoice_features = InvoiceFeatures::known().set_unknown_feature_optional();
-		assert!(invoice_features.supports_unknown_bits());
-		let node_features: NodeFeatures = invoice_features.to_context();
+		assert!(InitFeatures::known().flags.len() < NodeFeatures::known().flags.len());
+		let init_features = InitFeatures::known().set_unknown_feature_optional();
+		assert!(init_features.supports_unknown_bits());
+		let node_features: NodeFeatures = init_features.to_context();
 		assert!(!node_features.supports_unknown_bits());
 	}
 
