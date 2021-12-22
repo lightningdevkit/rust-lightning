@@ -5,6 +5,7 @@ use payment::{Payer, Router};
 
 use bech32::ToBase32;
 use bitcoin_hashes::Hash;
+use crate::prelude::*;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
@@ -16,9 +17,11 @@ use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
 use lightning::util::logger::Logger;
 use secp256k1::key::PublicKey;
-use std::convert::TryInto;
-use std::ops::Deref;
+use core::convert::TryInto;
+use core::ops::Deref;
+use core::time::Duration;
 
+#[cfg(feature = "std")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -27,6 +30,33 @@ use std::ops::Deref;
 pub fn create_invoice_from_channelmanager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
 	amt_msat: Option<u64>, description: String
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	use std::time::SystemTime;
+	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+		.expect("for the foreseeable future this shouldn't happen");
+	create_invoice_from_channelmanager_and_duration_since_epoch(
+		channelmanager,
+		keys_manager,
+		network,
+		amt_msat,
+		description,
+		duration
+	)
+}
+
+/// See [`create_invoice_from_channelmanager`]
+/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// available and the current time is supplied by the caller.
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -68,7 +98,7 @@ where
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let mut invoice = InvoiceBuilder::new(network)
 		.description(description)
-		.current_timestamp()
+		.duration_since_epoch(duration_since_epoch)
 		.payee_pub_key(our_node_pubkey)
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
@@ -161,6 +191,7 @@ where
 
 #[cfg(test)]
 mod test {
+	use core::time::Duration;
 	use {Currency, Description, InvoiceDescription};
 	use lightning::ln::PaymentHash;
 	use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY;
@@ -170,6 +201,8 @@ mod test {
 	use lightning::routing::router::{Payee, RouteParameters, find_route};
 	use lightning::util::events::MessageSendEventsProvider;
 	use lightning::util::test_utils;
+	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
+
 	#[test]
 	fn test_from_channelmanager() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -177,7 +210,9 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let _chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-		let invoice = ::utils::create_invoice_from_channelmanager(&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string()).unwrap();
+		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string(),
+			Duration::from_secs(1234567)).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));

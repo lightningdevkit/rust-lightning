@@ -1,6 +1,7 @@
-use std::fmt;
-use std::fmt::{Display, Formatter};
+use core::fmt;
+use core::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
+use crate::prelude::*;
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
@@ -64,7 +65,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 
 	pub fn finalize(mut self) ->  Result<(), W::Err> {
 		self.inner_finalize()?;
-		std::mem::forget(self);
+		core::mem::forget(self);
 		Ok(())
 	}
 

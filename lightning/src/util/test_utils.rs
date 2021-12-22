@@ -462,6 +462,7 @@ impl Logger for TestLogger {
 	fn log(&self, record: &Record) {
 		*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
 		if record.level >= self.level {
+			#[cfg(feature = "std")]
 			println!("{:<5} {} [{} : {}, {}] {}", record.level.to_string(), self.id, record.module_path, record.file, record.line, record.args);
 		}
 	}
@@ -571,9 +572,17 @@ impl TestKeysInterface {
 	}
 }
 
+pub(crate) fn panicking() -> bool {
+	#[cfg(feature = "std")]
+	let panicking = ::std::thread::panicking();
+	#[cfg(not(feature = "std"))]
+	let panicking = false;
+	return panicking;
+}
+
 impl Drop for TestKeysInterface {
 	fn drop(&mut self) {
-		if std::thread::panicking() {
+		if panicking() {
 			return;
 		}
 
@@ -665,7 +674,7 @@ impl chain::Filter for TestChainSource {
 
 impl Drop for TestChainSource {
 	fn drop(&mut self) {
-		if std::thread::panicking() {
+		if panicking() {
 			return;
 		}
 

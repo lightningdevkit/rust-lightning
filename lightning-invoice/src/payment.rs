@@ -32,6 +32,9 @@
 //! # extern crate lightning_invoice;
 //! # extern crate secp256k1;
 //! #
+//! # #[cfg(feature = "no-std")]
+//! # extern crate core2;
+//! #
 //! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
@@ -46,6 +49,11 @@
 //! # use secp256k1::key::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
+//! #
+//! # #[cfg(not(feature = "std"))]
+//! # use core2::io;
+//! # #[cfg(feature = "std")]
+//! # use std::io;
 //! #
 //! # struct FakeEventProvider {}
 //! # impl EventsProvider for FakeEventProvider {
@@ -78,7 +86,7 @@
 //! #
 //! # struct FakeScorer {}
 //! # impl Writeable for FakeScorer {
-//! #     fn write<W: Writer>(&self, w: &mut W) -> Result<(), std::io::Error> { unimplemented!(); }
+//! #     fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> { unimplemented!(); }
 //! # }
 //! # impl Score for FakeScorer {
 //! #     fn channel_penalty_msat(
@@ -130,6 +138,7 @@ use crate::Invoice;
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 
+use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
@@ -137,13 +146,14 @@ use lightning::routing::scoring::{LockableScore, Score};
 use lightning::routing::router::{Payee, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
+use crate::sync::Mutex;
 
 use secp256k1::key::PublicKey;
 
-use std::collections::hash_map::{self, HashMap};
-use std::ops::Deref;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use core::ops::Deref;
+use core::time::Duration;
+#[cfg(feature = "std")]
+use std::time::SystemTime;
 
 /// A utility for paying [`Invoice`]s and sending spontaneous payments.
 ///
@@ -336,9 +346,11 @@ where
 	fn pay_internal<F: FnOnce(&Route) -> Result<PaymentId, PaymentSendFailure> + Copy>(
 		&self, params: &RouteParameters, payment_hash: PaymentHash, send_payment: F,
 	) -> Result<PaymentId, PaymentError> {
-		if has_expired(params) {
-			log_trace!(self.logger, "Invoice expired prior to send for payment {}", log_bytes!(payment_hash.0));
-			return Err(PaymentError::Invoice("Invoice expired prior to send"));
+		#[cfg(feature = "std")] {
+			if has_expired(params) {
+				log_trace!(self.logger, "Invoice expired prior to send for payment {}", log_bytes!(payment_hash.0));
+				return Err(PaymentError::Invoice("Invoice expired prior to send"));
+			}
 		}
 
 		let payer = self.payer.node_id();
@@ -360,7 +372,7 @@ where
 						Err(e)
 					} else {
 						*retry_count += 1;
-						std::mem::drop(payment_cache);
+						core::mem::drop(payment_cache);
 						Ok(self.pay_internal(params, payment_hash, send_payment)?)
 					}
 				},
@@ -398,9 +410,11 @@ where
 			return Err(());
 		}
 
-		if has_expired(params) {
-			log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
-			return Err(());
+		#[cfg(feature = "std")] {
+			if has_expired(params) {
+				log_trace!(self.logger, "Invoice expired for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+				return Err(());
+			}
 		}
 
 		let payer = self.payer.node_id();
@@ -444,9 +458,10 @@ where
 }
 
 fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
-	invoice.timestamp().duration_since(SystemTime::UNIX_EPOCH).unwrap() + invoice.expiry_time()
+	invoice.signed_invoice.raw_invoice.data.timestamp.0 + invoice.expiry_time()
 }
 
+#[cfg(feature = "std")]
 fn has_expired(params: &RouteParameters) -> bool {
 	if let Some(expiry_time) = params.payee.expiry_time {
 		Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, Duration::from_secs(expiry_time))
@@ -510,8 +525,8 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{DEFAULT_EXPIRY_TIME, InvoiceBuilder, Currency};
-	use utils::create_invoice_from_channelmanager;
+	use crate::{InvoiceBuilder, Currency};
+	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
@@ -526,15 +541,17 @@ mod tests {
 	use std::cell::RefCell;
 	use std::collections::VecDeque;
 	use std::time::{SystemTime, Duration};
+	use DEFAULT_EXPIRY_TIME;
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+
 		InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
-			.current_timestamp()
+			.duration_since_epoch(duration_since_epoch())
 			.min_final_cltv_expiry(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
@@ -543,14 +560,24 @@ mod tests {
 			.unwrap()
 	}
 
+	fn duration_since_epoch() -> Duration {
+		#[cfg(feature = "std")]
+			let duration_since_epoch =
+			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+		#[cfg(not(feature = "std"))]
+			let duration_since_epoch = Duration::from_secs(1234567);
+		duration_since_epoch
+	}
+
 	fn zero_value_invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+
 		InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
-			.current_timestamp()
+			.duration_since_epoch(duration_since_epoch())
 			.min_final_cltv_expiry(144)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_recoverable(hash, &private_key)
@@ -558,17 +585,18 @@ mod tests {
 			.unwrap()
 	}
 
+	#[cfg(feature = "std")]
 	fn expired_invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let timestamp = SystemTime::now()
+		let duration = duration_since_epoch()
 			.checked_sub(Duration::from_secs(DEFAULT_EXPIRY_TIME * 2))
 			.unwrap();
 		InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
-			.timestamp(timestamp)
+			.duration_since_epoch(duration)
 			.min_final_cltv_expiry(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
@@ -811,6 +839,8 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 	}
 
+	// Expiration is checked only in an std environment
+	#[cfg(feature = "std")]
 	#[test]
 	fn fails_paying_invoice_after_expiration() {
 		let event_handled = core::cell::RefCell::new(false);
@@ -830,6 +860,8 @@ mod tests {
 		} else { panic!("Expected Invoice Error"); }
 	}
 
+	// Expiration is checked only in an std environment
+	#[cfg(feature = "std")]
 	#[test]
 	fn fails_retrying_invoice_after_expiration() {
 		let event_handled = core::cell::RefCell::new(false);
@@ -1524,8 +1556,9 @@ mod tests {
 		let scorer = RefCell::new(TestScorer::new());
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
 
-		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
-			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string(),
+			duration_since_epoch()).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -1569,8 +1602,9 @@ mod tests {
 		let scorer = RefCell::new(TestScorer::new());
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
 
-		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
-			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string(),
+			duration_since_epoch()).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -1650,8 +1684,9 @@ mod tests {
 		let scorer = RefCell::new(TestScorer::new());
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, RetryAttempts(1));
 
-		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager(
-			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string()).unwrap())
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string(),
+			duration_since_epoch()).unwrap())
 			.is_ok());
 		let htlc_updates = SendEvent::from_node(&nodes[0]);
 		check_added_monitors!(nodes[0], 1);

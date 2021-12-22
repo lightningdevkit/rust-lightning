@@ -8,13 +8,20 @@ license = "MIT OR Apache-2.0"
 keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
 
+[features]
+default = ["std"]
+no-std = ["hashbrown", "lightning/no-std", "core2/alloc"]
+std = ["bitcoin_hashes/std", "num-traits/std", "lightning/std"]
+
 [dependencies]
 bech32 = "0.8"
-lightning = { version = "0.0.104", path = "../lightning" }
-secp256k1 = { version = "0.20", features = ["recovery"] }
-num-traits = "0.2.8"
-bitcoin_hashes = "0.10"
+lightning = { version = "0.0.104", path = "../lightning", default-features = false }
+secp256k1 = { version = "0.20", default-features = false, features = ["recovery", "alloc"] }
+num-traits = { version = "0.2.8", default-features = false }
+bitcoin_hashes = { version = "0.10", default-features = false }
+hashbrown = { version = "0.11", optional = true }
+core2 = { version = "0.3.0", default-features = false, optional = true }
 
 [dev-dependencies]
+lightning = { version = "0.0.104", path = "../lightning", default-features = false, features = ["_test_utils"] }
 hex = "0.3"
-lightning = { version = "0.0.104", path = "../lightning", features = ["_test_utils"] }

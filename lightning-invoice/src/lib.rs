@@ -6,6 +6,7 @@
 #![deny(broken_intra_doc_links)]
 
 #![cfg_attr(feature = "strict", deny(warnings))]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 //! This crate provides data structures to represent
 //! [lightning BOLT11](https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md)
@@ -15,6 +16,10 @@
 //!   * For parsing use `str::parse::<Invoice>(&self)` (see the docs of `impl FromStr for Invoice`)
 //!   * For constructing invoices use the `InvoiceBuilder`
 //!   * For serializing invoices use the `Display`/`ToString` traits
+
+#[cfg(not(any(feature = "std", feature = "no-std")))]
+compile_error!("at least one of the `std` or `no-std` features must be enabled");
+
 pub mod payment;
 pub mod utils;
 
@@ -23,6 +28,12 @@ extern crate bitcoin_hashes;
 #[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
+extern crate alloc;
+#[cfg(any(test, feature = "std"))]
+extern crate core;
+
+#[cfg(feature = "std")]
+use std::time::SystemTime;
 
 use bech32::u5;
 use bitcoin_hashes::Hash;
@@ -37,22 +48,47 @@ use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
 use secp256k1::recovery::RecoverableSignature;
 
-use std::fmt::{Display, Formatter, self};
-use std::iter::FilterMap;
-use std::ops::Deref;
-use std::slice::Iter;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
+use core::fmt::{Display, Formatter, self};
+use core::iter::FilterMap;
+use core::ops::Deref;
+use core::slice::Iter;
+use core::time::Duration;
 
 mod de;
 mod ser;
 mod tb;
+
+mod prelude {
+	#[cfg(feature = "hashbrown")]
+	extern crate hashbrown;
+
+	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
+	#[cfg(not(feature = "hashbrown"))]
+	pub use std::collections::{HashMap, HashSet, hash_map};
+	#[cfg(feature = "hashbrown")]
+	pub use self::hashbrown::{HashMap, HashSet, hash_map};
+
+	pub use alloc::string::ToString;
+}
+
+use prelude::*;
+
+/// Sync compat for std/no_std
+#[cfg(feature = "std")]
+mod sync {
+	pub use ::std::sync::{Mutex, MutexGuard};
+}
+
+/// Sync compat for std/no_std
+#[cfg(not(feature = "std"))]
+mod sync;
 
 pub use de::{ParseError, ParseOrSemanticError};
 
 // TODO: fix before 2037 (see rust PR #55527)
 /// Defines the maximum UNIX timestamp that can be represented as `SystemTime`. This is checked by
 /// one of the unit tests, please run them.
-const SYSTEM_TIME_MAX_UNIX_TIMESTAMP: u64 = std::i32::MAX as u64;
+const SYSTEM_TIME_MAX_UNIX_TIMESTAMP: u64 = core::i32::MAX as u64;
 
 /// Allow the expiry time to be up to one year. Since this reduces the range of possible timestamps
 /// it should be rather low as long as we still have to support 32bit time representations
@@ -77,10 +113,11 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
 /// can remove this functions and run the test `test_system_time_bounds_assumptions`. In any case,
 /// please open an issue. If all tests pass you should be able to use this library safely by just
 /// removing this function till we patch it accordingly.
+#[cfg(feature = "std")]
 fn __system_time_size_check() {
 	// Use 2 * sizeof(u64) as expected size since the expected underlying implementation is storing
 	// a `Duration` since `SystemTime::UNIX_EPOCH`.
-	unsafe { std::mem::transmute_copy::<SystemTime, [u8; 16]>(&UNIX_EPOCH); }
+	unsafe { core::mem::transmute_copy::<SystemTime, [u8; 16]>(&SystemTime::UNIX_EPOCH); }
 }
 
 
@@ -94,32 +131,41 @@ fn __system_time_size_check() {
 /// If this function fails this is considered a bug. Please open an issue describing your
 /// platform and stating your current system time.
 ///
+/// Note that this currently does nothing in `no_std` environments, because they don't have
+/// a `SystemTime` implementation.
+///
 /// # Panics
 /// If the check fails this function panics. By calling this function on startup you ensure that
 /// this wont happen at an arbitrary later point in time.
 pub fn check_platform() {
-    // The upper and lower bounds of `SystemTime` are not part of its public contract and are
-    // platform specific. That's why we have to test if our assumptions regarding these bounds
-    // hold on the target platform.
-    //
-    // If this test fails on your platform, please don't use the library and open an issue
-    // instead so we can resolve the situation. Currently this library is tested on:
-    //   * Linux (64bit)
-    let fail_date = UNIX_EPOCH + Duration::from_secs(SYSTEM_TIME_MAX_UNIX_TIMESTAMP);
-    let year = Duration::from_secs(60 * 60 * 24 * 365);
+	#[cfg(feature = "std")]
+	check_system_time_bounds();
+}
 
-    // Make sure that the library will keep working for another year
-    assert!(fail_date.duration_since(SystemTime::now()).unwrap() > year);
+#[cfg(feature = "std")]
+fn check_system_time_bounds() {
+	// The upper and lower bounds of `SystemTime` are not part of its public contract and are
+	// platform specific. That's why we have to test if our assumptions regarding these bounds
+	// hold on the target platform.
+	//
+	// If this test fails on your platform, please don't use the library and open an issue
+	// instead so we can resolve the situation. Currently this library is tested on:
+	//   * Linux (64bit)
+	let fail_date = SystemTime::UNIX_EPOCH + Duration::from_secs(SYSTEM_TIME_MAX_UNIX_TIMESTAMP);
+	let year = Duration::from_secs(60 * 60 * 24 * 365);
 
-    let max_ts = PositiveTimestamp::from_unix_timestamp(
-        SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME
-    ).unwrap();
-    let max_exp = ::ExpiryTime::from_seconds(MAX_EXPIRY_TIME).unwrap();
+	// Make sure that the library will keep working for another year
+	assert!(fail_date.duration_since(SystemTime::now()).unwrap() > year);
 
-    assert_eq!(
-        (*max_ts.as_time() + *max_exp.as_duration()).duration_since(UNIX_EPOCH).unwrap().as_secs(),
-        SYSTEM_TIME_MAX_UNIX_TIMESTAMP
-    );
+	let max_ts = PositiveTimestamp::from_unix_timestamp(
+		SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME
+	).unwrap();
+	let max_exp = ::ExpiryTime::from_seconds(MAX_EXPIRY_TIME).unwrap();
+
+	assert_eq!(
+		(max_ts.as_time() + *max_exp.as_duration()).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+		SYSTEM_TIME_MAX_UNIX_TIMESTAMP
+	);
 }
 
 
@@ -142,6 +188,9 @@ pub fn check_platform() {
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
+/// # #[cfg(not(feature = "std"))]
+/// # fn main() {}
+/// # #[cfg(feature = "std")]
 /// # fn main() {
 /// let private_key = SecretKey::from_slice(
 ///		&[
@@ -186,11 +235,11 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 	tagged_fields: Vec<TaggedField>,
 	error: Option<CreationError>,
 
-	phantom_d: std::marker::PhantomData<D>,
-	phantom_h: std::marker::PhantomData<H>,
-	phantom_t: std::marker::PhantomData<T>,
-	phantom_c: std::marker::PhantomData<C>,
-	phantom_s: std::marker::PhantomData<S>,
+	phantom_d: core::marker::PhantomData<D>,
+	phantom_h: core::marker::PhantomData<H>,
+	phantom_t: core::marker::PhantomData<T>,
+	phantom_c: core::marker::PhantomData<C>,
+	phantom_s: core::marker::PhantomData<S>,
 }
 
 /// Represents a syntactically and semantically correct lightning BOLT11 invoice.
@@ -285,9 +334,9 @@ pub struct RawDataPart {
 ///
 /// # Invariants
 /// The UNIX timestamp representing the stored time has to be positive and small enough so that
-/// a `EpiryTime` can be added to it without an overflow.
+/// a `ExpiryTime` can be added to it without an overflow.
 #[derive(Eq, PartialEq, Debug, Clone)]
-pub struct PositiveTimestamp(SystemTime);
+pub struct PositiveTimestamp(Duration);
 
 /// SI prefixes for the human readable part
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
@@ -459,11 +508,11 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False> {
 			tagged_fields: Vec::new(),
 			error: None,
 
-			phantom_d: std::marker::PhantomData,
-			phantom_h: std::marker::PhantomData,
-			phantom_t: std::marker::PhantomData,
-			phantom_c: std::marker::PhantomData,
-			phantom_s: std::marker::PhantomData,
+			phantom_d: core::marker::PhantomData,
+			phantom_h: core::marker::PhantomData,
+			phantom_t: core::marker::PhantomData,
+			phantom_c: core::marker::PhantomData,
+			phantom_s: core::marker::PhantomData,
 		}
 	}
 }
@@ -479,11 +528,11 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 			tagged_fields: self.tagged_fields,
 			error: self.error,
 
-			phantom_d: std::marker::PhantomData,
-			phantom_h: std::marker::PhantomData,
-			phantom_t: std::marker::PhantomData,
-			phantom_c: std::marker::PhantomData,
-			phantom_s: std::marker::PhantomData,
+			phantom_d: core::marker::PhantomData,
+			phantom_h: core::marker::PhantomData,
+			phantom_t: core::marker::PhantomData,
+			phantom_c: core::marker::PhantomData,
+			phantom_s: core::marker::PhantomData,
 		}
 	}
 
@@ -589,7 +638,8 @@ impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, tb::F
 }
 
 impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb::False, C, S> {
-	/// Sets the timestamp.
+	/// Sets the timestamp to a specific [`SystemTime`].
+	#[cfg(feature = "std")]
 	pub fn timestamp(mut self, time: SystemTime) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		match PositiveTimestamp::from_system_time(time) {
 			Ok(t) => self.timestamp = Some(t),
@@ -599,7 +649,18 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb
 		self.set_flags()
 	}
 
-	/// Sets the timestamp to the current UNIX timestamp.
+	/// Sets the timestamp to a duration since the UNIX epoch.
+	pub fn duration_since_epoch(mut self, time: Duration) -> InvoiceBuilder<D, H, tb::True, C, S> {
+		match PositiveTimestamp::from_duration_since_epoch(time) {
+			Ok(t) => self.timestamp = Some(t),
+			Err(e) => self.error = Some(e),
+		}
+
+		self.set_flags()
+	}
+
+	/// Sets the timestamp to the current system time.
+	#[cfg(feature = "std")]
 	pub fn current_timestamp(mut self) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		let now = PositiveTimestamp::from_system_time(SystemTime::now());
 		self.timestamp = Some(now.expect("for the foreseeable future this shouldn't happen"));
@@ -776,7 +837,7 @@ impl SignedRawInvoice {
 macro_rules! find_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
 		find_all_extract!($iter, $enm, $enm_var).next()
-    };
+	};
 }
 
 /// Finds the all elements of an enum stream of a given variant and extracts one member of the
@@ -799,11 +860,11 @@ macro_rules! find_extract {
 /// ```
 macro_rules! find_all_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
-    	$iter.filter_map(|tf| match *tf {
+		$iter.filter_map(|tf| match *tf {
 			$enm => Some($enm_var),
 			_ => None,
 		})
-    };
+	};
 }
 
 #[allow(missing_docs)]
@@ -949,49 +1010,52 @@ impl PositiveTimestamp {
 		if unix_seconds > SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME {
 			Err(CreationError::TimestampOutOfBounds)
 		} else {
-			Ok(PositiveTimestamp(UNIX_EPOCH + Duration::from_secs(unix_seconds)))
+			Ok(PositiveTimestamp(Duration::from_secs(unix_seconds)))
 		}
 	}
 
 	/// Create a new `PositiveTimestamp` from a `SystemTime` with a corresponding unix timestamp in
-	/// the Range `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
+	/// the range `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
 	/// `CreationError::TimestampOutOfBounds`.
+	#[cfg(feature = "std")]
 	pub fn from_system_time(time: SystemTime) -> Result<Self, CreationError> {
-		if time
-			.duration_since(UNIX_EPOCH)
-			.map(|t| t.as_secs() <= SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME)
-			.unwrap_or(true)
-			{
-				Ok(PositiveTimestamp(time))
-			} else {
+		time.duration_since(SystemTime::UNIX_EPOCH)
+			.map(Self::from_duration_since_epoch)
+			.unwrap_or(Err(CreationError::TimestampOutOfBounds))
+	}
+
+	/// Create a new `PositiveTimestamp` from a `Duration` since the UNIX epoch in
+	/// the range `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
+	/// `CreationError::TimestampOutOfBounds`.
+	pub fn from_duration_since_epoch(duration: Duration) -> Result<Self, CreationError> {
+		if duration.as_secs() <= SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME {
+			Ok(PositiveTimestamp(duration))
+		} else {
 			Err(CreationError::TimestampOutOfBounds)
 		}
 	}
 
 	/// Returns the UNIX timestamp representing the stored time
 	pub fn as_unix_timestamp(&self) -> u64 {
-		self.0.duration_since(UNIX_EPOCH)
-			.expect("ensured by type contract/constructors")
-			.as_secs()
+		self.0.as_secs()
 	}
 
-	/// Returns a reference to the internal `SystemTime` time representation
-	pub fn as_time(&self) -> &SystemTime {
-		&self.0
-	}
-}
-
-impl Into<SystemTime> for PositiveTimestamp {
-	fn into(self) -> SystemTime {
+	/// Returns the duration of the stored time since the UNIX epoch
+	pub fn as_duration_since_epoch(&self) -> Duration {
 		self.0
 	}
+
+	/// Returns the `SystemTime` representing the stored time
+	#[cfg(feature = "std")]
+	pub fn as_time(&self) -> SystemTime {
+		SystemTime::UNIX_EPOCH + self.0
+	}
 }
 
-impl Deref for PositiveTimestamp {
-	type Target = SystemTime;
-
-	fn deref(&self) -> &Self::Target {
-		&self.0
+#[cfg(feature = "std")]
+impl Into<SystemTime> for PositiveTimestamp {
+	fn into(self) -> SystemTime {
+		SystemTime::UNIX_EPOCH + self.0
 	}
 }
 
@@ -1132,9 +1196,15 @@ impl Invoice {
 		Ok(invoice)
 	}
 
-	/// Returns the `Invoice`'s timestamp (should equal it's creation time)
-	pub fn timestamp(&self) -> &SystemTime {
+	/// Returns the `Invoice`'s timestamp (should equal its creation time)
+	#[cfg(feature = "std")]
+	pub fn timestamp(&self) -> SystemTime {
 		self.signed_invoice.raw_invoice().data.timestamp.as_time()
+	}
+
+	/// Returns the `Invoice`'s timestamp as a duration since the UNIX epoch
+	pub fn duration_since_epoch(&self) -> Duration {
+		self.signed_invoice.raw_invoice().data.timestamp.0
 	}
 
 	/// Returns an iterator over all tagged fields of this Invoice.
@@ -1190,16 +1260,24 @@ impl Invoice {
 	}
 
 	/// Returns whether the invoice has expired.
+	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
-		Self::is_expired_from_epoch(self.timestamp(), self.expiry_time())
+		Self::is_expired_from_epoch(&self.timestamp(), self.expiry_time())
 	}
 
 	/// Returns whether the expiry time from the given epoch has passed.
+	#[cfg(feature = "std")]
 	pub(crate) fn is_expired_from_epoch(epoch: &SystemTime, expiry_time: Duration) -> bool {
 		match epoch.elapsed() {
 			Ok(elapsed) => elapsed > expiry_time,
 			Err(_) => false,
 		}
+	}
+
+	/// Returns whether the expiry time would pass at the given point in time.
+	/// `at_time` is the timestamp as a duration since the UNIX epoch.
+	pub fn would_expire(&self, at_time: Duration) -> bool {
+		self.duration_since_epoch() + self.expiry_time() < at_time
 	}
 
 	/// Returns the invoice's `min_final_cltv_expiry` time, if present, otherwise
@@ -1430,6 +1508,7 @@ impl Display for CreationError {
 	}
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for CreationError { }
 
 /// Errors that may occur when converting a `RawInvoice` to an `Invoice`. They relate to the
@@ -1485,6 +1564,7 @@ impl Display for SemanticError {
 	}
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for SemanticError { }
 
 /// When signing using a fallible method either an user-supplied `SignError` or a `CreationError`
@@ -1516,15 +1596,15 @@ mod test {
 	fn test_system_time_bounds_assumptions() {
 		::check_platform();
 
-        assert_eq!(
-            ::PositiveTimestamp::from_unix_timestamp(::SYSTEM_TIME_MAX_UNIX_TIMESTAMP + 1),
-            Err(::CreationError::TimestampOutOfBounds)
-        );
+		assert_eq!(
+			::PositiveTimestamp::from_unix_timestamp(::SYSTEM_TIME_MAX_UNIX_TIMESTAMP + 1),
+			Err(::CreationError::TimestampOutOfBounds)
+		);
 
-        assert_eq!(
-            ::ExpiryTime::from_seconds(::MAX_EXPIRY_TIME + 1),
-            Err(::CreationError::ExpiryTimeOutOfBounds)
-        );
+		assert_eq!(
+			::ExpiryTime::from_seconds(::MAX_EXPIRY_TIME + 1),
+			Err(::CreationError::ExpiryTimeOutOfBounds)
+		);
 	}
 
 	#[test]
@@ -1727,7 +1807,7 @@ mod test {
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
-			.current_timestamp();
+			.duration_since_epoch(Duration::from_secs(1234567));
 
 		let invoice = builder.clone()
 			.amount_milli_satoshis(1500)
@@ -1756,7 +1836,7 @@ mod test {
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
-			.current_timestamp()
+			.duration_since_epoch(Duration::from_secs(1234567))
 			.min_final_cltv_expiry(144);
 
 		let too_long_string = String::from_iter(
@@ -1872,7 +1952,7 @@ mod test {
 
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
 			.amount_milli_satoshis(123)
-			.timestamp(UNIX_EPOCH + Duration::from_secs(1234567))
+			.duration_since_epoch(Duration::from_secs(1234567))
 			.payee_pub_key(public_key.clone())
 			.expiry_time(Duration::from_secs(54321))
 			.min_final_cltv_expiry(144)
@@ -1894,6 +1974,7 @@ mod test {
 		assert_eq!(invoice.amount_milli_satoshis(), Some(123));
 		assert_eq!(invoice.amount_pico_btc(), Some(1230));
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
+		#[cfg(feature = "std")]
 		assert_eq!(
 			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
 			1234567
@@ -1925,7 +2006,7 @@ mod test {
 			.description("Test".into())
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
 			.payment_secret(PaymentSecret([0; 32]))
-			.current_timestamp()
+			.duration_since_epoch(Duration::from_secs(1234567))
 			.build_raw()
 			.unwrap()
 			.sign::<_, ()>(|hash| {
@@ -1938,7 +2019,7 @@ mod test {
 
 		assert_eq!(invoice.min_final_cltv_expiry(), DEFAULT_MIN_FINAL_CLTV_EXPIRY);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(DEFAULT_EXPIRY_TIME));
-		assert!(!invoice.is_expired());
+		assert!(!invoice.would_expire(Duration::from_secs(1234568)));
 	}
 
 	#[test]
@@ -1947,14 +2028,11 @@ mod test {
 		use secp256k1::Secp256k1;
 		use secp256k1::key::SecretKey;
 
-		let timestamp = SystemTime::now()
-			.checked_sub(Duration::from_secs(DEFAULT_EXPIRY_TIME * 2))
-			.unwrap();
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
 			.payment_secret(PaymentSecret([0; 32]))
-			.timestamp(timestamp)
+			.duration_since_epoch(Duration::from_secs(1234567))
 			.build_raw()
 			.unwrap()
 			.sign::<_, ()>(|hash| {
@@ -1965,6 +2043,6 @@ mod test {
 			.unwrap();
 		let invoice = Invoice::from_signed(signed_invoice).unwrap();
 
-		assert!(invoice.is_expired());
+		assert!(invoice.would_expire(Duration::from_secs(1234567 + DEFAULT_EXPIRY_TIME + 1)));
 	}
 }
