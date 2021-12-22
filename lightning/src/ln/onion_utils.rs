@@ -120,11 +120,22 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, payment_secret_option: &Option<PaymentSecret>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, payment_secret_option: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OnionHopData>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OnionHopData> = Vec::with_capacity(path.len());
+
+	let mut last_hop_data = Some(msgs::OnionHopDataFormat::FinalNode {
+		payment_data: if let &Some(ref payment_secret) = payment_secret_option {
+			Some(msgs::FinalOnionHopData {
+				payment_secret: *payment_secret,
+				payment_metadata: payment_metadata,
+				total_msat,
+			})
+		} else { None },
+		keysend_preimage: *keysend_preimage,
+	});
 
 	for (idx, hop) in path.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
@@ -135,16 +146,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 		res.insert(0, msgs::OnionHopData {
 			format: if hop.node_features.supports_variable_length_onion() {
 				if idx == 0 {
-					msgs::OnionHopDataFormat::FinalNode {
-						payment_data: if let &Some(ref payment_secret) = payment_secret_option {
-							Some(msgs::FinalOnionHopData {
-								payment_secret: payment_secret.clone(),
-								payment_metadata: None,
-								total_msat,
-							})
-						} else { None },
-						keysend_preimage: *keysend_preimage,
-					}
+					last_hop_data.take().expect("Only called on the first iteration")
 				} else {
 					msgs::OnionHopDataFormat::NonFinalNode {
 						short_channel_id: last_short_channel_id,
