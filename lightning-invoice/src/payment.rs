@@ -64,8 +64,8 @@
 //! # impl Payer for FakePayer {
 //! #     fn node_id(&self) -> PublicKey { unimplemented!() }
 //! #     fn first_hops(&self) -> Vec<ChannelDetails> { unimplemented!() }
-//! #     fn send_payment(
-//! #         &self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
+//! #     fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
+//! #         payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
 //! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
 //! #     fn send_spontaneous_payment(
 //! #         &self, route: &Route, payment_preimage: PaymentPreimage
@@ -186,8 +186,8 @@ pub trait Payer {
 	fn first_hops(&self) -> Vec<ChannelDetails>;
 
 	/// Sends a payment over the Lightning Network using the given [`Route`].
-	fn send_payment(
-		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
+	fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
+		payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
 	) -> Result<PaymentId, PaymentSendFailure>;
 
 	/// Sends a spontaneous payment over the Lightning Network using the given [`Route`].
@@ -309,7 +309,7 @@ where
 		};
 
 		let send_payment = |route: &Route| {
-			self.payer.send_payment(route, payment_hash, &payment_secret)
+			self.payer.send_payment(route, payment_hash, &payment_secret, invoice.payment_metadata().cloned())
 		};
 		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
@@ -1463,9 +1463,8 @@ mod tests {
 			Vec::new()
 		}
 
-		fn send_payment(
-			&self, route: &Route, _payment_hash: PaymentHash,
-			_payment_secret: &Option<PaymentSecret>
+		fn send_payment(&self, route: &Route, _payment_hash: PaymentHash,
+			_payment_secret: &Option<PaymentSecret>, _payment_metadata: Option<Vec<u8>>
 		) -> Result<PaymentId, PaymentSendFailure> {
 			self.check_value_msats(Amount::ForInvoice(route.get_total_amount()));
 			self.check_attempts()

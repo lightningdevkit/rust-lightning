@@ -164,10 +164,10 @@ where
 		self.list_usable_channels()
 	}
 
-	fn send_payment(
-		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
+	fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
+		payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
 	) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment(route, payment_hash, payment_secret)
+		self.send_payment(route, payment_hash, payment_secret, payment_metadata)
 	}
 
 	fn send_spontaneous_payment(
@@ -236,7 +236,7 @@ mod test {
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone())).unwrap();
+			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone()), None).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();

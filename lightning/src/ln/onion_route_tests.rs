@@ -76,7 +76,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 	}
 
 	// 0 ~~> 2 send payment
-	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(*payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(*payment_secret), None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	// temper update_add (0 => 1)
@@ -268,7 +268,7 @@ fn test_fee_failures() {
 
 	// positive case
 	let (route, payment_hash_success, payment_preimage_success, payment_secret_success) = get_route_and_payment_hash!(nodes[0], nodes[2], 40_000);
-	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success), None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 40_000, payment_hash_success, payment_secret_success);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_success);
@@ -289,7 +289,7 @@ fn test_fee_failures() {
 	}
 
 	let (payment_preimage_success, payment_hash_success, payment_secret_success) = get_payment_preimage_hash!(nodes[2]);
-	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash_success, &Some(payment_secret_success), None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 40_000, payment_hash_success, payment_secret_success);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_success);

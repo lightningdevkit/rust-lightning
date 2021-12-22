@@ -2587,8 +2587,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
-	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment_internal(route, payment_hash, payment_secret, None, None, None, None)
+	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>) -> Result<PaymentId, PaymentSendFailure> {
+		self.send_payment_internal(route, payment_hash, payment_secret, payment_metadata, None, None, None)
 	}
 
 	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>, keysend_preimage: Option<PaymentPreimage>, payment_id: Option<PaymentId>, recv_value_msat: Option<u64>) -> Result<PaymentId, PaymentSendFailure> {
@@ -6996,7 +6996,7 @@ mod tests {
 
 		// Next, attempt a regular payment and make sure it fails.
 		let payment_secret = PaymentSecret([43; 32]);
-		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7133,7 +7133,7 @@ mod tests {
 		route.paths[1][0].short_channel_id = chan_2_id;
 		route.paths[1][1].short_channel_id = chan_4_id;
 
-		match nodes[0].node.send_payment(&route, payment_hash, &None).unwrap_err() {
+		match nodes[0].node.send_payment(&route, payment_hash, &None, None).unwrap_err() {
 			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {
 				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))			},
 			_ => panic!("unexpected error")
@@ -7302,7 +7302,7 @@ pub mod bench {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
 				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
 
-				$node_a.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+				$node_a.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);

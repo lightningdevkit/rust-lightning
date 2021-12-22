@@ -51,7 +51,7 @@ fn chanmon_fail_from_stale_commitment() {
 	let (update_a, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id_2);
