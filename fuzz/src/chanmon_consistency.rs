@@ -311,7 +311,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret)) {
+	}, payment_hash, &Some(payment_secret), None) {
 		check_payment_err(err);
 		false
 	} else { true }
@@ -337,7 +337,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret)) {
+	}, payment_hash, &Some(payment_secret), None) {
 		check_payment_err(err);
 		false
 	} else { true }

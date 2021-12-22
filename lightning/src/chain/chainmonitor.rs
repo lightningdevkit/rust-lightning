@@ -899,7 +899,7 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		chanmon_cfgs[0].persister.set_update_ret(Ok(()));
-		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret)),
+		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), None),
 			true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update

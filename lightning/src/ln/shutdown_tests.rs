@@ -98,8 +98,8 @@ fn updates_shutdown_wait() {
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &payment_params_1, &nodes[0].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
 	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &payment_params_2, &nodes[1].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
-	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret), None), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret), None), true, APIError::ChannelUnavailable {..}, {});
 
 	assert!(nodes[2].node.claim_funds(payment_preimage));
 	check_added_monitors!(nodes[2], 1);
@@ -157,7 +157,7 @@ fn htlc_fail_async_shutdown() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100000);
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), None).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);
