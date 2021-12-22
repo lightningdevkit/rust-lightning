@@ -40,7 +40,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
+use util::ser::{Readable, Writeable, Writer, VecWriteWrapper, VecReadWrapper, FixedLengthReader, HighZeroBytesDroppedVarInt};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -918,6 +918,7 @@ mod fuzzy_internal_msgs {
 	#[derive(Clone)]
 	pub(crate) struct FinalOnionHopData {
 		pub(crate) payment_secret: PaymentSecret,
+		pub(crate) payment_metadata: Option<Vec<u8>>,
 		/// The total value, in msat, of the payment as received by the ultimate recipient.
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) total_msat: u64,
@@ -1301,6 +1302,11 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	onion_routing_packet
 }, {});
 
+// The serialization here is really funky - FinalOnionHopData somewhat serves as two different
+// things. First, it is *the* object which is written with type 8 in the onion TLV. Second, it is
+// the data which a node may expect to receive when we are the recipient of an invoice payment.
+// Thus, its serialization doesn't match its in-memory layout - with the payment_metadata included
+// in the struct, but serialized separately.
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.payment_secret.0.write(w)?;
@@ -1312,7 +1318,7 @@ impl Readable for FinalOnionHopData {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let secret: [u8; 32] = Readable::read(r)?;
 		let amt: HighZeroBytesDroppedVarInt<u64> = Readable::read(r)?;
-		Ok(Self { payment_secret: PaymentSecret(secret), total_msat: amt.0 })
+		Ok(Self { payment_secret: PaymentSecret(secret), total_msat: amt.0, payment_metadata: None, })
 	}
 }
 
@@ -1334,10 +1340,15 @@ impl Writeable for OnionHopData {
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
+				let payment_metadata = if let Some(data) = payment_data {
+					if let Some(ref metadata) = data.payment_metadata { Some(VecWriteWrapper(metadata))
+					} else { None }
+				} else { None };
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
+					(16, payment_metadata, option),
 					(5482373484, keysend_preimage, option)
 				});
 			},
@@ -1361,6 +1372,7 @@ impl Readable for OnionHopData {
 			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
+			let mut payment_metadata: Option<VecReadWrapper<u8>> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
 			// The TLV type is chosen to be compatible with lnd and c-lightning.
 			decode_tlv_stream!(&mut rd, {
@@ -1368,19 +1380,22 @@ impl Readable for OnionHopData {
 				(4, cltv_value, required),
 				(6, short_id, option),
 				(8, payment_data, option),
+				(16, payment_metadata, option),
 				(5482373484, keysend_preimage, option)
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 			let format = if let Some(short_channel_id) = short_id {
 				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
+				if payment_metadata.is_some() { return Err(DecodeError::InvalidValue); }
 				OnionHopDataFormat::NonFinalNode {
 					short_channel_id,
 				}
 			} else {
-				if let &Some(ref data) = &payment_data {
+				if let Some(ref mut data) = &mut payment_data {
 					if data.total_msat > MAX_VALUE_MSAT {
 						return Err(DecodeError::InvalidValue);
 					}
+					data.payment_metadata = payment_metadata.map(|v| v.0);
 				}
 				OnionHopDataFormat::FinalNode {
 					payment_data,
@@ -2587,6 +2602,7 @@ mod tests {
 			format: OnionHopDataFormat::FinalNode {
 				payment_data: Some(FinalOnionHopData {
 					payment_secret: expected_payment_secret,
+					payment_metadata: None,
 					total_msat: 0x1badca1f
 				}),
 				keysend_preimage: None,
@@ -2601,6 +2617,7 @@ mod tests {
 		if let OnionHopDataFormat::FinalNode {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
+				payment_metadata: None,
 				total_msat: 0x1badca1f
 			}),
 			keysend_preimage: None,
