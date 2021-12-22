@@ -3181,6 +3181,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry } => {
 										let _legacy_hop_data = msgs::FinalOnionHopData {
 											payment_secret: payment_data.payment_secret,
+											payment_metadata: None, // Object is only for serialization backwards compat
 											total_msat: payment_data.total_msat
 										};
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data))
@@ -7137,6 +7138,7 @@ mod tests {
 		let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[0]);
 		let payment_data = msgs::FinalOnionHopData {
 			payment_secret,
+			payment_metadata: None,
 			total_msat: 100_000,
 		};
 

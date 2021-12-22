@@ -139,6 +139,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 						payment_data: if let &Some(ref payment_secret) = payment_secret_option {
 							Some(msgs::FinalOnionHopData {
 								payment_secret: payment_secret.clone(),
+								payment_metadata: None,
 								total_msat,
 							})
 						} else { None },
