@@ -40,7 +40,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLC
 use ln::channelmanager::HTLCSource;
 use chain;
 use chain::{BestBlock, WatchedOutput};
-use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
 use chain::onchaintx::OnchainTxHandler;
@@ -698,6 +698,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	/// spending CSV for revocable outputs).
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
+	// If this pre-signed channel feerate is inferior by this rate to the current observed
+	// feerate, we might force-close a channel with inbound fulfilled HTLCs.
+	spikes_force_close_rate: u32,
+
 	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
@@ -934,6 +938,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			(3, self.htlcs_resolved_on_chain, vec_type),
 			(5, self.pending_monitor_events, vec_type),
 			(7, self.funding_spend_seen, required),
+			(9, self.spikes_force_close_rate, required),
 		});
 
 		Ok(())
@@ -947,7 +952,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
-	                  best_block: BestBlock) -> ChannelMonitor<Signer> {
+	                  best_block: BestBlock,
+			  spikes_force_close_rate: u32) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
@@ -1035,6 +1041,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				funding_spend_seen: false,
 				funding_spend_confirmed: None,
 				htlcs_resolved_on_chain: Vec::new(),
+
+				spikes_force_close_rate,
 
 				best_block,
 
@@ -1989,6 +1997,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.current_holder_commitment_number
 	}
 
+	/// Return the sum in satoshis of the fulfilled *non-dust* inbound HTLCs pending on this
+	/// channel.
+	pub(crate) fn get_fulfilled_htlc_sum(&self) -> u64 {
+		let mut sum_sats = 0;
+		for (htlc, _, _) in self.current_holder_commitment_tx.htlc_outputs.iter() {
+			if htlc.transaction_output_index.is_some() && htlc.offered == false && self.payment_preimages.contains_key(&htlc.payment_hash) {
+				sum_sats += htlc.amount_msat;
+			}
+		}
+		sum_sats
+	}
+
 	/// Attempts to claim a counterparty commitment transaction's outputs using the revocation key and
 	/// data in counterparty_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
@@ -2443,7 +2463,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height() >= conf_height);
 
-		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
+		let fulfilled_htlc_high_exposure = 5_000_000 < self.get_fulfilled_htlc_sum();
+		let should_broadcast = self.should_broadcast_holder_commitment_txn(if self.should_force_close_fee_spikes(fee_estimator, self.current_holder_commitment_tx.feerate_per_kw) { true } else { false }, fulfilled_htlc_high_exposure, logger);
 		if should_broadcast {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone());
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
@@ -2634,7 +2655,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		false
 	}
 
-	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, logger: &L) -> bool where L::Target: Logger {
+	fn should_force_close_fee_spikes<F: Deref>(&self, fee_estimator: &F, current_feerate: u32) -> bool where F::Target: FeeEstimator {
+
+		let new_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+		// If the new feerate is superior by `spikes_force_close_rate` of current feerate,
+		// the channel could be preventively force-closed if there are HTLCs at risk.
+		if new_feerate > current_feerate * self.spikes_force_close_rate / 1000 {
+			return true;
+		}
+		false
+	}
+
+	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, spikes_force_close: bool, fulfilled_htlc_high_exposure: bool, logger: &L) -> bool where L::Target: Logger {
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
@@ -2674,7 +2706,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					//  with CHECK_CLTV_EXPIRY_SANITY_2.
 					let htlc_outbound = $holder_tx == htlc.offered;
 					if ( htlc_outbound && htlc.cltv_expiry + LATENCY_GRACE_PERIOD_BLOCKS <= height) ||
-					   (!htlc_outbound && htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER && self.payment_preimages.contains_key(&htlc.payment_hash)) {
+					   ((!htlc_outbound && (htlc.cltv_expiry <= height + CLTV_CLAIM_BUFFER || (spikes_force_close && fulfilled_htlc_high_exposure))) && self.payment_preimages.contains_key(&htlc.payment_hash)) {
 						log_info!(logger, "Force-closing channel due to {} HTLC timeout, HTLC expiry is {}", if htlc_outbound { "outbound" } else { "inbound "}, htlc.cltv_expiry);
 						return true;
 					}
@@ -3219,11 +3251,13 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
 		let mut funding_spend_seen = Some(false);
+		let mut spikes_force_close_rate = 0;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
 			(5, pending_monitor_events, vec_type),
 			(7, funding_spend_seen, option),
+			(9, spikes_force_close_rate, required),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3276,6 +3310,8 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				funding_spend_seen: funding_spend_seen.unwrap(),
 				funding_spend_confirmed,
 				htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
+
+				spikes_force_close_rate,
 
 				best_block,
 
@@ -3513,7 +3549,8 @@ mod tests {
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                  &channel_parameters,
 		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy(), best_block);
+		                                  HolderCommitmentTransaction::dummy(), best_block,
+						  1300);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		let dummy_txid = dummy_tx.txid();

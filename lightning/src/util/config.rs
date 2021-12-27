@@ -246,6 +246,13 @@ pub struct ChannelConfig {
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	pub force_close_avoidance_max_fee_satoshis: u64,
+	/// When we detect a fee spikes and receive a block, we force-close immediately channel
+	/// with pending non-dust inbound HTLCs, of which the preimage is known.
+	///
+	/// To disable the force-close on fee spikes mechanism, select 0 as a rate.
+	///
+	/// Default value: 30%
+	pub spikes_force_close_rate: u32,
 }
 
 impl Default for ChannelConfig {
@@ -259,6 +266,7 @@ impl Default for ChannelConfig {
 			commit_upfront_shutdown_pubkey: true,
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
+			spikes_force_close_rate: 1300,
 		}
 	}
 }
@@ -269,6 +277,7 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	(2, cltv_expiry_delta, required),
 	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 	(4, announced_channel, required),
+	(5, spikes_force_close_rate, (default_value, 1300)),
 	(6, commit_upfront_shutdown_pubkey, required),
 	(8, forwarding_fee_base_msat, required),
 });
