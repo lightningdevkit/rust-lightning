@@ -21,8 +21,8 @@ Communication about Rust-Lightning happens primarily on #ldk-dev on the
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
 
-Major projects are tracked [here](https://github.com/rust-bitcoin/rust-lightning/projects).
-Major milestones are tracked [here](https://github.com/rust-bitcoin/rust-lightning/milestones?direction=asc&sort=title&state=open).
+Major projects are tracked [here](https://github.com/lightningdevkit/rust-lightning/projects).
+Major milestones are tracked [here](https://github.com/lightningdevkit/rust-lightning/milestones?direction=asc&sort=title&state=open).
 
 Getting Started
 ---------------
@@ -33,7 +33,7 @@ This doesn't mean don't be ambitious with the breadth and depth of your contribu
 understand the project culture before investing an asymmetric number of hours on
 development compared to your merged work.
 
-Browsing through the [meeting minutes](https://github.com/rust-bitcoin/rust-lightning/wiki/Meetings)
+Browsing through the [meeting minutes](https://github.com/lightningdevkit/rust-lightning/wiki/Meetings)
 is a good first step. You will learn who is working on what, how releases are drafted, what are the
 pending tasks to deliver, where you can contribute review bandwidth, etc.
 

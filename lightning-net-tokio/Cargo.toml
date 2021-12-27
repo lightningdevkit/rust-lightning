@@ -3,7 +3,7 @@ name = "lightning-net-tokio"
 version = "0.0.104"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/rust-bitcoin/rust-lightning/"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
 description = """
 Implementation of the rust-lightning network stack using Tokio.
 For Rust-Lightning clients which wish to make direct connections to Lightning P2P nodes, this is a simple alternative to implementing the required network stack, especially for those already using Tokio.
