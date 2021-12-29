@@ -593,9 +593,8 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq)]
-/// Details about one direction of a channel. Received
-/// within a channel update.
-pub struct DirectionalChannelInfo {
+/// Details about one direction of a channel as received within a [`ChannelUpdate`].
+pub struct ChannelUpdateInfo {
 	/// When the last update to the channel direction was issued.
 	/// Value is opaque, as set in the announcement.
 	pub last_update: u32,
@@ -616,14 +615,14 @@ pub struct DirectionalChannelInfo {
 	pub last_update_message: Option<ChannelUpdate>,
 }
 
-impl fmt::Display for DirectionalChannelInfo {
+impl fmt::Display for ChannelUpdateInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, "last_update {}, enabled {}, cltv_expiry_delta {}, htlc_minimum_msat {}, fees {:?}", self.last_update, self.enabled, self.cltv_expiry_delta, self.htlc_minimum_msat, self.fees)?;
 		Ok(())
 	}
 }
 
-impl_writeable_tlv_based!(DirectionalChannelInfo, {
+impl_writeable_tlv_based!(ChannelUpdateInfo, {
 	(0, last_update, required),
 	(2, enabled, required),
 	(4, cltv_expiry_delta, required),
@@ -642,11 +641,11 @@ pub struct ChannelInfo {
 	/// Source node of the first direction of a channel
 	pub node_one: NodeId,
 	/// Details about the first direction of a channel
-	pub one_to_two: Option<DirectionalChannelInfo>,
+	pub one_to_two: Option<ChannelUpdateInfo>,
 	/// Source node of the second direction of a channel
 	pub node_two: NodeId,
 	/// Details about the second direction of a channel
-	pub two_to_one: Option<DirectionalChannelInfo>,
+	pub two_to_one: Option<ChannelUpdateInfo>,
 	/// The channel capacity as seen on-chain, if chain lookup is available.
 	pub capacity_sats: Option<u64>,
 	/// An initial announcement of the channel
@@ -658,6 +657,23 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
+}
+
+impl ChannelInfo {
+	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
+	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
+	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+		let (direction, source) = {
+			if target == &self.node_one {
+				(self.two_to_one.as_ref(), &self.node_two)
+			} else if target == &self.node_two {
+				(self.one_to_two.as_ref(), &self.node_one)
+			} else {
+				return None;
+			}
+		};
+		Some((DirectedChannelInfo { channel: self, direction }, source))
+	}
 }
 
 impl fmt::Display for ChannelInfo {
@@ -679,6 +695,132 @@ impl_writeable_tlv_based!(ChannelInfo, {
 	(12, announcement_message, required),
 });
 
+/// A wrapper around [`ChannelInfo`] representing information about the channel as directed from a
+/// source node to a target node.
+#[derive(Clone)]
+pub struct DirectedChannelInfo<'a> {
+	channel: &'a ChannelInfo,
+	direction: Option<&'a ChannelUpdateInfo>,
+}
+
+impl<'a> DirectedChannelInfo<'a> {
+	/// Returns information for the channel.
+	pub fn channel(&self) -> &'a ChannelInfo { self.channel }
+
+	/// Returns information for the direction.
+	pub fn direction(&self) -> Option<&'a ChannelUpdateInfo> { self.direction }
+
+	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
+	///
+	/// This is either the total capacity from the funding transaction, if known, or the
+	/// `htlc_maximum_msat` for the direction as advertised by the gossip network, if known,
+	/// whichever is smaller.
+	pub fn effective_capacity(&self) -> EffectiveCapacity {
+		let capacity_msat = self.channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
+		self.direction
+			.and_then(|direction| direction.htlc_maximum_msat)
+			.map(|max_htlc_msat| {
+				let capacity_msat = capacity_msat.unwrap_or(u64::max_value());
+				if max_htlc_msat < capacity_msat {
+					EffectiveCapacity::MaximumHTLC { amount_msat: max_htlc_msat }
+				} else {
+					EffectiveCapacity::Total { capacity_msat }
+				}
+			})
+			.or_else(|| capacity_msat.map(|capacity_msat|
+					EffectiveCapacity::Total { capacity_msat }))
+			.unwrap_or(EffectiveCapacity::Unknown)
+	}
+
+	/// Returns `Some` if [`ChannelUpdateInfo`] is available in the direction.
+	pub(super) fn with_update(self) -> Option<DirectedChannelInfoWithUpdate<'a>> {
+		match self.direction {
+			Some(_) => Some(DirectedChannelInfoWithUpdate { inner: self }),
+			None => None,
+		}
+	}
+}
+
+impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		f.debug_struct("DirectedChannelInfo")
+			.field("channel", &self.channel)
+			.finish()
+	}
+}
+
+/// A [`DirectedChannelInfo`] with [`ChannelUpdateInfo`] available in its direction.
+#[derive(Clone)]
+pub(super) struct DirectedChannelInfoWithUpdate<'a> {
+	inner: DirectedChannelInfo<'a>,
+}
+
+impl<'a> DirectedChannelInfoWithUpdate<'a> {
+	/// Returns information for the channel.
+	#[inline]
+	pub(super) fn channel(&self) -> &'a ChannelInfo { &self.inner.channel }
+
+	/// Returns information for the direction.
+	#[inline]
+	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.inner.direction.unwrap() }
+
+	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
+	#[inline]
+	pub(super) fn effective_capacity(&self) -> EffectiveCapacity { self.inner.effective_capacity() }
+}
+
+impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		self.inner.fmt(f)
+	}
+}
+
+/// The effective capacity of a channel for routing purposes.
+///
+/// While this may be smaller than the actual channel capacity, amounts greater than
+/// [`Self::as_msat`] should not be routed through the channel.
+pub enum EffectiveCapacity {
+	/// The available liquidity in the channel known from being a channel counterparty, and thus a
+	/// direct hop.
+	ExactLiquidity {
+		/// Either the inbound or outbound liquidity depending on the direction, denominated in
+		/// millisatoshi.
+		liquidity_msat: u64,
+	},
+	/// The maximum HTLC amount in one direction as advertised on the gossip network.
+	MaximumHTLC {
+		/// The maximum HTLC amount denominated in millisatoshi.
+		amount_msat: u64,
+	},
+	/// The total capacity of the channel as determined by the funding transaction.
+	Total {
+		/// The funding amount denominated in millisatoshi.
+		capacity_msat: u64,
+	},
+	/// A capacity sufficient to route any payment, typically used for private channels provided by
+	/// an invoice.
+	Infinite,
+	/// A capacity that is unknown possibly because either the chain state is unavailable to know
+	/// the total capacity or the `htlc_maximum_msat` was not advertised on the gossip network.
+	Unknown,
+}
+
+/// The presumed channel capacity denominated in millisatoshi for [`EffectiveCapacity::Unknown`] to
+/// use when making routing decisions.
+pub const UNKNOWN_CHANNEL_CAPACITY_MSAT: u64 = 250_000 * 1000;
+
+impl EffectiveCapacity {
+	/// Returns the effective capacity denominated in millisatoshi.
+	pub fn as_msat(&self) -> u64 {
+		match self {
+			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
+			EffectiveCapacity::MaximumHTLC { amount_msat } => *amount_msat,
+			EffectiveCapacity::Total { capacity_msat } => *capacity_msat,
+			EffectiveCapacity::Infinite => u64::max_value(),
+			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
+		}
+	}
+}
 
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
@@ -1227,7 +1369,7 @@ impl NetworkGraph {
 						let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 							{ full_msg.cloned() } else { None };
 
-						let updated_channel_dir_info = DirectionalChannelInfo {
+						let updated_channel_update_info = ChannelUpdateInfo {
 							enabled: chan_enabled,
 							last_update: msg.timestamp,
 							cltv_expiry_delta: msg.cltv_expiry_delta,
@@ -1239,7 +1381,7 @@ impl NetworkGraph {
 							},
 							last_update_message
 						};
-						$target = Some(updated_channel_dir_info);
+						$target = Some(updated_channel_update_info);
 					}
 				}
 

@@ -82,16 +82,12 @@ pub trait Score $(: $supertrait)* {
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
 	///
-	/// The channel's capacity (less any other MPP parts which are also being considered for use in
-	/// the same payment) is given by `channel_capacity_msat`. It may be guessed from various
-	/// sources or assumed from no data at all.
-	///
-	/// For hints provided in the invoice, we assume the channel has sufficient capacity to accept
-	/// the invoice's full amount, and provide a `channel_capacity_msat` of `None`. In all other
-	/// cases it is set to `Some`, even if we're guessing at the channel value.
-	///
-	/// Your code should be overflow-safe through a `channel_capacity_msat` of 21 million BTC.
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64;
+	/// The channel's capacity (less any other MPP parts that are also being considered for use in
+	/// the same payment) is given by `capacity_msat`. It may be determined from various sources
+	/// such as a chain data, network gossip, or invoice hints. For invoice hints, a capacity near
+	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
+	/// Thus, implementations should be overflow-safe.
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, source: &NodeId, target: &NodeId) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
@@ -101,8 +97,8 @@ pub trait Score $(: $supertrait)* {
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, channel_capacity_msat: Option<u64>, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, channel_capacity_msat, source, target)
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, capacity_msat, source, target)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -369,23 +365,19 @@ impl Default for ScoringParameters {
 
 impl<T: Time> Score for ScorerUsingTime<T> {
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, send_amt_msat: u64, chan_capacity_opt: Option<u64>, _source: &NodeId, _target: &NodeId
+		&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, _source: &NodeId, _target: &NodeId
 	) -> u64 {
 		let failure_penalty_msat = self.channel_failures
 			.get(&short_channel_id)
 			.map_or(0, |value| value.decayed_penalty_msat(self.params.failure_penalty_half_life));
 
 		let mut penalty_msat = self.params.base_penalty_msat + failure_penalty_msat;
-
-		if let Some(chan_capacity_msat) = chan_capacity_opt {
-			let send_1024ths = send_amt_msat.checked_mul(1024).unwrap_or(u64::max_value()) / chan_capacity_msat;
-
-			if send_1024ths > self.params.overuse_penalty_start_1024th as u64 {
-				penalty_msat = penalty_msat.checked_add(
-						(send_1024ths - self.params.overuse_penalty_start_1024th as u64)
-						.checked_mul(self.params.overuse_penalty_msat_per_1024th).unwrap_or(u64::max_value()))
-					.unwrap_or(u64::max_value());
-			}
+		let send_1024ths = send_amt_msat.checked_mul(1024).unwrap_or(u64::max_value()) / capacity_msat;
+		if send_1024ths > self.params.overuse_penalty_start_1024th as u64 {
+			penalty_msat = penalty_msat.checked_add(
+					(send_1024ths - self.params.overuse_penalty_start_1024th as u64)
+					.checked_mul(self.params.overuse_penalty_msat_per_1024th).unwrap_or(u64::max_value()))
+				.unwrap_or(u64::max_value());
 		}
 
 		penalty_msat
@@ -622,10 +614,10 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(1));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -639,16 +631,16 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_064);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_064);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_128);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_192);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_192);
 	}
 
 	#[test]
@@ -662,25 +654,25 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(9));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(1));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
 
 		SinceEpoch::advance(Duration::from_secs(10 * 8));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_001);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_001);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -694,18 +686,18 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		// An unchecked right shift 64 bits or more in ChannelFailure::decayed_penalty_msat would
 		// cause an overflow.
 		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -719,19 +711,19 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_768);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_768);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_384);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_384);
 	}
 
 	#[test]
@@ -745,13 +737,13 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
 
 		let hop = RouteHop {
 			pubkey: PublicKey::from_slice(target.as_slice()).unwrap(),
@@ -762,10 +754,10 @@ mod tests {
 			cltv_expiry_delta: 18,
 		};
 		scorer.payment_path_successful(&[&hop]);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_128);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_064);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_064);
 	}
 
 	#[test]
@@ -781,20 +773,20 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
 
 		scorer.payment_path_failed(&[], 43);
-		assert_eq!(scorer.channel_penalty_msat(43, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(43, 1, 1, &source, &target), 1_512);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
 
 		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
-		assert_eq!(deserialized_scorer.channel_penalty_msat(43, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(43, 1, 1, &source, &target), 1_512);
 	}
 
 	#[test]
@@ -810,7 +802,7 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -818,10 +810,10 @@ mod tests {
 		SinceEpoch::advance(Duration::from_secs(10));
 
 		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_256);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, Some(1), &source, &target), 1_128);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
 	}
 
 	#[test]
@@ -836,11 +828,10 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 1_000, None, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_000, Some(1_024_000), &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256_999, Some(1_024_000), &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 257_000, Some(1_024_000), &source, &target), 100);
-		assert_eq!(scorer.channel_penalty_msat(42, 258_000, Some(1_024_000), &source, &target), 200);
-		assert_eq!(scorer.channel_penalty_msat(42, 512_000, Some(1_024_000), &source, &target), 256 * 100);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_000, 1_024_000, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 256_999, 1_024_000, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 257_000, 1_024_000, &source, &target), 100);
+		assert_eq!(scorer.channel_penalty_msat(42, 258_000, 1_024_000, &source, &target), 200);
+		assert_eq!(scorer.channel_penalty_msat(42, 512_000, 1_024_000, &source, &target), 256 * 100);
 	}
 }
