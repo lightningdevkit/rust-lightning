@@ -3,7 +3,7 @@ name = "lightning"
 version = "0.0.104"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/rust-bitcoin/rust-lightning/"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
 description = """
 A Bitcoin Lightning library in Rust.
 Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
