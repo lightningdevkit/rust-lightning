@@ -52,6 +52,7 @@ use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Rec
 use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
+use util::scid_utils::fake_scid;
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
 use util::logger::{Level, Logger};
 use util::errors::APIError;
@@ -973,6 +974,13 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
 
+	/// LDK puts the [fake scids] that it generates into namespaces, to identify the type of an
+	/// incoming payment. To make it harder for a third-party to identify the type of a payment,
+	/// we encrypt the namespace identifier using these bytes.
+	///
+	/// [fake scids]: crate::util::scid_utils::fake_scid
+	fake_scid_rand_bytes: [u8; 32],
+
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicUsize,
@@ -1307,6 +1315,19 @@ pub enum PaymentSendFailure {
 		/// The payment id for the payment, which is now at least partially pending.
 		payment_id: PaymentId,
 	},
+}
+
+/// Route hints used in constructing invoices for [phantom node payents].
+///
+/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+pub struct PhantomRouteHints {
+	/// The list of channels to be included in the invoice route hints.
+	pub channels: Vec<ChannelDetails>,
+	/// A fake scid used for representing the phantom node's fake channel in generating the invoice
+	/// route hints.
+	pub phantom_scid: u64,
+	/// The pubkey of the real backing node that would ultimately receive the payment.
+	pub real_node_pubkey: PublicKey,
 }
 
 macro_rules! handle_error {
@@ -1690,6 +1711,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
+			fake_scid_rand_bytes: keys_manager.get_secure_random_bytes(),
 
 			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
@@ -5130,6 +5152,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
+	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
+	/// are used when constructing the phantom invoice's route hints.
+	///
+	/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+	pub fn get_phantom_scid(&self) -> u64 {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let best_block = self.best_block.read().unwrap();
+		loop {
+			let scid_candidate = fake_scid::get_phantom_scid(&self.fake_scid_rand_bytes, best_block.height(), &self.genesis_hash, &self.keys_manager);
+			// Ensure the generated scid doesn't conflict with a real channel.
+			match channel_state.short_to_id.entry(scid_candidate) {
+				hash_map::Entry::Occupied(_) => continue,
+				hash_map::Entry::Vacant(_) => return scid_candidate
+			}
+		}
+	}
+
+	/// Gets route hints for use in receiving [phantom node payments].
+	///
+	/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+	pub fn get_phantom_route_hints(&self) -> PhantomRouteHints {
+		PhantomRouteHints {
+			channels: self.list_usable_channels(),
+			phantom_scid: self.get_phantom_scid(),
+			real_node_pubkey: self.get_our_node_id(),
+		}
+	}
+
 	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
@@ -5860,6 +5910,12 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(32, is_public, required),
 });
 
+impl_writeable_tlv_based!(PhantomRouteHints, {
+	(2, channels, vec_type),
+	(4, phantom_scid, required),
+	(6, real_node_pubkey, required),
+});
+
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
 		(0, onion_packet, required),
@@ -6261,7 +6317,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(3, pending_outbound_payments, required),
-			(5, self.our_network_pubkey, required)
+			(5, self.our_network_pubkey, required),
+			(7, self.fake_scid_rand_bytes, required),
 		});
 
 		Ok(())
@@ -6557,11 +6614,16 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> = None;
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
+		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
-			(5, received_network_pubkey, option)
+			(5, received_network_pubkey, option),
+			(7, fake_scid_rand_bytes, option),
 		});
+		if fake_scid_rand_bytes.is_none() {
+			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
+		}
 
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
@@ -6657,6 +6719,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
 
 			our_network_key,
 			our_network_pubkey,
