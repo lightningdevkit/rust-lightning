@@ -2041,7 +2041,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
 							return (claimable_outpoints, (commitment_txid, watch_outputs)); // Corrupted per_commitment_data, fuck this user
 						}
-						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone());
+						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some());
 						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height);
 						claimable_outpoints.push(justice_package);
 					}
@@ -3307,7 +3307,7 @@ mod tests {
 	use ::{check_added_monitors, check_closed_broadcast, check_closed_event, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
 	use chain::{BestBlock, Confirm};
 	use chain::channelmonitor::ChannelMonitor;
-	use chain::package::{WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC, WEIGHT_REVOKED_OUTPUT};
+	use chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::InMemorySigner;
 	use ln::{PaymentPreimage, PaymentHash};
@@ -3568,7 +3568,7 @@ mod tests {
 		macro_rules! sign_input {
 			($sighash_parts: expr, $idx: expr, $amount: expr, $weight: expr, $sum_actual_sigs: expr, $opt_anchors: expr) => {
 				let htlc = HTLCOutputInCommitment {
-					offered: if *$weight == WEIGHT_REVOKED_OFFERED_HTLC || *$weight == WEIGHT_OFFERED_HTLC { true } else { false },
+					offered: if *$weight == weight_revoked_offered_htlc($opt_anchors) || *$weight == weight_offered_htlc($opt_anchors) { true } else { false },
 					amount_msat: 0,
 					cltv_expiry: 2 << 16,
 					payment_hash: PaymentHash([1; 32]),
@@ -3582,9 +3582,9 @@ mod tests {
 				$sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
 				if *$weight == WEIGHT_REVOKED_OUTPUT {
 					$sighash_parts.access_witness($idx).push(vec!(1));
-				} else if *$weight == WEIGHT_REVOKED_OFFERED_HTLC || *$weight == WEIGHT_REVOKED_RECEIVED_HTLC {
+				} else if *$weight == weight_revoked_offered_htlc($opt_anchors) || *$weight == weight_revoked_received_htlc($opt_anchors) {
 					$sighash_parts.access_witness($idx).push(pubkey.clone().serialize().to_vec());
-				} else if *$weight == WEIGHT_RECEIVED_HTLC {
+				} else if *$weight == weight_received_htlc($opt_anchors) {
 					$sighash_parts.access_witness($idx).push(vec![0]);
 				} else {
 					$sighash_parts.access_witness($idx).push(PaymentPreimage([1; 32]).0.to_vec());
@@ -3619,7 +3619,7 @@ mod tests {
 				value: 0,
 			});
 			let base_weight = claim_tx.get_weight();
-			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC];
+			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(opt_anchors), weight_revoked_offered_htlc(opt_anchors), weight_revoked_received_htlc(opt_anchors)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
@@ -3651,7 +3651,7 @@ mod tests {
 				value: 0,
 			});
 			let base_weight = claim_tx.get_weight();
-			let inputs_weight = vec![WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC];
+			let inputs_weight = vec![weight_offered_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
 				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
