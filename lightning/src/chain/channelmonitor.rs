@@ -3564,7 +3564,6 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let privkey = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 		let pubkey = PublicKey::from_secret_key(&secp_ctx, &privkey);
-		let mut sum_actual_sigs = 0;
 
 		macro_rules! sign_input {
 			($sighash_parts: expr, $idx: expr, $amount: expr, $weight: expr, $sum_actual_sigs: expr, $opt_anchors: expr) => {
@@ -3580,7 +3579,7 @@ mod tests {
 				let sig = secp_ctx.sign(&sighash, &privkey);
 				$sighash_parts.access_witness($idx).push(sig.serialize_der().to_vec());
 				$sighash_parts.access_witness($idx)[0].push(SigHashType::All as u8);
-				sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
+				$sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
 				if *$weight == WEIGHT_REVOKED_OUTPUT {
 					$sighash_parts.access_witness($idx).push(vec!(1));
 				} else if *$weight == WEIGHT_REVOKED_OFFERED_HTLC || *$weight == WEIGHT_REVOKED_RECEIVED_HTLC {
@@ -3601,83 +3600,98 @@ mod tests {
 		let txid = Txid::from_hex("56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d").unwrap();
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
-		let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
-		for i in 0..4 {
-			claim_tx.input.push(TxIn {
-				previous_output: BitcoinOutPoint {
-					txid,
-					vout: i,
-				},
-				script_sig: Script::new(),
-				sequence: 0xfffffffd,
-				witness: Vec::new(),
-			});
-		}
-		claim_tx.output.push(TxOut {
-			script_pubkey: script_pubkey.clone(),
-			value: 0,
-		});
-		let base_weight = claim_tx.get_weight();
-		let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC];
-		let mut inputs_total_weight = 2; // count segwit flags
-		{
-			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_weight.iter().enumerate() {
-				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, false);
-				inputs_total_weight += inp;
+		for &opt_anchors in [false, true].iter() {
+			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut sum_actual_sigs = 0;
+			for i in 0..4 {
+				claim_tx.input.push(TxIn {
+					previous_output: BitcoinOutPoint {
+						txid,
+						vout: i,
+					},
+					script_sig: Script::new(),
+					sequence: 0xfffffffd,
+					witness: Vec::new(),
+				});
 			}
+			claim_tx.output.push(TxOut {
+				script_pubkey: script_pubkey.clone(),
+				value: 0,
+			});
+			let base_weight = claim_tx.get_weight();
+			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_OFFERED_HTLC, WEIGHT_REVOKED_RECEIVED_HTLC];
+			let mut inputs_total_weight = 2; // count segwit flags
+			{
+				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				for (idx, inp) in inputs_weight.iter().enumerate() {
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					inputs_total_weight += inp;
+				}
+			}
+			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 		}
-		assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
-		claim_tx.input.clear();
-		sum_actual_sigs = 0;
-		for i in 0..4 {
+		for &opt_anchors in [false, true].iter() {
+			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut sum_actual_sigs = 0;
+			for i in 0..4 {
+				claim_tx.input.push(TxIn {
+					previous_output: BitcoinOutPoint {
+						txid,
+						vout: i,
+					},
+					script_sig: Script::new(),
+					sequence: 0xfffffffd,
+					witness: Vec::new(),
+				});
+			}
+			claim_tx.output.push(TxOut {
+				script_pubkey: script_pubkey.clone(),
+				value: 0,
+			});
+			let base_weight = claim_tx.get_weight();
+			let inputs_weight = vec![WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC];
+			let mut inputs_total_weight = 2; // count segwit flags
+			{
+				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				for (idx, inp) in inputs_weight.iter().enumerate() {
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					inputs_total_weight += inp;
+				}
+			}
+			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
+		}
+
+		// Justice tx with 1 revoked HTLC-Success tx output
+		for &opt_anchors in [false, true].iter() {
+			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
 				previous_output: BitcoinOutPoint {
 					txid,
-					vout: i,
+					vout: 0,
 				},
 				script_sig: Script::new(),
 				sequence: 0xfffffffd,
 				witness: Vec::new(),
 			});
-		}
-		let base_weight = claim_tx.get_weight();
-		let inputs_weight = vec![WEIGHT_OFFERED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC, WEIGHT_RECEIVED_HTLC];
-		let mut inputs_total_weight = 2; // count segwit flags
-		{
-			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_weight.iter().enumerate() {
-				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, false);
-				inputs_total_weight += inp;
+			claim_tx.output.push(TxOut {
+				script_pubkey: script_pubkey.clone(),
+				value: 0,
+			});
+			let base_weight = claim_tx.get_weight();
+			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
+			let mut inputs_total_weight = 2; // count segwit flags
+			{
+				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				for (idx, inp) in inputs_weight.iter().enumerate() {
+					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
+					inputs_total_weight += inp;
+				}
 			}
+			assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
 		}
-		assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
-
-		// Justice tx with 1 revoked HTLC-Success tx output
-		claim_tx.input.clear();
-		sum_actual_sigs = 0;
-		claim_tx.input.push(TxIn {
-			previous_output: BitcoinOutPoint {
-				txid,
-				vout: 0,
-			},
-			script_sig: Script::new(),
-			sequence: 0xfffffffd,
-			witness: Vec::new(),
-		});
-		let base_weight = claim_tx.get_weight();
-		let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
-		let mut inputs_total_weight = 2; // count segwit flags
-		{
-			let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
-			for (idx, inp) in inputs_weight.iter().enumerate() {
-				sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, false);
-				inputs_total_weight += inp;
-			}
-		}
-		assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
 	}
 
 	// Further testing is done in the ChannelManager integration tests.
