@@ -32,6 +32,16 @@ pub fn block_from_scid(short_channel_id: &u64) -> u32 {
 	return (short_channel_id >> 40) as u32;
 }
 
+/// Extracts the tx index (bytes [2..4]) from the `short_channel_id`
+pub fn tx_index_from_scid(short_channel_id: &u64) -> u32 {
+	return ((short_channel_id >> 16) & MAX_SCID_TX_INDEX) as u32;
+}
+
+/// Extracts the vout (bytes [0..2]) from the `short_channel_id`
+pub fn vout_from_scid(short_channel_id: &u64) -> u16 {
+	return ((short_channel_id) & MAX_SCID_VOUT_INDEX) as u16;
+}
+
 /// Constructs a `short_channel_id` using the components pieces. Results in an error
 /// if the block height, tx index, or vout index overflow the maximum sizes.
 pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64, ShortChannelIdError> {
@@ -61,6 +71,24 @@ mod tests {
 		assert_eq!(block_from_scid(&0x000001_ffffff_ffff), 1);
 		assert_eq!(block_from_scid(&0x800000_ffffff_ffff), 0x800000);
 		assert_eq!(block_from_scid(&0xffffff_ffffff_ffff), 0xffffff);
+	}
+
+	#[test]
+	fn test_tx_index_from_scid() {
+		assert_eq!(tx_index_from_scid(&0x000000_000000_0000), 0);
+		assert_eq!(tx_index_from_scid(&0x000000_000001_0000), 1);
+		assert_eq!(tx_index_from_scid(&0xffffff_000001_ffff), 1);
+		assert_eq!(tx_index_from_scid(&0xffffff_800000_ffff), 0x800000);
+		assert_eq!(tx_index_from_scid(&0xffffff_ffffff_ffff), 0xffffff);
+	}
+
+	#[test]
+	fn test_vout_from_scid() {
+		assert_eq!(vout_from_scid(&0x000000_000000_0000), 0);
+		assert_eq!(vout_from_scid(&0x000000_000000_0001), 1);
+		assert_eq!(vout_from_scid(&0xffffff_ffffff_0001), 1);
+		assert_eq!(vout_from_scid(&0xffffff_ffffff_8000), 0x8000);
+		assert_eq!(vout_from_scid(&0xffffff_ffffff_ffff), 0xffff);
 	}
 
 	#[test]
