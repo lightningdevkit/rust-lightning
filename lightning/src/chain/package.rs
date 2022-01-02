@@ -841,7 +841,7 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 
 #[cfg(test)]
 mod tests {
-	use chain::package::{CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT};
+	use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
 	use chain::Txid;
 	use ln::chan_utils::HTLCOutputInCommitment;
 	use ln::{PaymentPreimage, PaymentHash};
@@ -873,6 +873,19 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
 				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, dumb_point, dumb_point, htlc))
+			}
+		}
+	}
+
+	macro_rules! dumb_counterparty_offered_output {
+		($secp_ctx: expr, $amt: expr) => {
+			{
+				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
+				let hash = PaymentHash([1; 32]);
+				let preimage = PaymentPreimage([2;32]);
+				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 1000, payment_hash: hash, transaction_output_index: None };
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, dumb_point, dumb_point, preimage, htlc))
 			}
 		}
 	}
@@ -1041,13 +1054,32 @@ mod tests {
 	fn test_package_weight() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
-		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR
-		// + witness marker (2) + WEIGHT_REVOKED_OUTPUT
-		for &opt_anchors in [false, true].iter() {
-			assert_eq!(package.package_weight(&Script::new(), opt_anchors), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
+		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR + witness marker (2)
+		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2;
+
+		{
+			let revk_outp = dumb_revk_output!(secp_ctx);
+			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+			}
+		}
+
+		{
+			let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
+			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_received_htlc(opt_anchors) as usize);
+			}
+		}
+
+		{
+			let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000);
+			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_offered_htlc(opt_anchors) as usize);
+			}
 		}
 	}
 }
