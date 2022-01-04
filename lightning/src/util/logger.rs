@@ -17,6 +17,9 @@
 use core::cmp;
 use core::fmt;
 
+#[cfg(c_bindings)]
+use prelude::*; // Needed for String
+
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
 /// An enum representing the available verbosity levels of the logger.
