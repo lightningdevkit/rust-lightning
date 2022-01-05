@@ -22,7 +22,7 @@ use ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONC
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS };
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
-use ln::chan_utils::{HTLC_SUCCESS_TX_WEIGHT, HTLC_TIMEOUT_TX_WEIGHT, HTLCOutputInCommitment};
+use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use routing::network_graph::RoutingFees;
 use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -1608,7 +1608,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt, InitFeatures::known(), InitFeatures::known());
 
 	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
-		+ feerate_per_kw as u64 * HTLC_SUCCESS_TX_WEIGHT / 1000 * 1000 - 1;
+		+ feerate_per_kw as u64 * htlc_success_tx_weight(opt_anchors) / 1000 * 1000 - 1;
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
 	// commitment transaction fee.
@@ -9383,6 +9383,8 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 
+	let opt_anchors = false;
+
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 1_000_000, 42);
 
 	if on_holder_tx {
@@ -9407,10 +9409,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		let chan = chan_lock.by_id.get(&channel_id).unwrap();
 		chan.get_dust_buffer_feerate(None) as u64
 	};
-	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * HTLC_TIMEOUT_TX_WEIGHT / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
-	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * HTLC_SUCCESS_TX_WEIGHT / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
 	let dust_htlc_on_counterparty_tx: u64 = 25;

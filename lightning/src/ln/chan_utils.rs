@@ -42,12 +42,10 @@ use chain;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
 
-pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
-pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
-
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 	const HTLC_SUCCESS_ANCHOR_TX_WEIGHT: u64 = 706;
 	if opt_anchors { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
 }
@@ -55,6 +53,7 @@ pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
 /// Gets the weight for an HTLC-Timeout transaction.
 #[inline]
 pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
 	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
 }
