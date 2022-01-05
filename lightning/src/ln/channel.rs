@@ -1327,10 +1327,11 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.opt_anchors.is_some());
+		let anchors_val = if self.channel_transaction_parameters.opt_anchors.is_some() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
-			(value_to_self_msat / 1000 - total_fee_sat as i64, value_to_remote_msat / 1000)
+			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
 		} else {
-			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - total_fee_sat as i64)
+			(value_to_self_msat / 1000, value_to_remote_msat / 1000 - anchors_val - total_fee_sat as i64)
 		};
 
 		let mut value_to_a = if local { value_to_self } else { value_to_remote };
