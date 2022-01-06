@@ -118,6 +118,11 @@ jobs:
           # check if there is a conflict between no-std and the c_bindings cfg
           RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
           cd ..
+          cd lightning-invoice
+          cargo test --verbose --color always --no-default-features --features no-std
+          # check if there is a conflict between no-std and the default std feature
+          cargo test --verbose --color always --features no-std
+          cd ..
       - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
         if: "matrix.build-no-std && matrix.coverage"
         run: |

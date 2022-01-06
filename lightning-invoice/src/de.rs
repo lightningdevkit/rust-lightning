@@ -1,15 +1,17 @@
+#[cfg(feature = "std")]
 use std::error;
-use std::fmt;
-use std::fmt::{Display, Formatter};
-use std::num::ParseIntError;
-use std::str;
-use std::str::FromStr;
+use core::fmt;
+use core::fmt::{Display, Formatter};
+use core::num::ParseIntError;
+use core::str;
+use core::str::FromStr;
 
 use bech32;
 use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
+use crate::prelude::*;
 use lightning::ln::PaymentSecret;
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
@@ -28,7 +30,7 @@ use self::hrp_sm::parse_hrp;
 
 /// State machine to parse the hrp
 mod hrp_sm {
-	use std::ops::Range;
+	use core::ops::Range;
 
 	#[derive(PartialEq, Eq, Debug)]
 	enum States {
@@ -723,8 +725,10 @@ impl Display for ParseOrSemanticError {
 	}
 }
 
+#[cfg(feature = "std")]
 impl error::Error for ParseError {}
 
+#[cfg(feature = "std")]
 impl error::Error for ParseOrSemanticError {}
 
 macro_rules! from_error {

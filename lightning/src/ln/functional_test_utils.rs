@@ -22,7 +22,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
-use util::test_utils::TestChainMonitor;
+use util::test_utils::{panicking, TestChainMonitor};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::config::UserConfig;
@@ -40,7 +40,7 @@ use bitcoin::secp256k1::key::PublicKey;
 use io;
 use prelude::*;
 use core::cell::RefCell;
-use std::rc::Rc;
+use alloc::rc::Rc;
 use sync::{Arc, Mutex};
 use core::mem;
 
@@ -231,7 +231,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
-		if !::std::thread::panicking() {
+		if !panicking() {
 			// Check that we processed all pending events
 			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
 			assert!(self.node.get_and_clear_pending_events().is_empty());
