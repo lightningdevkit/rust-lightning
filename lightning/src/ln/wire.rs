@@ -119,15 +119,20 @@ impl<T> Message<T> where T: core::fmt::Debug + Type {
 /// # Errors
 ///
 /// Returns an error if the message payload code not be decoded as the specified type.
-pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(
-	buffer: &mut R,
-	custom_reader: H,
-) -> Result<Message<T>, msgs::DecodeError>
-where
+pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_reader: H)
+-> Result<Message<T>, (msgs::DecodeError, Option<u16>)> where
 	T: core::fmt::Debug + Type + Writeable,
 	H::Target: CustomMessageReader<CustomMessage = T>,
 {
-	let message_type = <u16 as Readable>::read(buffer)?;
+	let message_type = <u16 as Readable>::read(buffer).map_err(|e| (e, None))?;
+	do_read(buffer, message_type, custom_reader).map_err(|e| (e, Some(message_type)))
+}
+
+fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u16, custom_reader: H)
+-> Result<Message<T>, msgs::DecodeError> where
+	T: core::fmt::Debug + Type + Writeable,
+	H::Target: CustomMessageReader<CustomMessage = T>,
+{
 	match message_type {
 		msgs::Init::TYPE => {
 			Ok(Message::Init(Readable::read(buffer)?))

@@ -902,26 +902,31 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 											Ok(x) => x,
 											Err(e) => {
 												match e {
-													msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::UnknownRequiredFeature => {
+													(msgs::DecodeError::UnknownRequiredFeature, _) => {
 														log_gossip!(self.logger, "Got a channel/node announcement with an unknown required feature flag, you may want to update!");
 														continue;
 													}
-													msgs::DecodeError::InvalidValue => {
-														log_debug!(self.logger, "Got an invalid value while deserializing message");
-														return Err(PeerHandleError { no_connection_possible: false });
-													}
-													msgs::DecodeError::ShortRead => {
-														log_debug!(self.logger, "Deserialization failed due to shortness of message");
-														return Err(PeerHandleError { no_connection_possible: false });
-													}
-													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::UnsupportedCompression => {
+													(msgs::DecodeError::UnsupportedCompression, _) => {
 														log_gossip!(self.logger, "We don't support zlib-compressed message fields, sending a warning and ignoring message");
 														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unsupported message compression: zlib".to_owned() });
 														continue;
 													}
+													(_, Some(ty)) if is_gossip_msg(ty) => {
+														log_gossip!(self.logger, "Got an invalid value while deserializing a gossip message");
+														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
+														continue;
+													}
+													(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { no_connection_possible: false }),
+													(msgs::DecodeError::InvalidValue, _) => {
+														log_debug!(self.logger, "Got an invalid value while deserializing message");
+														return Err(PeerHandleError { no_connection_possible: false });
+													}
+													(msgs::DecodeError::ShortRead, _) => {
+														log_debug!(self.logger, "Deserialization failed due to shortness of message");
+														return Err(PeerHandleError { no_connection_possible: false });
+													}
+													(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { no_connection_possible: false }),
+													(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { no_connection_possible: false }),
 												}
 											}
 										};
