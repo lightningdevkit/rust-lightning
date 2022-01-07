@@ -33,7 +33,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 
 use prelude::*;
-use core::{cmp, fmt};
+use core::fmt;
 use core::fmt::Debug;
 use io::{self, Read};
 use io_extras::read_to_end;
@@ -1529,10 +1529,11 @@ impl Readable for ErrorMessage {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
-				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
-				let data = read_to_end(r)?;
-				sz = cmp::min(data.len(), sz);
-				match String::from_utf8(data[..sz as usize].to_vec()) {
+				let sz: usize = <u16 as Readable>::read(r)? as usize;
+				let mut data = Vec::with_capacity(sz);
+				data.resize(sz, 0);
+				r.read_exact(&mut data)?;
+				match String::from_utf8(data) {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
 				}
@@ -1555,10 +1556,11 @@ impl Readable for WarningMessage {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
-				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
-				let data = read_to_end(r)?;
-				sz = cmp::min(data.len(), sz);
-				match String::from_utf8(data[..sz as usize].to_vec()) {
+				let sz: usize = <u16 as Readable>::read(r)? as usize;
+				let mut data = Vec::with_capacity(sz);
+				data.resize(sz, 0);
+				r.read_exact(&mut data)?;
+				match String::from_utf8(data) {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
 				}
