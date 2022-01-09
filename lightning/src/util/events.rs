@@ -360,6 +360,11 @@ pub enum Event {
 		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
 		/// transaction.
 		claim_from_onchain_tx: bool,
+		/// The channel_id of the channel which sent us the payment.  If the channel has been
+		/// force-closed this will be None
+		from_channel_id: Option<[u8; 32]>,
+		/// The channel_id of the channel which we forwarded the payment along
+		to_channel_id: [u8; 32],
 	},
 	/// Used to indicate that a channel with the given `channel_id` is in the process of closure.
 	ChannelClosed  {
@@ -478,13 +483,20 @@ impl Writeable for Event {
 					(0, VecWriteWrapper(outputs), required),
 				});
 			},
-			&Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {
+			&Event::PaymentForwarded {
+				fee_earned_msat,
+				claim_from_onchain_tx,
+				from_channel_id,
+				to_channel_id,
+			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, fee_earned_msat, option),
 					(2, claim_from_onchain_tx, required),
+					(4, from_channel_id, option),
+					(6, to_channel_id, required)
 				});
-			},
+			}
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
 				9u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -638,11 +650,20 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut fee_earned_msat = None;
 					let mut claim_from_onchain_tx = false;
+					let mut from_channel_id = None;
+					let mut to_channel_id = [0; 32];
 					read_tlv_fields!(reader, {
 						(0, fee_earned_msat, option),
 						(2, claim_from_onchain_tx, required),
+						(4, from_channel_id, option),
+						(6, to_channel_id, required)
 					});
-					Ok(Some(Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx }))
+					Ok(Some(Event::PaymentForwarded {
+						fee_earned_msat,
+						claim_from_onchain_tx,
+						from_channel_id,
+						to_channel_id,
+					}))
 				};
 				f()
 			},

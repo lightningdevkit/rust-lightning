@@ -167,12 +167,14 @@ pub struct HTLCUpdate {
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) onchain_value_satoshis: Option<u64>,
+	pub(crate) forward_channel_id: [u8; 32],
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, onchain_value_satoshis, option),
 	(2, source, required),
 	(4, payment_preimage, option),
+	(6, forward_channel_id, required)
 });
 
 /// If an HTLC expires within this many blocks, don't try to claim it in a shared transaction,
@@ -2512,6 +2514,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						onchain_value_satoshis,
+						forward_channel_id: self.funding_info.0.to_channel_id(),
 					}));
 					if let Some(idx) = input_idx {
 						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { input_idx: idx, payment_preimage: None });
@@ -2851,6 +2854,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							onchain_value_satoshis: Some(amount_msat / 1000),
+							forward_channel_id: self.funding_info.0.to_channel_id(),
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -2872,6 +2876,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							onchain_value_satoshis: Some(amount_msat / 1000),
+							forward_channel_id: self.funding_info.0.to_channel_id(),
 						}));
 					}
 				} else {
