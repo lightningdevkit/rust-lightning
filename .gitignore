@@ -8,3 +8,5 @@ lightning-c-bindings/a.out
 Cargo.lock
 .idea
 lightning/target
+/examples/Cargo.lock
+/examples/target

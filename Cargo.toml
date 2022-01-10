@@ -7,6 +7,8 @@ members = [
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",
+
+    "examples/*"
 ]
 
 # Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it.

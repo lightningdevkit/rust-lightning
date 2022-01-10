@@ -22,25 +22,31 @@ jobs:
           - toolchain: stable
             build-net-tokio: true
             build-no-std: true
+            build-examples: true
           - toolchain: stable
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+            build-examples: true
           - toolchain: beta
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+            build-examples: true
           - toolchain: stable
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
+            build-examples: true
           - toolchain: beta
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
+            build-examples: true  
           - toolchain: beta
             build-net-tokio: true
             build-no-std: true
+            build-examples: true
           - toolchain: 1.36.0
             build-no-std: false
             test-log-variants: true
@@ -195,6 +201,15 @@ jobs:
           # Maybe if codecov wasn't broken we wouldn't need to do this...
           token: f421b687-4dc2-4387-ac3d-dc3b2528af57
           fail_ci_if_error: true
+      - name: Build examples
+        if: matrix.build-examples
+        shell: bash
+        run: |
+          cd examples
+          for FILE in */; do 
+            cd $FILE
+            cargo build --verbose --color always
+          done
 
   benchmark:
     runs-on: ubuntu-latest

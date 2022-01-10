@@ -53,12 +53,12 @@ impl RpcClient {
 				match e.get_ref().unwrap().downcast_ref::<HttpError>() {
 					Some(http_error) => match JsonResponse::try_from(http_error.contents.clone()) {
 						Ok(JsonResponse(response)) => response,
-						Err(_) => Err(e)?,
+						Err(_) => return Err(e),
 					},
-					None => Err(e)?,
+					None => return Err(e),
 				}
 			},
-			Err(e) => Err(e)?,
+			Err(e) => return Err(e),
 		};
 
 		if !response.is_object() {

@@ -1,0 +1,25 @@
+[package]
+name = "bitcoind-rpc-client"
+version = "0.1.0"
+authors = ["Conor Okus <conor@squarecrypto.org>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+lightning = { path = "../../lightning" }
+lightning-block-sync = { path = "../../lightning-block-sync", features = ["rpc-client"]}
+lightning-net-tokio = { path = "../../lightning-net-tokio" }
+
+base64 = "0.13.0"
+bitcoin = "0.27"
+bitcoin-bech32 = "0.12"
+bech32 = "0.8"
+hex = "0.3"
+serde_json = { version = "1.0" }
+tokio = { version = "1.5", features = [ "io-util", "macros", "rt", "rt-multi-thread", "sync", "net", "time" ] }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
