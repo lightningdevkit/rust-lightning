@@ -518,6 +518,12 @@ pub(super) enum HTLCFailReason {
 	}
 }
 
+struct ReceiveError {
+	err_code: u16,
+	err_data: Vec<u8>,
+	msg: &'static str,
+}
+
 /// Return value for claim_funds_from_hop
 enum ClaimFundsFromHop {
 	PrevHopForceClosed,
@@ -2043,6 +2049,102 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	fn construct_recv_pending_htlc_info(&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32],
+		payment_hash: PaymentHash, amt_msat: u64, cltv_expiry: u32) -> Result<PendingHTLCInfo, ReceiveError>
+	{
+		// final_incorrect_cltv_expiry
+		if hop_data.outgoing_cltv_value != cltv_expiry {
+			return Err(ReceiveError {
+				msg: "Upstream node set CLTV to the wrong value",
+				err_code: 18,
+				err_data: byte_utils::be32_to_array(cltv_expiry).to_vec()
+			})
+		}
+		// final_expiry_too_soon
+		// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
+		// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
+		// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
+		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
+		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
+		if (hop_data.outgoing_cltv_value as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1	{
+			return Err(ReceiveError {
+				err_code: 17,
+				err_data: Vec::new(),
+				msg: "The final CLTV expiry is too soon to handle",
+			});
+		}
+		if hop_data.amt_to_forward > amt_msat {
+			return Err(ReceiveError {
+				err_code: 19,
+				err_data: byte_utils::be64_to_array(amt_msat).to_vec(),
+				msg: "Upstream node sent less than we were supposed to receive in payment",
+			});
+		}
+
+		let routing = match hop_data.format {
+			msgs::OnionHopDataFormat::Legacy { .. } => {
+				return Err(ReceiveError {
+					err_code: 0x4000|0x2000|3,
+					err_data: Vec::new(),
+					msg: "We require payment_secrets",
+				});
+			},
+			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
+				return Err(ReceiveError {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "Got non final data with an HMAC of 0",
+				});
+			},
+			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+				if payment_data.is_some() && keysend_preimage.is_some() {
+					return Err(ReceiveError {
+						err_code: 0x4000|22,
+						err_data: Vec::new(),
+						msg: "We don't support MPP keysend payments",
+					});
+				} else if let Some(data) = payment_data {
+					PendingHTLCRouting::Receive {
+						payment_data: data,
+						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+					}
+				} else if let Some(payment_preimage) = keysend_preimage {
+					// We need to check that the sender knows the keysend preimage before processing this
+					// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
+					// could discover the final destination of X, by probing the adjacent nodes on the route
+					// with a keysend payment of identical payment hash to X and observing the processing
+					// time discrepancies due to a hash collision with X.
+					let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+					if hashed_preimage != payment_hash {
+						return Err(ReceiveError {
+							err_code: 0x4000|22,
+							err_data: Vec::new(),
+							msg: "Payment preimage didn't match payment hash",
+						});
+					}
+
+					PendingHTLCRouting::ReceiveKeysend {
+						payment_preimage,
+						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+					}
+				} else {
+					return Err(ReceiveError {
+						err_code: 0x4000|0x2000|3,
+						err_data: Vec::new(),
+						msg: "We require payment_secrets",
+					});
+				}
+			},
+		};
+		Ok(PendingHTLCInfo {
+			routing,
+			payment_hash,
+			incoming_shared_secret: shared_secret,
+			amt_to_forward: amt_msat,
+			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+		})
+	}
+
 	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<Signer>>) {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
@@ -2108,68 +2210,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let pending_forward_info = match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
-				// final_expiry_too_soon
-				// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
-				// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
-				// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
-				// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
-				// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
-				if (msg.cltv_expiry as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
-					return_err!("The final CLTV expiry is too soon to handle", 17, &[0;0]);
-				}
-				// final_incorrect_htlc_amount
-				if next_hop_data.amt_to_forward > msg.amount_msat {
-					return_err!("Upstream node sent less than we were supposed to receive in payment", 19, &byte_utils::be64_to_array(msg.amount_msat));
-				}
-				// final_incorrect_cltv_expiry
-				if next_hop_data.outgoing_cltv_value != msg.cltv_expiry {
-					return_err!("Upstream node set CLTV to the wrong value", 18, &byte_utils::be32_to_array(msg.cltv_expiry));
-				}
-
-				let routing = match next_hop_data.format {
-					msgs::OnionHopDataFormat::Legacy { .. } => return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]),
-					msgs::OnionHopDataFormat::NonFinalNode { .. } => return_err!("Got non final data with an HMAC of 0", 0x4000 | 22, &[0;0]),
-					msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
-						if payment_data.is_some() && keysend_preimage.is_some() {
-							return_err!("We don't support MPP keysend payments", 0x4000|22, &[0;0]);
-						} else if let Some(data) = payment_data {
-							PendingHTLCRouting::Receive {
-								payment_data: data,
-								incoming_cltv_expiry: msg.cltv_expiry,
-							}
-						} else if let Some(payment_preimage) = keysend_preimage {
-							// We need to check that the sender knows the keysend preimage before processing this
-							// payment further. Otherwise, an intermediary routing hop forwarding non-keysend-HTLC X
-							// could discover the final destination of X, by probing the adjacent nodes on the route
-							// with a keysend payment of identical payment hash to X and observing the processing
-							// time discrepancies due to a hash collision with X.
-							let hashed_preimage = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
-							if hashed_preimage != msg.payment_hash {
-								return_err!("Payment preimage didn't match payment hash", 0x4000|22, &[0;0]);
-							}
-
-							PendingHTLCRouting::ReceiveKeysend {
-								payment_preimage,
-								incoming_cltv_expiry: msg.cltv_expiry,
-							}
-						} else {
-							return_err!("We require payment_secrets", 0x4000|0x2000|3, &[0;0]);
-						}
+				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry) {
+					Ok(info) => {
+						// Note that we could obviously respond immediately with an update_fulfill_htlc
+						// message, however that would leak that we are the recipient of this payment, so
+						// instead we stay symmetric with the forwarding case, only responding (after a
+						// delay) once they've send us a commitment_signed!
+						PendingHTLCStatus::Forward(info)
 					},
-				};
-
-				// Note that we could obviously respond immediately with an update_fulfill_htlc
-				// message, however that would leak that we are the recipient of this payment, so
-				// instead we stay symmetric with the forwarding case, only responding (after a
-				// delay) once they've send us a commitment_signed!
-
-				PendingHTLCStatus::Forward(PendingHTLCInfo {
-					routing,
-					payment_hash: msg.payment_hash.clone(),
-					incoming_shared_secret: shared_secret,
-					amt_to_forward: next_hop_data.amt_to_forward,
-					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
-				})
+					Err(ReceiveError { err_code, err_data, msg }) => return_err!(msg, err_code, &err_data)
+				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
 				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
