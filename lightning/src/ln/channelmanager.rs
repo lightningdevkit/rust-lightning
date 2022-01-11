@@ -613,8 +613,14 @@ impl MsgHandleErrInternal {
 		Self {
 			err: match err {
 				ChannelError::Warn(msg) =>  LightningError {
-					err: msg,
-					action: msgs::ErrorAction::IgnoreError,
+					err: msg.clone(),
+					action: msgs::ErrorAction::SendWarningMessage {
+						msg: msgs::WarningMessage {
+							channel_id,
+							data: msg
+						},
+						log_level: Level::Warn,
+					},
 				},
 				ChannelError::Ignore(msg) => LightningError {
 					err: msg,
@@ -1373,9 +1379,7 @@ macro_rules! convert_chan_err {
 	($self: ident, $err: expr, $short_to_id: expr, $channel: expr, $channel_id: expr) => {
 		match $err {
 			ChannelError::Warn(msg) => {
-				//TODO: Once warning messages are merged, we should send a `warning` message to our
-				//peer here.
-				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))
+				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id.clone()))
 			},
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), $channel_id.clone()))

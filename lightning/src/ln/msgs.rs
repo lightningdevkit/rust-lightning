@@ -33,7 +33,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 
 use prelude::*;
-use core::{cmp, fmt};
+use core::fmt;
 use core::fmt::Debug;
 use io::{self, Read};
 use io_extras::read_to_end;
@@ -80,12 +80,29 @@ pub struct Init {
 /// An error message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
 pub struct ErrorMessage {
-	/// The channel ID involved in the error
+	/// The channel ID involved in the error.
+	///
+	/// All-0s indicates a general error unrelated to a specific channel, after which all channels
+	/// with the sending peer should be closed.
 	pub channel_id: [u8; 32],
 	/// A possibly human-readable error description.
-	/// The string should be sanitized before it is used (e.g. emitted to logs
-	/// or printed to stdout).  Otherwise, a well crafted error message may trigger a security
-	/// vulnerability in the terminal emulator or the logging subsystem.
+	/// The string should be sanitized before it is used (e.g. emitted to logs or printed to
+	/// stdout). Otherwise, a well crafted error message may trigger a security vulnerability in
+	/// the terminal emulator or the logging subsystem.
+	pub data: String,
+}
+
+/// A warning message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq)]
+pub struct WarningMessage {
+	/// The channel ID involved in the warning.
+	///
+	/// All-0s indicates a warning unrelated to a specific channel.
+	pub channel_id: [u8; 32],
+	/// A possibly human-readable warning description.
+	/// The string should be sanitized before it is used (e.g. emitted to logs or printed to
+	/// stdout). Otherwise, a well crafted error message may trigger a security vulnerability in
+	/// the terminal emulator or the logging subsystem.
 	pub data: String,
 }
 
@@ -714,7 +731,16 @@ pub enum ErrorAction {
 	/// The peer did something incorrect. Tell them.
 	SendErrorMessage {
 		/// The message to send.
-		msg: ErrorMessage
+		msg: ErrorMessage,
+	},
+	/// The peer did something incorrect. Tell them without closing any channels.
+	SendWarningMessage {
+		/// The message to send.
+		msg: WarningMessage,
+		/// The peer may have done something harmless that we weren't able to meaningfully process,
+		/// though we should still tell them about it.
+		/// If this event is logged, log it at the given level.
+		log_level: logger::Level,
 	},
 }
 
@@ -1503,10 +1529,38 @@ impl Readable for ErrorMessage {
 		Ok(Self {
 			channel_id: Readable::read(r)?,
 			data: {
-				let mut sz: usize = <u16 as Readable>::read(r)? as usize;
-				let data = read_to_end(r)?;
-				sz = cmp::min(data.len(), sz);
-				match String::from_utf8(data[..sz as usize].to_vec()) {
+				let sz: usize = <u16 as Readable>::read(r)? as usize;
+				let mut data = Vec::with_capacity(sz);
+				data.resize(sz, 0);
+				r.read_exact(&mut data)?;
+				match String::from_utf8(data) {
+					Ok(s) => s,
+					Err(_) => return Err(DecodeError::InvalidValue),
+				}
+			}
+		})
+	}
+}
+
+impl Writeable for WarningMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.channel_id.write(w)?;
+		(self.data.len() as u16).write(w)?;
+		w.write_all(self.data.as_bytes())?;
+		Ok(())
+	}
+}
+
+impl Readable for WarningMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self {
+			channel_id: Readable::read(r)?,
+			data: {
+				let sz: usize = <u16 as Readable>::read(r)? as usize;
+				let mut data = Vec::with_capacity(sz);
+				data.resize(sz, 0);
+				r.read_exact(&mut data)?;
+				match String::from_utf8(data) {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
 				}
@@ -2397,6 +2451,17 @@ mod tests {
 	#[test]
 	fn encoding_error() {
 		let error = msgs::ErrorMessage {
+			channel_id: [2; 32],
+			data: String::from("rust-lightning"),
+		};
+		let encoded_value = error.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000e727573742d6c696768746e696e67").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_warning() {
+		let error = msgs::WarningMessage {
 			channel_id: [2; 32],
 			data: String::from("rust-lightning"),
 		};

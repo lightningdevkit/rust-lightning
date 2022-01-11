@@ -35,6 +35,7 @@ pub trait CustomMessageReader {
 pub(crate) enum Message<T> where T: core::fmt::Debug + Type {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
+	Warning(msgs::WarningMessage),
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
 	OpenChannel(msgs::OpenChannel),
@@ -74,6 +75,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type {
 		match self {
 			&Message::Init(ref msg) => msg.type_id(),
 			&Message::Error(ref msg) => msg.type_id(),
+			&Message::Warning(ref msg) => msg.type_id(),
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
@@ -117,21 +119,29 @@ impl<T> Message<T> where T: core::fmt::Debug + Type {
 /// # Errors
 ///
 /// Returns an error if the message payload code not be decoded as the specified type.
-pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(
-	buffer: &mut R,
-	custom_reader: H,
-) -> Result<Message<T>, msgs::DecodeError>
-where
+pub(crate) fn read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, custom_reader: H)
+-> Result<Message<T>, (msgs::DecodeError, Option<u16>)> where
 	T: core::fmt::Debug + Type + Writeable,
 	H::Target: CustomMessageReader<CustomMessage = T>,
 {
-	let message_type = <u16 as Readable>::read(buffer)?;
+	let message_type = <u16 as Readable>::read(buffer).map_err(|e| (e, None))?;
+	do_read(buffer, message_type, custom_reader).map_err(|e| (e, Some(message_type)))
+}
+
+fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u16, custom_reader: H)
+-> Result<Message<T>, msgs::DecodeError> where
+	T: core::fmt::Debug + Type + Writeable,
+	H::Target: CustomMessageReader<CustomMessage = T>,
+{
 	match message_type {
 		msgs::Init::TYPE => {
 			Ok(Message::Init(Readable::read(buffer)?))
 		},
 		msgs::ErrorMessage::TYPE => {
 			Ok(Message::Error(Readable::read(buffer)?))
+		},
+		msgs::WarningMessage::TYPE => {
+			Ok(Message::Warning(Readable::read(buffer)?))
 		},
 		msgs::Ping::TYPE => {
 			Ok(Message::Ping(Readable::read(buffer)?))
@@ -262,6 +272,10 @@ impl Encode for msgs::Init {
 
 impl Encode for msgs::ErrorMessage {
 	const TYPE: u16 = 17;
+}
+
+impl Encode for msgs::WarningMessage {
+	const TYPE: u16 = 1;
 }
 
 impl Encode for msgs::Ping {

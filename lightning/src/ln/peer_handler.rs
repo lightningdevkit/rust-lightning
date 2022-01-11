@@ -821,6 +821,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 													self.enqueue_message(peer, &msg);
 													continue;
 												},
+												msgs::ErrorAction::SendWarningMessage { msg, log_level } => {
+													log_given_level!(self.logger, log_level, "Error handling message{}; sending warning message with: {}", OptionalFromDebugger(&peer.their_node_id), e.err);
+													self.enqueue_message(peer, &msg);
+													continue;
+												},
 											}
 										}
 									}
@@ -897,25 +902,31 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 											Ok(x) => x,
 											Err(e) => {
 												match e {
-													msgs::DecodeError::UnknownVersion => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::UnknownRequiredFeature => {
+													(msgs::DecodeError::UnknownRequiredFeature, _) => {
 														log_gossip!(self.logger, "Got a channel/node announcement with an unknown required feature flag, you may want to update!");
 														continue;
 													}
-													msgs::DecodeError::InvalidValue => {
+													(msgs::DecodeError::UnsupportedCompression, _) => {
+														log_gossip!(self.logger, "We don't support zlib-compressed message fields, sending a warning and ignoring message");
+														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unsupported message compression: zlib".to_owned() });
+														continue;
+													}
+													(_, Some(ty)) if is_gossip_msg(ty) => {
+														log_gossip!(self.logger, "Got an invalid value while deserializing a gossip message");
+														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
+														continue;
+													}
+													(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { no_connection_possible: false }),
+													(msgs::DecodeError::InvalidValue, _) => {
 														log_debug!(self.logger, "Got an invalid value while deserializing message");
 														return Err(PeerHandleError { no_connection_possible: false });
 													}
-													msgs::DecodeError::ShortRead => {
+													(msgs::DecodeError::ShortRead, _) => {
 														log_debug!(self.logger, "Deserialization failed due to shortness of message");
 														return Err(PeerHandleError { no_connection_possible: false });
 													}
-													msgs::DecodeError::BadLengthDescriptor => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::Io(_) => return Err(PeerHandleError { no_connection_possible: false }),
-													msgs::DecodeError::UnsupportedCompression => {
-														log_gossip!(self.logger, "We don't support zlib-compressed message fields, ignoring message");
-														continue;
-													}
+													(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { no_connection_possible: false }),
+													(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { no_connection_possible: false }),
 												}
 											}
 										};
@@ -1020,6 +1031,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.message_handler.chan_handler.handle_error(&peer.their_node_id.unwrap(), &msg);
 				if msg.channel_id == [0; 32] {
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
+				}
+			},
+			wire::Message::Warning(msg) => {
+				let mut data_is_printable = true;
+				for b in msg.data.bytes() {
+					if b < 32 || b > 126 {
+						data_is_printable = false;
+						break;
+					}
+				}
+
+				if data_is_printable {
+					log_debug!(self.logger, "Got warning message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.data);
+				} else {
+					log_debug!(self.logger, "Got warning message from {} with non-ASCII error message", log_pubkey!(peer.their_node_id.unwrap()));
 				}
 			},
 
@@ -1415,6 +1441,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							},
 							msgs::ErrorAction::SendErrorMessage { ref msg } => {
 								log_trace!(self.logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
+										log_pubkey!(node_id),
+										msg.data);
+								self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
+							},
+							msgs::ErrorAction::SendWarningMessage { ref msg, ref log_level } => {
+								log_given_level!(self.logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
 										log_pubkey!(node_id),
 										msg.data);
 								self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
