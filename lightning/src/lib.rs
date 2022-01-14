@@ -143,8 +143,16 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
+#[cfg(all(feature = "std", test))]
+mod debug_sync;
+#[cfg(all(feature = "backtrace", feature = "std", test))]
+extern crate backtrace;
+
 #[cfg(feature = "std")]
 mod sync {
+	#[cfg(test)]
+	pub use debug_sync::*;
+	#[cfg(not(test))]
 	pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard};
 }
 

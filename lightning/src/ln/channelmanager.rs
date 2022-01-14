@@ -3931,12 +3931,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn finalize_claims(&self, mut sources: Vec<HTLCSource>) {
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = self.pending_events.lock().unwrap();
 		for source in sources.drain(..) {
 			if let HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } = source {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
-				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 					assert!(payment.get().is_fulfilled());
 					if payment.get_mut().remove(&session_priv_bytes, None) {
@@ -5321,8 +5321,8 @@ where
 			inbound_payment.expiry_time > header.time as u64
 		});
 
-		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		let mut pending_events = self.pending_events.lock().unwrap();
 		outbounds.retain(|payment_id, payment| {
 			if payment.remaining_parts() != 0 { return true }
 			if let PendingOutboundPayment::Retryable { starting_block_height, payment_hash, .. } = payment {
@@ -6151,6 +6151,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			peer_state.latest_features.write(writer)?;
 		}
 
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
+		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
@@ -6172,14 +6174,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 
-		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		(pending_inbound_payments.len() as u64).write(writer)?;
 		for (hash, pending_payment) in pending_inbound_payments.iter() {
 			hash.write(writer)?;
 			pending_payment.write(writer)?;
 		}
 
-		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 		// For backwards compat, write the session privs and their total length.
 		let mut num_pending_outbounds_compat: u64 = 0;
 		for (_, outbound) in pending_outbound_payments.iter() {

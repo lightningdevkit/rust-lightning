@@ -2481,7 +2481,7 @@ fn revoked_output_claim() {
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 2); // ChannelMonitor: justice tx against revoked to_local output, ChannelManager: local commitment tx
 
 	check_spends!(node_txn[0], revoked_local_txn[0]);
@@ -4645,7 +4645,7 @@ fn test_claim_sizeable_push_msat() {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan.3);
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
@@ -4713,7 +4713,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	mine_transaction(&nodes[1], &node_txn[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
@@ -4756,7 +4756,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 	}
 
 	// Check B's monitor was able to send back output descriptor event for preimage tx on A's commitment tx
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap(); // ChannelManager : 2 (local commitment tx + HTLC-Success), ChannelMonitor: preimage tx
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone(); // ChannelManager : 2 (local commitment tx + HTLC-Success), ChannelMonitor: preimage tx
 	assert_eq!(node_txn.len(), 3);
 	check_spends!(node_txn[0], commitment_tx[0]);
 	assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
@@ -4842,7 +4842,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 2);
 	assert_eq!(node_txn[0].input.len(), 2);
 	check_spends!(node_txn[0], revoked_local_txn[0]);
@@ -4895,7 +4895,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 3); // ChannelMonitor: bogus justice tx, justice tx on revoked outputs, ChannelManager: local commitment tx
 	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
 	// including the one already spent by revoked_htlc_txn[1]. That's OK, we'll spend with valid
@@ -4951,7 +4951,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 
 	assert_eq!(revoked_htlc_txn.len(), 2);
 	assert_eq!(revoked_htlc_txn[0].input.len(), 1);
@@ -4969,7 +4969,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 3); // ChannelMonitor: justice tx on revoked commitment, justice tx on revoked HTLC-success, ChannelManager: local commitment tx
 
 	// The first transaction generated is bogus - it spends both outputs of revoked_local_txn[0]
@@ -5110,7 +5110,7 @@ fn test_onchain_to_onchain_claim() {
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let b_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	// ChannelMonitor: HTLC-Success tx, ChannelManager: local commitment tx + HTLC-Success tx
 	assert_eq!(b_txn.len(), 3);
 	check_spends!(b_txn[1], chan_1.3);
@@ -8685,7 +8685,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		};
 		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42};
 		connect_block(&nodes[1], &Block { header, txdata: vec![txn_to_broadcast[0].clone()]});
-		let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let mut bob_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 		if broadcast_alice {
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors!(nodes[1], 1);

@@ -778,7 +778,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 	nodes[1].node.timer_tick_occurred();
 	nodes[1].node.timer_tick_occurred();
 
-	let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(txn.len(), 1);
 	assert_eq!(txn[0].output.len(), 2);
 
