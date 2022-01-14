@@ -920,9 +920,10 @@ mod tests {
 				merkle_root: Default::default() };
 			nodes[0].chain_monitor.chain_monitor.best_block_updated(&latest_header, nodes[0].best_block_info().1 + LATENCY_GRACE_PERIOD_BLOCKS);
 		} else {
-			for (funding_outpoint, update_ids) in chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().iter() {
+			let persistences = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clone();
+			for (funding_outpoint, update_ids) in persistences {
 				for update_id in update_ids {
-					nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(*funding_outpoint, *update_id).unwrap();
+					nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_outpoint, update_id).unwrap();
 				}
 			}
 		}
