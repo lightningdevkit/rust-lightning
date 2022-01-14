@@ -387,7 +387,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
 		let new_timer = Some(cached_request.get_height_timer(cur_height));
 		if cached_request.is_malleable() {
-			let predicted_weight = cached_request.package_weight(&self.destination_script);
+			let predicted_weight = cached_request.package_weight(&self.destination_script, self.channel_transaction_parameters.opt_anchors.is_some());
 			if let Some((output_value, new_feerate)) =
 					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().as_sat(), fee_estimator, logger) {
 				assert!(new_feerate != 0);

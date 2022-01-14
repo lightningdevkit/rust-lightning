@@ -99,9 +99,10 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
 	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
 
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
-			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::COMMITMENT_TX_BASE_WEIGHT / 1000
+			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::commitment_tx_base_weight(opt_anchors) / 1000
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableOnChannelClose { claimable_amount_satoshis: 1_000, }],
@@ -136,7 +137,7 @@ fn chanmon_claim_value_coop_close() {
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
-			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::COMMITMENT_TX_BASE_WEIGHT / 1000,
+			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::commitment_tx_base_weight(opt_anchors) / 1000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
@@ -212,13 +213,14 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 
 	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
 
 	let remote_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	// Before B receives the payment preimage, it only suggests the push_msat value of 1_000 sats
 	// as claimable. A lists both its to-self balance and the (possibly-claimable) HTLCs.
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - chan_feerate *
-				(channel::COMMITMENT_TX_BASE_WEIGHT + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
@@ -266,7 +268,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 				1_000 - // The push_msat value in satoshis
 				3 - // The dust HTLC value in satoshis
 				// The commitment transaction fee with two HTLC outputs:
-				chan_feerate * (channel::COMMITMENT_TX_BASE_WEIGHT +
+				chan_feerate * (channel::commitment_tx_base_weight(opt_anchors) +
 								if prev_commitment_tx { 1 } else { 2 } *
 								channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
@@ -329,7 +331,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - chan_feerate *
-				(channel::COMMITMENT_TX_BASE_WEIGHT + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
 			claimable_amount_satoshis: 3_000,

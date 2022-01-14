@@ -40,14 +40,34 @@ use core::ops::Deref;
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 
-// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-pub(crate) const WEIGHT_REVOKED_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 + 133;
-// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-pub(crate) const WEIGHT_REVOKED_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 +  139;
-// number_of_witness_elements + sig_length + counterpartyhtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
-pub(crate) const WEIGHT_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 32 + 1 + 133;
-// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
-pub(crate) const WEIGHT_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 139;
+pub(crate) fn weight_revoked_offered_htlc(opt_anchors: bool) -> u64 {
+	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+	const WEIGHT_REVOKED_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 + 133;
+	const WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS: u64 = WEIGHT_REVOKED_OFFERED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
+	if opt_anchors { WEIGHT_REVOKED_OFFERED_HTLC_ANCHORS } else { WEIGHT_REVOKED_OFFERED_HTLC }
+}
+
+pub(crate) fn weight_revoked_received_htlc(opt_anchors: bool) -> u64 {
+	// number_of_witness_elements + sig_length + revocation_sig + pubkey_length + revocationpubkey + witness_script_length + witness_script
+	const WEIGHT_REVOKED_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 33 + 1 +  139;
+	const WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS: u64 = WEIGHT_REVOKED_RECEIVED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
+	if opt_anchors { WEIGHT_REVOKED_RECEIVED_HTLC_ANCHORS } else { WEIGHT_REVOKED_RECEIVED_HTLC }
+}
+
+pub(crate) fn weight_offered_htlc(opt_anchors: bool) -> u64 {
+	// number_of_witness_elements + sig_length + counterpartyhtlc_sig  + preimage_length + preimage + witness_script_length + witness_script
+	const WEIGHT_OFFERED_HTLC: u64 = 1 + 1 + 73 + 1 + 32 + 1 + 133;
+	const WEIGHT_OFFERED_HTLC_ANCHORS: u64 = WEIGHT_OFFERED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
+	if opt_anchors { WEIGHT_OFFERED_HTLC_ANCHORS } else { WEIGHT_OFFERED_HTLC }
+}
+
+pub(crate) fn weight_received_htlc(opt_anchors: bool) -> u64 {
+	// number_of_witness_elements + sig_length + counterpartyhtlc_sig + empty_vec_length + empty_vec + witness_script_length + witness_script
+	const WEIGHT_RECEIVED_HTLC: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 139;
+	const WEIGHT_RECEIVED_HTLC_ANCHORS: u64 = WEIGHT_RECEIVED_HTLC + 3; // + OP_1 + OP_CSV + OP_DROP
+	if opt_anchors { WEIGHT_RECEIVED_HTLC_ANCHORS } else { WEIGHT_RECEIVED_HTLC }
+}
+
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
@@ -118,8 +138,8 @@ pub(crate) struct RevokedHTLCOutput {
 }
 
 impl RevokedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment) -> Self {
-		let weight = if htlc.offered { WEIGHT_REVOKED_OFFERED_HTLC } else { WEIGHT_REVOKED_RECEIVED_HTLC };
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, htlc: HTLCOutputInCommitment, opt_anchors: bool) -> Self {
+		let weight = if htlc.offered { weight_revoked_offered_htlc(opt_anchors) } else { weight_revoked_received_htlc(opt_anchors) };
 		RevokedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -292,12 +312,12 @@ impl PackageSolvingData {
 		};
 		amt
 	}
-	fn weight(&self) -> usize {
+	fn weight(&self, opt_anchors: bool) -> usize {
 		let weight = match self {
 			PackageSolvingData::RevokedOutput(ref outp) => { outp.weight as usize },
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.weight as usize },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { WEIGHT_OFFERED_HTLC as usize },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { WEIGHT_RECEIVED_HTLC as usize },
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { weight_offered_htlc(opt_anchors) as usize },
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { weight_received_htlc(opt_anchors) as usize },
 			// Note: Currently, weights of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
@@ -567,13 +587,13 @@ impl PackageTemplate {
 		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
 			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &Script, opt_anchors: bool) -> usize {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
 			// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
 			inputs_weight += 41 * WITNESS_SCALE_FACTOR;
-			witnesses_weight += outp.weight();
+			witnesses_weight += outp.weight(opt_anchors);
 		}
 		// version: 4 bytes ; count_tx_in: 1 byte ; count_tx_out: 1 byte ; lock_time: 4 bytes
 		let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
@@ -821,7 +841,7 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 
 #[cfg(test)]
 mod tests {
-	use chain::package::{CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT};
+	use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
 	use chain::Txid;
 	use ln::chan_utils::HTLCOutputInCommitment;
 	use ln::{PaymentPreimage, PaymentHash};
@@ -853,6 +873,19 @@ mod tests {
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
 				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, dumb_point, dumb_point, htlc))
+			}
+		}
+	}
+
+	macro_rules! dumb_counterparty_offered_output {
+		($secp_ctx: expr, $amt: expr) => {
+			{
+				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
+				let hash = PaymentHash([1; 32]);
+				let preimage = PaymentPreimage([2;32]);
+				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 1000, payment_hash: hash, transaction_output_index: None };
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, dumb_point, dumb_point, preimage, htlc))
 			}
 		}
 	}
@@ -1021,11 +1054,32 @@ mod tests {
 	fn test_package_weight() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
 
-		let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
-		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR
-		// + witness marker (2) + WEIGHT_REVOKED_OUTPUT
-		assert_eq!(package.package_weight(&Script::new()), (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2 + WEIGHT_REVOKED_OUTPUT as usize);
+		// (nVersion (4) + nLocktime (4) + count_tx_in (1) + prevout (36) + sequence (4) + script_length (1) + count_tx_out (1) + value (8) + var_int (1)) * WITNESS_SCALE_FACTOR + witness marker (2)
+		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2;
+
+		{
+			let revk_outp = dumb_revk_output!(secp_ctx);
+			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+			}
+		}
+
+		{
+			let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
+			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_received_htlc(opt_anchors) as usize);
+			}
+		}
+
+		{
+			let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000);
+			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+			for &opt_anchors in [false, true].iter() {
+				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_offered_htlc(opt_anchors) as usize);
+			}
+		}
 	}
 }

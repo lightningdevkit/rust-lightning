@@ -42,12 +42,10 @@ use chain;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
 
-pub(super) const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
-pub(super) const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
-
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
 pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_SUCCESS_TX_WEIGHT: u64 = 703;
 	const HTLC_SUCCESS_ANCHOR_TX_WEIGHT: u64 = 706;
 	if opt_anchors { HTLC_SUCCESS_ANCHOR_TX_WEIGHT } else { HTLC_SUCCESS_TX_WEIGHT }
 }
@@ -55,6 +53,7 @@ pub fn htlc_success_tx_weight(opt_anchors: bool) -> u64 {
 /// Gets the weight for an HTLC-Timeout transaction.
 #[inline]
 pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
+	const HTLC_TIMEOUT_TX_WEIGHT: u64 = 663;
 	const HTLC_TIMEOUT_ANCHOR_TX_WEIGHT: u64 = 666;
 	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
 }
@@ -1394,6 +1393,8 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	/// which HTLCOutputInCommitment::transaction_output_index.is_some()).
 	///
 	/// The returned Vec has one entry for each HTLC, and in the same order.
+	///
+	/// This function is only valid in the holder commitment context, it always uses SigHashType::All.
 	pub fn get_htlc_sigs<T: secp256k1::Signing>(&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<T>) -> Result<Vec<Signature>, ()> {
 		let inner = self.inner;
 		let keys = &inner.keys;
@@ -1429,12 +1430,14 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
+		let sighashtype = if self.opt_anchors() { SigHashType::SinglePlusAnyoneCanPay } else { SigHashType::All };
+
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		htlc_tx.input[0].witness.push(Vec::new());
 
 		htlc_tx.input[0].witness.push(counterparty_signature.serialize_der().to_vec());
 		htlc_tx.input[0].witness.push(signature.serialize_der().to_vec());
-		htlc_tx.input[0].witness[1].push(SigHashType::All as u8);
+		htlc_tx.input[0].witness[1].push(sighashtype as u8);
 		htlc_tx.input[0].witness[2].push(SigHashType::All as u8);
 
 		if this_htlc.offered {

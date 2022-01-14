@@ -440,6 +440,17 @@ macro_rules! get_feerate {
 	}
 }
 
+#[cfg(test)]
+macro_rules! get_opt_anchors {
+	($node: expr, $channel_id: expr) => {
+		{
+			let mut lock;
+			let chan = get_channel_ref!($node, lock, $channel_id);
+			chan.opt_anchors()
+		}
+	}
+}
+
 /// Returns a channel monitor given a channel id, making some naive assumptions
 #[macro_export]
 macro_rules! get_monitor {
