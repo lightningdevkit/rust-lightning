@@ -4978,6 +4978,15 @@ mod benches {
 		fn log(&self, _record: &Record) {}
 	}
 
+	struct ZeroPenaltyScorer;
+	impl Score for ZeroPenaltyScorer {
+		fn channel_penalty_msat(
+			&self, _short_channel_id: u64, _send_amt: u64, _capacity_msat: Option<u64>, _source: &NodeId, _target: &NodeId
+		) -> u64 { 0 }
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+	}
+
 	fn read_network_graph() -> NetworkGraph {
 		let mut d = test_utils::get_route_file().unwrap();
 		NetworkGraph::read(&mut d).unwrap()
@@ -5015,6 +5024,20 @@ mod benches {
 			is_usable: true,
 			is_public: true,
 		}
+	}
+
+	#[bench]
+	fn generate_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = ZeroPenaltyScorer;
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
+	}
+
+	#[bench]
+	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = ZeroPenaltyScorer;
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
 	}
 
 	#[bench]
