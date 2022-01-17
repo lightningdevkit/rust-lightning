@@ -5032,13 +5032,14 @@ mod benches {
 	}
 
 	fn generate_routes<S: Score>(
-		bench: &mut Bencher, graph: &NetworkGraph, scorer: S, features: InvoiceFeatures
+		bench: &mut Bencher, graph: &NetworkGraph, mut scorer: S, features: InvoiceFeatures
 	) {
 		let nodes = graph.read_only().nodes().clone();
 		let payer = payer_pubkey();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut path_endpoints = Vec::new();
+		let mut routes = Vec::new();
+		let mut route_endpoints = Vec::new();
 		let mut seed: usize = 0xdeadbeef;
 		'load_endpoints: for _ in 0..100 {
 			loop {
@@ -5049,9 +5050,25 @@ mod benches {
 				let params = PaymentParameters::from_node_id(dst).with_features(features.clone());
 				let first_hop = first_hop(src);
 				let amt = seed as u64 % 1_000_000;
-				if get_route(&payer, &params, &graph, Some(&[&first_hop]), amt, 42, &DummyLogger{}, &scorer).is_ok() {
-					path_endpoints.push((first_hop, params, amt));
+				if let Ok(route) = get_route(&payer, &params, &graph, Some(&[&first_hop]), amt, 42, &DummyLogger{}, &scorer) {
+					routes.push(route);
+					route_endpoints.push((first_hop, params, amt));
 					continue 'load_endpoints;
+				}
+			}
+		}
+
+		// ...and seed the scorer with success and failure data...
+		for route in routes {
+			let amount = route.get_total_amount();
+			if amount < 250_000 {
+				for path in route.paths {
+					scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
+				}
+			} else if amount > 750_000 {
+				for path in route.paths {
+					let short_channel_id = path[path.len() / 2].short_channel_id;
+					scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), short_channel_id);
 				}
 			}
 		}
@@ -5059,7 +5076,7 @@ mod benches {
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
 		bench.iter(|| {
-			let (first_hop, params, amt) = &path_endpoints[idx % path_endpoints.len()];
+			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
 			assert!(get_route(&payer, params, &graph, Some(&[first_hop]), *amt, 42, &DummyLogger{}, &scorer).is_ok());
 			idx += 1;
 		});
