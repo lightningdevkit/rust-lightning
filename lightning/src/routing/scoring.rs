@@ -189,6 +189,32 @@ impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
 	}
 }
 
+/// [`Score`] implementation that uses a fixed penalty.
+pub struct FixedPenaltyScorer {
+	penalty_msat: u64,
+}
+
+impl_writeable_tlv_based!(FixedPenaltyScorer, {
+	(0, penalty_msat, required),
+});
+
+impl FixedPenaltyScorer {
+	/// Creates a new scorer using `penalty_msat`.
+	pub fn with_penalty(penalty_msat: u64) -> Self {
+		Self { penalty_msat }
+	}
+}
+
+impl Score for FixedPenaltyScorer {
+	fn channel_penalty_msat(&self, _: u64, _: u64, _: u64, _: &NodeId, _: &NodeId) -> u64 {
+		self.penalty_msat
+	}
+
+	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+
+	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+}
+
 /// [`Score`] implementation that provides reasonable default behavior.
 ///
 /// Used to apply a fixed penalty to each channel, thus avoiding long paths when shorter paths with
@@ -202,6 +228,10 @@ impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
 /// behavior.
 ///
 /// [module-level documentation]: crate::routing::scoring
+#[deprecated(
+	since = "0.0.105",
+	note = "ProbabilisticScorer should be used instead of Scorer.",
+)]
 pub type Scorer = ScorerUsingTime::<ConfiguredTime>;
 
 #[cfg(not(feature = "no-std"))]
@@ -300,18 +330,6 @@ impl<T: Time> ScorerUsingTime<T> {
 			params,
 			channel_failures: HashMap::new(),
 		}
-	}
-
-	/// Creates a new scorer using `penalty_msat` as a fixed channel penalty.
-	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
-	pub fn with_fixed_penalty(penalty_msat: u64) -> Self {
-		Self::new(ScoringParameters {
-			base_penalty_msat: penalty_msat,
-			failure_penalty_msat: 0,
-			failure_penalty_half_life: Duration::from_secs(0),
-			overuse_penalty_start_1024th: 1024,
-			overuse_penalty_msat_per_1024th: 0,
-		})
 	}
 }
 
