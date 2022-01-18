@@ -775,7 +775,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			forwarding_fee_base_msat: handshake_config.forwarding_fee_base_msat,
 			forwarding_fee_proportional_millionths: handshake_config.forwarding_fee_proportional_millionths,
-			cltv_expiry_delta: config.channel_options.clone().cltv_expiry_delta,
+			cltv_expiry_delta: handshake_config.cltv_expiry_delta,
 			
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
@@ -1078,7 +1078,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			forwarding_fee_base_msat: handshake_config.forwarding_fee_base_msat,
 			forwarding_fee_proportional_millionths: handshake_config.forwarding_fee_proportional_millionths,
-			cltv_expiry_delta: local_config.cltv_expiry_delta,
+			cltv_expiry_delta: handshake_config.cltv_expiry_delta,
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
@@ -5206,7 +5206,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		// Write out the old serialization for the config object. This is read by version-1
 		// deserializers, but we will read the version in the TLV at the end instead.
 		self.forwarding_fee_proportional_millionths.write(writer)?;
-		self.config.cltv_expiry_delta.write(writer)?;
+		self.cltv_expiry_delta.write(writer)?;
 		self.config.announced_channel.write(writer)?;
 		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
 
@@ -5471,14 +5471,14 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 
 		if ver == 1 {
 			// Read the old serialization of the ChannelConfig from version 0.0.98.handshake_config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
-			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
 			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
 			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
 		} else {
 			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
 			let mut _val: u64 = Readable::read(reader)?;
 		}
-
+		
+		let cltv_expiry_delta = Readable::read(reader)?;
 		let channel_id = Readable::read(reader)?;
 		let channel_state = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
@@ -5728,7 +5728,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			config: config.unwrap(),
 			forwarding_fee_base_msat: handshake_config.unwrap().forwarding_fee_base_msat,
 			forwarding_fee_proportional_millionths: handshake_config.unwrap().forwarding_fee_proportional_millionths,
-			cltv_expiry_delta: config.unwrap().cltv_expiry_delta,
+			cltv_expiry_delta: handshake_config.unwrap().cltv_expiry_delta,
 			
 			channel_id,
 			channel_state,

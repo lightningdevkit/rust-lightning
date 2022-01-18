@@ -67,6 +67,26 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// [`forwarding_fee_proportional_millionths`]: ChannelHandshakeConfig::forwarding_fee_proportional_millionths
 	pub forwarding_fee_base_msat: u32,
+	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
+	/// the channel this config applies to.
+	///
+	/// This is analogous to [`ChannelHandshakeConfig::our_to_self_delay`] but applies to in-flight
+	/// HTLC balance when a channel appears on-chain whereas
+	/// [`ChannelHandshakeConfig::our_to_self_delay`] applies to the remaining
+	/// (non-HTLC-encumbered) balance.
+	///
+	/// Thus, for HTLC-encumbered balances to be enforced on-chain when a channel is force-closed,
+	/// we (or one of our watchtowers) MUST be online to check for broadcast of the current
+	/// commitment transaction at least once per this many blocks (minus some margin to allow us
+	/// enough time to broadcast and confirm a transaction, possibly with time in between to RBF
+	/// the spending transaction).
+	///
+	/// Default value: 72 (12 hours at an average of 6 blocks/hour).
+	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`], any values less than this will be treated as
+	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.
+	///
+	/// [`MIN_CLTV_EXPIRY_DELTA`]: crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA
+	pub cltv_expiry_delta: u16,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -77,6 +97,7 @@ impl Default for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: 1,
 			forwarding_fee_base_msat: 1000,
 			forwarding_fee_proportional_millionths: 0,
+			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 		}
 	}
 }
@@ -165,26 +186,6 @@ impl Default for ChannelHandshakeLimits {
 /// with our counterparty.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelConfig {
-	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
-	/// the channel this config applies to.
-	///
-	/// This is analogous to [`ChannelHandshakeConfig::our_to_self_delay`] but applies to in-flight
-	/// HTLC balance when a channel appears on-chain whereas
-	/// [`ChannelHandshakeConfig::our_to_self_delay`] applies to the remaining
-	/// (non-HTLC-encumbered) balance.
-	///
-	/// Thus, for HTLC-encumbered balances to be enforced on-chain when a channel is force-closed,
-	/// we (or one of our watchtowers) MUST be online to check for broadcast of the current
-	/// commitment transaction at least once per this many blocks (minus some margin to allow us
-	/// enough time to broadcast and confirm a transaction, possibly with time in between to RBF
-	/// the spending transaction).
-	///
-	/// Default value: 72 (12 hours at an average of 6 blocks/hour).
-	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`], any values less than this will be treated as
-	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.
-	///
-	/// [`MIN_CLTV_EXPIRY_DELTA`]: crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA
-	pub cltv_expiry_delta: u16,
 	/// Set to announce the channel publicly and notify all nodes that they can route via this
 	/// channel.
 	///
@@ -254,7 +255,6 @@ impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
 		ChannelConfig {
-			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 			max_dust_htlc_exposure_msat: 5_000_000,
@@ -265,7 +265,6 @@ impl Default for ChannelConfig {
 
 impl_writeable_tlv_based!(ChannelConfig, {
 	(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
-	(2, cltv_expiry_delta, required),
 	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),

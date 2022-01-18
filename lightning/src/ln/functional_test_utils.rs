@@ -1731,7 +1731,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	let mut default_config = UserConfig::default();
 	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
 	// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
-	default_config.channel_options.cltv_expiry_delta = 6*6;
+	default_config.own_channel_config.cltv_expiry_delta = 6*6;
 	default_config.channel_options.announced_channel = true;
 	default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	// When most of our tests were written, the default HTLC minimum was fixed at 1000.
