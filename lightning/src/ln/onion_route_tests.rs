@@ -258,7 +258,7 @@ fn test_fee_failures() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.own_channel_config.forwarding_fee_base_msat = 196;
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -310,7 +310,7 @@ fn test_onion_failure() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.own_channel_config.forwarding_fee_base_msat = 196;
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);

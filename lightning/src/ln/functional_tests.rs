@@ -1787,7 +1787,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 239;
+	config.own_channel_config.forwarding_fee_base_msat = 239;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, InitFeatures::known(), InitFeatures::known());
@@ -5135,7 +5135,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.own_channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -5332,7 +5332,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.own_channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
@@ -6208,7 +6208,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.own_channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());

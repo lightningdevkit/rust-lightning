@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig,ChannelConfig};
+use util::config::{UserConfig,ChannelConfig,ChannelHandshakeConfig};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -426,6 +426,13 @@ pub(super) struct Channel<Signer: Sign> {
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	config: ChannelConfig,
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) forwarding_fee_base_msat: u32,
+	#[cfg(not(any(test, feature = "_test_utils")))]
+	forwarding_fee_base_msat: u32,
+	forwarding_fee_proportional_millionths: u32,
+	cltv_expiry_delta: u16,
+
 	user_id: u64,
 
 	channel_id: [u8; 32],
@@ -760,11 +767,16 @@ impl<Signer: Sign> Channel<Signer> {
 				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 			}
 		}
+		let handshake_config = config.own_channel_config.clone();
 
 		Ok(Channel {
 			user_id,
 			config: config.channel_options.clone(),
 
+			forwarding_fee_base_msat: handshake_config.forwarding_fee_base_msat,
+			forwarding_fee_proportional_millionths: handshake_config.forwarding_fee_proportional_millionths,
+			cltv_expiry_delta: config.channel_options.clone().cltv_expiry_delta,
+			
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
 			secp_ctx,
@@ -929,6 +941,7 @@ impl<Signer: Sign> Channel<Signer> {
 			htlc_basepoint: msg.htlc_basepoint
 		};
 		let mut local_config = (*config).channel_options.clone();
+		let handshake_config = (*config).own_channel_config.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.own_channel_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
@@ -1062,6 +1075,10 @@ impl<Signer: Sign> Channel<Signer> {
 		let chan = Channel {
 			user_id,
 			config: local_config,
+
+			forwarding_fee_base_msat: handshake_config.forwarding_fee_base_msat,
+			forwarding_fee_proportional_millionths: handshake_config.forwarding_fee_proportional_millionths,
+			cltv_expiry_delta: local_config.cltv_expiry_delta,
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
@@ -4052,11 +4069,11 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
-		self.config.forwarding_fee_proportional_millionths
+		self.forwarding_fee_proportional_millionths
 	}
 
 	pub fn get_cltv_expiry_delta(&self) -> u16 {
-		cmp::max(self.config.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
+		cmp::max(self.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
 
 	pub fn get_max_dust_htlc_exposure_msat(&self) -> u64 {
@@ -4147,7 +4164,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
 	pub fn get_outbound_forwarding_fee_base_msat(&self) -> u32 {
-		self.config.forwarding_fee_base_msat
+		self.forwarding_fee_base_msat
 	}
 
 	/// Returns true if we've ever received a message from the remote end for this Channel
@@ -5188,7 +5205,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		// Write out the old serialization for the config object. This is read by version-1
 		// deserializers, but we will read the version in the TLV at the end instead.
-		self.config.forwarding_fee_proportional_millionths.write(writer)?;
+		self.forwarding_fee_proportional_millionths.write(writer)?;
 		self.config.cltv_expiry_delta.write(writer)?;
 		self.config.announced_channel.write(writer)?;
 		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
@@ -5450,9 +5467,10 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let user_id = Readable::read(reader)?;
 
 		let mut config = Some(ChannelConfig::default());
+		let handshake_config = Some(ChannelHandshakeConfig::default());
+
 		if ver == 1 {
-			// Read the old serialization of the ChannelConfig from version 0.0.98.
-			config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
+			// Read the old serialization of the ChannelConfig from version 0.0.98.handshake_config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
 			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
 			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
 			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
@@ -5708,6 +5726,10 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			user_id,
 
 			config: config.unwrap(),
+			forwarding_fee_base_msat: handshake_config.unwrap().forwarding_fee_base_msat,
+			forwarding_fee_proportional_millionths: handshake_config.unwrap().forwarding_fee_proportional_millionths,
+			cltv_expiry_delta: config.unwrap().cltv_expiry_delta,
+			
 			channel_id,
 			channel_state,
 			secp_ctx,

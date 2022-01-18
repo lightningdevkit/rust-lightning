@@ -47,6 +47,26 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
 	/// by the protocol.
 	pub our_htlc_minimum_msat: u64,
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
+	/// over the channel.
+	/// This may be allowed to change at runtime in a later update, however doing so must result in
+	/// update messages sent to notify all nodes of our updated relay fee.
+	///
+	/// Default value: 0.
+	pub forwarding_fee_proportional_millionths: u32,
+	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
+	/// excess of [`forwarding_fee_proportional_millionths`].
+	/// This may be allowed to change at runtime in a later update, however doing so must result in
+	/// update messages sent to notify all nodes of our updated relay fee.
+	///
+	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
+	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
+	/// this node.
+	///
+	/// Default value: 1000.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelHandshakeConfig::forwarding_fee_proportional_millionths
+	pub forwarding_fee_base_msat: u32,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -55,6 +75,8 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
+			forwarding_fee_base_msat: 1000,
+			forwarding_fee_proportional_millionths: 0,
 		}
 	}
 }
@@ -143,26 +165,6 @@ impl Default for ChannelHandshakeLimits {
 /// with our counterparty.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelConfig {
-	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
-	/// over the channel.
-	/// This may be allowed to change at runtime in a later update, however doing so must result in
-	/// update messages sent to notify all nodes of our updated relay fee.
-	///
-	/// Default value: 0.
-	pub forwarding_fee_proportional_millionths: u32,
-	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
-	/// excess of [`forwarding_fee_proportional_millionths`].
-	/// This may be allowed to change at runtime in a later update, however doing so must result in
-	/// update messages sent to notify all nodes of our updated relay fee.
-	///
-	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
-	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
-	/// this node.
-	///
-	/// Default value: 1000.
-	///
-	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
-	pub forwarding_fee_base_msat: u32,
 	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
 	/// the channel this config applies to.
 	///
@@ -252,8 +254,6 @@ impl Default for ChannelConfig {
 	/// Provides sane defaults for most configurations (but with zero relay fees!).
 	fn default() -> Self {
 		ChannelConfig {
-			forwarding_fee_proportional_millionths: 0,
-			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
@@ -264,13 +264,11 @@ impl Default for ChannelConfig {
 }
 
 impl_writeable_tlv_based!(ChannelConfig, {
-	(0, forwarding_fee_proportional_millionths, required),
 	(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
 	(2, cltv_expiry_delta, required),
 	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 	(4, announced_channel, required),
 	(6, commit_upfront_shutdown_pubkey, required),
-	(8, forwarding_fee_base_msat, required),
 });
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
