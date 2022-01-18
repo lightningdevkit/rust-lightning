@@ -382,7 +382,7 @@ where
 						// recipient may misbehave and claim the funds, at which point we have to
 						// consider the payment sent, so return `Ok()` here, ignoring any retry
 						// errors.
-						let _ = self.retry_payment(payment_id, payment_hash, &retry_data);
+						let _ = self.retry_payment(payment_id, payment_hash, &retry_data, None);
 						Ok(payment_id)
 					} else {
 						// This may happen if we send a payment and some paths fail, but
@@ -396,8 +396,8 @@ where
 		}.map_err(|e| PaymentError::Sending(e))
 	}
 
-	fn retry_payment(
-		&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters
+	fn retry_payment(&self, payment_id: PaymentId, payment_hash: PaymentHash,
+		params: &RouteParameters, avoid_scid: Option<u64>
 	) -> Result<(), ()> {
 		let max_payment_attempts = self.retry_attempts.0 + 1;
 		let attempts = *self.payment_cache.lock().unwrap()
@@ -419,16 +419,29 @@ where
 
 		let payer = self.payer.node_id();
 		let first_hops = self.payer.first_hops();
-		let route = self.router.find_route(
-			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
-			&self.scorer.lock()
-		);
-		if route.is_err() {
-			log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+		let route = match self.router.find_route(
+			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()), &self.scorer.lock()
+		) {
+			Ok(r) => r,
+			Err(_) => {
+				log_trace!(self.logger, "Failed to find a route for payment {}; not retrying (attempts: {})", log_bytes!(payment_hash.0), attempts);
+				return Err(());
+			}
+		};
+
+		if route.paths.iter().any(|path| path.iter().any(|hop| Some(hop.short_channel_id) == avoid_scid)) {
+			// While hopefully there is a Scor being used to avoid taking channels which *just*
+			// failed, its possible that there is simply no other route. This is common in cases
+			// where we're paying a node which is behind some form of LSP - there is a single route
+			// hint which we are required to pay through. If that route hint failed (ie the node we
+			// are trying to pay is offline), we shouldn't try to pay the node again and again
+			// through the same hop.
+			log_trace!(self.logger, "Route found for payment {} re-uses just-failed channel {}; not retrying (attempts: {})",
+				log_bytes!(payment_hash.0), avoid_scid.unwrap_or(0),attempts);
 			return Err(());
 		}
 
-		match self.payer.retry_payment(&route.unwrap(), payment_id) {
+		match self.payer.retry_payment(&route, payment_id) {
 			Ok(()) => Ok(()),
 			Err(PaymentSendFailure::ParameterError(_)) |
 			Err(PaymentSendFailure::PathParameterError(_)) => {
@@ -436,12 +449,12 @@ where
 				Err(())
 			},
 			Err(PaymentSendFailure::AllFailedRetrySafe(_)) => {
-				self.retry_payment(payment_id, payment_hash, params)
+				self.retry_payment(payment_id, payment_hash, params, avoid_scid)
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, .. }) => {
 				if let Some(retry) = failed_paths_retry {
 					// Always return Ok for the same reason as noted in pay_internal.
-					let _ = self.retry_payment(payment_id, payment_hash, &retry);
+					let _ = self.retry_payment(payment_id, payment_hash, &retry, avoid_scid);
 				}
 				Ok(())
 			},
@@ -493,7 +506,7 @@ where
 				} else if retry.is_none() {
 					log_trace!(self.logger, "Payment {} missing retry params; not retrying", log_bytes!(payment_hash.0));
 					self.payer.abandon_payment(payment_id.unwrap());
-				} else if self.retry_payment(payment_id.unwrap(), *payment_hash, retry.as_ref().unwrap()).is_ok() {
+				} else if self.retry_payment(payment_id.unwrap(), *payment_hash, retry.as_ref().unwrap(), *short_channel_id).is_ok() {
 					// We retried at least somewhat, don't provide the PaymentPathFailed event to the user.
 					return;
 				} else {
@@ -972,6 +985,40 @@ mod tests {
 	}
 
 	#[test]
+	fn fails_paying_invoice_after_rejected_at_only_last_hop() {
+		let event_handled = core::cell::RefCell::new(false);
+		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
+
+		let payment_preimage = PaymentPreimage([1; 32]);
+		let invoice = invoice(payment_preimage);
+		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
+
+		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
+		let router = TestRouter {};
+		let scorer = RefCell::new(TestScorer::new());
+		let logger = TestLogger::new();
+		let invoice_payer =
+			InvoicePayer::new(&payer, router, &scorer, &logger, event_handler, RetryAttempts(2));
+
+		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
+		assert_eq!(*payer.attempts.borrow(), 1);
+
+		let event = Event::PaymentPathFailed {
+			payment_id,
+			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
+			network_update: None,
+			rejected_by_dest: false,
+			all_paths_failed: false,
+			path: vec![],
+			short_channel_id: Some(1),
+			retry: Some(TestRouter::retry_for_invoice(&invoice)),
+		};
+		invoice_payer.handle_event(&event);
+		assert_eq!(*event_handled.borrow(), true);
+		assert_eq!(*payer.attempts.borrow(), 1);
+	}
+
+	#[test]
 	fn fails_repaying_invoice_with_pending_payment() {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: &_| { *event_handled.borrow_mut() = true; };
@@ -1175,8 +1222,7 @@ mod tests {
 
 		// Expect that scorer is given short_channel_id upon handling the event.
 		let payer = TestPayer::new()
-			.expect_send(Amount::ForInvoice(final_value_msat))
-			.expect_send(Amount::OnRetry(final_value_msat / 2));
+			.expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new().expect(PaymentPath::Failure {
 			path: path.clone(), short_channel_id: path[0].short_channel_id,
@@ -1634,6 +1680,8 @@ mod tests {
 
 		let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 		let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_3_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_4_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
 
 		let mut route = Route {
 			paths: vec![
@@ -1672,8 +1720,11 @@ mod tests {
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
-		// On retry, we'll only be asked for one path
+		// On retry, we'll only be asked for one path. We also give it a diffferent SCID set as the
+		// InvoicePayer will refuse to retry using a just-failed channel.
 		route.paths.remove(1);
+		route.paths[0][0].short_channel_id = chan_3_scid;
+		route.paths[0][1].short_channel_id = chan_4_scid;
 		router.expect_find_route(Ok(route.clone()));
 
 		let expected_events: RefCell<VecDeque<&dyn Fn(&Event)>> = RefCell::new(VecDeque::new());
