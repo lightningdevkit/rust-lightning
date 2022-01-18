@@ -19,7 +19,7 @@ lightning = { version = "0.0.104", path = "../lightning", default-features = fal
 secp256k1 = { version = "0.20", default-features = false, features = ["recovery", "alloc"] }
 num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.10", default-features = false }
-hashbrown = { version = "0.11", optional = true }
+hashbrown = { version = "0.12", optional = true }
 core2 = { version = "0.3.0", default-features = false, optional = true }
 
 [dev-dependencies]

@@ -36,7 +36,7 @@ bitcoin = { version = "0.27", default-features = false, features = ["secp-recove
 # TODO remove this once rust-bitcoin PR #637 is released
 secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"] }
 
-hashbrown = { version = "0.11", optional = true }
+hashbrown = { version = "0.12", optional = true }
 hex = { version = "0.3", optional = true }
 regex = { version = "0.1.80", optional = true }
 backtrace = { version = "0.3", optional = true }
