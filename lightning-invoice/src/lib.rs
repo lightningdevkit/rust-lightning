@@ -117,7 +117,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
 fn __system_time_size_check() {
 	// Use 2 * sizeof(u64) as expected size since the expected underlying implementation is storing
 	// a `Duration` since `SystemTime::UNIX_EPOCH`.
-	unsafe { core::mem::transmute_copy::<SystemTime, [u8; 16]>(&SystemTime::UNIX_EPOCH); }
+	unsafe { let _ = core::mem::transmute_copy::<SystemTime, [u8; 16]>(&SystemTime::UNIX_EPOCH); }
 }
 
 
