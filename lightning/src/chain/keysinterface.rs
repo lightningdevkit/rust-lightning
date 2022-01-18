@@ -526,7 +526,8 @@ impl InMemorySigner {
 	/// described by descriptor, returning the witness stack for the input.
 	///
 	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
-	/// or is not spending the outpoint described by `descriptor.outpoint`.
+	/// is not spending the outpoint described by `descriptor.outpoint`,
+	/// or if an output descriptor script_pubkey does not match the one we can spend.
 	pub fn sign_counterparty_payment_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &StaticPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
@@ -540,6 +541,9 @@ impl InMemorySigner {
 		let witness_script = bitcoin::Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
 		let remotesig = secp_ctx.sign(&sighash, &self.payment_key);
+		let payment_script = bitcoin::Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Bitcoin).unwrap().script_pubkey();
+
+		if payment_script != descriptor.output.script_pubkey  { return Err(()); }
 
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
@@ -552,8 +556,9 @@ impl InMemorySigner {
 	/// described by descriptor, returning the witness stack for the input.
 	///
 	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
-	/// is not spending the outpoint described by `descriptor.outpoint`, or does not have a
-	/// sequence set to `descriptor.to_self_delay`.
+	/// is not spending the outpoint described by `descriptor.outpoint`, does not have a
+	/// sequence set to `descriptor.to_self_delay`, or if an output descriptor
+	/// script_pubkey does not match the one we can spend.
 	pub fn sign_dynamic_p2wsh_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &DelayedPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
@@ -570,6 +575,9 @@ impl InMemorySigner {
 		let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
 		let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
+		let payment_script = bitcoin::Address::p2wsh(&witness_script, Network::Bitcoin).script_pubkey();
+
+		if descriptor.output.script_pubkey != payment_script { return Err(()); }
 
 		let mut witness = Vec::with_capacity(3);
 		witness.push(local_delayedsig.serialize_der().to_vec());
@@ -927,8 +935,9 @@ impl KeysManager {
 	/// output to the given change destination (if sufficient change value remains). The
 	/// transaction will have a feerate, at least, of the given value.
 	///
-	/// Returns `Err(())` if the output value is greater than the input value minus required fee or
-	/// if a descriptor was duplicated.
+	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
+	/// if a descriptor was duplicated, or if an output descriptor script_pubkey 
+	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
 	///
@@ -996,7 +1005,7 @@ impl KeysManager {
 							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
 							descriptor.channel_keys_id));
 					}
-					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&spend_tx, input_idx, &descriptor, &secp_ctx).unwrap();
+					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(&spend_tx, input_idx, &descriptor, &secp_ctx)?;
 				},
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
 					if keys_cache.is_none() || keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id {
@@ -1004,7 +1013,7 @@ impl KeysManager {
 							self.derive_channel_keys(descriptor.channel_value_satoshis, &descriptor.channel_keys_id),
 							descriptor.channel_keys_id));
 					}
-					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&spend_tx, input_idx, &descriptor, &secp_ctx).unwrap();
+					spend_tx.input[input_idx].witness = keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(&spend_tx, input_idx, &descriptor, &secp_ctx)?;
 				},
 				SpendableOutputDescriptor::StaticOutput { ref output, .. } => {
 					let derivation_idx = if output.script_pubkey == self.destination_script {
@@ -1029,6 +1038,10 @@ impl KeysManager {
 						assert_eq!(pubkey.key, self.shutdown_pubkey);
 					}
 					let witness_script = bitcoin::Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
+					let payment_script = bitcoin::Address::p2wpkh(&pubkey, Network::Testnet).expect("uncompressed key found").script_pubkey();
+
+					if payment_script != output.script_pubkey { return Err(()); };
+
 					let sighash = hash_to_message!(&bip143::SigHashCache::new(&spend_tx).signature_hash(input_idx, &witness_script, output.value, SigHashType::All)[..]);
 					let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
 					spend_tx.input[input_idx].witness.push(sig.serialize_der().to_vec());

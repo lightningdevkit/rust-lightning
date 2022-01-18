@@ -6215,6 +6215,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(3, pending_outbound_payments, required),
+			(5, self.our_network_pubkey, required)
 		});
 
 		Ok(())
@@ -6509,10 +6510,13 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> = None;
 		let mut pending_outbound_payments = None;
+		let mut received_network_pubkey: Option<PublicKey> = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
+			(5, received_network_pubkey, option)
 		});
+
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
 		} else if pending_outbound_payments.is_none() {
@@ -6575,6 +6579,14 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_events_read.append(&mut channel_closures);
 		}
 
+		let our_network_pubkey = PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret());
+		if let Some(network_pubkey) = received_network_pubkey {
+			if network_pubkey != our_network_pubkey {
+				log_error!(args.logger, "Key that was generated does not match the existing key.");
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
 		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 		let channel_manager = ChannelManager {
@@ -6597,7 +6609,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
 			our_network_key: args.keys_manager.get_node_secret(),
-			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret()),
+			our_network_pubkey,
 			secp_ctx,
 
 			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
