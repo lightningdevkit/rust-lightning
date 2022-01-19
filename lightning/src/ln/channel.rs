@@ -330,6 +330,7 @@ struct CommitmentStats<'a> {
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
 	local_balance_msat: u64, // local balance before fees but considering dust limits
 	remote_balance_msat: u64, // remote balance before fees but considering dust limits
+	preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -1298,6 +1299,8 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+		let mut preimages: Vec<PaymentPreimage> = Vec::new();
+
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				OutboundHTLCState::LocalAnnounced(_) => (generated_by_local, "LocalAnnounced"),
@@ -1306,6 +1309,17 @@ impl<Signer: Sign> Channel<Signer> {
 				OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) => (generated_by_local, "AwaitingRemoteRevokeToRemove"),
 				OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) => (false, "AwaitingRemovedRemoteRevoke"),
 			};
+
+			let preimage_opt = match htlc.state {
+				OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(p)) => p,
+				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(p)) => p,
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(p)) => p,
+				_ => None,
+			};
+
+			if let Some(preimage) = preimage_opt {
+				preimages.push(preimage);
+			}
 
 			if include {
 				add_htlc_output!(htlc, true, Some(&htlc.source), state_name);
@@ -1411,6 +1425,7 @@ impl<Signer: Sign> Channel<Signer> {
 			htlcs_included,
 			local_balance_msat: value_to_self_msat as u64,
 			remote_balance_msat: value_to_remote_msat as u64,
+			preimages
 		}
 	}
 
@@ -1882,7 +1897,7 @@ impl<Signer: Sign> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -1936,7 +1951,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -2013,7 +2028,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 
@@ -2682,7 +2697,7 @@ impl<Signer: Sign> Channel<Signer> {
 		);
 
 		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
 			.map_err(|_| (None, ChannelError::Close("Failed to validate our commitment".to_owned())))?;
 		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
 
@@ -4529,7 +4544,7 @@ impl<Signer: Sign> Channel<Signer> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -4994,7 +5009,7 @@ impl<Signer: Sign> Channel<Signer> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.holder_signer.sign_counterparty_commitment(&commitment_stats.tx, &self.secp_ctx)
+			let res = self.holder_signer.sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;

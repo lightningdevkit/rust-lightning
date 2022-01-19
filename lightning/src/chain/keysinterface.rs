@@ -34,7 +34,7 @@ use util::{byte_utils, transaction_utils};
 use util::ser::{Writeable, Writer, Readable};
 
 use chain::transaction::OutPoint;
-use ln::chan_utils;
+use ln::{chan_utils, PaymentPreimage};
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
 use ln::script::ShutdownScript;
@@ -226,7 +226,14 @@ pub trait BaseSign {
 	/// secret won't leave us without a broadcastable holder transaction.
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction) -> Result<(), ()>;
+	///
+	/// The preimages of outgoing HTLCs that were fulfilled since the last commitment are provided.
+	/// A validating signer should ensure that an HTLC output is removed only when the matching
+	/// preimage is provided, or when the value to holder is restored.
+	///
+	/// NOTE: all the relevant preimages will be provided, but there may also be additional
+	/// irrelevant or duplicate preimages.
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
 	/// Gets the holder's channel public keys and basepoints
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
@@ -240,9 +247,16 @@ pub trait BaseSign {
 	///
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
+	///
+	/// The preimages of outgoing HTLCs that were fulfilled since the last commitment are provided.
+	/// A validating signer should ensure that an HTLC output is removed only when the matching
+	/// preimage is provided, or when the value to holder is restored.
+	///
+	/// NOTE: all the relevant preimages will be provided, but there may also be additional
+	/// irrelevant or duplicate preimages.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
-	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Validate the counterparty's revocation.
 	///
 	/// This is required in order for the signer to make sure that the state has moved
@@ -601,14 +615,14 @@ impl BaseSign for InMemorySigner {
 		chan_utils::build_commitment_secret(&self.commitment_seed, idx)
 	}
 
-	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction) -> Result<(), ()> {
+	fn validate_holder_commitment(&self, _holder_tx: &HolderCommitmentTransaction, _preimages: Vec<PaymentPreimage>) -> Result<(), ()> {
 		Ok(())
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }
 	fn channel_keys_id(&self) -> [u8; 32] { self.channel_keys_id }
 
-	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
 		let trusted_tx = commitment_tx.trust();
 		let keys = trusted_tx.keys();
 
