@@ -9602,6 +9602,77 @@ fn test_forwardable_regen() {
 }
 
 #[test]
+fn test_dup_htlc_second_fail_panic() {
+	// Previously, if we received two HTLCs back-to-back, where the second overran the expected
+	// value for the payment, we'd fail back both HTLCs after generating a `PaymentReceived` event.
+	// Then, if the user failed the second payment, they'd hit a "tried to fail an already failed
+	// HTLC" debug panic. This tests for this behavior, checking that only one HTLC is auto-failed.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let scorer = test_utils::TestScorer::with_penalty(0);
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph,
+		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+		10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+
+	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+
+	{
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	}
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_received!(nodes[1], our_payment_hash, our_payment_secret, 10_000);
+
+	{
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		// At this point, nodes[1] would notice it has too much value for the payment. It will
+		// assume the second is a privacy attack (no longer particularly relevant
+		// post-payment_secrets) and fail back the new HTLC. Previously, it'd also have failed back
+		// the first HTLC delivered above.
+	}
+
+	// Now we go fail back the first HTLC from the user end.
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	nodes[1].node.fail_htlc_backwards(&our_payment_hash);
+
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+
+	check_added_monitors!(nodes[1], 1);
+	let fail_updates_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(fail_updates_1.update_fail_htlcs.len(), 2);
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[1]);
+	commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
+
+	let failure_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(failure_events.len(), 2);
+	if let Event::PaymentPathFailed { .. } = failure_events[0] {} else { panic!(); }
+	if let Event::PaymentPathFailed { .. } = failure_events[1] {} else { panic!(); }
+}
+
+#[test]
 fn test_keysend_payments_to_public_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
