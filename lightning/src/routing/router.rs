@@ -575,7 +575,7 @@ where L::Target: Logger {
 	//    any ~sufficient (described later) value.
 	//    If succeed, remember which channels were used and how much liquidity they have available,
 	//    so that future paths don't rely on the same liquidity.
-	// 3. Prooceed to the next step if:
+	// 3. Proceed to the next step if:
 	//    - we hit the recommended target value;
 	//    - OR if we could not construct a new path. Any next attempt will fail too.
 	//    Otherwise, repeat step 2.
@@ -593,7 +593,7 @@ where L::Target: Logger {
 	//
 	// We are not a faithful Dijkstra's implementation because we can change values which impact
 	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
-	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) then
+	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) than
 	// the value we are currently attempting to send over a path, we simply reduce the value being
 	// sent along the path for any hops after that channel. This may imply that later fees (which
 	// we've already tabulated) are lower because a smaller value is passing through the channels
@@ -703,7 +703,7 @@ where L::Target: Logger {
 	// This map allows paths to be aware of the channel use by other paths in the same call.
 	// This would help to make a better path finding decisions and not "overbook" channels.
 	// It is unaware of the directions (except for `outbound_capacity_msat` in `first_hops`).
-	let mut bookkeeped_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
+	let mut bookkept_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
 	// - how much a new path should be transferring (upper bound);
@@ -718,7 +718,7 @@ where L::Target: Logger {
 		// Adds entry which goes from $src_node_id to $dest_node_id
 		// over the channel with id $chan_id with fees described in
 		// $directional_info.
-		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
+		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
 		// since that value has to be transferred over this channel.
 		// Returns whether this channel caused an update to `targets`.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr,
@@ -730,7 +730,7 @@ where L::Target: Logger {
 			// - for regular channels at channel announcement (TODO)
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id.clone() {
-				let available_liquidity_msat = bookkeeped_channels_liquidity_available_msat.entry($chan_id.clone()).or_insert_with(|| {
+				let available_liquidity_msat = bookkept_channels_liquidity_available_msat.entry($chan_id.clone()).or_insert_with(|| {
 					let mut initial_liquidity_available_msat = None;
 					if let Some(capacity_sats) = $capacity_sats {
 						initial_liquidity_available_msat = Some(capacity_sats * 1000);
@@ -805,7 +805,7 @@ where L::Target: Logger {
 					} else if contributes_sufficient_value {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
-						// payment path (upstream to the payee). To avoid that, we recompute path
+						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
 						let path_htlc_minimum_msat = compute_fees($next_hops_path_htlc_minimum_msat, $directional_info.fees)
 							.and_then(|fee_msat| fee_msat.checked_add($next_hops_path_htlc_minimum_msat))
@@ -1050,7 +1050,7 @@ where L::Target: Logger {
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
 		// For every new path, start from scratch, except
-		// bookkeeped_channels_liquidity_available_msat, which will improve
+		// bookkept_channels_liquidity_available_msat, which will improve
 		// the further iterations of path finding. Also don't erase first_hop_targets.
 		targets.clear();
 		dist.clear();
@@ -1284,7 +1284,7 @@ where L::Target: Logger {
 				// on the same liquidity in future paths.
 				let mut prevented_redundant_path_selection = false;
 				for (payment_hop, _) in payment_path.hops.iter() {
-					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.short_channel_id).unwrap();
+					let channel_liquidity_available_msat = bookkept_channels_liquidity_available_msat.get_mut(&payment_hop.short_channel_id).unwrap();
 					let mut spent_on_hop_msat = value_contribution_msat;
 					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
 					spent_on_hop_msat += next_hops_fee_msat;
@@ -1301,7 +1301,7 @@ where L::Target: Logger {
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_scid = payment_path.hops[(payment_path.hops.len() - 1) / 2].0.short_channel_id;
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					let victim_liquidity = bookkeeped_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
+					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
 					*victim_liquidity = 0;
 				}
 
