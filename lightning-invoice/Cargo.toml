@@ -24,4 +24,4 @@ core2 = { version = "0.3.0", default-features = false, optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.104", path = "../lightning", default-features = false, features = ["_test_utils"] }
-hex = "0.3"
+hex = "0.4"
