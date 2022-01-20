@@ -470,7 +470,7 @@ impl Logger for TestLogger {
 }
 
 pub struct TestKeysInterface {
-	pub backing: keysinterface::KeysManager,
+	pub backing: keysinterface::PhantomKeysManager,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
@@ -542,7 +542,7 @@ impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
-			backing: keysinterface::KeysManager::new(seed, now.as_secs(), now.subsec_nanos()),
+			backing: keysinterface::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 			disable_revocation_policy_check: false,

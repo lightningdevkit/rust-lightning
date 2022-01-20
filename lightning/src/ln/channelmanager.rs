@@ -2295,6 +2295,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if let Some((err, code, chan_update)) = loop {
 					let forwarding_id = match id_option {
 						None => { // unknown_next_peer
+							// Note that this is likely a timing oracle for detecting whether an scid is a
+							// phantom.
+							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) {
+								break None
+							}
 							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 						},
 						Some(id) => id.clone(),
@@ -2984,6 +2989,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
+		let mut phantom_receives: Vec<(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
 		let mut handle_errors = Vec::new();
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -2994,26 +3000,69 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let forward_chan_id = match channel_state.short_to_id.get(&short_chan_id) {
 						Some(chan_id) => chan_id.clone(),
 						None => {
-							failed_forwards.reserve(pending_forwards.len());
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info,
-									                           prev_funding_outpoint } => {
-										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-											short_channel_id: prev_short_channel_id,
-											outpoint: prev_funding_outpoint,
-											htlc_id: prev_htlc_id,
-											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
-										});
-										failed_forwards.push((htlc_source, forward_info.payment_hash,
-											HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() }
-										));
-									},
+									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
+										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
+										prev_funding_outpoint } => {
+											macro_rules! fail_forward {
+												($msg: expr, $err_code: expr, $err_data: expr) => {
+													{
+														log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+														let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+															short_channel_id: short_chan_id,
+															outpoint: prev_funding_outpoint,
+															htlc_id: prev_htlc_id,
+															incoming_packet_shared_secret: incoming_shared_secret,
+														});
+														failed_forwards.push((htlc_source, payment_hash,
+																HTLCFailReason::Reason { failure_code: $err_code, data: $err_data }
+														));
+														continue;
+													}
+												}
+											}
+											if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
+												let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
+												if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
+													let shared_secret = {
+														let mut arr = [0; 32];
+														arr.copy_from_slice(&SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap())[..]);
+														arr
+													};
+													let next_hop = match onion_utils::decode_next_hop(shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+														Ok(res) => res,
+														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+															fail_forward!(err_msg, err_code, Vec::new());
+														},
+														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+															fail_forward!(err_msg, err_code, Vec::new());
+														},
+													};
+													match next_hop {
+														onion_utils::Hop::Receive(hop_data) => {
+															match self.construct_recv_pending_htlc_info(hop_data, shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value) {
+																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
+																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data)
+															}
+														},
+														_ => panic!(),
+													}
+												} else {
+													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new());
+												}
+											} else {
+												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new());
+											}
+										},
 									HTLCForwardInfo::FailHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
 										// problem, not ours.
+										//
+										// `fail_htlc_backwards_internal` is never called for
+										// phantom payments, so this is unreachable for them.
 									}
 								}
 							}
@@ -3320,6 +3369,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (htlc_source, payment_hash, failure_reason) in failed_forwards.drain(..) {
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, failure_reason);
 		}
+		self.forward_htlcs(&mut phantom_receives);
 
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
 			let _ = handle_error!(self, err, counterparty_node_id);
