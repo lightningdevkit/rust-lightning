@@ -3,7 +3,7 @@ use std::convert::TryInto;
 use bitcoin::{BlockHash, hashes::hex::FromHex};
 use lightning_block_sync::http::JsonResponse;
 
-// TryInto implementation specifies the conversion logic from json response to BlockchainInfo object.
+/// TryInto implementation specifies the conversion logic from json response to BlockchainInfo object.
 pub struct BlockchainInfoResponse {
     pub latest_height: usize,
     pub latest_blockhash: BlockHash,
@@ -54,7 +54,7 @@ impl TryInto<GenerateToAddressResponse> for JsonResponse {
 
         for item in self.0.as_array().unwrap() {
             x.push(BlockHash::from_hex(item.as_str().unwrap())
-            .unwrap());
+                .unwrap());
         }
 
         Ok(GenerateToAddressResponse(x))
@@ -70,12 +70,3 @@ impl TryInto<NewAddressResponse> for JsonResponse {
         Ok(NewAddressResponse(self.0.as_str().unwrap().to_string()))
     }
 }
-
-
-
-
-
-
-
-
-

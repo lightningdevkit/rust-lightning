@@ -2,6 +2,7 @@ use std::{sync::{Arc}};
 
 use bitcoin::{BlockHash, Block};
 use lightning_block_sync::{rpc::RpcClient, http::{HttpEndpoint}, BlockSource, AsyncBlockSourceResult, BlockHeaderData};
+use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::convert::{CreateWalletResponse, BlockchainInfoResponse, NewAddressResponse, GetBalanceResponse, GenerateToAddressResponse};
@@ -48,7 +49,7 @@ impl BitcoindClient {
         let rpc_creditials = 
             base64::encode(format!("{}:{}", rpc_user.clone(), rpc_password.clone()));
         let mut bitcoind_rpc_client = RpcClient::new(&rpc_creditials, http_endpoint)?;
-        let _dummy = bitcoind_rpc_client
+        bitcoind_rpc_client
 			.call_method::<BlockchainInfoResponse>("getblockchaininfo", &vec![])
 			.await
 			.map_err(|_| {
@@ -81,7 +82,7 @@ impl BitcoindClient {
 
     pub async fn create_wallet(&self) -> CreateWalletResponse {
         let mut rpc = self.bitcoind_rpc_client.lock().await;
-        let create_wallet_args = vec![serde_json::json!("test-wallet")];
+        let create_wallet_args = vec![json!("test-wallet")];
 
         rpc.call_method::<CreateWalletResponse>("createwallet", &create_wallet_args).await.unwrap()
     }
@@ -89,7 +90,7 @@ impl BitcoindClient {
     pub async fn get_new_address(&self) -> String {
 		let mut rpc = self.bitcoind_rpc_client.lock().await;
 
-		let addr_args = vec![serde_json::json!("LDK output address")];
+		let addr_args = vec![json!("LDK output address")];
 		let addr = rpc.call_method::<NewAddressResponse>("getnewaddress", &addr_args).await.unwrap();
 		addr.0.to_string()
 	}
@@ -103,16 +104,9 @@ impl BitcoindClient {
     pub async fn generate_to_address(&self, block_num: u64, address: &str) -> GenerateToAddressResponse {
 		let mut rpc = self.bitcoind_rpc_client.lock().await;
 
-		let generate_to_address_args = vec![serde_json::json!(block_num), serde_json::json!(address)];
+		let generate_to_address_args = vec![json!(block_num), json!(address)];
 
 
 		rpc.call_method::<GenerateToAddressResponse>("generatetoaddress", &generate_to_address_args).await.unwrap()
 	}
 }
-
-
-
-
-
-
-
