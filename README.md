@@ -33,6 +33,24 @@ production-worthy implementation in 2021.
 Communications for Rust-Lightning and Lightning Development Kit happens through
 [LDK slack](http://lightningdevkit.org/).
 
+Crates
+-----------
+1. [lightning](./lightning)   
+  The Core of the LDK library, implements the lightning protocol, channel state machine, 
+  and on-chain logic. Supports no-std and exposes on relatively low-level interfaces.
+2. [lightning-background-processor](./lightning-background-processor)
+  Utilities to perform required background tasks for Rust Lightning.
+3. [lightning-block-sync](./lightning-block-sync)
+  Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
+4. [lightning-invoice](./lightning-invoice)
+  Data structures to parse and serialize BOLT11 lightning invoices.
+5. [lightning-net-tokio](./lightning-net-tokio)
+  Implementation of the rust-lightning network stack using Tokio.
+  For Rust-Lightning clients which wish to make direct connections to Lightning P2P nodes,
+  this is a simple alternative to implementing the required network stack, especially for those already using Tokio.
+6. [lightning-persister](./lightning-persister)
+  Utilities to manage Rust-Lightning channel data persistence and retrieval.
+
 About
 -----------
 LDK/Rust-Lightning is a generic library which allows you to build a lightning
