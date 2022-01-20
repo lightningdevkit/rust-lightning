@@ -2155,8 +2155,15 @@ impl<Signer: Sign> Channel<Signer> {
 	/// This is the amount that would go to us if we close the channel, ignoring any on-chain fees.
 	/// See also [`Channel::get_inbound_outbound_available_balance_msat`]
 	pub fn get_balance_msat(&self) -> u64 {
-		self.value_to_self_msat
-			- self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat
+		// Include our local balance, plus any inbound HTLCs we know the preimage for, minus any
+		// HTLCs sent or which will be sent after commitment signed's are exchanged.
+		let mut balance_msat = self.value_to_self_msat;
+		for ref htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
+				balance_msat += htlc.amount_msat;
+			}
+		}
+		balance_msat - self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat
 	}
 
 	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
