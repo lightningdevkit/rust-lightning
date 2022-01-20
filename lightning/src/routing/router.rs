@@ -173,6 +173,9 @@ impl_writeable_tlv_based!(RouteParameters, {
 	(4, final_cltv_expiry_delta, required),
 });
 
+/// Maximum total CTLV difference we allow for a full payment path.
+pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
+
 /// The recipient of a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Payee {
@@ -192,10 +195,14 @@ pub struct Payee {
 
 	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
 	pub expiry_time: Option<u64>,
+
+	/// The maximum total CLTV delta we accept for the route.
+	pub max_total_cltv_expiry_delta: u32,
 }
 
 impl_writeable_tlv_based!(Payee, {
 	(0, pubkey, required),
+	(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 	(2, features, option),
 	(4, route_hints, vec_type),
 	(6, expiry_time, option),
@@ -209,6 +216,7 @@ impl Payee {
 			features: None,
 			route_hints: vec![],
 			expiry_time: None,
+			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 		}
 	}
 
@@ -236,6 +244,13 @@ impl Payee {
 	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_expiry_time(self, expiry_time: u64) -> Self {
 		Self { expiry_time: Some(expiry_time), ..self }
+	}
+
+	/// Includes a limit for the total CLTV expiry delta which is considered during routing
+	///
+	/// (C-not exported) since bindings don't support move semantics
+	pub fn with_max_total_cltv_expiry_delta(self, max_total_cltv_expiry_delta: u32) -> Self {
+		Self { max_total_cltv_expiry_delta, ..self }
 	}
 }
 
@@ -296,6 +311,7 @@ struct RouteGraphNode {
 	node_id: NodeId,
 	lowest_fee_to_peer_through_node: u64,
 	lowest_fee_to_node: u64,
+	total_cltv_delta: u32,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
 	// This value is upper-bounded by us by:
 	// - how much is needed for a path being constructed
@@ -575,7 +591,7 @@ where L::Target: Logger {
 	//    any ~sufficient (described later) value.
 	//    If succeed, remember which channels were used and how much liquidity they have available,
 	//    so that future paths don't rely on the same liquidity.
-	// 3. Prooceed to the next step if:
+	// 3. Proceed to the next step if:
 	//    - we hit the recommended target value;
 	//    - OR if we could not construct a new path. Any next attempt will fail too.
 	//    Otherwise, repeat step 2.
@@ -593,7 +609,7 @@ where L::Target: Logger {
 	//
 	// We are not a faithful Dijkstra's implementation because we can change values which impact
 	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
-	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) then
+	// liquidity limit (via htlc_maximum_msat, on-chain capacity or assumed liquidity limits) than
 	// the value we are currently attempting to send over a path, we simply reduce the value being
 	// sent along the path for any hops after that channel. This may imply that later fees (which
 	// we've already tabulated) are lower because a smaller value is passing through the channels
@@ -703,7 +719,7 @@ where L::Target: Logger {
 	// This map allows paths to be aware of the channel use by other paths in the same call.
 	// This would help to make a better path finding decisions and not "overbook" channels.
 	// It is unaware of the directions (except for `outbound_capacity_msat` in `first_hops`).
-	let mut bookkeeped_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
+	let mut bookkept_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
 	// - how much a new path should be transferring (upper bound);
@@ -718,11 +734,11 @@ where L::Target: Logger {
 		// Adds entry which goes from $src_node_id to $dest_node_id
 		// over the channel with id $chan_id with fees described in
 		// $directional_info.
-		// $next_hops_fee_msat represents the fees paid for using all the channel *after* this one,
+		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
 		// since that value has to be transferred over this channel.
 		// Returns whether this channel caused an update to `targets`.
 		( $chan_id: expr, $src_node_id: expr, $dest_node_id: expr, $directional_info: expr, $capacity_sats: expr, $chan_features: expr, $next_hops_fee_msat: expr,
-		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr ) => { {
+		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr ) => { {
 			// We "return" whether we updated the path at the end, via this:
 			let mut did_add_update_path_to_src_node = false;
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
@@ -730,7 +746,7 @@ where L::Target: Logger {
 			// - for regular channels at channel announcement (TODO)
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id.clone() {
-				let available_liquidity_msat = bookkeeped_channels_liquidity_available_msat.entry($chan_id.clone()).or_insert_with(|| {
+				let available_liquidity_msat = bookkept_channels_liquidity_available_msat.entry($chan_id.clone()).or_insert_with(|| {
 					let mut initial_liquidity_available_msat = None;
 					if let Some(capacity_sats) = $capacity_sats {
 						initial_liquidity_available_msat = Some(capacity_sats * 1000);
@@ -784,6 +800,14 @@ where L::Target: Logger {
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 
+
+					// Do not consider candidates that exceed the maximum total cltv expiry limit.
+					let max_total_cltv_expiry_delta = payee.max_total_cltv_expiry_delta;
+					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
+						.checked_add($directional_info.cltv_expiry_delta as u32)
+						.unwrap_or(u32::max_value());
+					let doesnt_exceed_cltv_delta_limit = hop_total_cltv_delta <= max_total_cltv_expiry_delta;
+
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
 					// Includes paying fees for the use of the following channels.
 					let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add($next_hops_fee_msat) {
@@ -800,12 +824,12 @@ where L::Target: Logger {
 					// Since we're choosing amount_to_transfer_over_msat as maximum possible, it can
 					// be only reduced later (not increased), so this channel should just be skipped
 					// as not sufficient.
-					if !over_path_minimum_msat {
+					if !over_path_minimum_msat && doesnt_exceed_cltv_delta_limit {
 						hit_minimum_limit = true;
-					} else if contributes_sufficient_value {
+					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
-						// payment path (upstream to the payee). To avoid that, we recompute path
+						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
 						let path_htlc_minimum_msat = compute_fees($next_hops_path_htlc_minimum_msat, $directional_info.fees)
 							.and_then(|fee_msat| fee_msat.checked_add($next_hops_path_htlc_minimum_msat))
@@ -899,6 +923,7 @@ where L::Target: Logger {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
 								lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
+								total_cltv_delta: hop_total_cltv_delta,
 								value_contribution_msat: value_contribution_msat,
 								path_htlc_minimum_msat,
 								path_penalty_msat,
@@ -990,7 +1015,7 @@ where L::Target: Logger {
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr ) => {
+		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr ) => {
 			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
@@ -1006,7 +1031,7 @@ where L::Target: Logger {
 			if !skip_node {
 				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
 					for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-						add_entry!(first_hop, our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat);
+						add_entry!(first_hop, our_node_id, $node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat, $next_hops_cltv_delta);
 					}
 				}
 
@@ -1025,7 +1050,7 @@ where L::Target: Logger {
 								if first_hops.is_none() || chan.node_two != our_node_id {
 									if let Some(two_to_one) = chan.two_to_one.as_ref() {
 										if two_to_one.enabled {
-											add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat);
+											add_entry!(chan_id, chan.node_two, chan.node_one, two_to_one, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat, $next_hops_cltv_delta);
 										}
 									}
 								}
@@ -1033,7 +1058,7 @@ where L::Target: Logger {
 								if first_hops.is_none() || chan.node_one != our_node_id{
 									if let Some(one_to_two) = chan.one_to_two.as_ref() {
 										if one_to_two.enabled {
-											add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat);
+											add_entry!(chan_id, chan.node_one, chan.node_two, one_to_two, chan.capacity_sats, &chan.features, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat, $next_hops_cltv_delta);
 										}
 									}
 								}
@@ -1050,7 +1075,7 @@ where L::Target: Logger {
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
 		// For every new path, start from scratch, except
-		// bookkeeped_channels_liquidity_available_msat, which will improve
+		// bookkept_channels_liquidity_available_msat, which will improve
 		// the further iterations of path finding. Also don't erase first_hop_targets.
 		targets.clear();
 		dist.clear();
@@ -1060,7 +1085,7 @@ where L::Target: Logger {
 		// place where it could be added.
 		if let Some(first_channels) = first_hop_targets.get(&payee_node_id) {
 			for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-				let added = add_entry!(first_hop, our_node_id, payee_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0, 0u64);
+				let added = add_entry!(first_hop, our_node_id, payee_node_id, dummy_directional_info, Some(outbound_capacity_msat / 1000), features, 0, path_value_msat, 0, 0u64, 0);
 				log_trace!(logger, "{} direct route to payee via SCID {}", if added { "Added" } else { "Skipped" }, first_hop);
 			}
 		}
@@ -1074,7 +1099,7 @@ where L::Target: Logger {
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0, 0u64);
+				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0, 0u64, 0);
 			},
 		}
 
@@ -1100,6 +1125,7 @@ where L::Target: Logger {
 				let mut aggregate_next_hops_fee_msat: u64 = 0;
 				let mut aggregate_next_hops_path_htlc_minimum_msat: u64 = 0;
 				let mut aggregate_next_hops_path_penalty_msat: u64 = 0;
+				let mut aggregate_next_hops_cltv_delta: u32 = 0;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					// BOLT 11 doesn't allow inclusion of features for the last hop hints, which
@@ -1130,11 +1156,15 @@ where L::Target: Logger {
 						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, None, &src_node_id, &dest_node_id))
 						.unwrap_or_else(|| u64::max_value());
 
+					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
+						.checked_add(hop.cltv_expiry_delta as u32)
+						.unwrap_or_else(|| u32::max_value());
+
 					// We assume that the recipient only included route hints for routes which had
 					// sufficient value to route `final_value_msat`. Note that in the case of "0-value"
 					// invoices where the invoice does not specify value this may not be the case, but
 					// better to include the hints than not.
-					if !add_entry!(hop.short_channel_id, src_node_id, dest_node_id, directional_info, channel_cap_sat, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat) {
+					if !add_entry!(hop.short_channel_id, src_node_id, dest_node_id, directional_info, channel_cap_sat, &empty_channel_features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta) {
 						// If this hop was not used then there is no use checking the preceding hops
 						// in the RouteHint. We can break by just searching for a direct channel between
 						// last checked hop and first_hop_targets
@@ -1144,7 +1174,7 @@ where L::Target: Logger {
 					// Searching for a direct channel between last checked hop and first_hop_targets
 					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
 						for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-							add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&prev_hop_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat);
+							add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&prev_hop_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta);
 						}
 					}
 
@@ -1178,7 +1208,7 @@ where L::Target: Logger {
 						// path.
 						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
 							for (ref first_hop, ref features, ref outbound_capacity_msat, _) in first_channels {
-								add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&hop.src_node_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat);
+								add_entry!(first_hop, our_node_id , NodeId::from_pubkey(&hop.src_node_id), dummy_directional_info, Some(outbound_capacity_msat / 1000), features, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta);
 							}
 						}
 					}
@@ -1201,7 +1231,7 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
@@ -1284,7 +1314,7 @@ where L::Target: Logger {
 				// on the same liquidity in future paths.
 				let mut prevented_redundant_path_selection = false;
 				for (payment_hop, _) in payment_path.hops.iter() {
-					let channel_liquidity_available_msat = bookkeeped_channels_liquidity_available_msat.get_mut(&payment_hop.short_channel_id).unwrap();
+					let channel_liquidity_available_msat = bookkept_channels_liquidity_available_msat.get_mut(&payment_hop.short_channel_id).unwrap();
 					let mut spent_on_hop_msat = value_contribution_msat;
 					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
 					spent_on_hop_msat += next_hops_fee_msat;
@@ -1301,7 +1331,7 @@ where L::Target: Logger {
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_scid = payment_path.hops[(payment_path.hops.len() - 1) / 2].0.short_channel_id;
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					let victim_liquidity = bookkeeped_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
+					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
 					*victim_liquidity = 0;
 				}
 
@@ -1327,7 +1357,7 @@ where L::Target: Logger {
 			match network_nodes.get(&node_id) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat);
+					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, total_cltv_delta);
 				},
 			}
 		}
@@ -1731,7 +1761,7 @@ mod tests {
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: u16::max_value(),
+			cltv_expiry_delta: (5 << 4) | 3,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: u32::max_value(),
@@ -1759,7 +1789,7 @@ mod tests {
 			short_channel_id: 12,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: u16::max_value(),
+			cltv_expiry_delta: (5 << 4) | 3,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: u32::max_value(),
@@ -1787,7 +1817,7 @@ mod tests {
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (3 << 8) | 1,
+			cltv_expiry_delta: (3 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1799,7 +1829,7 @@ mod tests {
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (3 << 8) | 2,
+			cltv_expiry_delta: (3 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 100,
@@ -1813,7 +1843,7 @@ mod tests {
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (4 << 8) | 1,
+			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1825,7 +1855,7 @@ mod tests {
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (4 << 8) | 2,
+			cltv_expiry_delta: (4 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1839,7 +1869,7 @@ mod tests {
 			short_channel_id: 13,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (13 << 8) | 1,
+			cltv_expiry_delta: (13 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1851,7 +1881,7 @@ mod tests {
 			short_channel_id: 13,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (13 << 8) | 2,
+			cltv_expiry_delta: (13 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1867,7 +1897,7 @@ mod tests {
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (6 << 8) | 1,
+			cltv_expiry_delta: (6 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1879,7 +1909,7 @@ mod tests {
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (6 << 8) | 2,
+			cltv_expiry_delta: (6 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1893,7 +1923,7 @@ mod tests {
 			short_channel_id: 11,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (11 << 8) | 1,
+			cltv_expiry_delta: (11 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1905,7 +1935,7 @@ mod tests {
 			short_channel_id: 11,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (11 << 8) | 2,
+			cltv_expiry_delta: (11 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1923,7 +1953,7 @@ mod tests {
 			short_channel_id: 7,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (7 << 8) | 1,
+			cltv_expiry_delta: (7 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1935,7 +1965,7 @@ mod tests {
 			short_channel_id: 7,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (7 << 8) | 2,
+			cltv_expiry_delta: (7 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -1967,7 +1997,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
@@ -2305,7 +2335,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
@@ -2343,7 +2373,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]); // it should also override our view of their features
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
@@ -2373,14 +2403,14 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (3 << 8) | 2);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (3 << 4) | 2);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
@@ -2400,7 +2430,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
@@ -2421,7 +2451,7 @@ mod tests {
 			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}
@@ -2432,14 +2462,14 @@ mod tests {
 				base_msat: 1001,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (9 << 8) | 1,
+			cltv_expiry_delta: (9 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
-			cltv_expiry_delta: (10 << 8) | 1,
+			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2457,14 +2487,14 @@ mod tests {
 				base_msat: 100,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (5 << 8) | 1,
+			cltv_expiry_delta: (5 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
 			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}
@@ -2475,14 +2505,14 @@ mod tests {
 				base_msat: 1001,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (9 << 8) | 1,
+			cltv_expiry_delta: (9 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
-			cltv_expiry_delta: (10 << 8) | 1,
+			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2506,7 +2536,7 @@ mod tests {
 				base_msat: 1000,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]);
@@ -2527,28 +2557,28 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
@@ -2571,7 +2601,7 @@ mod tests {
 			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![
@@ -2580,7 +2610,7 @@ mod tests {
 			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
-			cltv_expiry_delta: (10 << 8) | 1,
+			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2601,28 +2631,28 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
@@ -2648,21 +2678,21 @@ mod tests {
 				base_msat: 100,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (5 << 8) | 1,
+			cltv_expiry_delta: (5 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
 			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
-			cltv_expiry_delta: (10 << 8) | 1,
+			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2709,21 +2739,21 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 200);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, 1025);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, 65);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, 1281);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, 81);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][2].short_channel_id, 5);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, 2049);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(4));
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new());
 
@@ -2744,14 +2774,14 @@ mod tests {
 			src_node_id: nodes[4],
 			short_channel_id: 11,
 			fees: zero_fees,
-			cltv_expiry_delta: (11 << 8) | 1,
+			cltv_expiry_delta: (11 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
 			src_node_id: nodes[3],
 			short_channel_id: 8,
 			fees: zero_fees,
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
@@ -2761,14 +2791,14 @@ mod tests {
 				base_msat: 1001,
 				proportional_millionths: 0,
 			},
-			cltv_expiry_delta: (9 << 8) | 1,
+			cltv_expiry_delta: (9 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}]), RouteHint(vec![RouteHintHop {
 			src_node_id: nodes[5],
 			short_channel_id: 10,
 			fees: zero_fees,
-			cltv_expiry_delta: (10 << 8) | 1,
+			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2789,28 +2819,28 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 100);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 0);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
@@ -2840,7 +2870,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 0);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &vec![0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &Vec::<u8>::new()); // No feature flags will meet the relevant-to-channel conversion
 
@@ -2861,21 +2891,21 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 200); // fee increased as its % of value transferred across node
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (7 << 8) | 1);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (7 << 4) | 1);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[5]);
 		assert_eq!(route.paths[0][2].short_channel_id, 7);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (10 << 8) | 1);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (10 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(6));
@@ -2895,28 +2925,28 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 		assert_eq!(route.paths[0][0].short_channel_id, 2);
 		assert_eq!(route.paths[0][0].fee_msat, 3000);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (4 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
 
 		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
 		assert_eq!(route.paths[0][1].short_channel_id, 4);
 		assert_eq!(route.paths[0][1].fee_msat, 0);
-		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 8) | 1);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, (6 << 4) | 1);
 		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[4]);
 		assert_eq!(route.paths[0][2].short_channel_id, 6);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
-		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 8) | 1);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, (11 << 4) | 1);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(5));
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(6));
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[3]);
 		assert_eq!(route.paths[0][3].short_channel_id, 11);
 		assert_eq!(route.paths[0][3].fee_msat, 1000);
-		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, (8 << 4) | 1);
 		// If we have a peer in the node map, we'll use their features here since we don't have
 		// a way of figuring out their features from the invoice:
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &id_to_feature_flags(4));
@@ -2943,7 +2973,7 @@ mod tests {
 				base_msat: 1000,
 				proportional_millionths: last_hop_fee_prop,
 			},
-			cltv_expiry_delta: (8 << 8) | 1,
+			cltv_expiry_delta: (8 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: last_hop_htlc_max,
 		}]);
@@ -2967,7 +2997,7 @@ mod tests {
 		assert_eq!(route.paths[0][0].pubkey, middle_node_id);
 		assert_eq!(route.paths[0][0].short_channel_id, 42);
 		assert_eq!(route.paths[0][0].fee_msat, 1001);
-		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 8) | 1);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, (8 << 4) | 1);
 		assert_eq!(route.paths[0][0].node_features.le_flags(), &[0b11]);
 		assert_eq!(route.paths[0][0].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 
@@ -3198,7 +3228,7 @@ mod tests {
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (3 << 8) | 1,
+			cltv_expiry_delta: (3 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -3210,7 +3240,7 @@ mod tests {
 			short_channel_id: 333,
 			timestamp: 1,
 			flags: 1,
-			cltv_expiry_delta: (3 << 8) | 2,
+			cltv_expiry_delta: (3 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 100,
@@ -4104,7 +4134,7 @@ mod tests {
 			short_channel_id: 1,
 			timestamp: 2,
 			flags: 0,
-			cltv_expiry_delta: u16::max_value(),
+			cltv_expiry_delta: (5 << 4) | 5,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Present(99_000),
 			fee_base_msat: u32::max_value(),
@@ -4116,7 +4146,7 @@ mod tests {
 			short_channel_id: 2,
 			timestamp: 2,
 			flags: 0,
-			cltv_expiry_delta: u16::max_value(),
+			cltv_expiry_delta: (5 << 4) | 3,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Present(99_000),
 			fee_base_msat: u32::max_value(),
@@ -4128,7 +4158,7 @@ mod tests {
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
-			cltv_expiry_delta: (4 << 8) | 1,
+			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 1,
@@ -4140,7 +4170,7 @@ mod tests {
 			short_channel_id: 13,
 			timestamp: 2,
 			flags: 0|2, // Channel disabled
-			cltv_expiry_delta: (13 << 8) | 1,
+			cltv_expiry_delta: (13 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4337,7 +4367,7 @@ mod tests {
 			short_channel_id: 6,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (6 << 8) | 0,
+			cltv_expiry_delta: (6 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4352,7 +4382,7 @@ mod tests {
 			short_channel_id: 5,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (5 << 8) | 0,
+			cltv_expiry_delta: (5 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 100,
@@ -4367,7 +4397,7 @@ mod tests {
 			short_channel_id: 4,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (4 << 8) | 0,
+			cltv_expiry_delta: (4 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4382,7 +4412,7 @@ mod tests {
 			short_channel_id: 3,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (3 << 8) | 0,
+			cltv_expiry_delta: (3 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4397,7 +4427,7 @@ mod tests {
 			short_channel_id: 2,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (2 << 8) | 0,
+			cltv_expiry_delta: (2 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4411,7 +4441,7 @@ mod tests {
 			short_channel_id: 1,
 			timestamp: 1,
 			flags: 0,
-			cltv_expiry_delta: (1 << 8) | 0,
+			cltv_expiry_delta: (1 << 4) | 0,
 			htlc_minimum_msat: 100,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4429,14 +4459,14 @@ mod tests {
 			assert_eq!(route.paths[0][0].pubkey, nodes[1]);
 			assert_eq!(route.paths[0][0].short_channel_id, 6);
 			assert_eq!(route.paths[0][0].fee_msat, 100);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (5 << 8) | 0);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (5 << 4) | 0);
 			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(1));
 			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(6));
 
 			assert_eq!(route.paths[0][1].pubkey, nodes[4]);
 			assert_eq!(route.paths[0][1].short_channel_id, 5);
 			assert_eq!(route.paths[0][1].fee_msat, 0);
-			assert_eq!(route.paths[0][1].cltv_expiry_delta, (1 << 8) | 0);
+			assert_eq!(route.paths[0][1].cltv_expiry_delta, (1 << 4) | 0);
 			assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(4));
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(5));
 
@@ -4480,7 +4510,7 @@ mod tests {
 			short_channel_id: 12,
 			timestamp: 2,
 			flags: 0,
-			cltv_expiry_delta: (4 << 8) | 1,
+			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: OptionalField::Present(270_000),
 			fee_base_msat: 0,
@@ -4498,7 +4528,7 @@ mod tests {
 			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 			assert_eq!(route.paths[0][0].short_channel_id, 12);
 			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
 			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
 			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
 
@@ -4542,7 +4572,7 @@ mod tests {
 			short_channel_id: 4,
 			timestamp: 2,
 			flags: 0,
-			cltv_expiry_delta: (4 << 8) | 1,
+			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 90_000,
 			htlc_maximum_msat: OptionalField::Absent,
 			fee_base_msat: 0,
@@ -4561,7 +4591,7 @@ mod tests {
 			assert_eq!(route.paths[0][0].pubkey, nodes[7]);
 			assert_eq!(route.paths[0][0].short_channel_id, 12);
 			assert_eq!(route.paths[0][0].fee_msat, 90_000*2);
-			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 8) | 1);
+			assert_eq!(route.paths[0][0].cltv_expiry_delta, (13 << 4) | 1);
 			assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(8));
 			assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(12));
 
@@ -4799,6 +4829,34 @@ mod tests {
 
 		assert_eq!(route.get_total_fees(), 0);
 		assert_eq!(route.get_total_amount(), 0);
+	}
+
+	#[test]
+	fn limits_total_cltv_delta() {
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+
+		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+
+		// Make sure that generally there is at least one route available
+		let feasible_max_total_cltv_delta = 1008;
+		let feasible_payee = Payee::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+			.with_max_total_cltv_expiry_delta(feasible_max_total_cltv_delta);
+		let route = get_route(&our_id, &feasible_payee, &network_graph, None, 100, 42, Arc::clone(&logger), &scorer).unwrap();
+		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		assert_ne!(path.len(), 0);
+
+		// But not if we exclude all paths on the basis of their accumulated CLTV delta
+		let fail_max_total_cltv_delta = 23;
+		let fail_payee = Payee::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+			.with_max_total_cltv_expiry_delta(fail_max_total_cltv_delta);
+		match get_route(&our_id, &fail_payee, &network_graph, None, 100, 42, Arc::clone(&logger), &scorer)
+		{
+			Err(LightningError { err, .. } ) => {
+				assert_eq!(err, "Failed to find a path to the given destination");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
 	}
 
 	#[cfg(not(feature = "no-std"))]
