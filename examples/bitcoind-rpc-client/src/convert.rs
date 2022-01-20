@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use bitcoin::{BlockHash, hashes::hex::FromHex};
+use bitcoin::{Amount, BlockHash, hashes::hex::FromHex};
 use lightning_block_sync::http::JsonResponse;
 
 /// TryInto implementation specifies the conversion logic from json response to BlockchainInfo object.
@@ -36,12 +36,13 @@ impl TryInto<CreateWalletResponse> for JsonResponse {
         })
     }
 }
-pub struct GetBalanceResponse(pub usize);
+pub struct GetBalanceResponse(pub Amount);
 
 impl TryInto<GetBalanceResponse> for JsonResponse {
     type Error = std::io::Error;
     fn try_into(self) -> std::io::Result<GetBalanceResponse> {
-        Ok(GetBalanceResponse(self.0.as_f64().unwrap() as usize))
+        let balance = Amount::from_btc(self.0.as_f64().unwrap()).unwrap();
+        Ok(GetBalanceResponse(balance))
     }
 }
 

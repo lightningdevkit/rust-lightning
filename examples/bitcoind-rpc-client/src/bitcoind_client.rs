@@ -1,4 +1,4 @@
-use std::{sync::{Arc}, io::{Result, Error, ErrorKind}};
+use std::{sync::{Arc}, io};
 
 use bitcoin::{BlockHash, Block};
 use lightning_block_sync::{rpc::RpcClient, http::{HttpEndpoint}, BlockSource, AsyncBlockSourceResult, BlockHeaderData};
@@ -44,7 +44,7 @@ impl BlockSource for &BitcoindClient {
 }
 
 impl BitcoindClient {
-    pub async fn new(host: String, port: u16, rpc_user: String, rpc_password: String) -> std::io::Result<Self> {
+    pub async fn new(host: String, port: u16, rpc_user: String, rpc_password: String) -> io::Result<Self> {
         let http_endpoint = HttpEndpoint::for_host(host.clone()).with_port(port);
         let rpc_creditials = 
             base64::encode(format!("{}:{}", rpc_user.clone(), rpc_password.clone()));
@@ -53,7 +53,7 @@ impl BitcoindClient {
 			.call_method::<BlockchainInfoResponse>("getblockchaininfo", &vec![])
 			.await
 			.map_err(|_| {
-				std::io::Error::new(std::io::ErrorKind::PermissionDenied,
+				io::Error::new(io::ErrorKind::PermissionDenied,
 				"Failed to make initial call to bitcoind - please check your RPC user/password and access settings")
 			})?;
 
@@ -68,7 +68,7 @@ impl BitcoindClient {
         Ok(client)
     }
 
-    pub fn get_new_rpc_client(&self) -> std::io::Result<RpcClient> {
+    pub fn get_new_rpc_client(&self) -> io::Result<RpcClient> {
 		let http_endpoint = HttpEndpoint::for_host(self.host.clone()).with_port(self.port);
 		let rpc_credentials =
 			base64::encode(format!("{}:{}", self.rpc_user.clone(), self.rpc_password.clone()));
