@@ -1,4 +1,4 @@
-use std::{sync::{Arc}};
+use std::{sync::{Arc}, io::{Result, Error, ErrorKind}};
 
 use bitcoin::{BlockHash, Block};
 use lightning_block_sync::{rpc::RpcClient, http::{HttpEndpoint}, BlockSource, AsyncBlockSourceResult, BlockHeaderData};
