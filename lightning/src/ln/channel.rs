@@ -425,6 +425,7 @@ pub(super) struct Channel<Signer: Sign> {
 	pub(crate) config: ChannelConfig,
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	config: ChannelConfig,
+	commit_upfront_shutdown_pubkey: bool,
 
 	user_id: u64,
 
@@ -751,7 +752,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
 
-		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if config.own_channel_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
@@ -764,6 +765,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(Channel {
 			user_id,
 			config: config.channel_options.clone(),
+			commit_upfront_shutdown_pubkey: config.own_channel_config.commit_upfront_shutdown_pubkey.clone(),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
@@ -1046,7 +1048,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		} else { None };
 
-		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if config.own_channel_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
@@ -1061,8 +1063,9 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let chan = Channel {
 			user_id,
-			config: local_config,
 
+			config: local_config,
+			commit_upfront_shutdown_pubkey: config.own_channel_config.commit_upfront_shutdown_pubkey,
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 			secp_ctx,
@@ -5191,7 +5194,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.config.forwarding_fee_proportional_millionths.write(writer)?;
 		self.config.cltv_expiry_delta.write(writer)?;
 		self.config.announced_channel.write(writer)?;
-		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
+		self.commit_upfront_shutdown_pubkey.write(writer)?;
 
 		self.channel_id.write(writer)?;
 		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;
@@ -5434,6 +5437,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(9, self.target_closing_feerate_sats_per_kw, option),
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
 			(13, self.channel_creation_height, required),
+			(15, self.commit_upfront_shutdown_pubkey, required),
 		});
 
 		Ok(())
@@ -5455,7 +5459,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
 			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
 			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
-			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
+			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Some(Readable::read(reader)?);
 		} else {
 			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
 			let mut _val: u64 = Readable::read(reader)?;
@@ -5675,6 +5679,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
 		let mut channel_creation_height = Some(serialized_height);
+		let mut commit_upfront_shutdown_pubkey = None;
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5687,6 +5692,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
 			(13, channel_creation_height, option),
+			(15, commit_upfront_shutdown_pubkey, option),
 		});
 
 		let chan_features = channel_type.as_ref().unwrap();
@@ -5701,6 +5707,22 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			return Err(DecodeError::InvalidValue);
 		}
 
+		if commit_upfront_shutdown_pubkey.is_none() {
+			// commit_upfront_shutdown_pubkey has moved around a good bit, in version 1
+			// serialization, it was written out as a part of the explicit field list of the
+			// `ChannelConfig`. Then, it was written out as a field in the `ChannelConfig` itself.
+			// Now, it is written out explicitly as its own TLV (as the field has moved to
+			// `ChannelHandshakeConfig`).
+			// Thus, if its not in a TLV, we here pull it from the `ChannelConfig`, and if we can't
+			// find it at all, fail.
+			let legacy_commit_upfront_shutdown_pubkey = config.as_ref().unwrap().commit_upfront_shutdown_pubkey;
+			if let Some(val) = legacy_commit_upfront_shutdown_pubkey {
+				commit_upfront_shutdown_pubkey = Some(val);
+			} else {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
 
@@ -5708,6 +5730,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			user_id,
 
 			config: config.unwrap(),
+			commit_upfront_shutdown_pubkey: commit_upfront_shutdown_pubkey.unwrap(),
 			channel_id,
 			channel_state,
 			secp_ctx,

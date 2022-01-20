@@ -47,6 +47,20 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
 	/// by the protocol.
 	pub our_htlc_minimum_msat: u64,
+	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
+	/// supports it, they will then enforce the mutual-close output to us matches what we provided
+	/// at intialization, preventing us from closing to an alternate pubkey.
+	///
+	/// This is set to true by default to provide a slight increase in security, though ultimately
+	/// any attacker who is able to take control of a channel can just as easily send the funds via
+	/// lightning payments, so we never require that our counterparties support this option.
+	///
+	/// This cannot be changed after a channel has been initialized. 
+	/// 
+	/// The upfront key committed is provided from [`KeysInterface::get_shutdown_pubkey`]
+	///
+	/// Default value: true.
+	pub commit_upfront_shutdown_pubkey: bool
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -55,6 +69,7 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
+			commit_upfront_shutdown_pubkey: true
 		}
 	}
 }
@@ -195,18 +210,8 @@ pub struct ChannelConfig {
 	///
 	/// Default value: false.
 	pub announced_channel: bool,
-	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
-	/// supports it, they will then enforce the mutual-close output to us matches what we provided
-	/// at intialization, preventing us from closing to an alternate pubkey.
-	///
-	/// This is set to true by default to provide a slight increase in security, though ultimately
-	/// any attacker who is able to take control of a channel can just as easily send the funds via
-	/// lightning payments, so we never require that our counterparties support this option.
-	///
-	/// This cannot be changed after a channel has been initialized.
-	///
-	/// Default value: true.
-	pub commit_upfront_shutdown_pubkey: bool,
+	/// This value is moved to ChannelHandshakeConfig, optional here for old serialiization
+	pub(crate) commit_upfront_shutdown_pubkey: Option<bool>,
 	/// Limit our total exposure to in-flight HTLCs which are burned to fees as they are too
 	/// small to claim on-chain.
 	///
@@ -256,7 +261,7 @@ impl Default for ChannelConfig {
 			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			announced_channel: false,
-			commit_upfront_shutdown_pubkey: true,
+			commit_upfront_shutdown_pubkey: None,
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
 		}
@@ -269,7 +274,7 @@ impl_writeable_tlv_based!(ChannelConfig, {
 	(2, cltv_expiry_delta, required),
 	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 	(4, announced_channel, required),
-	(6, commit_upfront_shutdown_pubkey, required),
+	(6, commit_upfront_shutdown_pubkey, option),
 	(8, forwarding_fee_base_msat, required),
 });
 
