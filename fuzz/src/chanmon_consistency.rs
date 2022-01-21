@@ -63,6 +63,7 @@ use std::collections::{HashSet, hash_map, HashMap};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
+use bitcoin::bech32::u5;
 
 const MAX_FEE: u32 = 10_000;
 struct FuzzEstimator {
@@ -220,7 +221,7 @@ impl KeysInterface for KeyProvider {
 		})
 	}
 
-	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 }

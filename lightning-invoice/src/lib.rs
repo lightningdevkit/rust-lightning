@@ -43,6 +43,7 @@ use lightning::ln::features::InvoiceFeatures;
 #[cfg(any(doc, test))]
 use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHint;
+use lightning::util::invoice::construct_invoice_preimage;
 
 use secp256k1::key::PublicKey;
 use secp256k1::{Message, Secp256k1};
@@ -869,32 +870,9 @@ macro_rules! find_all_extract {
 
 #[allow(missing_docs)]
 impl RawInvoice {
-	/// Construct the invoice's HRP and signatureless data into a preimage to be hashed.
-	pub(crate) fn construct_invoice_preimage(hrp_bytes: &[u8], data_without_signature: &[u5]) -> Vec<u8> {
-		use bech32::FromBase32;
-
-		let mut preimage = Vec::<u8>::from(hrp_bytes);
-
-		let mut data_part = Vec::from(data_without_signature);
-		let overhang = (data_part.len() * 5) % 8;
-		if overhang > 0 {
-			// add padding if data does not end at a byte boundary
-			data_part.push(u5::try_from_u8(0).unwrap());
-
-			// if overhang is in (1..3) we need to add u5(0) padding two times
-			if overhang < 3 {
-				data_part.push(u5::try_from_u8(0).unwrap());
-			}
-		}
-
-		preimage.extend_from_slice(&Vec::<u8>::from_base32(&data_part)
-			.expect("No padding error may occur due to appended zero above."));
-		preimage
-	}
-
 	/// Hash the HRP as bytes and signatureless data part.
 	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
-		let preimage = RawInvoice::construct_invoice_preimage(hrp_bytes, data_without_signature);
+		let preimage = construct_invoice_preimage(hrp_bytes, data_without_signature);
 		let mut hash: [u8; 32] = Default::default();
 		hash.copy_from_slice(&sha256::Hash::hash(&preimage)[..]);
 		hash

@@ -60,6 +60,7 @@ use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
+use bitcoin::bech32::u5;
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -333,7 +334,7 @@ impl KeysInterface for KeyProvider {
 		))
 	}
 
-	fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 }

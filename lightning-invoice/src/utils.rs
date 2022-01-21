@@ -1,6 +1,6 @@
 //! Convenient utilities to create an invoice.
 
-use {CreationError, Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError, RawInvoice};
+use {CreationError, Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError};
 use payment::{Payer, Router};
 
 use bech32::ToBase32;
@@ -118,8 +118,7 @@ where
 	let hrp_str = raw_invoice.hrp.to_string();
 	let hrp_bytes = hrp_str.as_bytes();
 	let data_without_signature = raw_invoice.data.to_base32();
-	let invoice_preimage = RawInvoice::construct_invoice_preimage(hrp_bytes, &data_without_signature);
-	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(invoice_preimage));
+	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(hrp_bytes, &data_without_signature));
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))

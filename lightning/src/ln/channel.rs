@@ -5840,6 +5840,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::{Txid, WPubkeyHash};
 	use core::num::NonZeroU8;
+	use bitcoin::bech32::u5;
 	use sync::Arc;
 	use prelude::*;
 
@@ -5884,7 +5885,7 @@ mod tests {
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
-		fn sign_invoice(&self, _invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> { panic!(); }
+		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
