@@ -16,7 +16,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
-use lightning::routing::router::{find_route, Payee, RouteHint, RouteHintHop, RouteParameters};
+use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::Scorer;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
@@ -251,12 +251,12 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				}
 				let scorer = Scorer::with_fixed_penalty(0);
 				for target in node_pks.iter() {
-					let params = RouteParameters {
-						payee: Payee::from_node_id(*target).with_route_hints(last_hops.clone()),
+					let route_params = RouteParameters {
+						payment_params: PaymentParameters::from_node_id(*target).with_route_hints(last_hops.clone()),
 						final_value_msat: slice_to_be64(get_slice!(8)),
 						final_cltv_expiry_delta: slice_to_be32(get_slice!(4)),
 					};
-					let _ = find_route(&our_pubkey, &params, &net_graph,
+					let _ = find_route(&our_pubkey, &route_params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
 						Arc::clone(&logger), &scorer);
 				}

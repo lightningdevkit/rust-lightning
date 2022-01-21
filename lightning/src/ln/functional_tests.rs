@@ -24,7 +24,7 @@ use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use routing::network_graph::RoutingFees;
-use routing::router::{Payee, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
+use routing::router::{PaymentParameters, Route, RouteHop, RouteHint, RouteHintHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
@@ -1037,7 +1037,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![hops], payee: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![hops], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -1066,7 +1066,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![hops], payee: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![hops], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
@@ -4099,7 +4099,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
-		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payee, &our_payment_hash, &Some(payment_secret), 200000, cur_height, payment_id, &None).unwrap();
+		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200000, cur_height, payment_id, &None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7351,8 +7351,8 @@ fn test_check_htlc_underpaying() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
-	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, nodes[0].network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, nodes[0].network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
@@ -7752,13 +7752,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
-	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payee, &nodes[0].network_graph, None,
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph, None,
 		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let payee = Payee::from_node_id(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
-	let route = get_route(&nodes[1].node.get_our_node_id(), &payee, nodes[1].network_graph, None,
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
+	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, nodes[1].network_graph, None,
 		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
 
@@ -9285,13 +9285,13 @@ fn test_keysend_payments_to_public_node() {
 	let network_graph = nodes[0].network_graph;
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
-	let params = RouteParameters {
-		payee: Payee::for_keysend(payee_pubkey),
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::for_keysend(payee_pubkey),
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
-	let route = find_route(&payer_pubkey, &params, network_graph, None, nodes[0].logger, &scorer).unwrap();
+	let route = find_route(&payer_pubkey, &route_params, network_graph, None, nodes[0].logger, &scorer).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
 	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
@@ -9317,8 +9317,8 @@ fn test_keysend_payments_to_private_node() {
 	nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: InitFeatures::known() });
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known());
-	let params = RouteParameters {
-		payee: Payee::for_keysend(payee_pubkey),
+	let route_params = RouteParameters {
+		payment_params: PaymentParameters::for_keysend(payee_pubkey),
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
@@ -9326,7 +9326,7 @@ fn test_keysend_payments_to_private_node() {
 	let first_hops = nodes[0].node.list_usable_channels();
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = find_route(
-		&payer_pubkey, &params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+		&payer_pubkey, &route_params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
 		nodes[0].logger, &scorer
 	).unwrap();
 

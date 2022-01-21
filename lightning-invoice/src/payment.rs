@@ -143,7 +143,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::scoring::{LockableScore, Score};
-use lightning::routing::router::{Payee, Route, RouteParameters};
+use lightning::routing::router::{PaymentParameters, Route, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use crate::sync::Mutex;
@@ -206,7 +206,7 @@ pub trait Payer {
 pub trait Router<S: Score> {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
+		&self, payer: &PublicKey, route_params: &RouteParameters, payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError>;
 }
@@ -296,14 +296,14 @@ where
 		};
 
 		let payment_secret = Some(invoice.payment_secret().clone());
-		let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
+		let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
 			.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
 			.with_route_hints(invoice.route_hints());
 		if let Some(features) = invoice.features() {
-			payee = payee.with_features(features.clone());
+			payment_params = payment_params.with_features(features.clone());
 		}
-		let params = RouteParameters {
-			payee,
+		let route_params = RouteParameters {
+			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
 			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 		};
@@ -311,7 +311,7 @@ where
 		let send_payment = |route: &Route| {
 			self.payer.send_payment(route, payment_hash, &payment_secret)
 		};
-		self.pay_internal(&params, payment_hash, send_payment)
+		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
 	}
 
@@ -330,8 +330,8 @@ where
 			hash_map::Entry::Vacant(entry) => entry.insert(0),
 		};
 
-		let params = RouteParameters {
-			payee: Payee::for_keysend(pubkey),
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::for_keysend(pubkey),
 			final_value_msat: amount_msats,
 			final_cltv_expiry_delta,
 		};
@@ -339,7 +339,7 @@ where
 		let send_payment = |route: &Route| {
 			self.payer.send_spontaneous_payment(route, payment_preimage)
 		};
-		self.pay_internal(&params, payment_hash, send_payment)
+		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
 	}
 
@@ -462,8 +462,8 @@ fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
 }
 
 #[cfg(feature = "std")]
-fn has_expired(params: &RouteParameters) -> bool {
-	if let Some(expiry_time) = params.payee.expiry_time {
+fn has_expired(route_params: &RouteParameters) -> bool {
+	if let Some(expiry_time) = route_params.payment_params.expiry_time {
 		Invoice::is_expired_from_epoch(&SystemTime::UNIX_EPOCH, Duration::from_secs(expiry_time))
 	} else { false }
 }
@@ -533,7 +533,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::network_graph::NodeId;
-	use lightning::routing::router::{Payee, Route, RouteHop};
+	use lightning::routing::router::{PaymentParameters, Route, RouteHop};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
 	use lightning::util::events::{Event, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
@@ -882,7 +882,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 
 		let mut retry_data = TestRouter::retry_for_invoice(&invoice);
-		retry_data.payee.expiry_time = Some(SystemTime::now()
+		retry_data.payment_params.expiry_time = Some(SystemTime::now()
 			.checked_sub(Duration::from_secs(2)).unwrap()
 			.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs());
 		let event = Event::PaymentPathFailed {
@@ -1136,7 +1136,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 
 		let retry = RouteParameters {
-			payee: Payee::for_keysend(pubkey),
+			payment_params: PaymentParameters::for_keysend(pubkey),
 			final_value_msat,
 			final_cltv_expiry_delta,
 		};
@@ -1251,7 +1251,7 @@ mod tests {
 						short_channel_id: 1, fee_msat: final_value_msat / 2, cltv_expiry_delta: 144
 					}],
 				],
-				payee: None,
+				payment_params: None,
 			}
 		}
 
@@ -1260,15 +1260,15 @@ mod tests {
 		}
 
 		fn retry_for_invoice(invoice: &Invoice) -> RouteParameters {
-			let mut payee = Payee::from_node_id(invoice.recover_payee_pub_key())
+			let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
 				.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 				.with_route_hints(invoice.route_hints());
 			if let Some(features) = invoice.features() {
-				payee = payee.with_features(features.clone());
+				payment_params = payment_params.with_features(features.clone());
 			}
 			let final_value_msat = invoice.amount_milli_satoshis().unwrap() / 2;
 			RouteParameters {
-				payee,
+				payment_params,
 				final_value_msat,
 				final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 			}
@@ -1277,11 +1277,11 @@ mod tests {
 
 	impl<S: Score> Router<S> for TestRouter {
 		fn find_route(
-			&self, _payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+			&self, _payer: &PublicKey, route_params: &RouteParameters, _payment_hash: &PaymentHash,
 			_first_hops: Option<&[&ChannelDetails]>, _scorer: &S
 		) -> Result<Route, LightningError> {
 			Ok(Route {
-				payee: Some(params.payee.clone()), ..Self::route_for_value(params.final_value_msat)
+				payment_params: Some(route_params.payment_params.clone()), ..Self::route_for_value(route_params.final_value_msat)
 			})
 		}
 	}
@@ -1543,7 +1543,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payee: Some(Payee::from_node_id(nodes[1].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -1587,7 +1587,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payee: Some(Payee::from_node_id(nodes[1].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -1668,7 +1668,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}]
 			],
-			payee: Some(Payee::from_node_id(nodes[2].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));

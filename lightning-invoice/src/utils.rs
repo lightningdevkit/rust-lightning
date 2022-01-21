@@ -198,7 +198,7 @@ mod test {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
-	use lightning::routing::router::{Payee, RouteParameters, find_route};
+	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use lightning::util::events::MessageSendEventsProvider;
 	use lightning::util::test_utils;
 	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
@@ -217,11 +217,11 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 
-		let payee = Payee::from_node_id(invoice.recover_payee_pub_key())
+		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
 			.with_features(invoice.features().unwrap().clone())
 			.with_route_hints(invoice.route_hints());
-		let params = RouteParameters {
-			payee,
+		let route_params = RouteParameters {
+			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
 			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 		};
@@ -230,7 +230,7 @@ mod test {
 		let logger = test_utils::TestLogger::new();
 		let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params, network_graph,
+			&nodes[0].node.get_our_node_id(), &route_params, network_graph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer,
 		).unwrap();
 
