@@ -24,7 +24,7 @@ use secp256k1::key::PublicKey;
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	SemanticError, PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice, constants, SignedRawInvoice,
-	RawDataPart, CreationError, InvoiceFeatures};
+	RawDataPart, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
 
@@ -359,7 +359,6 @@ impl FromBase32 for PositiveTimestamp {
 			.expect("7*5bit < 64bit, no overflow possible");
 		match PositiveTimestamp::from_unix_timestamp(timestamp) {
 			Ok(t) => Ok(t),
-			Err(CreationError::TimestampOutOfBounds) => Err(ParseError::TimestampOverflow),
 			Err(_) => unreachable!(),
 		}
 	}
@@ -516,7 +515,7 @@ impl FromBase32 for ExpiryTime {
 
 	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, ParseError> {
 		match parse_int_be::<u64, u5>(field_data, 32)
-			.and_then(|t| ExpiryTime::from_seconds(t).ok()) // ok, since the only error is out of bounds
+			.map(|t| ExpiryTime::from_seconds(t))
 		{
 			Some(t) => Ok(t),
 			None => Err(ParseError::IntegerOverflowError),
@@ -646,7 +645,6 @@ pub enum ParseError {
 	/// Not an error, but used internally to signal that a part of the invoice should be ignored
 	/// according to BOLT11
 	Skip,
-	TimestampOverflow,
 }
 
 /// Indicates that something went wrong while parsing or validating the invoice. Parsing errors
@@ -709,9 +707,6 @@ impl Display for ParseError {
 			ParseError::Skip => {
 				f.write_str("the tagged field has to be skipped because of an unexpected, but allowed property")
 			},
-			ParseError::TimestampOverflow => {
-                f.write_str("the invoice's timestamp could not be represented as SystemTime")
-            },
 		}
 	}
 }
@@ -877,7 +872,7 @@ mod test {
 		use bech32::FromBase32;
 
 		let input = from_bech32("pu".as_bytes());
-		let expected = Ok(ExpiryTime::from_seconds(60).unwrap());
+		let expected = Ok(ExpiryTime::from_seconds(60));
 		assert_eq!(ExpiryTime::from_base32(&input), expected);
 
 		let input_too_large = from_bech32("sqqqqqqqqqqqq".as_bytes());

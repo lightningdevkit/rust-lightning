@@ -85,18 +85,17 @@ mod sync;
 
 pub use de::{ParseError, ParseOrSemanticError};
 
-// TODO: fix before 2037 (see rust PR #55527)
-/// Defines the maximum UNIX timestamp that can be represented as `SystemTime`. This is checked by
-/// one of the unit tests, please run them.
-const SYSTEM_TIME_MAX_UNIX_TIMESTAMP: u64 = core::i32::MAX as u64;
+/// The number of bits used to represent timestamps as defined in BOLT 11.
+const TIMESTAMP_BITS: usize = 35;
 
-/// Allow the expiry time to be up to one year. Since this reduces the range of possible timestamps
-/// it should be rather low as long as we still have to support 32bit time representations
-const MAX_EXPIRY_TIME: u64 = 60 * 60 * 24 * 356;
+/// The maximum timestamp as [`Duration::as_secs`] since the Unix epoch allowed by [`BOLT 11`].
+///
+/// [BOLT 11]: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
+pub const MAX_TIMESTAMP: u64 = (1 << TIMESTAMP_BITS) - 1;
 
 /// Default expiry time as defined by [BOLT 11].
 ///
-/// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
+/// [BOLT 11]: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
 pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 
 /// Default minimum final CLTV expiry as defined by [BOLT 11].
@@ -104,70 +103,9 @@ pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 /// Note that this is *not* the same value as rust-lightning's minimum CLTV expiry, which is
 /// provided in [`MIN_FINAL_CLTV_EXPIRY`].
 ///
-/// [BOLT 11]: https://github.com/lightningnetwork/lightning-rfc/blob/master/11-payment-encoding.md
+/// [BOLT 11]: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md
 /// [`MIN_FINAL_CLTV_EXPIRY`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY
 pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
-
-/// This function is used as a static assert for the size of `SystemTime`. If the crate fails to
-/// compile due to it this indicates that your system uses unexpected bounds for `SystemTime`. You
-/// can remove this functions and run the test `test_system_time_bounds_assumptions`. In any case,
-/// please open an issue. If all tests pass you should be able to use this library safely by just
-/// removing this function till we patch it accordingly.
-#[cfg(feature = "std")]
-fn __system_time_size_check() {
-	// Use 2 * sizeof(u64) as expected size since the expected underlying implementation is storing
-	// a `Duration` since `SystemTime::UNIX_EPOCH`.
-	unsafe { let _ = core::mem::transmute_copy::<SystemTime, [u8; 16]>(&SystemTime::UNIX_EPOCH); }
-}
-
-
-/// **Call this function on startup to ensure that all assumptions about the platform are valid.**
-///
-/// Unfortunately we have to make assumptions about the upper bounds of the `SystemTime` type on
-/// your platform which we can't fully verify at compile time and which isn't part of it's contract.
-/// To our best knowledge our assumptions hold for all platforms officially supported by rust, but
-/// since this check is fast we recommend to do it anyway.
-///
-/// If this function fails this is considered a bug. Please open an issue describing your
-/// platform and stating your current system time.
-///
-/// Note that this currently does nothing in `no_std` environments, because they don't have
-/// a `SystemTime` implementation.
-///
-/// # Panics
-/// If the check fails this function panics. By calling this function on startup you ensure that
-/// this wont happen at an arbitrary later point in time.
-pub fn check_platform() {
-	#[cfg(feature = "std")]
-	check_system_time_bounds();
-}
-
-#[cfg(feature = "std")]
-fn check_system_time_bounds() {
-	// The upper and lower bounds of `SystemTime` are not part of its public contract and are
-	// platform specific. That's why we have to test if our assumptions regarding these bounds
-	// hold on the target platform.
-	//
-	// If this test fails on your platform, please don't use the library and open an issue
-	// instead so we can resolve the situation. Currently this library is tested on:
-	//   * Linux (64bit)
-	let fail_date = SystemTime::UNIX_EPOCH + Duration::from_secs(SYSTEM_TIME_MAX_UNIX_TIMESTAMP);
-	let year = Duration::from_secs(60 * 60 * 24 * 365);
-
-	// Make sure that the library will keep working for another year
-	assert!(fail_date.duration_since(SystemTime::now()).unwrap() > year);
-
-	let max_ts = PositiveTimestamp::from_unix_timestamp(
-		SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME
-	).unwrap();
-	let max_exp = ::ExpiryTime::from_seconds(MAX_EXPIRY_TIME).unwrap();
-
-	assert_eq!(
-		(max_ts.as_time() + *max_exp.as_duration()).duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
-		SYSTEM_TIME_MAX_UNIX_TIMESTAMP
-	);
-}
-
 
 /// Builder for `Invoice`s. It's the most convenient and advised way to use this library. It ensures
 /// that only a semantically and syntactically correct Invoice can be built using it.
@@ -329,12 +267,12 @@ pub struct RawDataPart {
 	pub tagged_fields: Vec<RawTaggedField>,
 }
 
-/// A timestamp that refers to a date after 1 January 1970 which means its representation as UNIX
-/// timestamp is positive.
+/// A timestamp that refers to a date after 1 January 1970.
 ///
 /// # Invariants
-/// The UNIX timestamp representing the stored time has to be positive and small enough so that
-/// a `ExpiryTime` can be added to it without an overflow.
+///
+/// The Unix timestamp representing the stored time has to be positive and no greater than
+/// [`MAX_TIMESTAMP`].
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PositiveTimestamp(Duration);
 
@@ -444,11 +382,6 @@ pub struct PayeePubKey(pub PublicKey);
 
 /// Positive duration that defines when (relatively to the timestamp) in the future the invoice
 /// expires
-///
-/// # Invariants
-/// The number of seconds this expiry time represents has to be in the range
-/// `0...(SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME)` to avoid overflows when adding it to a
-/// timestamp
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct ExpiryTime(Duration);
 
@@ -556,10 +489,7 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 
 	/// Sets the expiry time
 	pub fn expiry_time(mut self, expiry_time: Duration) -> Self {
-        match ExpiryTime::from_duration(expiry_time) {
-            Ok(t) => self.tagged_fields.push(TaggedField::ExpiryTime(t)),
-            Err(e) => self.error = Some(e),
-        };
+		self.tagged_fields.push(TaggedField::ExpiryTime(ExpiryTime::from_duration(expiry_time)));
 		self
 	}
 
@@ -649,7 +579,7 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb
 		self.set_flags()
 	}
 
-	/// Sets the timestamp to a duration since the UNIX epoch.
+	/// Sets the timestamp to a duration since the Unix epoch.
 	pub fn duration_since_epoch(mut self, time: Duration) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		match PositiveTimestamp::from_duration_since_epoch(time) {
 			Ok(t) => self.timestamp = Some(t),
@@ -1003,20 +933,17 @@ impl RawInvoice {
 }
 
 impl PositiveTimestamp {
-	/// Create a new `PositiveTimestamp` from a unix timestamp in the Range
-	/// `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
-	/// `CreationError::TimestampOutOfBounds`.
+	/// Creates a `PositiveTimestamp` from a Unix timestamp in the range `0..=MAX_TIMESTAMP`.
+	///
+	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	pub fn from_unix_timestamp(unix_seconds: u64) -> Result<Self, CreationError> {
-		if unix_seconds > SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME {
-			Err(CreationError::TimestampOutOfBounds)
-		} else {
-			Ok(PositiveTimestamp(Duration::from_secs(unix_seconds)))
-		}
+		Self::from_duration_since_epoch(Duration::from_secs(unix_seconds))
 	}
 
-	/// Create a new `PositiveTimestamp` from a `SystemTime` with a corresponding unix timestamp in
-	/// the range `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
-	/// `CreationError::TimestampOutOfBounds`.
+	/// Creates a `PositiveTimestamp` from a [`SystemTime`] with a corresponding Unix timestamp in
+	/// the range `0..=MAX_TIMESTAMP`.
+	///
+	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	#[cfg(feature = "std")]
 	pub fn from_system_time(time: SystemTime) -> Result<Self, CreationError> {
 		time.duration_since(SystemTime::UNIX_EPOCH)
@@ -1024,28 +951,29 @@ impl PositiveTimestamp {
 			.unwrap_or(Err(CreationError::TimestampOutOfBounds))
 	}
 
-	/// Create a new `PositiveTimestamp` from a `Duration` since the UNIX epoch in
-	/// the range `0...SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME`, otherwise return a
-	/// `CreationError::TimestampOutOfBounds`.
+	/// Creates a `PositiveTimestamp` from a [`Duration`] since the Unix epoch in the range
+	/// `0..=MAX_TIMESTAMP`.
+	///
+	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	pub fn from_duration_since_epoch(duration: Duration) -> Result<Self, CreationError> {
-		if duration.as_secs() <= SYSTEM_TIME_MAX_UNIX_TIMESTAMP - MAX_EXPIRY_TIME {
+		if duration.as_secs() <= MAX_TIMESTAMP {
 			Ok(PositiveTimestamp(duration))
 		} else {
 			Err(CreationError::TimestampOutOfBounds)
 		}
 	}
 
-	/// Returns the UNIX timestamp representing the stored time
+	/// Returns the Unix timestamp representing the stored time
 	pub fn as_unix_timestamp(&self) -> u64 {
 		self.0.as_secs()
 	}
 
-	/// Returns the duration of the stored time since the UNIX epoch
+	/// Returns the duration of the stored time since the Unix epoch
 	pub fn as_duration_since_epoch(&self) -> Duration {
 		self.0
 	}
 
-	/// Returns the `SystemTime` representing the stored time
+	/// Returns the [`SystemTime`] representing the stored time
 	#[cfg(feature = "std")]
 	pub fn as_time(&self) -> SystemTime {
 		SystemTime::UNIX_EPOCH + self.0
@@ -1202,7 +1130,7 @@ impl Invoice {
 		self.signed_invoice.raw_invoice().data.timestamp.as_time()
 	}
 
-	/// Returns the `Invoice`'s timestamp as a duration since the UNIX epoch
+	/// Returns the `Invoice`'s timestamp as a duration since the Unix epoch
 	pub fn duration_since_epoch(&self) -> Duration {
 		self.signed_invoice.raw_invoice().data.timestamp.0
 	}
@@ -1275,9 +1203,11 @@ impl Invoice {
 	}
 
 	/// Returns whether the expiry time would pass at the given point in time.
-	/// `at_time` is the timestamp as a duration since the UNIX epoch.
+	/// `at_time` is the timestamp as a duration since the Unix epoch.
 	pub fn would_expire(&self, at_time: Duration) -> bool {
-		self.duration_since_epoch() + self.expiry_time() < at_time
+		self.duration_since_epoch()
+			.checked_add(self.expiry_time())
+			.unwrap_or_else(|| Duration::new(u64::max_value(), 1_000_000_000 - 1)) < at_time
 	}
 
 	/// Returns the invoice's `min_final_cltv_expiry` time, if present, otherwise
@@ -1398,26 +1328,14 @@ impl Deref for PayeePubKey {
 }
 
 impl ExpiryTime {
-	/// Construct an `ExpiryTime` from seconds. If there exists a `PositiveTimestamp` which would
-	/// overflow on adding the `EpiryTime` to it then this function will return a
-	/// `CreationError::ExpiryTimeOutOfBounds`.
-	pub fn from_seconds(seconds: u64) -> Result<ExpiryTime, CreationError> {
-		if seconds <= MAX_EXPIRY_TIME {
-			Ok(ExpiryTime(Duration::from_secs(seconds)))
-		} else {
-			Err(CreationError::ExpiryTimeOutOfBounds)
-		}
+	/// Construct an `ExpiryTime` from seconds.
+	pub fn from_seconds(seconds: u64) -> ExpiryTime {
+		ExpiryTime(Duration::from_secs(seconds))
 	}
 
-	/// Construct an `ExpiryTime` from a `Duration`. If there exists a `PositiveTimestamp` which
-	/// would overflow on adding the `EpiryTime` to it then this function will return a
-	/// `CreationError::ExpiryTimeOutOfBounds`.
-	pub fn from_duration(duration: Duration) -> Result<ExpiryTime, CreationError> {
-		if duration.as_secs() <= MAX_EXPIRY_TIME {
-			Ok(ExpiryTime(duration))
-		} else {
-			Err(CreationError::ExpiryTimeOutOfBounds)
-		}
+	/// Construct an `ExpiryTime` from a `Duration`.
+	pub fn from_duration(duration: Duration) -> ExpiryTime {
+		ExpiryTime(duration)
 	}
 
 	/// Returns the expiry time in seconds
@@ -1486,11 +1404,8 @@ pub enum CreationError {
 	/// The specified route has too many hops and can't be encoded
 	RouteTooLong,
 
-	/// The unix timestamp of the supplied date is <0 or can't be represented as `SystemTime`
+	/// The Unix timestamp of the supplied date is less than zero or greater than 35-bits
 	TimestampOutOfBounds,
-
-	/// The supplied expiry time could cause an overflow if added to a `PositiveTimestamp`
-	ExpiryTimeOutOfBounds,
 
 	/// The supplied millisatoshi amount was greater than the total bitcoin supply.
 	InvalidAmount,
@@ -1501,8 +1416,7 @@ impl Display for CreationError {
 		match self {
 			CreationError::DescriptionTooLong => f.write_str("The supplied description string was longer than 639 bytes"),
 			CreationError::RouteTooLong => f.write_str("The specified route has too many hops and can't be encoded"),
-			CreationError::TimestampOutOfBounds => f.write_str("The unix timestamp of the supplied date is <0 or can't be represented as `SystemTime`"),
-			CreationError::ExpiryTimeOutOfBounds => f.write_str("The supplied expiry time could cause an overflow if added to a `PositiveTimestamp`"),
+			CreationError::TimestampOutOfBounds => f.write_str("The Unix timestamp of the supplied date is less than zero or greater than 35-bits"),
 			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
 		}
 	}
@@ -1594,16 +1508,9 @@ mod test {
 
 	#[test]
 	fn test_system_time_bounds_assumptions() {
-		::check_platform();
-
 		assert_eq!(
-			::PositiveTimestamp::from_unix_timestamp(::SYSTEM_TIME_MAX_UNIX_TIMESTAMP + 1),
+			::PositiveTimestamp::from_unix_timestamp(::MAX_TIMESTAMP + 1),
 			Err(::CreationError::TimestampOutOfBounds)
-		);
-
-		assert_eq!(
-			::ExpiryTime::from_seconds(::MAX_EXPIRY_TIME + 1),
-			Err(::CreationError::ExpiryTimeOutOfBounds)
 		);
 	}
 
