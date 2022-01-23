@@ -695,7 +695,7 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo { channel: self, direction }, source))
+		Some((DirectedChannelInfo::new(self, direction), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
@@ -710,7 +710,7 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo { channel: self, direction }, target))
+		Some((DirectedChannelInfo::new(self, direction), target))
 	}
 }
 
@@ -739,35 +739,53 @@ impl_writeable_tlv_based!(ChannelInfo, {
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
 	direction: Option<&'a ChannelUpdateInfo>,
+	htlc_maximum_msat: u64,
+	effective_capacity: EffectiveCapacity,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
+	#[inline]
+	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>) -> Self {
+		let htlc_maximum_msat = direction.and_then(|direction| direction.htlc_maximum_msat);
+		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
+
+		let (htlc_maximum_msat, effective_capacity) = match (htlc_maximum_msat, capacity_msat) {
+			(Some(amount_msat), Some(capacity_msat)) => {
+				let htlc_maximum_msat = cmp::min(amount_msat, capacity_msat);
+				(htlc_maximum_msat, EffectiveCapacity::Total { capacity_msat })
+			},
+			(Some(amount_msat), None) => {
+				(amount_msat, EffectiveCapacity::MaximumHTLC { amount_msat })
+			},
+			(None, Some(capacity_msat)) => {
+				(capacity_msat, EffectiveCapacity::Total { capacity_msat })
+			},
+			(None, None) => (EffectiveCapacity::Unknown.as_msat(), EffectiveCapacity::Unknown),
+		};
+
+		Self {
+			channel, direction, htlc_maximum_msat, effective_capacity
+		}
+	}
+
 	/// Returns information for the channel.
 	pub fn channel(&self) -> &'a ChannelInfo { self.channel }
 
 	/// Returns information for the direction.
 	pub fn direction(&self) -> Option<&'a ChannelUpdateInfo> { self.direction }
 
+	/// Returns the maximum HTLC amount allowed over the channel in the direction.
+	pub fn htlc_maximum_msat(&self) -> u64 {
+		self.htlc_maximum_msat
+	}
+
 	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
 	///
 	/// This is either the total capacity from the funding transaction, if known, or the
 	/// `htlc_maximum_msat` for the direction as advertised by the gossip network, if known,
-	/// whichever is smaller.
+	/// otherwise.
 	pub fn effective_capacity(&self) -> EffectiveCapacity {
-		let capacity_msat = self.channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
-		self.direction
-			.and_then(|direction| direction.htlc_maximum_msat)
-			.map(|max_htlc_msat| {
-				let capacity_msat = capacity_msat.unwrap_or(u64::max_value());
-				if max_htlc_msat < capacity_msat {
-					EffectiveCapacity::MaximumHTLC { amount_msat: max_htlc_msat }
-				} else {
-					EffectiveCapacity::Total { capacity_msat }
-				}
-			})
-			.or_else(|| capacity_msat.map(|capacity_msat|
-					EffectiveCapacity::Total { capacity_msat }))
-			.unwrap_or(EffectiveCapacity::Unknown)
+		self.effective_capacity
 	}
 
 	/// Returns `Some` if [`ChannelUpdateInfo`] is available in the direction.
@@ -805,6 +823,10 @@ impl<'a> DirectedChannelInfoWithUpdate<'a> {
 	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
 	#[inline]
 	pub(super) fn effective_capacity(&self) -> EffectiveCapacity { self.inner.effective_capacity() }
+
+	/// Returns the maximum HTLC amount allowed over the channel in the direction.
+	#[inline]
+	pub(super) fn htlc_maximum_msat(&self) -> u64 { self.inner.htlc_maximum_msat() }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
@@ -817,6 +839,7 @@ impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
 ///
 /// While this may be smaller than the actual channel capacity, amounts greater than
 /// [`Self::as_msat`] should not be routed through the channel.
+#[derive(Clone, Copy)]
 pub enum EffectiveCapacity {
 	/// The available liquidity in the channel known from being a channel counterparty, and thus a
 	/// direct hop.

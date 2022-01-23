@@ -414,6 +414,16 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
+	fn htlc_maximum_msat(&self) -> u64 {
+		match self {
+			CandidateRouteHop::FirstHop { details } => details.next_outbound_htlc_limit_msat,
+			CandidateRouteHop::PublicHop { info, .. } => info.htlc_maximum_msat(),
+			CandidateRouteHop::PrivateHop { hint } => {
+				hint.htlc_maximum_msat.unwrap_or(u64::max_value())
+			},
+		}
+	}
+
 	fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => RoutingFees {
@@ -834,12 +844,12 @@ where L::Target: Logger {
 	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
 	let mut path_value_msat = final_value_msat;
 
-	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
-	// This map allows paths to be aware of the channel use by other paths in the same call.
-	// This would help to make a better path finding decisions and not "overbook" channels.
-	// It is unaware of the directions (except for `next_outbound_htlc_limit_msat` in
-	// `first_hops`).
-	let mut bookkept_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
+	// Keep track of how much liquidity has been used in selected channels. Used to determine
+	// if the channel can be used by additional MPP paths or to inform path finding decisions. It is
+	// aware of direction *only* to ensure that the correct htlc_maximum_msat value is used. Hence,
+	// liquidity used in one direction will not offset any used in the opposite direction.
+	let mut used_channel_liquidities: HashMap<(u64, bool), u64> =
+		HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
 	// - how much a new path should be transferring (upper bound);
@@ -889,9 +899,7 @@ where L::Target: Logger {
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id {
 				let short_channel_id = $candidate.short_channel_id();
-				let available_liquidity_msat = bookkept_channels_liquidity_available_msat
-					.entry(short_channel_id)
-					.or_insert_with(|| $candidate.effective_capacity().as_msat());
+				let htlc_maximum_msat = $candidate.htlc_maximum_msat();
 
 				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
 				// It may be misleading because we might later choose to reduce the value transferred
@@ -900,7 +908,14 @@ where L::Target: Logger {
 				// fees caused by one expensive channel, but then this channel could have been used
 				// if the amount being transferred over this path is lower.
 				// We do this for now, but this is a subject for removal.
-				if let Some(available_value_contribution_msat) = available_liquidity_msat.checked_sub($next_hops_fee_msat) {
+				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
+					let used_liquidity_msat = used_channel_liquidities
+						.get(&(short_channel_id, $src_node_id < $dest_node_id))
+						.map_or(0, |used_liquidity_msat| {
+							available_value_contribution_msat = available_value_contribution_msat
+								.saturating_sub(*used_liquidity_msat);
+							*used_liquidity_msat
+						});
 
 					// Routing Fragmentation Mitigation heuristic:
 					//
@@ -1051,9 +1066,10 @@ where L::Target: Logger {
 								}
 							}
 
+							let available_liquidity_msat = htlc_maximum_msat - used_liquidity_msat;
 							let path_penalty_msat = $next_hops_path_penalty_msat.saturating_add(
 								scorer.channel_penalty_msat(short_channel_id, amount_to_transfer_over_msat,
-									*available_liquidity_msat, &$src_node_id, &$dest_node_id));
+									available_liquidity_msat, &$src_node_id, &$dest_node_id));
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1211,9 +1227,8 @@ where L::Target: Logger {
 
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
-		// For every new path, start from scratch, except
-		// bookkept_channels_liquidity_available_msat, which will improve
-		// the further iterations of path finding. Also don't erase first_hop_targets.
+		// For every new path, start from scratch, except for used_channel_liquidities, which
+		// helps to avoid reusing previously selected paths in future iterations.
 		targets.clear();
 		dist.clear();
 		hit_minimum_limit = false;
@@ -1452,26 +1467,30 @@ where L::Target: Logger {
 				// Remember that we used these channels so that we don't rely
 				// on the same liquidity in future paths.
 				let mut prevented_redundant_path_selection = false;
-				for (payment_hop, _) in payment_path.hops.iter() {
-					let channel_liquidity_available_msat = bookkept_channels_liquidity_available_msat.get_mut(&payment_hop.candidate.short_channel_id()).unwrap();
-					let mut spent_on_hop_msat = value_contribution_msat;
-					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
-					spent_on_hop_msat += next_hops_fee_msat;
-					if spent_on_hop_msat == *channel_liquidity_available_msat {
+				let prev_hop_iter = core::iter::once(&our_node_id)
+					.chain(payment_path.hops.iter().map(|(hop, _)| &hop.node_id));
+				for (prev_hop, (hop, _)) in prev_hop_iter.zip(payment_path.hops.iter()) {
+					let spent_on_hop_msat = value_contribution_msat + hop.next_hops_fee_msat;
+					let used_liquidity_msat = used_channel_liquidities
+						.entry((hop.candidate.short_channel_id(), *prev_hop < hop.node_id))
+						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
+						.or_insert(spent_on_hop_msat);
+					if *used_liquidity_msat == hop.candidate.htlc_maximum_msat() {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
 						prevented_redundant_path_selection = true;
 					}
-					*channel_liquidity_available_msat -= spent_on_hop_msat;
+					debug_assert!(*used_liquidity_msat <= hop.candidate.htlc_maximum_msat());
 				}
 				if !prevented_redundant_path_selection {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
+					let exhausted = u64::max_value();
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
-					*victim_liquidity = 0;
+					*used_channel_liquidities.entry((victim_scid, false)).or_default() = exhausted;
+					*used_channel_liquidities.entry((victim_scid, true)).or_default() = exhausted;
 				}
 
 				// Track the total amount all our collected paths allow to send so that we:
