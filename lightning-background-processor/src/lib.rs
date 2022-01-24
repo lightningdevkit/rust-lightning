@@ -238,7 +238,7 @@ impl BackgroundProcessor {
 				// Exit the loop if the background processor was requested to stop.
 				if stop_thread.load(Ordering::Acquire) == true {
 					log_trace!(logger, "Terminating background processor.");
-					return Ok(());
+					break;
 				}
 				if last_freshness_call.elapsed().as_secs() > FRESHNESS_TIMER {
 					log_trace!(logger, "Calling ChannelManager's timer_tick_occurred");
@@ -280,6 +280,10 @@ impl BackgroundProcessor {
 					}
 				}
 			}
+			// After we exit, ensure we persist the ChannelManager one final time - this avoids
+			// some races where users quit while channel updates were in-flight, with
+			// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
+			persister.persist_manager(&*channel_manager)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
