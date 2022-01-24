@@ -500,10 +500,10 @@ impl InvoiceFeatures {
 	/// Getting a route for a keysend payment to a private node requires providing the payee's
 	/// features (since they were not announced in a node announcement). However, keysend payments
 	/// don't have an invoice to pull the payee's features from, so this method is provided for use in
-	/// [`Payee::for_keysend`], thus omitting the need for payers to manually construct an
+	/// [`PaymentParameters::for_keysend`], thus omitting the need for payers to manually construct an
 	/// `InvoiceFeatures` for [`find_route`].
 	///
-	/// [`Payee::for_keysend`]: crate::routing::router::Payee::for_keysend
+	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	/// [`find_route`]: crate::routing::router::find_route
 	pub(crate) fn for_keysend() -> InvoiceFeatures {
 		InvoiceFeatures::empty().set_variable_length_onion_optional()

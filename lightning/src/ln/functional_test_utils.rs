@@ -16,7 +16,7 @@ use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-use routing::router::{Payee, Route, get_route};
+use routing::router::{PaymentParameters, Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
@@ -1075,12 +1075,12 @@ macro_rules! get_route_and_payment_hash {
 	}};
 	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
 		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
-		let payee = $crate::routing::router::Payee::from_node_id($recv_node.node.get_our_node_id())
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
 		let scorer = $crate::util::test_utils::TestScorer::with_fixed_penalty(0);
 		let route = $crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &payee, $send_node.network_graph,
+			&$send_node.node.get_our_node_id(), &payment_params, $send_node.network_graph,
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 			$recv_value, $cltv, $send_node.logger, &scorer
 		).unwrap();
@@ -1299,7 +1299,7 @@ macro_rules! expect_payment_failed_conditions {
 				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
 				assert!(retry.is_some(), "expected retry.is_some()");
 				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
-				assert_eq!(retry.as_ref().unwrap().payee.pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
+				assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
 
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
@@ -1531,11 +1531,11 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
-	let payee = Payee::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = get_route(
-		&origin_node.node.get_our_node_id(), &payee, &origin_node.network_graph,
+		&origin_node.node.get_our_node_id(), &payment_params, &origin_node.network_graph,
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 		recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
@@ -1549,10 +1549,12 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let payee = Payee::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
-	let route = get_route(&origin_node.node.get_our_node_id(), &payee, origin_node.network_graph, None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
+	let route = get_route(
+		&origin_node.node.get_our_node_id(), &payment_params, origin_node.network_graph, 
+		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {

@@ -18,7 +18,7 @@ use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadAr
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
-use routing::router::{Payee, get_route};
+use routing::router::{PaymentParameters, get_route};
 use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
 use util::errors::APIError;
@@ -721,11 +721,11 @@ fn get_ldk_payment_preimage() {
 	let expiry_secs = 60 * 60;
 	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs).unwrap();
 
-	let payee = Payee::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
 	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &payee, &nodes[0].network_graph,
+		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph,
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
 		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
 	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();

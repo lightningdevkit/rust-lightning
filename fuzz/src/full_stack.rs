@@ -38,7 +38,7 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,Ig
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
-use lightning::routing::router::{find_route, Payee, RouteParameters};
+use lightning::routing::router::{find_route, PaymentParameters, RouteParameters};
 use lightning::routing::scoring::Scorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
@@ -446,9 +446,9 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			4 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
-				let payee = Payee::from_node_id(get_pubkey!());
+				let payment_params = PaymentParameters::from_node_id(get_pubkey!());
 				let params = RouteParameters {
-					payee,
+					payment_params,
 					final_value_msat,
 					final_cltv_expiry_delta: 42,
 				};
@@ -469,9 +469,9 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
-				let payee = Payee::from_node_id(get_pubkey!());
+				let payment_params = PaymentParameters::from_node_id(get_pubkey!());
 				let params = RouteParameters {
-					payee,
+					payment_params,
 					final_value_msat,
 					final_cltv_expiry_delta: 42,
 				};
