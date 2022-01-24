@@ -18,6 +18,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
 use bitcoin::util::bip143;
 
+use bitcoin::bech32::u5;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::HashEngine as Sha256State;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -42,6 +43,7 @@ use prelude::*;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use io::{self, Error};
 use ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use util::invoice::construct_invoice_preimage;
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.
@@ -398,11 +400,12 @@ pub trait KeysInterface {
 	/// you've read all of the provided bytes to ensure no corruption occurred.
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
 
-	/// Sign an invoice's preimage (note that this is the preimage of the invoice, not the HTLC's
-	/// preimage). By parameterizing by the preimage instead of the hash, we allow implementors of
+	/// Sign an invoice.
+	/// By parameterizing by the raw invoice bytes instead of the hash, we allow implementors of
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
-	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()>;
+	/// The hrp is ascii bytes, while the invoice data is base32.
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()>;
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
@@ -1105,8 +1108,9 @@ impl KeysInterface for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader))
 	}
 
-	fn sign_invoice(&self, invoice_preimage: Vec<u8>) -> Result<RecoverableSignature, ()> {
-		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&invoice_preimage)), &self.get_node_secret()))
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
 	}
 }
 
