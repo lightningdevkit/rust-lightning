@@ -162,19 +162,43 @@ enum OutboundHTLCState {
 	Committed,
 	/// Remote removed this (outbound) HTLC. We're waiting on their commitment_signed to finalize
 	/// the change (though they'll need to revoke before we fail the payment).
-	RemoteRemoved(Option<HTLCFailReason>),
+	RemoteRemoved(OutboundHTLCOutcome),
 	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
 	/// We also have not yet removed this HTLC in a commitment_signed message, and are waiting on a
 	/// remote revoke_and_ack on a previous state before we can do so.
-	AwaitingRemoteRevokeToRemove(Option<HTLCFailReason>),
+	AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome),
 	/// Remote removed this and sent a commitment_signed (implying we've revoke_and_ack'ed it), but
 	/// the remote side hasn't yet revoked their previous state, which we need them to do before we
 	/// can do any backwards failing. Implies AwaitingRemoteRevoke.
 	/// We have removed this HTLC in our latest commitment_signed and are now just waiting on a
 	/// revoke_and_ack to drop completely.
-	AwaitingRemovedRemoteRevoke(Option<HTLCFailReason>),
+	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
+}
+
+#[derive(Clone)]
+enum OutboundHTLCOutcome {
+	Success(Option<PaymentPreimage>),
+	Failure(HTLCFailReason),
+}
+
+impl From<Option<HTLCFailReason>> for OutboundHTLCOutcome {
+	fn from(o: Option<HTLCFailReason>) -> Self {
+		match o {
+			None => OutboundHTLCOutcome::Success(None),
+			Some(r) => OutboundHTLCOutcome::Failure(r)
+		}
+	}
+}
+
+impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
+	fn into(self) -> Option<&'a HTLCFailReason> {
+		match self {
+			OutboundHTLCOutcome::Success(_) => None,
+			OutboundHTLCOutcome::Failure(ref r) => Some(r)
+		}
+	}
 }
 
 struct OutboundHTLCOutput {
@@ -306,6 +330,7 @@ struct CommitmentStats<'a> {
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
 	local_balance_msat: u64, // local balance before fees but considering dust limits
 	remote_balance_msat: u64, // remote balance before fees but considering dust limits
+	preimages: Vec<PaymentPreimage>, // preimages for successful offered HTLCs since last commitment
 }
 
 /// Used when calculating whether we or the remote can afford an additional HTLC.
@@ -1274,6 +1299,8 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+		let mut preimages: Vec<PaymentPreimage> = Vec::new();
+
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			let (include, state_name) = match htlc.state {
 				OutboundHTLCState::LocalAnnounced(_) => (generated_by_local, "LocalAnnounced"),
@@ -1283,16 +1310,27 @@ impl<Signer: Sign> Channel<Signer> {
 				OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) => (false, "AwaitingRemovedRemoteRevoke"),
 			};
 
+			let preimage_opt = match htlc.state {
+				OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(p)) => p,
+				OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(p)) => p,
+				OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(p)) => p,
+				_ => None,
+			};
+
+			if let Some(preimage) = preimage_opt {
+				preimages.push(preimage);
+			}
+
 			if include {
 				add_htlc_output!(htlc, true, Some(&htlc.source), state_name);
 				local_htlc_total_msat += htlc.amount_msat;
 			} else {
 				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
 				match htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(None)|OutboundHTLCState::AwaitingRemovedRemoteRevoke(None) => {
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
 						value_to_self_msat_offset -= htlc.amount_msat as i64;
 					},
-					OutboundHTLCState::RemoteRemoved(None) => {
+					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_)) => {
 						if !generated_by_local {
 							value_to_self_msat_offset -= htlc.amount_msat as i64;
 						}
@@ -1387,6 +1425,7 @@ impl<Signer: Sign> Channel<Signer> {
 			htlcs_included,
 			local_balance_msat: value_to_self_msat as u64,
 			remote_balance_msat: value_to_remote_msat as u64,
+			preimages
 		}
 	}
 
@@ -1858,7 +1897,7 @@ impl<Signer: Sign> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		let counterparty_signature = self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0;
 
 		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -1912,7 +1951,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -1989,7 +2028,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.counterparty_funding_pubkey()
 		);
 
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new())
 			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
 
 
@@ -2393,9 +2432,9 @@ impl<Signer: Sign> Channel<Signer> {
 		// transaction).
 		let mut removed_outbound_total_msat = 0;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(None) = htlc.state {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(None) = htlc.state {
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
 			}
 		}
@@ -2494,21 +2533,25 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
-	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentHash>, fail_reason: Option<HTLCFailReason>) -> Result<&OutboundHTLCOutput, ChannelError> {
+	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentPreimage>, fail_reason: Option<HTLCFailReason>) -> Result<&OutboundHTLCOutput, ChannelError> {
+		assert!(!(check_preimage.is_some() && fail_reason.is_some()), "cannot fail while we have a preimage");
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if htlc.htlc_id == htlc_id {
-				match check_preimage {
-					None => {},
-					Some(payment_hash) =>
+				let outcome = match check_preimage {
+					None => fail_reason.into(),
+					Some(payment_preimage) => {
+						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
 						if payment_hash != htlc.payment_hash {
 							return Err(ChannelError::Close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
 						}
+						OutboundHTLCOutcome::Success(Some(payment_preimage))
+					}
 				};
 				match htlc.state {
 					OutboundHTLCState::LocalAnnounced(_) =>
 						return Err(ChannelError::Close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
 					OutboundHTLCState::Committed => {
-						htlc.state = OutboundHTLCState::RemoteRemoved(fail_reason);
+						htlc.state = OutboundHTLCState::RemoteRemoved(outcome);
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
 						return Err(ChannelError::Close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
@@ -2527,8 +2570,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		let payment_hash = PaymentHash(Sha256::hash(&msg.payment_preimage.0[..]).into_inner());
-		self.mark_outbound_htlc_removed(msg.htlc_id, Some(payment_hash), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, Some(msg.payment_preimage), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat))
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
@@ -2655,7 +2697,7 @@ impl<Signer: Sign> Channel<Signer> {
 		);
 
 		let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number - 1, &self.secp_ctx);
-		self.holder_signer.validate_holder_commitment(&holder_commitment_tx)
+		self.holder_signer.validate_holder_commitment(&holder_commitment_tx, commitment_stats.preimages)
 			.map_err(|_| (None, ChannelError::Close("Failed to validate our commitment".to_owned())))?;
 		let per_commitment_secret = self.holder_signer.release_commitment_secret(self.cur_holder_commitment_transaction_number + 1);
 
@@ -2689,12 +2731,13 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if let Some(fail_reason) = if let &mut OutboundHTLCState::RemoteRemoved(ref mut fail_reason) = &mut htlc.state {
-				Some(fail_reason.take())
-			} else { None } {
+			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
 					log_bytes!(htlc.payment_hash.0), log_bytes!(self.channel_id));
-				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(fail_reason);
+				// Grab the preimage, if it exists, instead of cloning
+				let mut reason = OutboundHTLCOutcome::Success(None);
+				mem::swap(outcome, &mut reason);
+				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
 			}
 		}
@@ -2963,9 +3006,9 @@ impl<Signer: Sign> Channel<Signer> {
 				} else { true }
 			});
 			pending_outbound_htlcs.retain(|htlc| {
-				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) = &htlc.state {
+				if let &OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) = &htlc.state {
 					log_trace!(logger, " ...removing outbound AwaitingRemovedRemoteRevoke {}", log_bytes!(htlc.payment_hash.0));
-					if let Some(reason) = fail_reason.clone() { // We really want take() here, but, again, non-mut ref :(
+					if let OutboundHTLCOutcome::Failure(reason) = outcome.clone() { // We really want take() here, but, again, non-mut ref :(
 						revoked_htlcs.push((htlc.source.clone(), htlc.payment_hash, reason));
 					} else {
 						finalized_claimed_htlcs.push(htlc.source.clone());
@@ -3019,11 +3062,12 @@ impl<Signer: Sign> Channel<Signer> {
 					log_trace!(logger, " ...promoting outbound LocalAnnounced {} to Committed", log_bytes!(htlc.payment_hash.0));
 					htlc.state = OutboundHTLCState::Committed;
 				}
-				if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
-					Some(fail_reason.take())
-				} else { None } {
+				if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 					log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
-					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
+					// Grab the preimage, if it exists, instead of cloning
+					let mut reason = OutboundHTLCOutcome::Success(None);
+					mem::swap(outcome, &mut reason);
+					htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 					require_commitment = true;
 				}
 			}
@@ -4500,7 +4544,7 @@ impl<Signer: Sign> Channel<Signer> {
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
-		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, &self.secp_ctx)
+		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
 	}
 
@@ -4891,11 +4935,12 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
-			if let Some(fail_reason) = if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut fail_reason) = &mut htlc.state {
-				Some(fail_reason.take())
-			} else { None } {
+			if let &mut OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, " ...promoting outbound AwaitingRemoteRevokeToRemove {} to AwaitingRemovedRemoteRevoke", log_bytes!(htlc.payment_hash.0));
-				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(fail_reason);
+				// Grab the preimage, if it exists, instead of cloning
+				let mut reason = OutboundHTLCOutcome::Success(None);
+				mem::swap(outcome, &mut reason);
+				htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(reason);
 			}
 		}
 		if let Some((feerate, update_state)) = self.pending_update_fee {
@@ -4964,7 +5009,7 @@ impl<Signer: Sign> Channel<Signer> {
 				htlcs.push(htlc);
 			}
 
-			let res = self.holder_signer.sign_counterparty_commitment(&commitment_stats.tx, &self.secp_ctx)
+			let res = self.holder_signer.sign_counterparty_commitment(&commitment_stats.tx, commitment_stats.preimages, &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?;
 			signature = res.0;
 			htlc_signatures = res.1;
@@ -5253,6 +5298,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			}
 		}
 
+		let mut preimages: Vec<&Option<PaymentPreimage>> = vec![];
+
 		(self.pending_outbound_htlcs.len() as u64).write(writer)?;
 		for htlc in self.pending_outbound_htlcs.iter() {
 			htlc.htlc_id.write(writer)?;
@@ -5273,14 +5320,22 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 					// resend the claim/fail on reconnect as we all (hopefully) the missing CS.
 					1u8.write(writer)?;
 				},
-				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref fail_reason) => {
+				&OutboundHTLCState::AwaitingRemoteRevokeToRemove(ref outcome) => {
 					3u8.write(writer)?;
-					fail_reason.write(writer)?;
-				},
-				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref fail_reason) => {
+					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+						preimages.push(preimage);
+					}
+					let reason: Option<&HTLCFailReason> = outcome.into();
+					reason.write(writer)?;
+				}
+				&OutboundHTLCState::AwaitingRemovedRemoteRevoke(ref outcome) => {
 					4u8.write(writer)?;
-					fail_reason.write(writer)?;
-				},
+					if let OutboundHTLCOutcome::Success(preimage) = outcome {
+						preimages.push(preimage);
+					}
+					let reason: Option<&HTLCFailReason> = outcome.into();
+					reason.write(writer)?;
+				}
 			}
 		}
 
@@ -5434,6 +5489,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(9, self.target_closing_feerate_sats_per_kw, option),
 			(11, self.monitor_pending_finalized_fulfills, vec_type),
 			(13, self.channel_creation_height, required),
+			(15, preimages, vec_type),
 		});
 
 		Ok(())
@@ -5519,9 +5575,18 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				state: match <u8 as Readable>::read(reader)? {
 					0 => OutboundHTLCState::LocalAnnounced(Box::new(Readable::read(reader)?)),
 					1 => OutboundHTLCState::Committed,
-					2 => OutboundHTLCState::RemoteRemoved(Readable::read(reader)?),
-					3 => OutboundHTLCState::AwaitingRemoteRevokeToRemove(Readable::read(reader)?),
-					4 => OutboundHTLCState::AwaitingRemovedRemoteRevoke(Readable::read(reader)?),
+					2 => {
+						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						OutboundHTLCState::RemoteRemoved(option.into())
+					},
+					3 => {
+						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						OutboundHTLCState::AwaitingRemoteRevokeToRemove(option.into())
+					},
+					4 => {
+						let option: Option<HTLCFailReason> = Readable::read(reader)?;
+						OutboundHTLCState::AwaitingRemovedRemoteRevoke(option.into())
+					},
 					_ => return Err(DecodeError::InvalidValue),
 				},
 			});
@@ -5675,6 +5740,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
 		let mut channel_creation_height = Some(serialized_height);
+		let mut preimages_opt: Option<Vec<Option<PaymentPreimage>>> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -5687,7 +5754,27 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(9, target_closing_feerate_sats_per_kw, option),
 			(11, monitor_pending_finalized_fulfills, vec_type),
 			(13, channel_creation_height, option),
+			(15, preimages_opt, vec_type),
 		});
+
+		if let Some(preimages) = preimages_opt {
+			let mut iter = preimages.into_iter();
+			for htlc in pending_outbound_htlcs.iter_mut() {
+				match &htlc.state {
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(None)) => {
+						htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
+					}
+					OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(None)) => {
+						htlc.state = OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(iter.next().ok_or(DecodeError::InvalidValue)?));
+					}
+					_ => {}
+				}
+			}
+			// We expect all preimages to be consumed above
+			if iter.next().is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
 
 		let chan_features = channel_type.as_ref().unwrap();
 		if chan_features.supports_unknown_bits() || chan_features.requires_unknown_bits() {
