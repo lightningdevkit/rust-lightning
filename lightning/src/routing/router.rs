@@ -4963,6 +4963,11 @@ pub(crate) mod test_utils {
 #[cfg(all(test, feature = "unstable", not(feature = "no-std")))]
 mod benches {
 	use super::*;
+	use bitcoin::hashes::Hash;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use chain::transaction::OutPoint;
+	use ln::channelmanager::{ChannelCounterparty, ChannelDetails};
+	use ln::features::{InitFeatures, InvoiceFeatures};
 	use routing::scoring::Scorer;
 	use util::logger::{Logger, Record};
 
@@ -4973,50 +4978,91 @@ mod benches {
 		fn log(&self, _record: &Record) {}
 	}
 
-	#[bench]
-	fn generate_routes(bench: &mut Bencher) {
+	struct ZeroPenaltyScorer;
+	impl Score for ZeroPenaltyScorer {
+		fn channel_penalty_msat(
+			&self, _short_channel_id: u64, _send_amt: u64, _capacity_msat: Option<u64>, _source: &NodeId, _target: &NodeId
+		) -> u64 { 0 }
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+	}
+
+	fn read_network_graph() -> NetworkGraph {
 		let mut d = test_utils::get_route_file().unwrap();
-		let graph = NetworkGraph::read(&mut d).unwrap();
-		let nodes = graph.read_only().nodes().clone();
-		let scorer = Scorer::with_fixed_penalty(0);
+		NetworkGraph::read(&mut d).unwrap()
+	}
 
-		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut path_endpoints = Vec::new();
-		let mut seed: usize = 0xdeadbeef;
-		'load_endpoints: for _ in 0..100 {
-			loop {
-				seed *= 0xdeadbeef;
-				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				seed *= 0xdeadbeef;
-				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst);
-				let amt = seed as u64 % 1_000_000;
-				if get_route(&src, &payment_params, &graph, None, amt, 42, &DummyLogger{}, &scorer).is_ok() {
-					path_endpoints.push((src, dst, amt));
-					continue 'load_endpoints;
-				}
-			}
+	fn payer_pubkey() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	}
+
+	#[inline]
+	fn first_hop(node_id: PublicKey) -> ChannelDetails {
+		ChannelDetails {
+			channel_id: [0; 32],
+			counterparty: ChannelCounterparty {
+				features: InitFeatures::known(),
+				node_id,
+				unspendable_punishment_reserve: 0,
+				forwarding_info: None,
+			},
+			funding_txo: Some(OutPoint {
+				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0
+			}),
+			short_channel_id: Some(1),
+			channel_value_satoshis: 10_000_000,
+			user_channel_id: 0,
+			balance_msat: 10_000_000,
+			outbound_capacity_msat: 10_000_000,
+			inbound_capacity_msat: 0,
+			unspendable_punishment_reserve: None,
+			confirmations_required: None,
+			force_close_spend_delay: None,
+			is_outbound: true,
+			is_funding_locked: true,
+			is_usable: true,
+			is_public: true,
 		}
-
-		// ...then benchmark finding paths between the nodes we learned.
-		let mut idx = 0;
-		bench.iter(|| {
-			let (src, dst, amt) = path_endpoints[idx % path_endpoints.len()];
-			let payment_params = PaymentParameters::from_node_id(dst);
-			assert!(get_route(&src, &payment_params, &graph, None, amt, 42, &DummyLogger{}, &scorer).is_ok());
-			idx += 1;
-		});
 	}
 
 	#[bench]
-	fn generate_mpp_routes(bench: &mut Bencher) {
-		let mut d = test_utils::get_route_file().unwrap();
-		let graph = NetworkGraph::read(&mut d).unwrap();
+	fn generate_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = ZeroPenaltyScorer;
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
+	}
+
+	#[bench]
+	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = ZeroPenaltyScorer;
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
+	}
+
+	#[bench]
+	fn generate_routes_with_default_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = Scorer::default();
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
+	}
+
+	#[bench]
+	fn generate_mpp_routes_with_default_scorer(bench: &mut Bencher) {
+		let network_graph = read_network_graph();
+		let scorer = Scorer::default();
+		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
+	}
+
+	fn generate_routes<S: Score>(
+		bench: &mut Bencher, graph: &NetworkGraph, mut scorer: S, features: InvoiceFeatures
+	) {
 		let nodes = graph.read_only().nodes().clone();
-		let scorer = Scorer::with_fixed_penalty(0);
+		let payer = payer_pubkey();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
-		let mut path_endpoints = Vec::new();
+		let mut routes = Vec::new();
+		let mut route_endpoints = Vec::new();
 		let mut seed: usize = 0xdeadbeef;
 		'load_endpoints: for _ in 0..100 {
 			loop {
@@ -5024,11 +5070,28 @@ mod benches {
 				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed *= 0xdeadbeef;
 				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst).with_features(InvoiceFeatures::known());
+				let params = PaymentParameters::from_node_id(dst).with_features(features.clone());
+				let first_hop = first_hop(src);
 				let amt = seed as u64 % 1_000_000;
-				if get_route(&src, &payment_params, &graph, None, amt, 42, &DummyLogger{}, &scorer).is_ok() {
-					path_endpoints.push((src, dst, amt));
+				if let Ok(route) = get_route(&payer, &params, &graph, Some(&[&first_hop]), amt, 42, &DummyLogger{}, &scorer) {
+					routes.push(route);
+					route_endpoints.push((first_hop, params, amt));
 					continue 'load_endpoints;
+				}
+			}
+		}
+
+		// ...and seed the scorer with success and failure data...
+		for route in routes {
+			let amount = route.get_total_amount();
+			if amount < 250_000 {
+				for path in route.paths {
+					scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
+				}
+			} else if amount > 750_000 {
+				for path in route.paths {
+					let short_channel_id = path[path.len() / 2].short_channel_id;
+					scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), short_channel_id);
 				}
 			}
 		}
@@ -5036,9 +5099,8 @@ mod benches {
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
 		bench.iter(|| {
-			let (src, dst, amt) = path_endpoints[idx % path_endpoints.len()];
-			let payment_params = PaymentParameters::from_node_id(dst).with_features(InvoiceFeatures::known());
-			assert!(get_route(&src, &payment_params, &graph, None, amt, 42, &DummyLogger{}, &scorer).is_ok());
+			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
+			assert!(get_route(&payer, params, &graph, Some(&[first_hop]), *amt, 42, &DummyLogger{}, &scorer).is_ok());
 			idx += 1;
 		});
 	}
