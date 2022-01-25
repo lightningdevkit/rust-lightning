@@ -29,7 +29,6 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::key::PublicKey;
-
 use io;
 use prelude::*;
 use core::time::Duration;
@@ -403,6 +402,34 @@ pub enum Event {
 		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
 		path: Vec<RouteHop>,
 	},
+	/// Indicates a request to open a new channel by a peer.
+	///
+	/// To accept the request, call [`ChannelManager::accept_inbound_channel`]. To reject the
+	/// request, call [`ChannelManager::force_close_channel`].
+	///
+	/// The event is only triggered when a new open channel request is received and the
+	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
+	///
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel
+	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	OpenChannelRequest {
+		/// The temporary channel ID of the channel requested to be opened.
+		///
+		/// When responding to the request, the `temporary_channel_id` should be passed
+		/// back to the ChannelManager with [`ChannelManager::accept_inbound_channel`] to accept,
+		/// or to [`ChannelManager::force_close_channel`] to reject.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel
+		temporary_channel_id: [u8; 32],
+		/// The node_id of the counterparty requesting to open the channel.
+		counterparty_node_id: PublicKey,
+		/// The channel value of the requested channel.
+		funding_satoshis: u64,
+		/// Our starting balance in the channel if the request is accepted, in milli-satoshi.
+		push_msat: u64,
+	},
 }
 
 impl Writeable for Event {
@@ -514,6 +541,11 @@ impl Writeable for Event {
 					(0, payment_id, required),
 					(2, payment_hash, required),
 				})
+			},
+			&Event::OpenChannelRequest { .. } => {
+				17u8.write(writer)?;
+				// We never write the OpenChannelRequest events as, upon disconnection, peers
+				// drop any channels which have not yet exchanged funding_signed.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -706,6 +738,10 @@ impl MaybeReadable for Event {
 					}))
 				};
 				f()
+			},
+			17u8 => {
+				// Value 17 is used for `Event::OpenChannelRequest`.
+				Ok(None)
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt

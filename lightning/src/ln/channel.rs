@@ -584,6 +584,19 @@ pub(super) struct Channel<Signer: Sign> {
 	#[cfg(not(test))]
 	closing_fee_limits: Option<(u64, u64)>,
 
+	/// Flag that ensures that `accept_inbound_channel` must be called before `funding_created`
+	/// is executed successfully. The reason for this flag is that when the
+	/// `UserConfig::manually_accept_inbound_channels` config flag is set to true, inbound channels
+	/// are required to be manually accepted by the node operator before the `msgs::AcceptChannel`
+	/// message is created and sent out. During the manual accept process, `accept_inbound_channel`
+	/// is called by `ChannelManager::accept_inbound_channel`.
+	///
+	/// The flag counteracts that a counterparty node could theoretically send a
+	/// `msgs::FundingCreated` message before the node operator has manually accepted an inbound
+	/// channel request made by the counterparty node. That would execute `funding_created` before
+	/// `accept_inbound_channel`, and `funding_created` should therefore not execute successfully.
+	inbound_awaiting_accept: bool,
+
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
@@ -883,6 +896,8 @@ impl<Signer: Sign> Channel<Signer> {
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
 
+			inbound_awaiting_accept: false,
+
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
 			short_channel_id: None,
@@ -1181,6 +1196,8 @@ impl<Signer: Sign> Channel<Signer> {
 			pending_counterparty_closing_signed: None,
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw: None,
+
+			inbound_awaiting_accept: true,
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
@@ -1972,6 +1989,9 @@ impl<Signer: Sign> Channel<Signer> {
 			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
 			return Err(ChannelError::Close("Received funding_created after we got the channel!".to_owned()));
+		}
+		if self.inbound_awaiting_accept {
+			return Err(ChannelError::Close("FundingCreated message received before the channel was accepted".to_owned()));
 		}
 		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
@@ -4645,7 +4665,15 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
-	pub fn get_accept_channel(&self) -> msgs::AcceptChannel {
+	pub fn inbound_is_awaiting_accept(&self) -> bool {
+		self.inbound_awaiting_accept
+	}
+
+	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which
+	/// should be sent back to the counterparty node.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
 		if self.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -4655,7 +4683,21 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
+		if !self.inbound_awaiting_accept {
+			panic!("The inbound channel has already been accepted");
+		}
 
+		self.inbound_awaiting_accept = false;
+
+		self.generate_accept_channel_message()
+	}
+
+	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
+	/// inbound channel. If the intention is to accept an inbound channel, use
+	/// [`Channel::accept_inbound_channel`] instead.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
 		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		let keys = self.get_holder_pubkeys();
 
@@ -6064,6 +6106,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			closing_fee_limits: None,
 			target_closing_feerate_sats_per_kw,
 
+			inbound_awaiting_accept: false,
+
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height,
 			short_channel_id,
@@ -6281,10 +6325,10 @@ mod tests {
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.get_accept_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
@@ -6402,7 +6446,7 @@ mod tests {
 		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
 
 		// Node B --> Node A: accept channel
-		let accept_channel_msg = node_b_chan.get_accept_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel();
 		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created

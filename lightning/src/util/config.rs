@@ -305,6 +305,20 @@ pub struct UserConfig {
 	/// If this is set to false, we do not accept inbound requests to open a new channel.
 	/// Default value: true.
 	pub accept_inbound_channels: bool,
+	/// If this is set to true, the user needs to manually accept inbound requests to open a new
+	/// channel.
+	///
+	/// When set to true, [`Event::OpenChannelRequest`] will be triggered once a request to open a
+	/// new inbound channel is received through a [`msgs::OpenChannel`] message. In that case, a
+	/// [`msgs::AcceptChannel`] message will not be sent back to the counterparty node unless the
+	/// user explicitly chooses to accept the request.
+	///
+	/// Default value: false.
+	///
+	/// [`Event::OpenChannelRequest`]: crate::util::events::Event::OpenChannelRequest
+	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	pub manually_accept_inbound_channels: bool,
 }
 
 impl Default for UserConfig {
@@ -315,6 +329,7 @@ impl Default for UserConfig {
 			channel_options: ChannelConfig::default(),
 			accept_forwards_to_priv_channels: false,
 			accept_inbound_channels: true,
+			manually_accept_inbound_channels: false,
 		}
 	}
 }
