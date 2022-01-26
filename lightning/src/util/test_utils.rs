@@ -79,7 +79,8 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		let inner: InMemorySigner = Readable::read(&mut reader)?;
+		let dummy_sk = SecretKey::from_slice(&[42; 32]).unwrap();
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, dummy_sk)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
 		Ok(EnforcingSigner::new_with_revoked(
@@ -519,7 +520,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = Readable::read(&mut reader)?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret())?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(

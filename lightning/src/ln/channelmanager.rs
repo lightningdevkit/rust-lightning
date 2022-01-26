@@ -1533,7 +1533,7 @@ macro_rules! maybe_break_monitor_err {
 macro_rules! handle_chan_restoration_locked {
 	($self: ident, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
 	 $raa: expr, $commitment_update: expr, $order: expr, $chanmon_update: expr,
-	 $pending_forwards: expr, $funding_broadcastable: expr, $funding_locked: expr) => { {
+	 $pending_forwards: expr, $funding_broadcastable: expr, $funding_locked: expr, $announcement_sigs: expr) => { {
 		let mut htlc_forwards = None;
 		let counterparty_node_id = $channel_entry.get().get_counterparty_node_id();
 
@@ -1568,13 +1568,13 @@ macro_rules! handle_chan_restoration_locked {
 					node_id: counterparty_node_id,
 					msg,
 				});
-				if let Some(announcement_sigs) = $self.get_announcement_sigs($channel_entry.get()) {
-					$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-						node_id: counterparty_node_id,
-						msg: announcement_sigs,
-					});
-				}
 				$channel_state.short_to_id.insert($channel_entry.get().get_short_channel_id().unwrap(), $channel_entry.get().channel_id());
+			}
+			if let Some(msg) = $announcement_sigs {
+				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+					node_id: counterparty_node_id,
+					msg,
+				});
 			}
 
 			let funding_broadcastable: Option<Transaction> = $funding_broadcastable; // Force type-checking to resolve
@@ -2891,27 +2891,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		})
 	}
 
-	fn get_announcement_sigs(&self, chan: &Channel<Signer>) -> Option<msgs::AnnouncementSignatures> {
-		if !chan.should_announce() {
-			log_trace!(self.logger, "Can't send announcement_signatures for private channel {}", log_bytes!(chan.channel_id()));
-			return None
-		}
-
-		let (announcement, our_bitcoin_sig) = match chan.get_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone()) {
-			Ok(res) => res,
-			Err(_) => return None, // Only in case of state precondition violations eg channel is closing
-		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let our_node_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
-
-		Some(msgs::AnnouncementSignatures {
-			channel_id: chan.channel_id(),
-			short_channel_id: chan.get_short_channel_id().unwrap(),
-			node_signature: our_node_sig,
-			bitcoin_signature: our_bitcoin_sig,
-		})
-	}
-
 	#[allow(dead_code)]
 	// Messages of up to 64KB should never end up more than half full with addresses, as that would
 	// be absurd. We ensure this by checking that at least 500 (our stated public contract on when
@@ -2969,7 +2948,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut announced_chans = false;
 		for (_, chan) in channel_state.by_id.iter() {
-			if let Some(msg) = chan.get_signed_channel_announcement(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone()) {
+			if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg,
 					update_msg: match self.get_channel_update_for_broadcast(chan) {
@@ -4077,18 +4056,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return;
 			}
 
-			let updates = channel.get_mut().monitor_updating_restored(&self.logger);
-			let channel_update = if updates.funding_locked.is_some() && channel.get().is_usable() && !channel.get().should_announce() {
+			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, self.best_block.read().unwrap().height());
+			let channel_update = if updates.funding_locked.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
-				// funding_locked and the channel is in a usable state. Further, we rely on the
-				// normal announcement_signatures process to send a channel_update for public
-				// channels, only generating a unicast channel_update if this is a private channel.
+				// funding_locked and the channel is in a usable state. We may re-send a
+				// channel_update later through the announcement_signatures process for public
+				// channels, but there's no reason not to just inform our counterparty of our fees
+				// now.
 				Some(events::MessageSendEvent::SendChannelUpdate {
 					node_id: channel.get().get_counterparty_node_id(),
 					msg: self.get_channel_update_for_unicast(channel.get()).unwrap(),
 				})
 			} else { None };
-			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.funding_locked);
+			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.funding_locked, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
@@ -4254,23 +4234,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().funding_locked(&msg, &self.logger), channel_state, chan);
-				if let Some(announcement_sigs) = self.get_announcement_sigs(chan.get()) {
-					log_trace!(self.logger, "Sending announcement_signatures for {} in response to funding_locked", log_bytes!(chan.get().channel_id()));
-					// If we see locking block before receiving remote funding_locked, we broadcast our
-					// announcement_sigs at remote funding_locked reception. If we receive remote
-					// funding_locked before seeing locking block, we broadcast our announcement_sigs at locking
-					// block connection. We should guanrantee to broadcast announcement_sigs to our peer whatever
-					// the order of the events but our peer may not receive it due to disconnection. The specs
-					// lacking an acknowledgement for announcement_sigs we may have to re-send them at peer
-					// connection in the future if simultaneous misses by both peers due to network/hardware
-					// failures is an issue. Note, to achieve its goal, only one of the announcement_sigs needs
-					// to be received, from then sigs are going to be flood to the whole network.
+				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().funding_locked(&msg, self.get_our_node_id(),
+					self.genesis_hash.clone(), &self.best_block.read().unwrap(), &self.logger), channel_state, chan);
+				if let Some(announcement_sigs) = announcement_sigs_opt {
+					log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(chan.get().channel_id()));
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 						node_id: counterparty_node_id.clone(),
 						msg: announcement_sigs,
 					});
 				} else if chan.get().is_usable() {
+					// If we're sending an announcement_signatures, we'll send the (public)
+					// channel_update after sending a channel_announcement when we receive our
+					// counterparty's announcement_signatures. Thus, we only bother to send a
+					// channel_update here if the channel is not public, i.e. we're not sending an
+					// announcement_signatures.
+					log_trace!(self.logger, "Sending private initial channel_update for our counterparty on channel {}", log_bytes!(chan.get().channel_id()));
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
 						node_id: counterparty_node_id.clone(),
 						msg: self.get_channel_update_for_unicast(chan.get()).unwrap(),
@@ -4674,7 +4652,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 
 				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(&self.our_network_key, self.get_our_node_id(), self.genesis_hash.clone(), msg), channel_state, chan),
+					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(
+						self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height(), msg), channel_state, chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
 					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
@@ -4735,10 +4714,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// disconnect, so Channel's reestablish will never hand us any holding cell
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
-					let (funding_locked, revoke_and_ack, commitment_update, monitor_update_opt, order, htlcs_failed_forward, shutdown) =
-						try_chan_entry!(self, chan.get_mut().channel_reestablish(msg, &self.logger), channel_state, chan);
+					let responses = try_chan_entry!(self, chan.get_mut().channel_reestablish(
+						msg, &self.logger, self.our_network_pubkey.clone(), self.genesis_hash,
+						&*self.best_block.read().unwrap()), channel_state, chan);
 					let mut channel_update = None;
-					if let Some(msg) = shutdown {
+					if let Some(msg) = responses.shutdown_msg {
 						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
 							msg,
@@ -4753,11 +4733,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						});
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
-					chan_restoration_res = handle_chan_restoration_locked!(self, channel_state_lock, channel_state, chan, revoke_and_ack, commitment_update, order, monitor_update_opt, Vec::new(), None, funding_locked);
+					chan_restoration_res = handle_chan_restoration_locked!(
+						self, channel_state_lock, channel_state, chan, responses.raa, responses.commitment_update, responses.order,
+						responses.mon_update, Vec::new(), None, responses.funding_locked, responses.announcement_sigs);
 					if let Some(upd) = channel_update {
 						channel_state.pending_msg_events.push(upd);
 					}
-					(htlcs_failed_forward, need_lnd_workaround)
+					(responses.holding_cell_failed_htlcs, need_lnd_workaround)
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
@@ -5260,7 +5242,7 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, &self.logger));
+		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
 	}
 }
 
@@ -5281,7 +5263,8 @@ where
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, &self.logger).map(|a| (a, Vec::new())));
+		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger)
+			.map(|(a, b)| (a, Vec::new(), b)));
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
@@ -5296,7 +5279,7 @@ where
 
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, &self.logger));
+		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -5353,9 +5336,9 @@ where
 		self.do_chain_event(None, |channel| {
 			if let Some(funding_txo) = channel.get_funding_txo() {
 				if funding_txo.txid == *txid {
-					channel.funding_transaction_unconfirmed(&self.logger).map(|_| (None, Vec::new()))
-				} else { Ok((None, Vec::new())) }
-			} else { Ok((None, Vec::new())) }
+					channel.funding_transaction_unconfirmed(&self.logger).map(|()| (None, Vec::new(), None))
+				} else { Ok((None, Vec::new(), None)) }
+			} else { Ok((None, Vec::new(), None)) }
 		});
 	}
 }
@@ -5371,7 +5354,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -5386,7 +5369,7 @@ where
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
 				let res = f(channel);
-				if let Ok((chan_res, mut timed_out_pending_htlcs)) = res {
+				if let Ok((funding_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let chan_update = self.get_channel_update_for_unicast(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
 						timed_out_htlcs.push((source, payment_hash,  HTLCFailReason::Reason {
@@ -5394,27 +5377,38 @@ where
 							data: chan_update,
 						}));
 					}
-					if let Some(funding_locked) = chan_res {
+					if let Some(funding_locked) = funding_locked_opt {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
 							node_id: channel.get_counterparty_node_id(),
 							msg: funding_locked,
 						});
-						if let Some(announcement_sigs) = self.get_announcement_sigs(channel) {
-							log_trace!(self.logger, "Sending funding_locked and announcement_signatures for {}", log_bytes!(channel.channel_id()));
-							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-								node_id: channel.get_counterparty_node_id(),
-								msg: announcement_sigs,
-							});
-						} else if channel.is_usable() {
-							log_trace!(self.logger, "Sending funding_locked WITHOUT announcement_signatures but with private channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
+						if channel.is_usable() {
+							log_trace!(self.logger, "Sending funding_locked with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
 							pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
 								node_id: channel.get_counterparty_node_id(),
 								msg: self.get_channel_update_for_unicast(channel).unwrap(),
 							});
 						} else {
-							log_trace!(self.logger, "Sending funding_locked WITHOUT announcement_signatures for {}", log_bytes!(channel.channel_id()));
+							log_trace!(self.logger, "Sending funding_locked WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
 						}
 						short_to_id.insert(channel.get_short_channel_id().unwrap(), channel.channel_id());
+					}
+					if let Some(announcement_sigs) = announcement_sigs {
+						log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(channel.channel_id()));
+						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+							node_id: channel.get_counterparty_node_id(),
+							msg: announcement_sigs,
+						});
+						if let Some(height) = height_opt {
+							if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+									msg: announcement,
+									// Note that announcement_signatures fails if the channel cannot be announced,
+									// so get_channel_update_for_broadcast will never fail by the time we get here.
+									update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
+								});
+							}
+						}
 					}
 				} else if let Err(reason) = res {
 					if let Some(short_id) = channel.get_short_channel_id() {
