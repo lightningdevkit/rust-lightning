@@ -902,7 +902,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 											Ok(x) => x,
 											Err(e) => {
 												match e {
-													(msgs::DecodeError::UnknownRequiredFeature, _) => {
+													// Note that to avoid recursion we never call
+													// `do_attempt_write_data` from here, causing
+													// the messages enqueued here to not actually
+													// be sent before the peer is disconnected.
+													(msgs::DecodeError::UnknownRequiredFeature, Some(ty)) if is_gossip_msg(ty) => {
 														log_gossip!(self.logger, "Got a channel/node announcement with an unknown required feature flag, you may want to update!");
 														continue;
 													}
@@ -915,6 +919,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 														log_gossip!(self.logger, "Got an invalid value while deserializing a gossip message");
 														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
 														continue;
+													}
+													(msgs::DecodeError::UnknownRequiredFeature, ty) => {
+														log_gossip!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
+														self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: format!("Received an unknown required feature/TLV in message type {:?}", ty) });
+														return Err(PeerHandleError { no_connection_possible: false });
 													}
 													(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { no_connection_possible: false }),
 													(msgs::DecodeError::InvalidValue, _) => {
