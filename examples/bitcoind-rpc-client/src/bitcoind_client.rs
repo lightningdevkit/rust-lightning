@@ -1,7 +1,6 @@
 use std::{sync::{Arc}, io};
 
-use bitcoin::{BlockHash, Block};
-use lightning_block_sync::{rpc::RpcClient, http::{HttpEndpoint}, BlockSource, AsyncBlockSourceResult, BlockHeaderData};
+use lightning_block_sync::{rpc::RpcClient, http::{HttpEndpoint}};
 use serde_json::json;
 use tokio::sync::Mutex;
 
@@ -14,33 +13,6 @@ pub struct BitcoindClient {
     port: u16,
     rpc_user: String,
     rpc_password: String,
-}
-
-impl BlockSource for &BitcoindClient {
-	fn get_header<'a>(
-		&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>,
-	) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
-			let mut rpc = self.bitcoind_rpc_client.lock().await;
-			rpc.get_header(header_hash, height_hint).await
-		})
-	}
-
-	fn get_block<'a>(
-		&'a mut self, header_hash: &'a BlockHash,
-	) -> AsyncBlockSourceResult<'a, Block> {
-		Box::pin(async move {
-			let mut rpc = self.bitcoind_rpc_client.lock().await;
-			rpc.get_block(header_hash).await
-		})
-	}
-
-	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)> {
-		Box::pin(async move {
-			let mut rpc = self.bitcoind_rpc_client.lock().await;
-			rpc.get_best_block().await
-		})
-	}
 }
 
 impl BitcoindClient {
