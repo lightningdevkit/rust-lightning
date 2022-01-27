@@ -81,6 +81,7 @@ mod inbound_payment {
 	use ln::msgs;
 	use ln::msgs::MAX_VALUE_MSAT;
 	use util::chacha20::ChaCha20;
+	use util::crypto::hkdf_extract_expand_thrice;
 	use util::logger::Logger;
 
 	use core::convert::TryInto;
@@ -112,7 +113,13 @@ mod inbound_payment {
 
 	impl ExpandedKey {
 		pub(super) fn new(key_material: &KeyMaterial) -> ExpandedKey {
-			hkdf_extract_expand(b"LDK Inbound Payment Key Expansion", &key_material)
+			let (metadata_key, ldk_pmt_hash_key, user_pmt_hash_key) =
+				hkdf_extract_expand_thrice(b"LDK Inbound Payment Key Expansion", &key_material.0);
+			Self {
+				metadata_key,
+				ldk_pmt_hash_key,
+				user_pmt_hash_key,
+			}
 		}
 	}
 
@@ -329,31 +336,6 @@ mod inbound_payment {
 			return Err(decoded_payment_preimage);
 		}
 		return Ok(PaymentPreimage(decoded_payment_preimage))
-	}
-
-	fn hkdf_extract_expand(salt: &[u8], ikm: &KeyMaterial) -> ExpandedKey {
-		let mut hmac = HmacEngine::<Sha256>::new(salt);
-		hmac.input(&ikm.0);
-		let prk = Hmac::from_engine(hmac).into_inner();
-		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
-		hmac.input(&[1; 1]);
-		let metadata_key = Hmac::from_engine(hmac).into_inner();
-
-		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
-		hmac.input(&metadata_key);
-		hmac.input(&[2; 1]);
-		let ldk_pmt_hash_key = Hmac::from_engine(hmac).into_inner();
-
-		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
-		hmac.input(&ldk_pmt_hash_key);
-		hmac.input(&[3; 1]);
-		let user_pmt_hash_key = Hmac::from_engine(hmac).into_inner();
-
-		ExpandedKey {
-			metadata_key,
-			ldk_pmt_hash_key,
-			user_pmt_hash_key,
-		}
 	}
 }
 

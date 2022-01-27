@@ -38,6 +38,9 @@ pub(crate) mod scid_utils;
 #[macro_use]
 pub(crate) mod macro_logger;
 
+/// Cryptography utilities.
+pub(crate) mod crypto;
+
 // These have to come after macro_logger to build
 pub mod logger;
 pub mod config;
@@ -49,3 +52,4 @@ pub mod test_utils;
 /// machine errors and used in fuzz targets and tests.
 #[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
 pub mod enforcing_trait_impls;
+
