@@ -942,14 +942,6 @@ impl<Signer: Sign> Channel<Signer> {
 	fn check_remote_fee<F: Deref>(fee_estimator: &F, feerate_per_kw: u32) -> Result<(), ChannelError>
 		where F::Target: FeeEstimator
 	{
-		let lower_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
-		// occasional issues with feerate disagreements between an initiator that wants a feerate
-		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
-		// sat/kw before the comparison here.
-		if feerate_per_kw + 250 < lower_limit {
-			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {} (- 250)", feerate_per_kw, lower_limit)));
-		}
 		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
 		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
 		// We generally don't care too much if they set the feerate to something very high, but it
@@ -958,6 +950,14 @@ impl<Signer: Sign> Channel<Signer> {
 			fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
 		if feerate_per_kw as u64 > upper_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
+		}
+		let lower_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
+		// occasional issues with feerate disagreements between an initiator that wants a feerate
+		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
+		// sat/kw before the comparison here.
+		if feerate_per_kw + 250 < lower_limit {
+			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {} (- 250)", feerate_per_kw, lower_limit)));
 		}
 		Ok(())
 	}
@@ -6152,6 +6152,13 @@ mod tests {
 	fn test_max_funding_satoshis() {
 		assert!(MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
 		        "MAX_FUNDING_SATOSHIS is greater than all satoshis in existence");
+	}
+
+	#[test]
+	fn test_no_fee_check_overflow() {
+		// Previously, calling `check_remote_fee` with a fee of 0xffffffff would overflow in
+		// arithmetic, causing a panic with debug assertions enabled.
+		assert!(Channel::<InMemorySigner>::check_remote_fee(&&TestFeeEstimator { fee_est: 42 }, u32::max_value()).is_err());
 	}
 
 	struct Keys {
