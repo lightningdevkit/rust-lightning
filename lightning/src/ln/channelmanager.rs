@@ -5796,6 +5796,38 @@ impl PersistenceNotifier {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
+impl_writeable_tlv_based!(CounterpartyForwardingInfo, {
+	(2, fee_base_msat, required),
+	(4, fee_proportional_millionths, required),
+	(6, cltv_expiry_delta, required),
+});
+
+impl_writeable_tlv_based!(ChannelCounterparty, {
+	(2, node_id, required),
+	(4, features, required),
+	(6, unspendable_punishment_reserve, required),
+	(8, forwarding_info, option),
+});
+
+impl_writeable_tlv_based!(ChannelDetails, {
+	(2, channel_id, required),
+	(4, counterparty, required),
+	(6, funding_txo, option),
+	(8, short_channel_id, option),
+	(10, channel_value_satoshis, required),
+	(12, unspendable_punishment_reserve, option),
+	(14, user_channel_id, required),
+	(16, balance_msat, required),
+	(18, outbound_capacity_msat, required),
+	(20, inbound_capacity_msat, required),
+	(22, confirmations_required, option),
+	(24, force_close_spend_delay, option),
+	(26, is_outbound, required),
+	(28, is_funding_locked, required),
+	(30, is_usable, required),
+	(32, is_public, required),
+});
+
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
 		(0, onion_packet, required),
