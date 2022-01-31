@@ -41,7 +41,7 @@ hex = { version = "0.4", optional = true }
 regex = { version = "0.1.80", optional = true }
 backtrace = { version = "0.3", optional = true }
 
-core2 = { version = "0.3.0", optional = true, default-features = false }
+core2 = { version = "0.4.0", optional = true, default-features = false }
 
 [dev-dependencies]
 hex = "0.4"
