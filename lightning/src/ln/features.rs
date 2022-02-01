@@ -143,7 +143,7 @@ mod sealed {
 			// Byte 4
 			,
 			// Byte 5
-			ChannelType,
+			ChannelType | SCIDPrivacy,
 		],
 	});
 	define_context!(NodeContext {
@@ -175,7 +175,7 @@ mod sealed {
 			// Byte 4
 			,
 			// Byte 5
-			ChannelType,
+			ChannelType | SCIDPrivacy,
 			// Byte 6
 			Keysend,
 		],
@@ -214,6 +214,10 @@ mod sealed {
 			,
 			// Byte 3
 			,
+			// Byte 4
+			,
+			// Byte 5
+			SCIDPrivacy,
 		],
 		optional_features: [
 			// Byte 0
@@ -223,6 +227,10 @@ mod sealed {
 			// Byte 2
 			,
 			// Byte 3
+			,
+			// Byte 4
+			,
+			// Byte 5
 			,
 		],
 	});
@@ -388,6 +396,10 @@ mod sealed {
 	define_feature!(45, ChannelType, [InitContext, NodeContext],
 		"Feature flags for `option_channel_type`.", set_channel_type_optional,
 		set_channel_type_required, supports_channel_type, requires_channel_type);
+	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
+		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
+
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
@@ -826,6 +838,11 @@ mod tests {
 		assert!(InitFeatures::known().supports_shutdown_anysegwit());
 		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
 
+		assert!(InitFeatures::known().supports_scid_privacy());
+		assert!(NodeFeatures::known().supports_scid_privacy());
+		assert!(!InitFeatures::known().requires_scid_privacy());
+		assert!(!NodeFeatures::known().requires_scid_privacy());
+
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
@@ -864,14 +881,14 @@ mod tests {
 			// - basic_mpp
 			// - opt_shutdown_anysegwit
 			// -
-			// - option_channel_type
+			// - option_channel_type | option_scid_alias
 			assert_eq!(node_features.flags.len(), 6);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00000010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 			assert_eq!(node_features.flags[4], 0b00000000);
-			assert_eq!(node_features.flags[5], 0b00100000);
+			assert_eq!(node_features.flags[5], 0b10100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:

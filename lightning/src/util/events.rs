@@ -433,6 +433,12 @@ pub enum Event {
 		/// The features that this channel will operate with. If you reject the channel, a
 		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
 		/// feature flags.
+		///
+		/// Note that if [`ChannelTypeFeatures::supports_scid_privacy`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.106.
+		///
+		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
 	},
 }

@@ -2420,7 +2420,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
 							// we don't allow forwards outbound over them.
-							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+							break Some(("Refusing to forward to a private channel based on our config.", 0x4000 | 10, None));
+						}
+						if chan.get_channel_type().supports_scid_privacy() && *short_channel_id != chan.outbound_scid_alias() {
+							// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
+							// "refuse to forward unless the SCID alias was used", so we pretend
+							// we don't have the channel here.
+							break Some(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10, None));
 						}
 
 						// Note that we could technically not return an error yet here and just hope

@@ -1009,6 +1009,7 @@ impl<Signer: Sign> Channel<Signer> {
 		      L::Target: Logger,
 	{
 		let opt_anchors = false; // TODO - should be based on features
+		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
@@ -1016,8 +1017,18 @@ impl<Signer: Sign> Channel<Signer> {
 			if channel_type.supports_any_optional_bits() {
 				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 			}
-			if *channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
+			// We currently only allow two channel types, so write it all out here - we allow
+			// `only_static_remote_key` in all contexts, and further allow
+			// `static_remote_key|scid_privacy` if the channel is not publicly announced.
+			let mut allowed_type = ChannelTypeFeatures::only_static_remote_key();
+			if *channel_type != allowed_type {
+				allowed_type.set_scid_privacy_required();
+				if *channel_type != allowed_type {
+					return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
+				}
+				if announced_channel {
+					return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
+				}
 			}
 			channel_type.clone()
 		} else {
@@ -1098,14 +1109,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Convert things into internal flags and prep our state:
 
-		let announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if config.peer_channel_config_limits.force_announced_channel_preference {
-			if local_config.announced_channel != announce {
+			if local_config.announced_channel != announced_channel {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
 		// we either accept their preference or the preferences match
-		local_config.announced_channel = announce;
+		local_config.announced_channel = announced_channel;
 
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
