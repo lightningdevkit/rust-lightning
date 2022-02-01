@@ -31,7 +31,7 @@ use lightning::chain::{BestBlock, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemorySigner, KeyMaterial, KeysInterface};
+use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
@@ -336,7 +336,7 @@ impl KeysInterface for KeyProvider {
 		))
 	}
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 }

@@ -34,7 +34,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateErr, chainmonitor, channel
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner};
+use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner, Recipient};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -222,7 +222,7 @@ impl KeysInterface for KeyProvider {
 		})
 	}
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 }

@@ -380,6 +380,18 @@ pub trait BaseSign {
 pub trait Sign: BaseSign + Writeable + Clone {
 }
 
+/// Specifies the recipient of an invoice, to indicate to [`KeysInterface::sign_invoice`] what node
+/// secret key should be used to sign the invoice.
+pub enum Recipient {
+	/// The invoice should be signed with the local node secret key.
+	Node,
+	/// The invoice should be signed with the phantom node secret key. This secret key must be the
+	/// same for all nodes participating in the [phantom node payment].
+	///
+	/// [phantom node payment]: PhantomKeysManager
+	PhantomNode,
+}
+
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface {
 	/// A type which implements Sign which will be returned by get_channel_signer.
@@ -424,7 +436,9 @@ pub trait KeysInterface {
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
 	/// The hrp is ascii bytes, while the invoice data is base32.
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()>;
+	///
+	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
@@ -1149,9 +1163,13 @@ impl KeysInterface for KeysManager {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self.get_node_secret())
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+		let secret = match recipient {
+			Recipient::Node => self.get_node_secret(),
+			Recipient::PhantomNode => return Err(()),
+		};
+		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
 }
 
@@ -1213,9 +1231,13 @@ impl KeysInterface for PhantomKeysManager {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+		let secret = match recipient {
+			Recipient::Node => self.get_node_secret(),
+			Recipient::PhantomNode => self.phantom_secret.clone(),
+		};
+		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
 }
 

@@ -47,7 +47,7 @@ use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
 use bitcoin::bech32::u5;
-use chain::keysinterface::{InMemorySigner, KeyMaterial};
+use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -88,7 +88,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 			false
 		))
 	}
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> { unreachable!(); }
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -529,8 +529,8 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		))
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
-		self.backing.sign_invoice(hrp_bytes, invoice_data)
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
 }
 

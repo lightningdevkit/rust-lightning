@@ -8,7 +8,7 @@ use bitcoin_hashes::Hash;
 use crate::prelude::*;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{Sign, KeysInterface};
+use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 use lightning::ln::msgs::LightningError;
@@ -118,7 +118,7 @@ where
 	let hrp_str = raw_invoice.hrp.to_string();
 	let hrp_bytes = hrp_str.as_bytes();
 	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(hrp_bytes, &data_without_signature));
+	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
