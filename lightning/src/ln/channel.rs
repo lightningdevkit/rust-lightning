@@ -710,6 +710,11 @@ pub(super) struct Channel<Signer: Sign> {
 	// Our counterparty can offer us SCID aliases which they will map to this channel when routing
 	// outbound payments. These can be used in invoice route hints to avoid explicitly revealing
 	// the channel's funding UTXO.
+	//
+	// We also use this when sending our peer a channel_update that isn't to be broadcasted
+	// publicly - allowing them to re-use their map of SCID -> channel for channel_update ->
+	// associated channel mapping.
+	//
 	// We only bother storing the most recent SCID alias at any time, though our counterparty has
 	// to store all of them.
 	latest_inbound_scid_alias: Option<u64>,
@@ -1987,12 +1992,6 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.minimum_depth > peer_limits.max_minimum_depth {
 			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.minimum_depth)));
 		}
-		if msg.minimum_depth == 0 {
-			// Note that if this changes we should update the serialization minimum version to
-			// indicate to older clients that they don't understand some features of the current
-			// channel.
-			return Err(ChannelError::Close("Minimum confirmation depth must be at least 1".to_owned()));
-		}
 
 		if let Some(ty) = &msg.channel_type {
 			if *ty != self.channel_type {
@@ -2029,7 +2028,12 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_selected_channel_reserve_satoshis = Some(msg.channel_reserve_satoshis);
 		self.counterparty_htlc_minimum_msat = msg.htlc_minimum_msat;
 		self.counterparty_max_accepted_htlcs = msg.max_accepted_htlcs;
-		self.minimum_depth = Some(msg.minimum_depth);
+
+		if peer_limits.trust_own_funding_0conf {
+			self.minimum_depth = Some(msg.minimum_depth);
+		} else {
+			self.minimum_depth = Some(cmp::max(1, msg.minimum_depth));
+		}
 
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -2169,7 +2173,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction), ChannelError> where L::Target: Logger {
+	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction, Option<msgs::FundingLocked>), ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -2238,7 +2242,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap()))
+		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap(), self.check_get_funding_locked(0)))
 	}
 
 	/// Handles a funding_locked message from our peer. If we've already sent our funding_locked
@@ -3540,12 +3544,13 @@ impl<Signer: Sign> Channel<Signer> {
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
 	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool,
-		mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		resend_funding_locked: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>
 	) {
 		self.monitor_pending_revoke_and_ack |= resend_raa;
 		self.monitor_pending_commitment_signed |= resend_commitment;
+		self.monitor_pending_funding_locked |= resend_funding_locked;
 		self.monitor_pending_forwards.append(&mut pending_forwards);
 		self.monitor_pending_failures.append(&mut pending_fails);
 		self.monitor_pending_finalized_fulfills.append(&mut pending_finalized_claimed_htlcs);
@@ -3559,9 +3564,18 @@ impl<Signer: Sign> Channel<Signer> {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
 
-		let funding_broadcastable = if self.channel_state & (ChannelState::FundingSent as u32) != 0 && self.is_outbound() {
-			self.funding_transaction.take()
-		} else { None };
+		// If we're past (or at) the FundingSent stage on an outbound channel, try to
+		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
+		// first received the funding_signed.
+		let mut funding_broadcastable =
+			if self.is_outbound() && self.channel_state & !MULTI_STATE_FLAGS >= ChannelState::FundingSent as u32 {
+				self.funding_transaction.take()
+			} else { None };
+		// That said, if the funding transaction is already confirmed (ie we're active with a
+		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
+		if self.channel_state & !MULTI_STATE_FLAGS >= ChannelState::ChannelFunded as u32 && self.minimum_depth != Some(0) {
+			funding_broadcastable = None;
+		}
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateFailed (and
 		// we assume the user never directly broadcasts the funding transaction and waits for us to
@@ -3570,7 +3584,8 @@ impl<Signer: Sign> Channel<Signer> {
 		//   the funding transaction confirmed before the monitor was persisted, or
 		// * a 0-conf channel and intended to send the funding_locked before any broadcast at all.
 		let funding_locked = if self.monitor_pending_funding_locked {
-			assert!(!self.is_outbound(), "Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
+			assert!(!self.is_outbound() || self.minimum_depth == Some(0),
+				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.monitor_pending_funding_locked = false;
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::FundingLocked {
@@ -4552,6 +4567,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_state >= ChannelState::FundingSent as u32
 	}
 
+	/// Returns true if our funding_locked has been sent
+	pub fn is_our_funding_locked(&self) -> bool {
+		(self.channel_state & ChannelState::OurFundingLocked as u32) != 0 || self.channel_state >= ChannelState::ChannelFunded as u32
+	}
+
 	/// Returns true if our peer has either initiated or agreed to shut down the channel.
 	pub fn received_shutdown(&self) -> bool {
 		(self.channel_state & ChannelState::RemoteShutdownSent as u32) != 0
@@ -4582,7 +4602,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn check_get_funding_locked(&mut self, height: u32) -> Option<msgs::FundingLocked> {
-		if self.funding_tx_confirmation_height == 0 {
+		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
 			return None;
 		}
 
@@ -4759,9 +4779,9 @@ impl<Signer: Sign> Channel<Signer> {
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
 			//
-			// Note that ideally we wouldn't force-close if we see *any* reorg on a 1-conf channel,
-			// but not doing so may lead to the `ChannelManager::short_to_id` map being
-			// inconsistent, so we currently have to.
+			// Note that ideally we wouldn't force-close if we see *any* reorg on a 1-conf or
+			// 0-conf channel, but not doing so may lead to the `ChannelManager::short_to_id` map
+			// being inconsistent, so we currently have to.
 			if funding_tx_confirmations == 0 && self.funding_tx_confirmed_in.is_some() {
 				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
 					self.minimum_depth.unwrap(), funding_tx_confirmations);
@@ -5620,7 +5640,7 @@ impl<Signer: Sign> Channel<Signer> {
 }
 
 const SERIALIZATION_VERSION: u8 = 2;
-const MIN_SERIALIZATION_VERSION: u8 = 1;
+const MIN_SERIALIZATION_VERSION: u8 = 2;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
 	(0, FailRelay),
@@ -5685,12 +5705,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		self.user_id.write(writer)?;
 
-		// Write out the old serialization for the config object. This is read by version-1
-		// deserializers, but we will read the version in the TLV at the end instead.
-		self.config.forwarding_fee_proportional_millionths.write(writer)?;
-		self.config.cltv_expiry_delta.write(writer)?;
-		self.config.announced_channel.write(writer)?;
-		self.config.commit_upfront_shutdown_pubkey.write(writer)?;
+		// Version 1 deserializers expected to read parts of the config object here. Version 2
+		// deserializers (0.0.99) now read config through TLVs, and as we now require them for
+		// `minimum_depth` we simply write dummy values here.
+		writer.write_all(&[0; 8])?;
 
 		self.channel_id.write(writer)?;
 		(self.channel_state | ChannelState::PeerDisconnected as u32).write(writer)?;

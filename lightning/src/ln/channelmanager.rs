@@ -1286,7 +1286,7 @@ macro_rules! remove_channel {
 }
 
 macro_rules! handle_monitor_err {
-	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
+	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateErr::PermanentFailure", log_bytes!($chan_id[..]));
@@ -1324,13 +1324,13 @@ macro_rules! handle_monitor_err {
 				if !$resend_raa {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
-				$chan.monitor_update_failed($resend_raa, $resend_commitment, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
+				$chan.monitor_update_failed($resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
 				(Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$chan_id)), false)
 			},
 		}
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
-		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
+		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
 		if drop {
 			$entry.remove_entry();
 		}
@@ -1338,16 +1338,19 @@ macro_rules! handle_monitor_err {
 	} };
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $chan_id: expr, COMMITMENT_UPDATE_ONLY) => { {
 		debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst);
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, true, Vec::new(), Vec::new(), Vec::new(), $chan_id)
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, true, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
 	} };
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $chan_id: expr, NO_UPDATE) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
+	};
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_funding_locked: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, $resend_funding_locked, Vec::new(), Vec::new(), Vec::new())
 	};
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, Vec::new(), Vec::new(), Vec::new())
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, false, Vec::new(), Vec::new(), Vec::new())
 	};
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails, Vec::new())
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, false, $failed_forwards, $failed_fails, Vec::new())
 	};
 }
 
@@ -4268,7 +4271,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 					// accepted payment from yet. We do, however, need to wait to send our funding_locked
 					// until we have persisted our monitor.
-					chan.monitor_update_failed(false, false, Vec::new(), Vec::new(), Vec::new());
+					chan.monitor_update_failed(false, false, false, Vec::new(), Vec::new(), Vec::new());
 				},
 			}
 		}
@@ -4299,12 +4302,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let (monitor, funding_tx) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
+					let (monitor, funding_tx, funding_locked) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
 					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
-						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, false, false);
+						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, funding_locked.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
 						if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 							// We weren't able to watch the channel to begin with, so no updates should be made on
 							// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -4314,6 +4317,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							}
 						}
 						return res
+					}
+					if let Some(msg) = funding_locked {
+						send_funding_locked!(channel_state.short_to_id, channel_state.pending_msg_events, chan.get(), msg);
 					}
 					funding_tx
 				},
@@ -4665,7 +4671,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						} else {
 							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan,
 									RAACommitmentOrder::CommitmentFirst, false,
-									raa_updates.commitment_update.is_some(),
+									raa_updates.commitment_update.is_some(), false,
 									raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
 									raa_updates.finalized_claimed_htlcs) {
 								break Err(e);
@@ -5518,6 +5524,19 @@ where
 									update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
 								});
 							}
+						}
+					}
+					if channel.is_our_funding_locked() {
+						if let Some(real_scid) = channel.get_short_channel_id() {
+							// If we sent a 0conf funding_locked, and now have an SCID, we add it
+							// to the short_to_id map here. Note that we check whether we can relay
+							// using the real SCID at relay-time (i.e. enforce option_scid_alias
+							// then), and if the funding tx is ever un-confirmed we force-close the
+							// channel, ensuring short_to_id is always consistent.
+							let scid_insert = short_to_id.insert(real_scid, channel.channel_id());
+							assert!(scid_insert.is_none() || scid_insert.unwrap() == channel.channel_id(),
+								"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
+								fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
 						}
 					}
 				} else if let Err(reason) = res {
