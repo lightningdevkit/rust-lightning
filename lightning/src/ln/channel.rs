@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig,ChannelConfig};
+use util::config::{UserConfig, ChannelConfig, ChannelHandshakeLimits};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -484,6 +484,8 @@ pub(super) struct Channel<Signer: Sign> {
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	config: ChannelConfig,
 
+	inbound_handshake_limits_override: Option<ChannelHandshakeLimits>,
+
 	user_id: u64,
 
 	channel_id: [u8; 32],
@@ -835,6 +837,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(Channel {
 			user_id,
 			config: config.channel_options.clone(),
+			inbound_handshake_limits_override: Some(config.peer_channel_config_limits.clone()),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
@@ -1134,6 +1137,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let chan = Channel {
 			user_id,
 			config: local_config,
+			inbound_handshake_limits_override: None,
 
 			channel_id: msg.temporary_channel_id,
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
@@ -1811,7 +1815,9 @@ impl<Signer: Sign> Channel<Signer> {
 
 	// Message handlers:
 
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, config: &UserConfig, their_features: &InitFeatures) -> Result<(), ChannelError> {
+	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, default_limits: &ChannelHandshakeLimits, their_features: &InitFeatures) -> Result<(), ChannelError> {
+		let peer_limits = if let Some(ref limits) = self.inbound_handshake_limits_override { limits } else { default_limits };
+
 		// Check sanity of message fields:
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer".to_owned()));
@@ -1832,7 +1838,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) is full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		let max_delay_acceptable = u16::min(config.peer_channel_config_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
+		let max_delay_acceptable = u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_delay_acceptable {
 			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.to_self_delay)));
 		}
@@ -1844,17 +1850,17 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Now check against optional parameters as set by config...
-		if msg.htlc_minimum_msat > config.peer_channel_config_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.htlc_minimum_msat, config.peer_channel_config_limits.max_htlc_minimum_msat)));
+		if msg.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
 		}
-		if msg.max_htlc_value_in_flight_msat < config.peer_channel_config_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.max_htlc_value_in_flight_msat, config.peer_channel_config_limits.min_max_htlc_value_in_flight_msat)));
+		if msg.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
 		}
-		if msg.channel_reserve_satoshis > config.peer_channel_config_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, config.peer_channel_config_limits.max_channel_reserve_satoshis)));
+		if msg.channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
 		}
-		if msg.max_accepted_htlcs < config.peer_channel_config_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.peer_channel_config_limits.min_max_accepted_htlcs)));
+		if msg.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
 		}
 		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
@@ -1862,8 +1868,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.minimum_depth > config.peer_channel_config_limits.max_minimum_depth {
-			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", config.peer_channel_config_limits.max_minimum_depth, msg.minimum_depth)));
+		if msg.minimum_depth > peer_limits.max_minimum_depth {
+			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.minimum_depth)));
 		}
 		if msg.minimum_depth == 0 {
 			// Note that if this changes we should update the serialization minimum version to
@@ -1916,6 +1922,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
 
 		self.channel_state = ChannelState::OurInitSent as u32 | ChannelState::TheirInitSent as u32;
+		self.inbound_handshake_limits_override = None; // We're done enforcing limits on our peer's handshake now.
 
 		Ok(())
 	}
@@ -6002,6 +6009,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			user_id,
 
 			config: config.unwrap(),
+
+			// Note that we don't care about serializing handshake limits as we only ever serialize
+			// channel data after the handshake has completed.
+			inbound_handshake_limits_override: None,
+
 			channel_id,
 			channel_state,
 			announcement_sigs_state: announcement_sigs_state.unwrap(),
@@ -6270,7 +6282,7 @@ mod tests {
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.get_accept_channel();
 		accept_channel_msg.dust_limit_satoshis = 546;
-		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
 
 		// Put some inbound and outbound HTLCs in A's channel.
@@ -6387,7 +6399,7 @@ mod tests {
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.get_accept_channel();
-		node_a_chan.accept_channel(&accept_channel_msg, &config, &InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();

@@ -4117,7 +4117,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration, &their_features), channel_state, chan);
+					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.peer_channel_config_limits, &their_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
