@@ -2188,17 +2188,28 @@ impl<Signer: Sign> Channel<Signer> {
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.update_time_counter += 1;
-		} else if (self.channel_state & (ChannelState::ChannelFunded as u32) != 0 &&
-				 // Note that funding_signed/funding_created will have decremented both by 1!
-				 self.cur_holder_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
-				 self.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1) ||
-				// If we reconnected before sending our funding locked they may still resend theirs:
-				(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
-				                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32)) {
-			if self.counterparty_cur_commitment_point != Some(msg.next_per_commitment_point) {
+		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 ||
+			// If we reconnected before sending our funding locked they may still resend theirs:
+			(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
+			                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32))
+		{
+			// They probably disconnected/reconnected and re-sent the funding_locked, which is
+			// required, or they're sending a fresh SCID alias.
+			let expected_point =
+				if self.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+					// If they haven't ever sent an updated point, the point they send should match
+					// the current one.
+					self.counterparty_cur_commitment_point
+				} else {
+					// If they have sent updated points, funding_locked is always supposed to match
+					// their "first" point, which we re-derive here.
+					Some(PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(
+							&self.commitment_secrets.get_secret(INITIAL_COMMITMENT_NUMBER - 1).expect("We should have all prev secrets available")
+						).expect("We already advanced, so previous secret keys should have been validated already")))
+				};
+			if expected_point != Some(msg.next_per_commitment_point) {
 				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point".to_owned()));
 			}
-			// They probably disconnected/reconnected and re-sent the funding_locked, which is required
 			return Ok(None);
 		} else {
 			return Err(ChannelError::Close("Peer sent a funding_locked at a strange time".to_owned()));
@@ -4238,7 +4249,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.outbound_scid_alias
 	}
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
-	/// indicating we were written by an old LDK which did not set outbound SCID aliases.
+	/// indicating we were written by LDK prior to 0.0.106 which did not set outbound SCID aliases.
 	pub fn set_outbound_scid_alias(&mut self, outbound_scid_alias: u64) {
 		assert_eq!(self.outbound_scid_alias, 0);
 		self.outbound_scid_alias = outbound_scid_alias;
@@ -4492,7 +4503,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if need_commitment_update {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
 				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
-					let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
+					let next_per_commitment_point =
+						self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
 					return Some(msgs::FundingLocked {
 						channel_id: self.channel_id,
 						next_per_commitment_point,

@@ -249,7 +249,7 @@ fn test_routed_scid_alias() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).2;
-	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+	let mut as_funding_locked = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).0;
 
 	let last_hop = nodes[2].node.list_usable_channels();
 	let hop_hints = vec![RouteHint(vec![RouteHintHop {
@@ -270,4 +270,17 @@ fn test_routed_scid_alias() {
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Now test that if a peer sends us a second funding_locked after the channel is operational we
+	// will use the new alias.
+	as_funding_locked.short_channel_id_alias = Some(0xdeadbeef);
+	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
+	// Note that we always respond to a funding_locked with a channel_update. Not a lot of reason
+	// to bother updating that code, so just drop the message here.
+	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+	let updated_channel_info = nodes[2].node.list_usable_channels();
+	assert_eq!(updated_channel_info.len(), 1);
+	assert_eq!(updated_channel_info[0].inbound_scid_alias.unwrap(), 0xdeadbeef);
+	// Note that because we never send a duplicate funding_locked we can't send a payment through
+	// the 0xdeadbeef SCID alias.
 }
