@@ -65,7 +65,7 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 
 	for hint in phantom_route_hints {
 		for channel in &hint.channels {
-			let short_channel_id = match channel.short_channel_id {
+			let short_channel_id = match channel.get_inbound_payment_scid() {
 				Some(id) => id,
 				None => continue,
 			};
@@ -162,7 +162,7 @@ where
 	let our_channels = channelmanager.list_usable_channels();
 	let mut route_hints = vec![];
 	for channel in our_channels {
-		let short_channel_id = match channel.short_channel_id {
+		let short_channel_id = match channel.get_inbound_payment_scid() {
 			Some(id) => id,
 			None => continue,
 		};
@@ -312,6 +312,13 @@ mod test {
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
+
+		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
+		// available.
+		assert_eq!(invoice.route_hints().len(), 1);
+		assert_eq!(invoice.route_hints()[0].0.len(), 1);
+		assert_eq!(invoice.route_hints()[0].0[0].short_channel_id,
+			nodes[1].node.list_usable_channels()[0].inbound_scid_alias.unwrap());
 
 		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
 			.with_features(invoice.features().unwrap().clone())

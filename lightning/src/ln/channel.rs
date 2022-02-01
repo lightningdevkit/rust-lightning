@@ -695,6 +695,13 @@ pub(super) struct Channel<Signer: Sign> {
 
 	/// This channel's type, as negotiated during channel open
 	channel_type: ChannelTypeFeatures,
+
+	// Our counterparty can offer us SCID aliases which they will map to this channel when routing
+	// outbound payments. These can be used in invoice route hints to avoid explicitly revealing
+	// the channel's funding UTXO.
+	// We only bother storing the most recent SCID alias at any time, though our counterparty has
+	// to store all of them.
+	latest_inbound_scid_alias: Option<u64>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -946,6 +953,8 @@ impl<Signer: Sign> Channel<Signer> {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+
+			latest_inbound_scid_alias: None,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -1251,6 +1260,8 @@ impl<Signer: Sign> Channel<Signer> {
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+
+			latest_inbound_scid_alias: None,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -2149,6 +2160,15 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			self.workaround_lnd_bug_4006 = Some(msg.clone());
 			return Err(ChannelError::Ignore("Peer sent funding_locked when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
+		}
+
+		if let Some(scid_alias) = msg.short_channel_id_alias {
+			if Some(scid_alias) != self.short_channel_id {
+				// The scid alias provided can be used to route payments *from* our counterparty,
+				// i.e. can be used for inbound payments and provided in invoices, but is not used
+				// when routing outbound payments.
+				self.latest_inbound_scid_alias = Some(scid_alias);
+			}
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
@@ -4198,6 +4218,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.short_channel_id
 	}
 
+	/// Allowed in any state (including after shutdown)
+	pub fn latest_inbound_scid_alias(&self) -> Option<u64> {
+		self.latest_inbound_scid_alias
+	}
+
 	/// Returns the funding_txo we either got from our peer, or were given by
 	/// get_outbound_funding_created.
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
@@ -5769,6 +5794,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(13, self.channel_creation_height, required),
 			(15, preimages, vec_type),
 			(17, self.announcement_sigs_state, required),
+			(19, self.latest_inbound_scid_alias, option),
 		});
 
 		Ok(())
@@ -6024,6 +6050,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		// If we read an old Channel, for simplicity we just treat it as "we never sent an
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
 		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
+		let mut latest_inbound_scid_alias = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6039,6 +6066,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(13, channel_creation_height, option),
 			(15, preimages_opt, vec_type),
 			(17, announcement_sigs_state, option),
+			(19, latest_inbound_scid_alias, option),
 		});
 
 		if let Some(preimages) = preimages_opt {
@@ -6172,6 +6200,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
 
 			workaround_lnd_bug_4006: None,
+
+			latest_inbound_scid_alias,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills,
