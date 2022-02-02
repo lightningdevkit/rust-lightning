@@ -22,7 +22,15 @@ pub struct ChannelHandshakeConfig {
 	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
 	/// equivalent limit applied to outbound channels).
 	///
+	/// A lower-bound of 1 is applied, requiring all channels to have a confirmed commitment
+	/// transaction before operation. If you wish to accept channels with zero confirmations, see
+	/// [`UserConfig::manually_accept_inbound_channels`] and
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`].
+	///
 	/// Default value: 6.
+	///
+	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
 	pub minimum_depth: u32,
 	/// Set to the number of blocks we require our counterparty to wait to claim their money (ie
 	/// the number of blocks we have to punish our counterparty if they broadcast a revoked

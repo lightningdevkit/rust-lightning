@@ -1312,7 +1312,7 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.own_channel_config.our_htlc_minimum_msat == 0 { 1 } else { config.own_channel_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
-			minimum_depth: Some(config.own_channel_config.minimum_depth),
+			minimum_depth: Some(cmp::max(config.own_channel_config.minimum_depth, 1)),
 
 			counterparty_forwarding_info: None,
 
@@ -4876,6 +4876,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn inbound_is_awaiting_accept(&self) -> bool {
 		self.inbound_awaiting_accept
+	}
+
+	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
+	pub fn set_0conf(&mut self) {
+		assert!(self.inbound_awaiting_accept);
+		self.minimum_depth = Some(0);
 	}
 
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannel`] message which

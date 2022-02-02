@@ -4119,20 +4119,45 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Called to accept a request to open a channel after [`Event::OpenChannelRequest`] has been
-	/// triggered.
+	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
 	///
 	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted,
 	/// and the `counterparty_node_id` parameter is the id of the peer which has requested to open
 	/// the channel.
 	///
-	/// For inbound channels, the `user_channel_id` parameter will be provided back in
+	/// The `user_channel_id` parameter will be provided back in
 	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
-	/// with which `accept_inbound_channel` call.
+	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer_0conf` call.
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u64) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
+	}
+
+	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
+	/// it as confirmed immediately.
+	///
+	/// The `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer_0conf` call.
+	///
+	/// Unlike [`ChannelManager::accept_inbound_channel`], this method accepts the incoming channel
+	/// and (if the counterparty agrees), enables forwarding of payments immediately.
+	///
+	/// This fully trusts that the counterparty has honestly and correctly constructed the funding
+	/// transaction and blindly assumes that it will eventually confirm.
+	///
+	/// If it does not confirm before we decide to close the channel, or if the funding transaction
+	/// does not pay to the correct script the correct amount, *you will lose funds*.
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u64) -> Result<(), APIError> {
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
+	}
+
+	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -4145,6 +4170,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if *counterparty_node_id != channel.get().get_counterparty_node_id() {
 					return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
 				}
+				if accept_0conf { channel.get_mut().set_0conf(); }
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: channel.get().get_counterparty_node_id(),
 					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
