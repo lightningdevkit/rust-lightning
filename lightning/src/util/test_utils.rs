@@ -21,8 +21,7 @@ use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::OptionalField;
 use ln::script::ShutdownScript;
-use routing::scoring::ScorerUsingTime;
-use routing::scoring::time::Eternity;
+use routing::scoring::FixedPenaltyScorer;
 use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use util::events;
 use util::logger::{Logger, Level, Record};
@@ -724,4 +723,4 @@ impl core::fmt::Debug for OnRegisterOutput {
 }
 
 /// A scorer useful in testing, when the passage of time isn't a concern.
-pub type TestScorer = ScorerUsingTime<Eternity>;
+pub type TestScorer = FixedPenaltyScorer;

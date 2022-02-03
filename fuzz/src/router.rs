@@ -17,7 +17,7 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
-use lightning::routing::scoring::Scorer;
+use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
@@ -249,7 +249,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						}]));
 					}
 				}
-				let scorer = Scorer::with_fixed_penalty(0);
+				let scorer = FixedPenaltyScorer::with_penalty(0);
 				for target in node_pks.iter() {
 					let route_params = RouteParameters {
 						payment_params: PaymentParameters::from_node_id(*target).with_route_hints(last_hops.clone()),

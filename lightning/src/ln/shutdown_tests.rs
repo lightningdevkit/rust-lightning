@@ -76,7 +76,7 @@ fn updates_shutdown_wait() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 	let logger = test_utils::TestLogger::new();
-	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+	let scorer = test_utils::TestScorer::with_penalty(0);
 
 	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
 

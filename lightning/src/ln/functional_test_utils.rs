@@ -1085,7 +1085,7 @@ macro_rules! get_route_and_payment_hash {
 		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
-		let scorer = $crate::util::test_utils::TestScorer::with_fixed_penalty(0);
+		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
 		let route = $crate::routing::router::get_route(
 			&$send_node.node.get_our_node_id(), &payment_params, $send_node.network_graph,
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
@@ -1540,7 +1540,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
-	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+	let scorer = test_utils::TestScorer::with_penalty(0);
 	let route = get_route(
 		&origin_node.node.get_our_node_id(), &payment_params, &origin_node.network_graph,
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
@@ -1558,7 +1558,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
-	let scorer = test_utils::TestScorer::with_fixed_penalty(0);
+	let scorer = test_utils::TestScorer::with_penalty(0);
 	let route = get_route(
 		&origin_node.node.get_our_node_id(), &payment_params, origin_node.network_graph, 
 		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
