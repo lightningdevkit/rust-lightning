@@ -4180,13 +4180,12 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Allowed in any state (including after shutdown)
-	#[cfg(test)]
 	pub fn get_holder_htlc_minimum_msat(&self) -> u64 {
 		self.holder_htlc_minimum_msat
 	}
 
 	/// Allowed in any state (including after shutdown)
-	pub fn get_announced_htlc_max_msat(&self) -> u64 {
+	pub fn get_holder_htlc_max_msat(&self) -> u64 {
 		return cmp::min(
 			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
 			// to use full capacity. This is an effort to reduce routing failures, because in many cases
@@ -4195,6 +4194,15 @@ impl<Signer: Sign> Channel<Signer> {
 
 			self.holder_max_htlc_value_in_flight_msat
 		);
+	}
+
+	/// Allowed in any state (including after shutdown)
+	pub fn get_counterparty_htlc_max_msat(&self) -> u64 {
+		return cmp::min(
+			self.channel_value_satoshis * 1000 * 9 / 10,
+
+			self.counterparty_max_htlc_value_in_flight_msat
+		)
 	}
 
 	/// Allowed in any state (including after shutdown)
