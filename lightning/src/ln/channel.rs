@@ -3457,6 +3457,7 @@ impl<Signer: Sign> Channel<Signer> {
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
+				short_channel_id_alias: None,
 			})
 		} else { None };
 
@@ -3678,6 +3679,7 @@ impl<Signer: Sign> Channel<Signer> {
 				funding_locked: Some(msgs::FundingLocked {
 					channel_id: self.channel_id(),
 					next_per_commitment_point,
+					short_channel_id_alias: None,
 				}),
 				raa: None, commitment_update: None, mon_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
@@ -3713,6 +3715,7 @@ impl<Signer: Sign> Channel<Signer> {
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
+				short_channel_id_alias: None,
 			})
 		} else { None };
 
@@ -4447,6 +4450,7 @@ impl<Signer: Sign> Channel<Signer> {
 					return Some(msgs::FundingLocked {
 						channel_id: self.channel_id,
 						next_per_commitment_point,
+						short_channel_id_alias: None,
 					});
 				}
 			} else {
