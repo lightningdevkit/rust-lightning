@@ -2293,53 +2293,59 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				let id_option = channel_state.as_ref().unwrap().short_to_id.get(&short_channel_id).cloned();
 				if let Some((err, code, chan_update)) = loop {
-					let forwarding_id = match id_option {
+					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
 							// phantom.
 							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) {
-								break None
+								None
+							} else {
+								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 							}
-							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 						},
-						Some(id) => id.clone(),
+						Some(id) => Some(id.clone()),
 					};
+					let (chan_update_opt, forwardee_cltv_expiry_delta) = if let Some(forwarding_id) = forwarding_id_opt {
+						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+						// Leave channel updates as None for private channels.
+						let chan_update_opt = if chan.should_announce() {
+							Some(self.get_channel_update_for_unicast(chan).unwrap()) } else { None };
+						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
+							// Note that the behavior here should be identical to the above block - we
+							// should NOT reveal the existence or non-existence of a private channel if
+							// we don't allow forwards outbound over them.
+							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+						}
 
-					let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+						// Note that we could technically not return an error yet here and just hope
+						// that the connection is reestablished or monitor updated by the time we get
+						// around to doing the actual forward, but better to fail early if we can and
+						// hopefully an attacker trying to path-trace payments cannot make this occur
+						// on a small/per-node/per-channel scale.
+						if !chan.is_live() { // channel_disabled
+							break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, chan_update_opt));
+						}
+						if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
+							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
+						}
+						let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
+							.and_then(|prop_fee| { (prop_fee / 1000000)
+							.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
+						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
+							break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, chan_update_opt));
+						}
+						(chan_update_opt, chan.get_cltv_expiry_delta())
+					} else { (None, MIN_CLTV_EXPIRY_DELTA) };
 
-					if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
-						// Note that the behavior here should be identical to the above block - we
-						// should NOT reveal the existence or non-existence of a private channel if
-						// we don't allow forwards outbound over them.
-						break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
-					}
-
-					// Note that we could technically not return an error yet here and just hope
-					// that the connection is reestablished or monitor updated by the time we get
-					// around to doing the actual forward, but better to fail early if we can and
-					// hopefully an attacker trying to path-trace payments cannot make this occur
-					// on a small/per-node/per-channel scale.
-					if !chan.is_live() { // channel_disabled
-						break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, Some(self.get_channel_update_for_unicast(chan).unwrap())));
-					}
-					if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
-						break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, Some(self.get_channel_update_for_unicast(chan).unwrap())));
-					}
-					let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
-						.and_then(|prop_fee| { (prop_fee / 1000000)
-						.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
-					if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
-						break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, Some(self.get_channel_update_for_unicast(chan).unwrap())));
-					}
-					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + chan.get_cltv_expiry_delta() as u64 { // incorrect_cltv_expiry
-						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, Some(self.get_channel_update_for_unicast(chan).unwrap())));
+					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + forwardee_cltv_expiry_delta as u64 { // incorrect_cltv_expiry
+						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, chan_update_opt));
 					}
 					let cur_height = self.best_block.read().unwrap().height() + 1;
 					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
 					// but we want to be robust wrt to counterparty packet sanitization (see
 					// HTLC_FAIL_BACK_BUFFER rationale).
 					if msg.cltv_expiry <= cur_height + HTLC_FAIL_BACK_BUFFER as u32 { // expiry_too_soon
-						break Some(("CLTV expiry is too close", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
+						break Some(("CLTV expiry is too close", 0x1000 | 14, chan_update_opt));
 					}
 					if msg.cltv_expiry > cur_height + CLTV_FAR_FAR_AWAY as u32 { // expiry_too_far
 						break Some(("CLTV expiry is too far in the future", 21, None));
@@ -2353,7 +2359,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// but there is no need to do that, and since we're a bit conservative with our
 					// risk threshold it just results in failing to forward payments.
 					if (*outgoing_cltv_value) as u64 <= (cur_height + LATENCY_GRACE_PERIOD_BLOCKS) as u64 {
-						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, Some(self.get_channel_update_for_unicast(chan).unwrap())));
+						break Some(("Outgoing CLTV value is too soon", 0x1000 | 14, chan_update_opt));
 					}
 
 					break None;
