@@ -4731,9 +4731,6 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Will only fail if we're not in a state where channel_announcement may be sent (including
 	/// closing).
 	///
-	/// Note that the "channel must be funded" requirement is stricter than BOLT 7 requires - see
-	/// https://github.com/lightningnetwork/lightning-rfc/issues/468
-	///
 	/// This will only return ChannelError::Ignore upon failure.
 	fn get_channel_announcement(&self, node_id: PublicKey, chain_hash: BlockHash) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> {
 		if !self.config.announced_channel {
