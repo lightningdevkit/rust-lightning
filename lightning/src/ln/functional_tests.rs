@@ -8301,6 +8301,207 @@ fn test_override_0msat_htlc_minimum() {
 }
 
 #[test]
+fn test_manually_accept_inbound_channel_request() {
+	let mut manually_accept_conf = UserConfig::default();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
+
+	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in `msg_events` before
+	// accepting the inbound channel request.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id).unwrap();
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	let accept_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(accept_msg_ev.len(), 1);
+
+	match accept_msg_ev[0] {
+		MessageSendEvent::SendAcceptChannel { ref node_id, .. } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
+fn test_manually_reject_inbound_channel_request() {
+	let mut manually_accept_conf = UserConfig::default();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
+
+	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in `msg_events` before
+	// rejecting the inbound channel request.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			nodes[1].node.force_close_channel(&temporary_channel_id).unwrap();
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(close_msg_ev.len(), 1);
+
+	match close_msg_ev[0] {
+		MessageSendEvent::HandleError { ref node_id, .. } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
+}
+
+#[test]
+fn test_reject_funding_before_inbound_channel_accepted() {
+	// This tests that when `UserConfig::manually_accept_inbound_channels` is set to true, inbound
+	// channels must to be manually accepted through `ChannelManager::accept_inbound_channel` by
+	// the node operator before the counterparty sends a `FundingCreated` message. If a
+	// `FundingCreated` message is received before the channel is accepted, it should be rejected
+	// and the channel should be closed.
+	let mut manually_accept_conf = UserConfig::default();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	let temp_channel_id = res.temporary_channel_id;
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
+
+	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in the `msg_events`.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Clear the `Event::OpenChannelRequest` event without responding to the request.
+	nodes[1].node.get_and_clear_pending_events();
+
+	// Get the `AcceptChannel` message of `nodes[1]` without calling
+	// `ChannelManager::accept_inbound_channel`, which generates a
+	// `MessageSendEvent::SendAcceptChannel` event. The message is passed to `nodes[0]`
+	// `handle_accept_channel`, which is required in order for `create_funding_transaction` to
+	// succeed when `nodes[0]` is passed to it.
+	{
+		let mut lock;
+		let channel = get_channel_ref!(&nodes[1], lock, temp_channel_id);
+		let accept_chan_msg = channel.get_accept_channel_message();
+		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
+	}
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 100000, 42);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+	// The `funding_created_msg` should be rejected by `nodes[1]` as it hasn't accepted the channel
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+
+	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(close_msg_ev.len(), 1);
+
+	let expected_err = "FundingCreated message received before the channel was accepted";
+	match close_msg_ev[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, ref node_id, } => {
+			assert_eq!(msg.channel_id, temp_channel_id);
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(msg.data, expected_err);
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: expected_err.to_string() });
+}
+
+#[test]
+fn test_can_not_accept_inbound_channel_twice() {
+	let mut manually_accept_conf = UserConfig::default();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
+	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
+
+	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in `msg_events` before
+	// accepting the inbound channel request.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id).unwrap();
+			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id);
+			match api_res {
+				Err(APIError::APIMisuseError { err }) => {
+					assert_eq!(err, "The channel isn't currently awaiting to be accepted.");
+				},
+				Ok(_) => panic!("Channel shouldn't be possible to be accepted twice"),
+				Err(_) => panic!("Unexpected Error"),
+			}
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	// Ensure that the channel wasn't closed after attempting to accept it twice.
+	let accept_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(accept_msg_ev.len(), 1);
+
+	match accept_msg_ev[0] {
+		MessageSendEvent::SendAcceptChannel { ref node_id, .. } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
+fn test_can_not_accept_unknown_inbound_channel() {
+	let chanmon_cfg = create_chanmon_cfgs(1);
+	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
+	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
+	let node = create_network(1, &node_cfg, &node_chanmgr)[0].node;
+
+	let unknown_channel_id = [0; 32];
+	let api_res = node.accept_inbound_channel(&unknown_channel_id);
+	match api_res {
+		Err(APIError::ChannelUnavailable { err }) => {
+			assert_eq!(err, "Can't accept a channel that doesn't exist");
+		},
+		Ok(_) => panic!("It shouldn't be possible to accept an unkown channel"),
+		Err(_) => panic!("Unexpected Error"),
+	}
+}
+
+#[test]
 fn test_simple_mpp() {
 	// Simple test of sending a multi-path payment.
 	let chanmon_cfgs = create_chanmon_cfgs(4);

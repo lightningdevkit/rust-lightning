@@ -4723,6 +4723,15 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
+	/// Enables the possibility for tests to extract a [`msgs::AcceptChannel`] message for an
+	/// inbound channel without accepting it.
+	///
+	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	#[cfg(test)]
+	pub fn get_accept_channel_message(&self) -> msgs::AcceptChannel {
+		self.generate_accept_channel_message()
+	}
+
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
