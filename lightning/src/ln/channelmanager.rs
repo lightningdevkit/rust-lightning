@@ -1150,6 +1150,10 @@ pub struct CounterpartyForwardingInfo {
 	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
 	/// `cltv_expiry_delta` for more details.
 	pub cltv_expiry_delta: u16,
+	/// The maximum amount of msats that can be forwarded by a channel holder in an HTLC.
+	pub holder_htlc_maximum_msat: u64,
+	/// The minimum amount of msats that can be forwarded by a channel counterparty in an HTLC.
+	pub counterparty_htlc_minimum_msat: u64,
 }
 
 /// Channel parameters which apply to our counterparty. These are split out from [`ChannelDetails`]
@@ -1279,12 +1283,8 @@ pub struct ChannelDetails {
 	pub is_public: bool,
 	/// The minimum amount of msats that can be forwarded by the channel holder in an HTLC.
 	pub holder_htlc_minimum_msat: u64,
-	/// The maximum amount of msats that can be forwarded by a channel holder in an HTLC.
-	pub holder_htlc_maximum_msat: u64,
-	/// The minimum amount of msats that can be forwarded by a channel counterparty in an HTLC.
-	pub counterparty_htlc_minimum_msat: u64,
 	/// The maximum amount of msats that can be forwarded by a channel counterparty in an HTLC.
-	pub counterparty_htlc_maximum_msat: u64
+	pub counterparty_htlc_maximum_msat: u64,
 }
 
 /// If a payment fails to send, it can be in one of several states. This enum is returned as the
@@ -1837,9 +1837,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
 					holder_htlc_minimum_msat: channel.get_holder_htlc_minimum_msat(),
-					holder_htlc_maximum_msat: channel.get_holder_htlc_max_msat(),
-					counterparty_htlc_minimum_msat: channel.get_counterparty_htlc_minimum_msat(),
-					counterparty_htlc_maximum_msat: channel.get_counterparty_htlc_max_msat(),
+					counterparty_htlc_maximum_msat: channel.get_counterparty_htlc_max_msat().unwrap_or(0),
 				});
 			}
 		}
@@ -2424,7 +2422,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
-			htlc_maximum_msat: OptionalField::Present(chan.get_counterparty_htlc_max_msat()),
+			htlc_maximum_msat: OptionalField::Present(chan.get_counterparty_htlc_max_msat().unwrap_or(0)),
 			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),

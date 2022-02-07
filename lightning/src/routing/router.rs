@@ -1559,8 +1559,8 @@ mod tests {
 			force_close_spend_delay: None,
 			is_outbound: true, is_funding_locked: true,
 			is_usable: true, is_public: true,
-			holder_htlc_minimum_msat: 1000, holder_htlc_maximum_msat: 100000000,
-			counterparty_htlc_minimum_msat: 1000, counterparty_htlc_maximum_msat: 100000000, 
+			holder_htlc_minimum_msat: 1000,
+			counterparty_htlc_maximum_msat: 100000000, 
 		}
 	}
 

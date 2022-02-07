@@ -4187,22 +4187,25 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_holder_htlc_max_msat(&self) -> u64 {
 		return cmp::min(
-			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
-			// to use full capacity. This is an effort to reduce routing failures, because in many cases
-			// channel might have been used to route very small values (either by honest users or as DoS).
-			self.channel_value_satoshis * 1000 * 9 / 10,
+			// Upper bound by capacity. The total balance of the channel minus the reserves of the holder and counterparty.
+			self.channel_value_satoshis - (self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) + self.holder_selected_channel_reserve_satoshis) * 1000,
 
 			self.holder_max_htlc_value_in_flight_msat
 		);
 	}
 
 	/// Allowed in any state (including after shutdown)
-	pub fn get_counterparty_htlc_max_msat(&self) -> u64 {
-		return cmp::min(
-			self.channel_value_satoshis * 1000 * 9 / 10,
+	pub fn get_counterparty_htlc_max_msat(&self) -> Option<u64> {
+		if self.channel_state >= ChannelState::TheirInitSent as u32 {		
+			return None
+		}
 
-			self.counterparty_max_htlc_value_in_flight_msat
-		)
+		return cmp::min(
+			// Upper bound by capacity. The total balance of the channel minus the reserves of the holder and counterparty.
+			Some(self.channel_value_satoshis - (self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) + self.holder_selected_channel_reserve_satoshis) * 1000),
+	
+			Some(self.counterparty_max_htlc_value_in_flight_msat)
+		)	
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -5247,7 +5250,9 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
 			fee_base_msat: msg.contents.fee_base_msat,
 			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
-			cltv_expiry_delta: msg.contents.cltv_expiry_delta
+			cltv_expiry_delta: msg.contents.cltv_expiry_delta,
+			counterparty_htlc_minimum_msat: self.get_counterparty_htlc_minimum_msat(),
+			holder_htlc_maximum_msat: self.get_holder_htlc_max_msat(),
 		});
 
 		Ok(())
@@ -5904,6 +5909,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				fee_base_msat: Readable::read(reader)?,
 				fee_proportional_millionths: Readable::read(reader)?,
 				cltv_expiry_delta: Readable::read(reader)?,
+				counterparty_htlc_minimum_msat: Readable::read(reader)?,
+				holder_htlc_maximum_msat: Readable::read(reader)?,
 			}),
 			_ => return Err(DecodeError::InvalidValue),
 		};
