@@ -10,10 +10,8 @@ jobs:
         platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
-                     # 1.36.0 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
-                     1.36.0,
-                     # 1.41.0 is Debian stable
-                     1.41.0,
+                     # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
+                     1.41.1,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
                      1.45.2,
                      # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
@@ -41,11 +39,9 @@ jobs:
           - toolchain: beta
             build-net-tokio: true
             build-no-std: true
-          - toolchain: 1.36.0
+          - toolchain: 1.41.1
             build-no-std: false
             test-log-variants: true
-          - toolchain: 1.41.0
-            build-no-std: false
           - toolchain: 1.45.2
             build-net-old-tokio: true
             build-net-tokio: true
