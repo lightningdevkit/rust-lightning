@@ -556,6 +556,7 @@ mod tests {
 					},
 			]],
 			payment_params: None,
+			path_penalties: Vec::with_capacity(1),
 		};
 
 		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();

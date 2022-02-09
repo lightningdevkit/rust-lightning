@@ -1252,6 +1252,7 @@ mod tests {
 					}],
 				],
 				payment_params: None,
+				path_penalties: Vec::with_capacity(2),
 			}
 		}
 
@@ -1544,6 +1545,7 @@ mod tests {
 				}],
 			],
 			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+			path_penalties: Vec::with_capacity(2),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -1588,6 +1590,7 @@ mod tests {
 				}],
 			],
 			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+			path_penalties: Vec::with_capacity(1),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -1669,6 +1672,7 @@ mod tests {
 				}]
 			],
 			payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())),
+			path_penalties: Vec::with_capacity(2)
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));

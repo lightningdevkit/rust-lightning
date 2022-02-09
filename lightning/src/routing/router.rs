@@ -76,6 +76,9 @@ pub struct Route {
 	///
 	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
 	pub payment_params: Option<PaymentParameters>,
+	/// List of penalties corresponding to the paths in the `paths` vector.
+	/// This is populated by taking the last [`PathBuildingHop`] of every path found in [`find_route`]
+	pub path_penalties: Vec<u64>,
 }
 
 pub(crate) trait RoutePath {
@@ -121,6 +124,12 @@ impl Writeable for Route {
 				hop.write(writer)?;
 			}
 		}
+
+		(self.path_penalties.len() as u64).write(writer)?;
+		for penalty in self.path_penalties.iter() {
+			penalty.write(writer)?;
+		}
+
 		write_tlv_fields!(writer, {
 			(1, self.payment_params, option),
 		});
@@ -133,6 +142,8 @@ impl Readable for Route {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
+		let mut path_penalties: Vec<u64> = Vec::with_capacity(paths.len());
+
 		for _ in 0..path_count {
 			let hop_count: u8 = Readable::read(reader)?;
 			let mut hops = Vec::with_capacity(hop_count as usize);
@@ -141,11 +152,17 @@ impl Readable for Route {
 			}
 			paths.push(hops);
 		}
+
+		let path_penalty_count: u64 = Readable::read(reader)?;
+		for _ in 0..path_penalty_count {
+			path_penalties.push(Readable::read(reader)?);
+		}
+
 		let mut payment_params = None;
 		read_tlv_fields!(reader, {
 			(1, payment_params, option),
 		});
-		Ok(Route { paths, payment_params })
+		Ok(Route { paths, payment_params, path_penalties })
 	}
 }
 
@@ -1513,9 +1530,11 @@ where L::Target: Logger {
 	}
 
 	let route = Route {
+		path_penalties: selected_paths.iter().map(|(_, penalty)| *penalty).collect(),
 		paths: selected_paths.into_iter().map(|(path, _)| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()?,
 		payment_params: Some(payment_params.clone()),
 	};
+
 	log_info!(logger, "Got route to {}: {}", payment_params.payee_pubkey, log_route!(route));
 	Ok(route)
 }
@@ -4795,6 +4814,7 @@ mod tests {
 				},
 			]],
 			payment_params: None,
+			path_penalties: Vec::with_capacity(1)
 		};
 
 		assert_eq!(route.get_total_fees(), 250);
@@ -4828,6 +4848,7 @@ mod tests {
 				},
 			]],
 			payment_params: None,
+			path_penalties: Vec::with_capacity(2)
 		};
 
 		assert_eq!(route.get_total_fees(), 200);
@@ -4839,7 +4860,7 @@ mod tests {
 		// In an earlier version of `Route::get_total_fees` and `Route::get_total_amount`, they
 		// would both panic if the route was completely empty. We test to ensure they return 0
 		// here, even though its somewhat nonsensical as a route.
-		let route = Route { paths: Vec::new(), payment_params: None };
+		let route = Route { paths: Vec::new(), payment_params: None, path_penalties: Vec::new() };
 
 		assert_eq!(route.get_total_fees(), 0);
 		assert_eq!(route.get_total_amount(), 0);
