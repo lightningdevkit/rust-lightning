@@ -9603,3 +9603,30 @@ fn test_max_dust_htlc_exposure() {
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, true);
 }
+
+#[test]
+fn test_fee_spikes_force_close() {
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Route a payment above default `fulfilled_htlc_high_exposure`
+	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000).0;
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[1].node.claim_funds(payment_preimage);
+	// Increase feerate * 2, above default `spikes_force_close_rate`
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += *feerate_lock;
+	}
+	// Confirms a block to trigger force-close.
+	connect_blocks(&nodes[1], 1);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_broadcast!(nodes[1], true).unwrap();
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_added_monitors!(nodes[1], 1);
+}
