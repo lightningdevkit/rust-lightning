@@ -70,7 +70,7 @@ pub struct OnlyReadsKeysInterface {}
 impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
+	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
@@ -481,8 +481,12 @@ pub struct TestKeysInterface {
 impl keysinterface::KeysInterface for TestKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
-	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial { self.backing.get_inbound_payment_key_material() }
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		self.backing.get_node_secret(recipient)
+	}
+	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
+		self.backing.get_inbound_payment_key_material()
+	}
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
@@ -519,7 +523,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret())?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(

@@ -397,10 +397,11 @@ pub trait KeysInterface {
 	/// A type which implements Sign which will be returned by get_channel_signer.
 	type Signer : Sign;
 
-	/// Get node secret key (aka node_id or network_key).
+	/// Get node secret key (aka node_id or network_key) based on the provided [`Recipient`].
 	///
-	/// This method must return the same value each time it is called.
-	fn get_node_secret(&self) -> SecretKey;
+	/// This method must return the same value each time it is called with a given `Recipient`
+	/// parameter.
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
@@ -1122,8 +1123,11 @@ impl KeysManager {
 impl KeysInterface for KeysManager {
 	type Signer = InMemorySigner;
 
-	fn get_node_secret(&self) -> SecretKey {
-		self.node_secret.clone()
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -1160,13 +1164,13 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader), self.get_node_secret())
+		InMemorySigner::read(&mut io::Cursor::new(reader), self.node_secret.clone())
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = match recipient {
-			Recipient::Node => self.get_node_secret(),
+			Recipient::Node => self.get_node_secret(Recipient::Node)?,
 			Recipient::PhantomNode => return Err(()),
 		};
 		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
@@ -1203,8 +1207,11 @@ pub struct PhantomKeysManager {
 impl KeysInterface for PhantomKeysManager {
 	type Signer = InMemorySigner;
 
-	fn get_node_secret(&self) -> SecretKey {
-		self.inner.get_node_secret()
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		match recipient {
+			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
+			Recipient::PhantomNode => Ok(self.phantom_secret.clone()),
+		}
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -1233,10 +1240,7 @@ impl KeysInterface for PhantomKeysManager {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		let secret = match recipient {
-			Recipient::Node => self.get_node_secret(),
-			Recipient::PhantomNode => self.phantom_secret.clone(),
-		};
+		let secret = self.get_node_secret(recipient)?;
 		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
 }

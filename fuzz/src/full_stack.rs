@@ -265,8 +265,8 @@ struct KeyProvider {
 impl KeysInterface for KeyProvider {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey {
-		self.node_secret.clone()
+	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
+		Ok(self.node_secret.clone())
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -390,7 +390,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		best_block: BestBlock::from_genesis(network),
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params));
-	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret());
+	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret(Recipient::Node).unwrap());
 	let network_graph = Arc::new(NetworkGraph::new(genesis_block(network).block_hash()));
 	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 	let scorer = FixedPenaltyScorer::with_penalty(0);

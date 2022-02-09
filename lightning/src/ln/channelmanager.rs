@@ -48,7 +48,7 @@ use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
-use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner};
+use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
@@ -1679,8 +1679,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 
-			our_network_key: keys_manager.get_node_secret(),
-			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret()),
+			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
+			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret(Recipient::Node).unwrap()),
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
@@ -6575,7 +6575,11 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		let our_network_pubkey = PublicKey::from_secret_key(&secp_ctx, &args.keys_manager.get_node_secret());
+		let our_network_key = match args.keys_manager.get_node_secret(Recipient::Node) {
+			Ok(key) => key,
+			Err(()) => return Err(DecodeError::InvalidValue)
+		};
+		let our_network_pubkey = PublicKey::from_secret_key(&secp_ctx, &our_network_key);
 		if let Some(network_pubkey) = received_network_pubkey {
 			if network_pubkey != our_network_pubkey {
 				log_error!(args.logger, "Key that was generated does not match the existing key.");
@@ -6604,7 +6608,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
-			our_network_key: args.keys_manager.get_node_secret(),
+			our_network_key,
 			our_network_pubkey,
 			secp_ctx,
 

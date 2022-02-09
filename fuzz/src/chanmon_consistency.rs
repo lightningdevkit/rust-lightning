@@ -161,8 +161,8 @@ struct KeyProvider {
 impl KeysInterface for KeyProvider {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey {
-		SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap()
+	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
+		Ok(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap())
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -188,7 +188,7 @@ impl KeysInterface for KeyProvider {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
 		let keys = InMemorySigner::new(
 			&secp_ctx,
-			self.get_node_secret(),
+			self.get_node_secret(Recipient::Node).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
@@ -212,7 +212,7 @@ impl KeysInterface for KeyProvider {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
 		let mut reader = std::io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret())?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner {

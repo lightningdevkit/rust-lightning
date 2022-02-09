@@ -6236,7 +6236,7 @@ mod tests {
 	impl KeysInterface for Keys {
 		type Signer = InMemorySigner;
 
-		fn get_node_secret(&self) -> SecretKey { panic!(); }
+		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
 		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
