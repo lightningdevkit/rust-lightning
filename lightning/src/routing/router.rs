@@ -1484,7 +1484,7 @@ where L::Target: Logger {
 	// Step (9).
 	// Select the best route by lowest total fee.
 	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
-	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
+	let mut selected_paths = Vec::<(Vec<Result<RouteHop, LightningError>>, u64)>::new();
 	for payment_path in drawn_routes.first().unwrap() {
 		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {
 			Ok(RouteHop {
@@ -1501,19 +1501,19 @@ where L::Target: Logger {
 		path.iter_mut().rev().fold(final_cltv_expiry_delta, |prev_cltv_expiry_delta, hop| {
 			core::mem::replace(&mut hop.as_mut().unwrap().cltv_expiry_delta, prev_cltv_expiry_delta)
 		});
-		selected_paths.push(path);
+		selected_paths.push((path, payment_path.hops.last().unwrap().0.path_penalty_msat));
 	}
 
 	if let Some(features) = &payment_params.features {
 		for path in selected_paths.iter_mut() {
-			if let Ok(route_hop) = path.last_mut().unwrap() {
+			if let Ok(route_hop) = path.0.last_mut().unwrap() {
 				route_hop.node_features = features.to_context();
 			}
 		}
 	}
 
 	let route = Route {
-		paths: selected_paths.into_iter().map(|path| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()?,
+		paths: selected_paths.into_iter().map(|(path, _)| path.into_iter().collect()).collect::<Result<Vec<_>, _>>()?,
 		payment_params: Some(payment_params.clone()),
 	};
 	log_info!(logger, "Got route to {}: {}", payment_params.payee_pubkey, log_route!(route));
