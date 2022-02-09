@@ -72,7 +72,7 @@ pub(crate) struct DebugRoute<'a>(pub &'a Route);
 impl<'a> core::fmt::Display for DebugRoute<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		for (idx, p) in self.0.paths.iter().enumerate() {
-			writeln!(f, "path {}:", idx)?;
+			writeln!(f, "path {} (penalty: {}):", idx, self.0.path_penalties[idx])?;
 			for h in p.iter() {
 				writeln!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
 			}
