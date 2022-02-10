@@ -2293,6 +2293,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				action: msgs::ErrorAction::IgnoreError
 			});
 		}
+		if chan.get_short_channel_id().is_none() {
+			return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError});
+		}
 		log_trace!(self.logger, "Attempting to generate broadcast channel update for channel {}", log_bytes!(chan.channel_id()));
 		self.get_channel_update_for_unicast(chan)
 	}
@@ -2304,7 +2307,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// May be called with channel_state already locked!
 	fn get_channel_update_for_unicast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
-		let short_channel_id = match chan.get_short_channel_id() {
+		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
 			Some(id) => id,
 		};
@@ -4262,7 +4265,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
-		let ((funding_msg, monitor), mut chan) = {
+		let ((funding_msg, monitor, mut funding_locked), mut chan) = {
 			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
@@ -4297,7 +4300,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 					// accepted payment from yet. We do, however, need to wait to send our funding_locked
 					// until we have persisted our monitor.
-					chan.monitor_update_failed(false, false, false, Vec::new(), Vec::new(), Vec::new());
+					chan.monitor_update_failed(false, false, funding_locked.is_some(), Vec::new(), Vec::new(), Vec::new());
+					funding_locked = None; // Don't send the funding_locked now
 				},
 			}
 		}
@@ -4312,6 +4316,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					node_id: counterparty_node_id.clone(),
 					msg: funding_msg,
 				});
+				if let Some(msg) = funding_locked {
+					send_funding_locked!(channel_state.short_to_id, channel_state.pending_msg_events, chan, msg);
+				}
 				e.insert(chan);
 			}
 		}

@@ -570,6 +570,9 @@ fn test_simple_0conf_channel() {
 	// If our peer tells us they will accept our channel with 0 confs, and we funded the channel,
 	// we should trust the funding won't be double-spent (assuming `trust_own_funding_0conf` is
 	// set)!
+	// Further, if we `accept_inbound_channel_from_trusted_peer_0conf`, funding locked messages
+	// should fly immediately and the channel should be available for use as soon as they are
+	// received.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -602,11 +605,38 @@ fn test_simple_0conf_channel() {
 
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	check_added_monitors!(nodes[1], 1);
-	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), 2);
+	let as_funding_locked;
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { node_id, msg } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &msg);
+			check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
-	check_added_monitors!(nodes[0], 1);
+			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
 
-	let as_funding_locked = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
+			as_funding_locked = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+	match &bs_signed_locked[1] {
+		MessageSendEvent::SendFundingLocked { node_id, msg } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &msg);
+		}
+		_ => panic!("Unexpected event"),
+	}
+
 	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+
+	let as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+	let bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_channel_update);
+	nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_channel_update);
+
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
 }

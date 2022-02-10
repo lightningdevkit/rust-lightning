@@ -2093,7 +2093,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>, Option<msgs::FundingLocked>), ChannelError> where L::Target: Logger {
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -2168,7 +2168,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
 			signature
-		}, channel_monitor))
+		}, channel_monitor, self.check_get_funding_locked(0)))
 	}
 
 	/// Handles a funding_signed message from the remote end.
@@ -6692,7 +6692,7 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&logger).unwrap();
+		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed
 		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&logger);
