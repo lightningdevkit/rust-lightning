@@ -876,8 +876,8 @@ where L::Target: Logger {
 							// semi-dummy record just to compute the fees to reach the source node.
 							// This will affect our decision on selecting short_channel_id
 							// as a way to reach the $dest_node_id.
-							let mut fee_base_msat = u32::max_value();
-							let mut fee_proportional_millionths = u32::max_value();
+							let mut fee_base_msat = 0;
+							let mut fee_proportional_millionths = 0;
 							if let Some(Some(fees)) = network_nodes.get(&$src_node_id).map(|node| node.lowest_inbound_channel_fees) {
 								fee_base_msat = fees.base_msat;
 								fee_proportional_millionths = fees.proportional_millionths;
