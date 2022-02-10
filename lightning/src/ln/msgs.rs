@@ -985,7 +985,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::InvalidValue => f.write_str("Nonsense bytes didn't map to the type they were interpreted as"),
 			DecodeError::ShortRead => f.write_str("Packet extended beyond the provided bytes"),
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
-			DecodeError::Io(ref e) => e.fmt(f),
+			DecodeError::Io(ref e) => fmt::Debug::fmt(e, f),
 			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
 		}
 	}
