@@ -1268,11 +1268,9 @@ where L::Target: Logger {
 								ordered_hops.last_mut().unwrap().1 = NodeFeatures::empty();
 							}
 						} else {
-							// We should be able to fill in features for everything except the last
-							// hop, if the last hop was provided via a BOLT 11 invoice (though we
-							// should be able to extend it further as BOLT 11 does have feature
-							// flags for the last hop node itself).
-							assert!(ordered_hops.last().unwrap().0.node_id == payee_node_id);
+							// We can fill in features for everything except hops which were
+							// provided via the invoice we're paying. We could guess based on the
+							// recipient's features but for now we simply avoid guessing at all.
 						}
 					}
 
@@ -1654,7 +1652,7 @@ mod tests {
 
 	fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
 		let privkeys: Vec<SecretKey> = (2..10).map(|i| {
-			SecretKey::from_slice(&hex::decode(format!("{:02}", i).repeat(32)).unwrap()[..]).unwrap()
+			SecretKey::from_slice(&hex::decode(format!("{:02x}", i).repeat(32)).unwrap()[..]).unwrap()
 		}).collect();
 
 		let pubkeys = privkeys.iter().map(|secret| PublicKey::from_secret_key(&secp_ctx, secret)).collect();
@@ -2680,14 +2678,16 @@ mod tests {
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
-	fn multi_hint_last_hops(nodes: &Vec<PublicKey>) -> Vec<RouteHint> {
+	/// Builds a trivial last-hop hint that passes through the two nodes given, with channel 0xff00
+	/// and 0xff01.
+	fn multi_hop_last_hops_hint(hint_hops: [PublicKey; 2]) -> Vec<RouteHint> {
 		let zero_fees = RoutingFees {
 			base_msat: 0,
 			proportional_millionths: 0,
 		};
 		vec![RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[2],
-			short_channel_id: 5,
+			src_node_id: hint_hops[0],
+			short_channel_id: 0xff00,
 			fees: RoutingFees {
 				base_msat: 100,
 				proportional_millionths: 0,
@@ -2696,17 +2696,10 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}, RouteHintHop {
-			src_node_id: nodes[3],
-			short_channel_id: 8,
+			src_node_id: hint_hops[1],
+			short_channel_id: 0xff01,
 			fees: zero_fees,
 			cltv_expiry_delta: (8 << 4) | 1,
-			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,
-		}]), RouteHint(vec![RouteHintHop {
-			src_node_id: nodes[5],
-			short_channel_id: 10,
-			fees: zero_fees,
-			cltv_expiry_delta: (10 << 4) | 1,
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		}])]
@@ -2716,9 +2709,10 @@ mod tests {
 	fn multi_hint_last_hops_test() {
 		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(multi_hint_last_hops(&nodes));
+		let last_hops = multi_hop_last_hops_hint([nodes[2], nodes[3]]);
+		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops.clone());
 		let scorer = test_utils::TestScorer::with_penalty(0);
-		// Test through channels 2, 3, 5, 8.
+		// Test through channels 2, 3, 0xff00, 0xff01.
 		// Test shows that multiple hop hints are considered.
 
 		// Disabling channels 6 & 7 by flags=2
@@ -2765,14 +2759,86 @@ mod tests {
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
 
 		assert_eq!(route.paths[0][2].pubkey, nodes[3]);
-		assert_eq!(route.paths[0][2].short_channel_id, 5);
+		assert_eq!(route.paths[0][2].short_channel_id, last_hops[0].0[0].short_channel_id);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
 		assert_eq!(route.paths[0][2].node_features.le_flags(), &id_to_feature_flags(4));
-		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new());
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
-		assert_eq!(route.paths[0][3].short_channel_id, 8);
+		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
+		assert_eq!(route.paths[0][3].fee_msat, 100);
+		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
+		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+	}
+
+	#[test]
+	fn private_multi_hint_last_hops_test() {
+		let (secp_ctx, network_graph, net_graph_msg_handler, _, logger) = build_graph();
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		let non_announced_privkey = SecretKey::from_slice(&hex::decode(format!("{:02x}", 0xf0).repeat(32)).unwrap()[..]).unwrap();
+		let non_announced_pubkey = PublicKey::from_secret_key(&secp_ctx, &non_announced_privkey);
+
+		let last_hops = multi_hop_last_hops_hint([nodes[2], non_announced_pubkey]);
+		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops.clone());
+		let scorer = test_utils::TestScorer::with_penalty(0);
+		// Test through channels 2, 3, 0xff00, 0xff01.
+		// Test shows that multiple hop hints are considered.
+
+		// Disabling channels 6 & 7 by flags=2
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 6,
+			timestamp: 2,
+			flags: 2, // to disable
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&net_graph_msg_handler, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 7,
+			timestamp: 2,
+			flags: 2, // to disable
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Absent,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let route = get_route(&our_id, &payment_params, &network_graph, None, 100, 42, Arc::clone(&logger), &scorer).unwrap();
+		assert_eq!(route.paths[0].len(), 4);
+
+		assert_eq!(route.paths[0][0].pubkey, nodes[1]);
+		assert_eq!(route.paths[0][0].short_channel_id, 2);
+		assert_eq!(route.paths[0][0].fee_msat, 200);
+		assert_eq!(route.paths[0][0].cltv_expiry_delta, 65);
+		assert_eq!(route.paths[0][0].node_features.le_flags(), &id_to_feature_flags(2));
+		assert_eq!(route.paths[0][0].channel_features.le_flags(), &id_to_feature_flags(2));
+
+		assert_eq!(route.paths[0][1].pubkey, nodes[2]);
+		assert_eq!(route.paths[0][1].short_channel_id, 4);
+		assert_eq!(route.paths[0][1].fee_msat, 100);
+		assert_eq!(route.paths[0][1].cltv_expiry_delta, 81);
+		assert_eq!(route.paths[0][1].node_features.le_flags(), &id_to_feature_flags(3));
+		assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		assert_eq!(route.paths[0][2].pubkey, non_announced_pubkey);
+		assert_eq!(route.paths[0][2].short_channel_id, last_hops[0].0[0].short_channel_id);
+		assert_eq!(route.paths[0][2].fee_msat, 0);
+		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
+		assert_eq!(route.paths[0][2].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+
+		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
+		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
 		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
