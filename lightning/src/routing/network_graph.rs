@@ -2687,7 +2687,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "unstable"))]
+#[cfg(all(test, feature = "_bench_unstable"))]
 mod benches {
 	use super::*;
 

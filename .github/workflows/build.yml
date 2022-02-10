@@ -231,7 +231,7 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          cargo bench --features unstable
+          cargo bench --features _bench_unstable
 
   check_commits:
     runs-on: ubuntu-latest

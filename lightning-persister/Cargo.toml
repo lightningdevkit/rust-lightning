@@ -9,7 +9,7 @@ Utilities to manage Rust-Lightning channel data persistence and retrieval.
 """
 
 [features]
-unstable = ["lightning/unstable"]
+_bench_unstable = ["lightning/_bench_unstable"]
 
 [dependencies]
 bitcoin = "0.27"

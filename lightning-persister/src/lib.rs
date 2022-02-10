@@ -3,8 +3,8 @@
 #![deny(broken_intra_doc_links)]
 #![deny(missing_docs)]
 
-#![cfg_attr(all(test, feature = "unstable"), feature(test))]
-#[cfg(all(test, feature = "unstable"))] extern crate test;
+#![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
+#[cfg(all(test, feature = "_bench_unstable"))] extern crate test;
 
 mod util;
 
@@ -362,7 +362,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "unstable"))]
+#[cfg(all(test, feature = "_bench_unstable"))]
 pub mod bench {
 	use test::Bencher;
 
