@@ -140,10 +140,10 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 /// Implements the per-commitment secret storage scheme from
 /// [BOLT 3](https://github.com/lightningnetwork/lightning-rfc/blob/dcbf8583976df087c79c3ce0b535311212e6812d/03-transactions.md#efficient-per-commitment-secret-storage).
 ///
-/// Allows us to keep track of all of the revocation secrets of counterarties in just 50*32 bytes
+/// Allows us to keep track of all of the revocation secrets of our counterparty in just 50*32 bytes
 /// or so.
 #[derive(Clone)]
-pub(crate) struct CounterpartyCommitmentSecrets {
+pub struct CounterpartyCommitmentSecrets {
 	old_secrets: [([u8; 32], u64); 49],
 }
 
@@ -159,7 +159,8 @@ impl PartialEq for CounterpartyCommitmentSecrets {
 }
 
 impl CounterpartyCommitmentSecrets {
-	pub(crate) fn new() -> Self {
+	/// Creates a new empty `CounterpartyCommitmentSecrets` structure.
+	pub fn new() -> Self {
 		Self { old_secrets: [([0; 32], 1 << 48); 49], }
 	}
 
@@ -173,7 +174,9 @@ impl CounterpartyCommitmentSecrets {
 		48
 	}
 
-	pub(crate) fn get_min_seen_secret(&self) -> u64 {
+	/// Returns the minimum index of all stored secrets. Note that indexes start
+	/// at 1 << 48 and get decremented by one for each new secret.
+	pub fn get_min_seen_secret(&self) -> u64 {
 		//TODO This can be optimized?
 		let mut min = 1 << 48;
 		for &(_, idx) in self.old_secrets.iter() {
@@ -197,7 +200,9 @@ impl CounterpartyCommitmentSecrets {
 		res
 	}
 
-	pub(crate) fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), ()> {
+	/// Inserts the `secret` at `idx`. Returns `Ok(())` if the secret
+	/// was generated in accordance with BOLT 3 and is consistent with previous secrets.
+	pub fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), ()> {
 		let pos = Self::place_secret(idx);
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
@@ -212,8 +217,9 @@ impl CounterpartyCommitmentSecrets {
 		Ok(())
 	}
 
-	/// Can only fail if idx is < get_min_seen_secret
-	pub(crate) fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
+	/// Returns the secret at `idx`.
+	/// Returns `None` if `idx` is < [`CounterpartyCommitmentSecrets::get_min_seen_secret`].
+	pub fn get_secret(&self, idx: u64) -> Option<[u8; 32]> {
 		for i in 0..self.old_secrets.len() {
 			if (idx & (!((1 << i) - 1))) == self.old_secrets[i].1 {
 				return Some(Self::derive_secret(self.old_secrets[i].0, i as u8, idx))
