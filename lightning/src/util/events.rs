@@ -235,7 +235,7 @@ pub enum Event {
 	/// Note that this does *not* indicate that all paths for an MPP payment have failed, see
 	/// [`Event::PaymentFailed`] and [`all_paths_failed`].
 	///
-	/// [`all_paths_failed`]: Self::all_paths_failed
+	/// [`all_paths_failed`]: Self::PaymentPathFailed::all_paths_failed
 	PaymentPathFailed {
 		/// The id returned by [`ChannelManager::send_payment`] and used with
 		/// [`ChannelManager::retry_payment`] and [`ChannelManager::abandon_payment`].
