@@ -9,6 +9,10 @@ Utilities to perform required background tasks for Rust Lightning.
 """
 edition = "2018"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 bitcoin = "0.27"
 lightning = { version = "0.0.104", path = "../lightning", features = ["std"] }

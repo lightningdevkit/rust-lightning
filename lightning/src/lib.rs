@@ -28,6 +28,8 @@
 #![allow(bare_trait_objects)]
 #![allow(ellipsis_inclusive_range_patterns)]
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #![cfg_attr(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"), feature(test))]

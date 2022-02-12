@@ -69,6 +69,8 @@
 #![deny(broken_intra_doc_links)]
 #![deny(missing_docs)]
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 use bitcoin::secp256k1::key::PublicKey;
 
 use tokio::net::TcpStream;
