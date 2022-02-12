@@ -246,7 +246,6 @@ type ConfiguredTime = time::Eternity;
 /// [`Score`] implementation.
 ///
 /// (C-not exported) generally all users should use the [`Scorer`] type alias.
-#[doc(hidden)]
 pub struct ScorerUsingTime<T: Time> {
 	params: ScoringParameters,
 	// TODO: Remove entries of closed channels.
@@ -493,7 +492,6 @@ pub type ProbabilisticScorer<G> = ProbabilisticScorerUsingTime::<G, ConfiguredTi
 /// Probabilistic [`Score`] implementation.
 ///
 /// (C-not exported) generally all users should use the [`ProbabilisticScorer`] type alias.
-#[doc(hidden)]
 pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph>, T: Time> {
 	params: ProbabilisticScoringParameters,
 	network_graph: G,
