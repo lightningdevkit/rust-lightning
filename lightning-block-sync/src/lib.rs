@@ -61,11 +61,11 @@ pub trait BlockSource : Sync + Send {
 	///
 	/// Implementations that cannot find headers based on the hash should return a `Transient` error
 	/// when `height_hint` is `None`.
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
+	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData>;
 
 	/// Returns the block for a given hash. A headers-only block source should return a `Transient`
 	/// error.
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block>;
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block>;
 
 	/// Returns the hash of the best block and, optionally, its height.
 	///
@@ -73,7 +73,7 @@ pub trait BlockSource : Sync + Send {
 	/// to allow for a more efficient lookup.
 	///
 	/// [`get_header`]: Self::get_header
-	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
+	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<(BlockHash, Option<u32>)>;
 }
 
 /// Result type for `BlockSource` requests.

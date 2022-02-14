@@ -16,7 +16,7 @@ use lightning::chain;
 /// start when there are no chain listeners to sync yet.
 ///
 /// [`SpvClient`]: crate::SpvClient
-pub async fn validate_best_block_header<B: BlockSource>(block_source: &mut B) ->
+pub async fn validate_best_block_header<B: BlockSource>(block_source: &B) ->
 BlockSourceResult<ValidatedBlockHeader> {
 	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
 	block_source
@@ -67,7 +67,7 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// 	C: chain::Filter,
 /// 	P: chainmonitor::Persist<S>,
 /// >(
-/// 	block_source: &mut B,
+/// 	block_source: &B,
 /// 	chain_monitor: &ChainMonitor<S, &C, &T, &F, &L, &P>,
 /// 	config: UserConfig,
 /// 	keys_manager: &K,
@@ -122,7 +122,7 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 pub async fn synchronize_listeners<'a, B: BlockSource, C: Cache, L: chain::Listen + ?Sized>(
-	block_source: &mut B,
+	block_source: &B,
 	network: Network,
 	header_cache: &mut C,
 	mut chain_listeners: Vec<(BlockHash, &'a L)>,

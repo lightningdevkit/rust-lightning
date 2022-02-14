@@ -113,7 +113,7 @@ impl Blockchain {
 }
 
 impl BlockSource for Blockchain {
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			if self.without_headers {
 				return Err(BlockSourceError::persistent("header not found"));
@@ -133,7 +133,7 @@ impl BlockSource for Blockchain {
 		})
 	}
 
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
 		Box::pin(async move {
 			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
@@ -150,7 +150,7 @@ impl BlockSource for Blockchain {
 		})
 	}
 
-	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
+	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 		Box::pin(async move {
 			match self.blocks.last() {
 				None => Err(BlockSourceError::transient("empty chain")),
