@@ -30,8 +30,8 @@ sufficient for a developer or project to experiment with it. Recent increased
 contribution rate to the project is expected to lead to a high quality, stable,
 production-worthy implementation in 2021.
 
-Communications for Rust-Lightning and Lightning Development Kit happens through
-[LDK slack](http://lightningdevkit.org/).
+Communications for Rust-Lightning and Lightning Development Kit happens through our LDK
+[slack](https://join.slack.com/t/lightningdevkit/shared_invite/zt-tte36cb7-r5f41MDn3ObFtDu~N9dCrQ) & [discord](https://discord.gg/5AcknnMfBw) channels.
 
 Crates
 -----------
