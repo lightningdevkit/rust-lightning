@@ -7173,7 +7173,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(any(test, feature = "_test_utils"), feature = "unstable"))]
+#[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))]
 pub mod bench {
 	use chain::Listen;
 	use chain::chainmonitor::{ChainMonitor, Persist};
