@@ -4081,6 +4081,34 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Called to accept a request to open a channel after [`Event::OpenChannelRequest`] has been
+	/// triggered.
+	///
+	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted.
+	///
+	/// [`Event::OpenChannelRequest`]: crate::util::events::Event::OpenChannelRequest
+	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32]) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		match channel_state.by_id.entry(temporary_channel_id.clone()) {
+			hash_map::Entry::Occupied(mut channel) => {
+				if !channel.get().inbound_is_awaiting_accept() {
+					return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
+				}
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: channel.get().get_counterparty_node_id(),
+					msg: channel.get_mut().accept_inbound_channel(),
+				});
+			}
+			hash_map::Entry::Vacant(_) => {
+				return Err(APIError::ChannelUnavailable { err: "Can't accept a channel that doesn't exist".to_owned() });
+			}
+		}
+		Ok(())
+	}
+
 	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
 		if msg.chain_hash != self.genesis_hash {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.temporary_channel_id.clone()));
@@ -4090,7 +4118,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
-		let channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(),
+		let mut channel = Channel::new_from_req(&self.fee_estimator, &self.keys_manager, counterparty_node_id.clone(),
 				&their_features, msg, 0, &self.default_configuration, self.best_block.read().unwrap().height(), &self.logger)
 			.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.temporary_channel_id))?;
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -4098,10 +4126,23 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		match channel_state.by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!".to_owned(), msg.temporary_channel_id.clone())),
 			hash_map::Entry::Vacant(entry) => {
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: counterparty_node_id.clone(),
-					msg: channel.get_accept_channel(),
-				});
+				if !self.default_configuration.manually_accept_inbound_channels {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+						node_id: counterparty_node_id.clone(),
+						msg: channel.accept_inbound_channel(),
+					});
+				} else {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push(
+						events::Event::OpenChannelRequest {
+							temporary_channel_id: msg.temporary_channel_id.clone(),
+							counterparty_node_id: counterparty_node_id.clone(),
+							funding_satoshis: msg.funding_satoshis,
+							push_msat: msg.push_msat,
+						}
+					);
+				}
+
 				entry.insert(channel);
 			}
 		}
