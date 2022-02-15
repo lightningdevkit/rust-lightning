@@ -1387,6 +1387,12 @@ pub enum CreationError {
 
 	/// The supplied millisatoshi amount was greater than the total bitcoin supply.
 	InvalidAmount,
+
+	/// Route hints were required for this invoice and were missing. Applies to
+	/// [phantom invoices].
+	///
+	/// [phantom invoices]: crate::utils::create_phantom_invoice
+	MissingRouteHints,
 }
 
 impl Display for CreationError {
@@ -1396,6 +1402,7 @@ impl Display for CreationError {
 			CreationError::RouteTooLong => f.write_str("The specified route has too many hops and can't be encoded"),
 			CreationError::TimestampOutOfBounds => f.write_str("The Unix timestamp of the supplied date is less than zero or greater than 35-bits"),
 			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
+			CreationError::MissingRouteHints => f.write_str("The invoice required route hints and they weren't provided"),
 		}
 	}
 }

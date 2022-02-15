@@ -47,7 +47,7 @@ use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
 use bitcoin::bech32::u5;
-use chain::keysinterface::{InMemorySigner, KeyMaterial};
+use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -70,7 +70,7 @@ pub struct OnlyReadsKeysInterface {}
 impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey { unreachable!(); }
+	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
@@ -88,7 +88,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 			false
 		))
 	}
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> { unreachable!(); }
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -470,7 +470,7 @@ impl Logger for TestLogger {
 }
 
 pub struct TestKeysInterface {
-	pub backing: keysinterface::KeysManager,
+	pub backing: keysinterface::PhantomKeysManager,
 	pub override_session_priv: Mutex<Option<[u8; 32]>>,
 	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
@@ -481,8 +481,12 @@ pub struct TestKeysInterface {
 impl keysinterface::KeysInterface for TestKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self) -> SecretKey { self.backing.get_node_secret() }
-	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial { self.backing.get_inbound_payment_key_material() }
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		self.backing.get_node_secret(recipient)
+	}
+	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
+		self.backing.get_inbound_payment_key_material()
+	}
 	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
@@ -519,7 +523,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret())?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(
@@ -529,8 +533,8 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		))
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
-		self.backing.sign_invoice(hrp_bytes, invoice_data)
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
 }
 
@@ -538,7 +542,7 @@ impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
-			backing: keysinterface::KeysManager::new(seed, now.as_secs(), now.subsec_nanos()),
+			backing: keysinterface::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_session_priv: Mutex::new(None),
 			override_channel_id_priv: Mutex::new(None),
 			disable_revocation_policy_check: false,

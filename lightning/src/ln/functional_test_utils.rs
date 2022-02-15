@@ -1102,7 +1102,7 @@ macro_rules! expect_pending_htlcs_forwardable_ignore {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
+			$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
 			_ => panic!("Unexpected event"),
 		};
 	}}
@@ -1137,18 +1137,22 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 	}}
 }
 
-#[cfg(any(test, feature = "_bench_unstable"))]
+#[macro_export]
+#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
+		expect_payment_received!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None)
+	};
+	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr, $expected_payment_preimage: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
+			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amt);
 				match purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
-						assert!(payment_preimage.is_none());
+					$crate::util::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+						assert_eq!(&$expected_payment_preimage, payment_preimage);
 						assert_eq!($expected_payment_secret, *payment_secret);
 					},
 					_ => {},
@@ -1560,7 +1564,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let route = get_route(
-		&origin_node.node.get_our_node_id(), &payment_params, origin_node.network_graph, 
+		&origin_node.node.get_our_node_id(), &payment_params, origin_node.network_graph,
 		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());

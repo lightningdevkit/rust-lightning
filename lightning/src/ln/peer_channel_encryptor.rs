@@ -12,7 +12,7 @@ use prelude::*;
 use ln::msgs::LightningError;
 use ln::msgs;
 
-use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1::Secp256k1;
@@ -21,6 +21,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use util::crypto::hkdf_extract_expand_twice;
 use bitcoin::hashes::hex::ToHex;
 
 /// Maximum Lightning message data length according to
@@ -160,22 +161,9 @@ impl PeerChannelEncryptor {
 		Ok(())
 	}
 
-	fn hkdf_extract_expand(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32]) {
-		let mut hmac = HmacEngine::<Sha256>::new(salt);
-		hmac.input(ikm);
-		let prk = Hmac::from_engine(hmac).into_inner();
-		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
-		hmac.input(&[1; 1]);
-		let t1 = Hmac::from_engine(hmac).into_inner();
-		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
-		hmac.input(&t1);
-		hmac.input(&[2; 1]);
-		(t1, Hmac::from_engine(hmac).into_inner())
-	}
-
 	#[inline]
 	fn hkdf(state: &mut BidirectionalNoiseState, ss: SharedSecret) -> [u8; 32] {
-		let (t1, t2) = Self::hkdf_extract_expand(&state.ck, &ss[..]);
+		let (t1, t2) = hkdf_extract_expand_twice(&state.ck, &ss[..]);
 		state.ck = t1;
 		t2
 	}
@@ -311,7 +299,7 @@ impl PeerChannelEncryptor {
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
 
 						PeerChannelEncryptor::encrypt_with_ad(&mut res[50..], 0, &temp_k, &bidirectional_state.h, &[0; 0]);
-						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
+						final_hkdf = hkdf_extract_expand_twice(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 						res
 					},
@@ -365,7 +353,7 @@ impl PeerChannelEncryptor {
 						let temp_k = PeerChannelEncryptor::hkdf(bidirectional_state, ss);
 
 						PeerChannelEncryptor::decrypt_with_ad(&mut [0; 0], 0, &temp_k, &bidirectional_state.h, &act_three[50..])?;
-						final_hkdf = Self::hkdf_extract_expand(&bidirectional_state.ck, &[0; 0]);
+						final_hkdf = hkdf_extract_expand_twice(&bidirectional_state.ck, &[0; 0]);
 						ck = bidirectional_state.ck.clone();
 					},
 					_ => panic!("Wrong direction for act"),
@@ -399,7 +387,7 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { ref mut sk, ref mut sn, ref mut sck, rk: _, rn: _, rck: _ } => {
 				if *sn >= 1000 {
-					let (new_sck, new_sk) = Self::hkdf_extract_expand(sck, sk);
+					let (new_sck, new_sk) = hkdf_extract_expand_twice(sck, sk);
 					*sck = new_sck;
 					*sk = new_sk;
 					*sn = 0;
@@ -425,7 +413,7 @@ impl PeerChannelEncryptor {
 		match self.noise_state {
 			NoiseState::Finished { sk: _, sn: _, sck: _, ref mut rk, ref mut rn, ref mut rck } => {
 				if *rn >= 1000 {
-					let (new_rck, new_rk) = Self::hkdf_extract_expand(rck, rk);
+					let (new_rck, new_rk) = hkdf_extract_expand_twice(rck, rk);
 					*rck = new_rck;
 					*rk = new_rk;
 					*rn = 0;

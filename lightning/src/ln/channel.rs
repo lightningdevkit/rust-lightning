@@ -6188,7 +6188,7 @@ mod tests {
 	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use chain::BestBlock;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-	use chain::keysinterface::{InMemorySigner, KeyMaterial, KeysInterface, BaseSign};
+	use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface, BaseSign};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
 	use util::enforcing_trait_impls::EnforcingSigner;
@@ -6236,7 +6236,7 @@ mod tests {
 	impl KeysInterface for Keys {
 		type Signer = InMemorySigner;
 
-		fn get_node_secret(&self) -> SecretKey { panic!(); }
+		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
 		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
@@ -6256,7 +6256,7 @@ mod tests {
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
-		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5]) -> Result<RecoverableSignature, ()> { panic!(); }
+		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {

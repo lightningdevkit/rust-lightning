@@ -31,6 +31,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
+use util::crypto::hkdf_extract_expand_twice;
 use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use chain::transaction::OutPoint;
@@ -379,15 +380,28 @@ pub trait BaseSign {
 pub trait Sign: BaseSign + Writeable + Clone {
 }
 
+/// Specifies the recipient of an invoice, to indicate to [`KeysInterface::sign_invoice`] what node
+/// secret key should be used to sign the invoice.
+pub enum Recipient {
+	/// The invoice should be signed with the local node secret key.
+	Node,
+	/// The invoice should be signed with the phantom node secret key. This secret key must be the
+	/// same for all nodes participating in the [phantom node payment].
+	///
+	/// [phantom node payment]: PhantomKeysManager
+	PhantomNode,
+}
+
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface {
 	/// A type which implements Sign which will be returned by get_channel_signer.
 	type Signer : Sign;
 
-	/// Get node secret key (aka node_id or network_key).
+	/// Get node secret key (aka node_id or network_key) based on the provided [`Recipient`].
 	///
-	/// This method must return the same value each time it is called.
-	fn get_node_secret(&self) -> SecretKey;
+	/// This method must return the same value each time it is called with a given `Recipient`
+	/// parameter.
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
@@ -423,11 +437,22 @@ pub trait KeysInterface {
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
 	/// The hrp is ascii bytes, while the invoice data is base32.
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()>;
+	///
+	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
+	/// If the implementor of this trait supports [phantom node payments], then every node that is
+	/// intended to be included in the phantom invoice route hints must return the same value from
+	/// this method.
+	//  This is because LDK avoids storing inbound payment data by encrypting payment data in the
+	//  payment hash and/or payment secret, therefore for a payment to be receivable by multiple
+	//  nodes, they must share the key that encrypts this payment data.
+	///
 	/// This method must return the same value each time it is called.
+	///
+	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 }
 
@@ -810,6 +835,12 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 /// ChannelMonitor closes may use seed/1'
 /// Cooperative closes may use seed/2'
 /// The two close keys may be needed to claim on-chain funds!
+///
+/// This struct cannot be used for nodes that wish to support receiving phantom payments;
+/// [`PhantomKeysManager`] must be used instead.
+///
+/// Note that switching between this struct and [`PhantomKeysManager`] will invalidate any
+/// previously issued invoices and attempts to pay previous invoices will fail.
 pub struct KeysManager {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
@@ -964,7 +995,7 @@ impl KeysManager {
 	/// transaction will have a feerate, at least, of the given value.
 	///
 	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
-	/// if a descriptor was duplicated, or if an output descriptor script_pubkey 
+	/// if a descriptor was duplicated, or if an output descriptor `script_pubkey`
 	/// does not match the one we can spend.
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
@@ -1092,8 +1123,11 @@ impl KeysManager {
 impl KeysInterface for KeysManager {
 	type Signer = InMemorySigner;
 
-	fn get_node_secret(&self) -> SecretKey {
-		self.node_secret.clone()
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -1130,12 +1164,116 @@ impl KeysInterface for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader), self.get_node_secret())
+		InMemorySigner::read(&mut io::Cursor::new(reader), self.node_secret.clone())
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5]) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &self.get_node_secret()))
+		let secret = match recipient {
+			Recipient::Node => self.get_node_secret(Recipient::Node)?,
+			Recipient::PhantomNode => return Err(()),
+		};
+		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	}
+}
+
+/// Similar to [`KeysManager`], but allows the node using this struct to receive phantom node
+/// payments.
+///
+/// A phantom node payment is a payment made to a phantom invoice, which is an invoice that can be
+/// paid to one of multiple nodes. This works because we encode the invoice route hints such that
+/// LDK will recognize an incoming payment as destined for a phantom node, and collect the payment
+/// itself without ever needing to forward to this fake node.
+///
+/// Phantom node payments are useful for load balancing between multiple LDK nodes. They also
+/// provide some fault tolerance, because payers will automatically retry paying other provided
+/// nodes in the case that one node goes down.
+///
+/// Note that multi-path payments are not supported in phantom invoices for security reasons.
+//  In the hypothetical case that we did support MPP phantom payments, there would be no way for
+//  nodes to know when the full payment has been received (and the preimage can be released) without
+//  significantly compromising on our safety guarantees. I.e., if we expose the ability for the user
+//  to tell LDK when the preimage can be released, we open ourselves to attacks where the preimage
+//  is released too early.
+//
+/// Switching between this struct and [`KeysManager`] will invalidate any previously issued
+/// invoices and attempts to pay previous invoices will fail.
+pub struct PhantomKeysManager {
+	inner: KeysManager,
+	inbound_payment_key: KeyMaterial,
+	phantom_secret: SecretKey,
+}
+
+impl KeysInterface for PhantomKeysManager {
+	type Signer = InMemorySigner;
+
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		match recipient {
+			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
+			Recipient::PhantomNode => Ok(self.phantom_secret.clone()),
+		}
+	}
+
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		self.inbound_payment_key.clone()
+	}
+
+	fn get_destination_script(&self) -> Script {
+		self.inner.get_destination_script()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		self.inner.get_shutdown_scriptpubkey()
+	}
+
+	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
+		self.inner.get_channel_signer(inbound, channel_value_satoshis)
+	}
+
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		self.inner.get_secure_random_bytes()
+	}
+
+	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
+		self.inner.read_chan_signer(reader)
+	}
+
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		let secret = self.get_node_secret(recipient)?;
+		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	}
+}
+
+impl PhantomKeysManager {
+	/// Constructs a `PhantomKeysManager` given a 32-byte seed and an additional `cross_node_seed`
+	/// that is shared across all nodes that intend to participate in [phantom node payments] together.
+	///
+	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`, and
+	/// `starting_time_nanos`.
+	///
+	/// `cross_node_seed` must be the same across all phantom payment-receiving nodes and also the
+	/// same across restarts, or else inbound payments may fail.
+	///
+	/// [phantom node payments]: PhantomKeysManager
+	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32, cross_node_seed: &[u8; 32]) -> Self {
+		let inner = KeysManager::new(seed, starting_time_secs, starting_time_nanos);
+		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(b"LDK Inbound and Phantom Payment Key Expansion", cross_node_seed);
+		Self {
+			inner,
+			inbound_payment_key: KeyMaterial(inbound_key),
+			phantom_secret: SecretKey::from_slice(&phantom_key).unwrap(),
+		}
+	}
+
+	/// See [`KeysManager::spend_spendable_outputs`] for documentation on this method.
+	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
+		self.inner.spend_spendable_outputs(descriptors, outputs, change_destination_script, feerate_sat_per_1000_weight, secp_ctx)
+	}
+
+	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
+	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
+		self.inner.derive_channel_keys(channel_value_satoshis, params)
 	}
 }
 
