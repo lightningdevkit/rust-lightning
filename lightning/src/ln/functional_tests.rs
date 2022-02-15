@@ -7577,7 +7577,6 @@ fn test_priv_forwarding_rejection() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut no_announce_cfg = test_default_channel_config();
-	no_announce_cfg.channel_options.announced_channel = false;
 	no_announce_cfg.accept_forwards_to_priv_channels = false;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
 	let persister: test_utils::TestPersister;
@@ -7586,38 +7585,7 @@ fn test_priv_forwarding_rejection() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let chan_id_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).2;
-
-	// Note that the create_*_chan functions in utils requires announcement_signatures, which we do
-	// not send for private channels.
-	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
-	let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
-	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel);
-	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
-
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[1], 1_000_000, 42);
-	nodes[1].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
-	nodes[2].node.handle_funding_created(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[2].node.get_our_node_id()));
-	check_added_monitors!(nodes[2], 1);
-
-	let cs_funding_signed = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &cs_funding_signed);
-	check_added_monitors!(nodes[1], 1);
-
-	let conf_height = core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[2].best_block_info().1 + 1);
-	confirm_transaction_at(&nodes[1], &tx, conf_height);
-	connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
-	confirm_transaction_at(&nodes[2], &tx, conf_height);
-	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
-	let as_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[2].node.get_our_node_id());
-	nodes[1].node.handle_funding_locked(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
-	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
-	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
-	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
-
-	assert!(nodes[0].node.list_usable_channels()[0].is_public);
-	assert_eq!(nodes[1].node.list_usable_channels().len(), 2);
-	assert!(!nodes[2].node.list_usable_channels()[0].is_public);
+	let chan_id_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).0.channel_id;
 
 	// We should always be able to forward through nodes[1] as long as its out through a public
 	// channel:
@@ -7662,7 +7630,7 @@ fn test_priv_forwarding_rejection() {
 	let mut monitor_a_serialized = test_utils::TestVecWriter(Vec::new());
 	let mut monitor_b_serialized = test_utils::TestVecWriter(Vec::new());
 	get_monitor!(nodes[1], chan_id_1).write(&mut monitor_a_serialized).unwrap();
-	get_monitor!(nodes[1], cs_funding_signed.channel_id).write(&mut monitor_b_serialized).unwrap();
+	get_monitor!(nodes[1], chan_id_2).write(&mut monitor_b_serialized).unwrap();
 
 	persister = test_utils::TestPersister::new();
 	let keys_manager = &chanmon_cfgs[1].keys_manager;
