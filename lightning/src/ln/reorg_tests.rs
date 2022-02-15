@@ -201,7 +201,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
-	assert_eq!(channel_state.short_to_id.len(), 1);
+	assert_eq!(channel_state.short_to_id.len(), 2);
 	mem::drop(channel_state);
 
 	if !reorg_after_reload {

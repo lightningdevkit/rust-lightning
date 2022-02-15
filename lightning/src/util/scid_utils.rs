@@ -61,7 +61,7 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 }
 
 /// LDK has multiple reasons to generate fake short channel ids:
-/// 1) zero-conf channels that don't have a confirmed channel id yet
+/// 1) outbound SCID aliases we use for private channels
 /// 2) phantom node payments, to get an scid for the phantom node's phantom channel
 pub(crate) mod fake_scid {
 	use bitcoin::hash_types::BlockHash;
@@ -84,9 +84,9 @@ pub(crate) mod fake_scid {
 	/// receipt, and handle the HTLC accordingly. The namespace identifier is encrypted when encoded
 	/// into the fake scid.
 	#[derive(Copy, Clone)]
-	pub(super) enum Namespace {
+	pub(crate) enum Namespace {
 		Phantom,
-		// Coming soon: a variant for the zero-conf scid namespace
+		OutboundAlias,
 	}
 
 	impl Namespace {
@@ -94,7 +94,7 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(super) fn get_fake_scid<Signer: Sign, K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], keys_manager: &K) -> u64
+		pub(crate) fn get_fake_scid<Signer: Sign, K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], keys_manager: &K) -> u64
 			where K::Target: KeysInterface<Signer = Signer>,
 		{
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
@@ -136,13 +136,6 @@ pub(crate) mod fake_scid {
 			chacha.process_in_place(&mut vout_byte);
 			vout_byte[0] & NAMESPACE_ID_BITMASK
 		}
-	}
-
-	pub fn get_phantom_scid<Signer: Sign, K: Deref>(fake_scid_rand_bytes: &[u8; 32], highest_seen_blockheight: u32, genesis_hash: &BlockHash, keys_manager: &K) -> u64
-		where K::Target: KeysInterface<Signer = Signer>,
-	{
-		let namespace = Namespace::Phantom;
-		namespace.get_fake_scid(highest_seen_blockheight, genesis_hash, fake_scid_rand_bytes, keys_manager)
 	}
 
 	fn segwit_activation_height(genesis: &BlockHash) -> u32 {

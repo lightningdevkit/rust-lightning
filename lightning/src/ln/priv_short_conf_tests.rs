@@ -237,3 +237,37 @@ fn test_1_conf_open() {
 	do_test_1_conf_open(ConnectStyle::TransactionsFirst);
 	do_test_1_conf_open(ConnectStyle::FullBlockViaListen);
 }
+
+#[test]
+fn test_routed_scid_alias() {
+	// Trivially test sending a payment which is routed through an SCID alias.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut no_announce_cfg = test_default_channel_config();
+	no_announce_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(no_announce_cfg), None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).2;
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+
+	let last_hop = nodes[2].node.list_usable_channels();
+	let hop_hints = vec![RouteHint(vec![RouteHintHop {
+		src_node_id: nodes[1].node.get_our_node_id(),
+		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
+		fees: RoutingFees {
+			base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
+			proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
+		},
+		cltv_expiry_delta: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().cltv_expiry_delta,
+		htlc_maximum_msat: None,
+		htlc_minimum_msat: None,
+	}])];
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 100_000, 42);
+	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+}

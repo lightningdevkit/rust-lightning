@@ -5916,7 +5916,7 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	//Force duplicate channel ids
+	// Force duplicate randomness for every get-random call
 	for node in nodes.iter() {
 		*node.keys_manager.override_random_bytes.lock().unwrap() = Some([0; 32]);
 	}
@@ -5929,7 +5929,8 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &node0_to_1_send_open_channel);
 	get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 
-	//Create a second channel with a channel_id collision
+	// Create a second channel with the same random values. This used to panic due to a colliding
+	// channel_id, but now panics due to a colliding outbound SCID alias.
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None).is_err());
 }
 
@@ -7179,7 +7180,10 @@ fn test_user_configurable_csv_delay() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
-	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), 1000000, 1000000, 0, &low_our_to_self_config, 0) {
+	if let Err(error) = Channel::new_outbound(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
+		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), 1000000, 1000000, 0,
+		&low_our_to_self_config, 0, 42)
+	{
 		match error {
 			APIError::APIMisuseError { err } => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),
@@ -7190,7 +7194,10 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &low_our_to_self_config, 0, &nodes[0].logger) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
+		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0,
+		&low_our_to_self_config, 0, &nodes[0].logger, 42)
+	{
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
 			_ => panic!("Unexpected event"),
@@ -7219,7 +7226,10 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
-	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0, &high_their_to_self_config, 0, &nodes[0].logger) {
+	if let Err(error) = Channel::new_from_req(&&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
+		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &InitFeatures::known(), &open_channel, 0,
+		&high_their_to_self_config, 0, &nodes[0].logger, 42)
+	{
 		match error {
 			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
 			_ => panic!("Unexpected event"),

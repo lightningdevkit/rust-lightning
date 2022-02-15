@@ -702,6 +702,12 @@ pub(super) struct Channel<Signer: Sign> {
 	// We only bother storing the most recent SCID alias at any time, though our counterparty has
 	// to store all of them.
 	latest_inbound_scid_alias: Option<u64>,
+
+	// We always offer our counterparty a static SCID alias, which we recognize as for this channel
+	// if we see it in HTLC forwarding instructions. We don't bother rotating the alias given we
+	// don't currently support node id aliases and eventually privacy should be provided with
+	// blinded paths instead of simple scid+node_id aliases.
+	outbound_scid_alias: u64,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -807,7 +813,8 @@ impl<Signer: Sign> Channel<Signer> {
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig, current_chain_height: u32
+		channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig, current_chain_height: u32,
+		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      F::Target: FeeEstimator,
@@ -955,6 +962,7 @@ impl<Signer: Sign> Channel<Signer> {
 			workaround_lnd_bug_4006: None,
 
 			latest_inbound_scid_alias: None,
+			outbound_scid_alias,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -993,7 +1001,8 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req<K: Deref, F: Deref, L: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32, logger: &L
+		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32, logger: &L,
+		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
 		      F::Target: FeeEstimator,
@@ -1262,6 +1271,7 @@ impl<Signer: Sign> Channel<Signer> {
 			workaround_lnd_bug_4006: None,
 
 			latest_inbound_scid_alias: None,
+			outbound_scid_alias,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -3477,7 +3487,7 @@ impl<Signer: Sign> Channel<Signer> {
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
-				short_channel_id_alias: None,
+				short_channel_id_alias: Some(self.outbound_scid_alias),
 			})
 		} else { None };
 
@@ -3699,7 +3709,7 @@ impl<Signer: Sign> Channel<Signer> {
 				funding_locked: Some(msgs::FundingLocked {
 					channel_id: self.channel_id(),
 					next_per_commitment_point,
-					short_channel_id_alias: None,
+					short_channel_id_alias: Some(self.outbound_scid_alias),
 				}),
 				raa: None, commitment_update: None, mon_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
@@ -3735,7 +3745,7 @@ impl<Signer: Sign> Channel<Signer> {
 			Some(msgs::FundingLocked {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
-				short_channel_id_alias: None,
+				short_channel_id_alias: Some(self.outbound_scid_alias),
 			})
 		} else { None };
 
@@ -4223,6 +4233,17 @@ impl<Signer: Sign> Channel<Signer> {
 		self.latest_inbound_scid_alias
 	}
 
+	/// Allowed in any state (including after shutdown)
+	pub fn outbound_scid_alias(&self) -> u64 {
+		self.outbound_scid_alias
+	}
+	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,
+	/// indicating we were written by an old LDK which did not set outbound SCID aliases.
+	pub fn set_outbound_scid_alias(&mut self, outbound_scid_alias: u64) {
+		assert_eq!(self.outbound_scid_alias, 0);
+		self.outbound_scid_alias = outbound_scid_alias;
+	}
+
 	/// Returns the funding_txo we either got from our peer, or were given by
 	/// get_outbound_funding_created.
 	pub fn get_funding_txo(&self) -> Option<OutPoint> {
@@ -4475,7 +4496,7 @@ impl<Signer: Sign> Channel<Signer> {
 					return Some(msgs::FundingLocked {
 						channel_id: self.channel_id,
 						next_per_commitment_point,
-						short_channel_id_alias: None,
+						short_channel_id_alias: Some(self.outbound_scid_alias),
 					});
 				}
 			} else {
@@ -5795,6 +5816,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(15, preimages, vec_type),
 			(17, self.announcement_sigs_state, required),
 			(19, self.latest_inbound_scid_alias, option),
+			(21, self.outbound_scid_alias, required),
 		});
 
 		Ok(())
@@ -6051,6 +6073,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		// AnnouncementSignatures" which implies we'll re-send it on reconnect, but that's fine.
 		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
 		let mut latest_inbound_scid_alias = None;
+		let mut outbound_scid_alias = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6067,6 +6090,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(15, preimages_opt, vec_type),
 			(17, announcement_sigs_state, option),
 			(19, latest_inbound_scid_alias, option),
+			(21, outbound_scid_alias, option),
 		});
 
 		if let Some(preimages) = preimages_opt {
@@ -6202,6 +6226,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			workaround_lnd_bug_4006: None,
 
 			latest_inbound_scid_alias,
+			// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
+			outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills,
@@ -6325,7 +6351,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0) {
+		match Channel::<EnforcingSigner>::new_outbound(&&fee_estimator, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42) {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
@@ -6347,7 +6373,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -6373,13 +6399,13 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
@@ -6443,7 +6469,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, chan.opt_anchors());
 		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, chan.opt_anchors());
@@ -6492,12 +6518,12 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.accept_inbound_channel();
@@ -6554,7 +6580,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -6619,7 +6645,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_options.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config, 0).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
