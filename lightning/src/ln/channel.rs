@@ -2174,11 +2174,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Returns transaction if there is pending funding transaction that is yet to broadcast
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		 if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
-			 self.funding_transaction.clone()
-		 } else {
-			 None
-		 }
+		if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
+			self.funding_transaction.clone()
+		} else {
+			None
+		}
 	}
 
 	/// Returns a HTLCStats about inbound pending htlcs
