@@ -1667,6 +1667,7 @@ mod tests {
 				forwarding_info: None,
 			},
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+			channel_type: None,
 			short_channel_id,
 			inbound_scid_alias: None,
 			channel_value_satoshis: 0,
@@ -5363,6 +5364,7 @@ mod benches {
 			funding_txo: Some(OutPoint {
 				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0
 			}),
+			channel_type: None,
 			short_channel_id: Some(1),
 			inbound_scid_alias: None,
 			channel_value_satoshis: 10_000_000,

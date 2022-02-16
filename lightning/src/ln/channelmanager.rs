@@ -42,7 +42,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
-use ln::features::{InitFeatures, NodeFeatures};
+use ln::features::{ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
@@ -1200,6 +1200,10 @@ pub struct ChannelDetails {
 	/// Note that, if this has been set, `channel_id` will be equivalent to
 	/// `funding_txo.unwrap().to_channel_id()`.
 	pub funding_txo: Option<OutPoint>,
+	/// The features which this channel operates with. See individual features for more info.
+	///
+	/// `None` until negotiation completes and the channel type is finalized.
+	pub channel_type: Option<ChannelTypeFeatures>,
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	///
@@ -1922,6 +1926,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						forwarding_info: channel.counterparty_forwarding_info(),
 					},
 					funding_txo: channel.get_funding_txo(),
+					// Note that accept_channel (or open_channel) is always the first message, so
+					// `have_received_message` indicates that type negotiation has completed.
+					channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
 					short_channel_id: channel.get_short_channel_id(),
 					inbound_scid_alias: channel.latest_inbound_scid_alias(),
 					channel_value_satoshis: channel.get_value_satoshis(),
@@ -4315,6 +4322,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							counterparty_node_id: counterparty_node_id.clone(),
 							funding_satoshis: msg.funding_satoshis,
 							push_msat: msg.push_msat,
+							channel_type: channel.get_channel_type().clone(),
 						}
 					);
 				}
@@ -6054,6 +6062,7 @@ impl_writeable_tlv_based!(ChannelCounterparty, {
 impl_writeable_tlv_based!(ChannelDetails, {
 	(1, inbound_scid_alias, option),
 	(2, channel_id, required),
+	(3, channel_type, option),
 	(4, counterparty, required),
 	(6, funding_txo, option),
 	(8, short_channel_id, option),

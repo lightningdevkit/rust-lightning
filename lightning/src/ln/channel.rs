@@ -4232,6 +4232,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.user_id
 	}
 
+	/// Gets the channel's type
+	pub fn get_channel_type(&self) -> &ChannelTypeFeatures {
+		&self.channel_type
+	}
+
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
 	/// is_usable() returns true).
 	/// Allowed in any state (including after shutdown)

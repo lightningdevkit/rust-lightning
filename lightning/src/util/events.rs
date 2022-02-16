@@ -17,6 +17,7 @@
 use chain::keysinterface::SpendableOutputDescriptor;
 use ln::channelmanager::PaymentId;
 use ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use ln::features::ChannelTypeFeatures;
 use ln::msgs;
 use ln::msgs::DecodeError;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -429,6 +430,10 @@ pub enum Event {
 		funding_satoshis: u64,
 		/// Our starting balance in the channel if the request is accepted, in milli-satoshi.
 		push_msat: u64,
+		/// The features that this channel will operate with. If you reject the channel, a
+		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
+		/// feature flags.
+		channel_type: ChannelTypeFeatures,
 	},
 }
 
