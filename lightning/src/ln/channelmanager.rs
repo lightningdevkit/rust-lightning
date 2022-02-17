@@ -5972,6 +5972,23 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 				}
 			}
 		} else {
+			{
+				// First check if we can advance the channel type and try again.
+				let mut channel_state = self.channel_state.lock().unwrap();
+				if let Some(chan) = channel_state.by_id.get_mut(&msg.channel_id) {
+					if chan.get_counterparty_node_id() != *counterparty_node_id {
+						return;
+					}
+					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							node_id: *counterparty_node_id,
+							msg,
+						});
+						return;
+					}
+				}
+			}
+
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
 			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id), Some(&msg.data));
 		}

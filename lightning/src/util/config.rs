@@ -47,6 +47,28 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
 	/// by the protocol.
 	pub our_htlc_minimum_msat: u64,
+	/// If set, we attempt to negotiate the `scid_privacy` (referred to as `scid_alias` in the
+	/// BOLTs) option for outbound private channels. This provides better privacy by not including
+	/// our real on-chain channel UTXO in each invoice and requiring that our counterparty only
+	/// relay HTLCs to us using the channel's SCID alias.
+	///
+	/// If this option is set, channels may be created that will not be readable by LDK versions
+	/// prior to 0.0.106, causing [`ChannelManager`]'s read method to return a
+	/// [`DecodeError:InvalidValue`].
+	///
+	/// Note that setting this to true does *not* prevent us from opening channels with
+	/// counterparties that do not support the `scid_alias` option; we will simply fall back to a
+	/// private channel without that option.
+	///
+	/// Ignored if the channel is negotiated to be announced, see
+	/// [`ChannelConfig::announced_channel`] and
+	/// [`ChannelHandshakeLimits::force_announced_channel_preference`] for more.
+	///
+	/// Default value: false. This value is likely to change to true in the future.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`DecodeError:InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	pub negotiate_scid_privacy: bool,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -55,6 +77,7 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
+			negotiate_scid_privacy: false,
 		}
 	}
 }

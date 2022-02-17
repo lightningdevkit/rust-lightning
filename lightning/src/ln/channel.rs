@@ -810,6 +810,31 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.opt_anchors.is_some()
 	}
 
+	fn get_initial_channel_type(config: &UserConfig) -> ChannelTypeFeatures {
+		// The default channel type (ie the first one we try) depends on whether the channel is
+		// public - if it is, we just go with `only_static_remotekey` as it's the only option
+		// available. If it's private, we first try `scid_privacy` as it provides better privacy
+		// with no other changes, and fall back to `only_static_remotekey`
+		let mut ret = ChannelTypeFeatures::only_static_remote_key();
+		if !config.channel_options.announced_channel && config.own_channel_config.negotiate_scid_privacy {
+			ret.set_scid_privacy_required();
+		}
+		ret
+	}
+
+	/// If we receive an error message, it may only be a rejection of the channel type we tried,
+	/// not of our ability to open any channel at all. Thus, on error, we should first call this
+	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
+	pub(crate) fn maybe_handle_error_without_close(&mut self, chain_hash: BlockHash) -> Result<msgs::OpenChannel, ()> {
+		if !self.is_outbound() || self.channel_state != ChannelState::OurInitSent as u32 { return Err(()); }
+		if self.channel_type == ChannelTypeFeatures::only_static_remote_key() {
+			// We've exhausted our options
+			return Err(());
+		}
+		self.channel_type = ChannelTypeFeatures::only_static_remote_key(); // We only currently support two types
+		Ok(self.get_open_channel(chain_hash))
+	}
+
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
@@ -967,10 +992,7 @@ impl<Signer: Sign> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			// We currently only actually support one channel type, so don't retry with new types
-			// on error messages. When we support more we'll need fallback support (assuming we
-			// want to support old types).
-			channel_type: ChannelTypeFeatures::only_static_remote_key(),
+			channel_type: Self::get_initial_channel_type(&config),
 		})
 	}
 
